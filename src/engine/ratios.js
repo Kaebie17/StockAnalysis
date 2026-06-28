@@ -1,154 +1,114 @@
-// ratios.js
-// ALL derived ratios calculated here from normalized raw data
-// Nothing pulled from source — every formula is ours to control
-// For Yahoo Finance: balance sheet history is sparse so we supplement with
-// pre-calculated TTM ratios from financialData (stored in data.ttm)
+/**
+ * src/engine/ratios.js
+ * Calculates all derived ratios from the normalized data object.
+ * Falls back to TTM values when historical data is sparse.
+ */
 
-export const RATIO_FORMULAS = {
-  pe:           'Price / EPS',
-  pb:           'Price / Book Value Per Share',
-  ps:           'Market Cap / Revenue',
-  ev:           'Market Cap + Total Debt - Cash',
-  evEbitda:     'EV / EBITDA',
-  evGrossProfit:'EV / Gross Profit',
-  grossMargin:  'Gross Profit / Revenue × 100',
-  ebitdaMargin: 'EBITDA / Revenue × 100',
-  netMargin:    'Net Income / Revenue × 100',
-  roe:          'Net Income / Total Equity × 100',
-  roa:          'Net Income / Total Assets × 100',
-  roce:         'EBIT / (Total Assets - Current Liabilities) × 100',
-  deRatio:      'Total Debt / Total Equity',
-  fcfConversion:'FCF / Net Income × 100',
-  fcfYield:     'FCF / Market Cap × 100',
-  dividendYield:'(-Dividends Paid) / Market Cap × 100',
-  grahamNumber: '√(22.5 × EPS × Book Value Per Share)',
-}
+export function calcRatios(data) {
+  const { price, marketCap, sharesOutstanding, incomeHistory, balanceHistory,
+          cashflowHistory, ttm, meta } = data
 
-export function calculateRatios(data) {
-  const { latest, marketCap, price } = data
-  // ttm holds Yahoo financialData TTM ratios when balance sheet history is sparse
-  const ttm = data.ttm ?? null
+  const latest  = incomeHistory[incomeHistory.length - 1] || {}
+  const latestB = balanceHistory[balanceHistory.length - 1] || {}
+  const latestCF = cashflowHistory[cashflowHistory.length - 1] || {}
+  const prev    = incomeHistory[incomeHistory.length - 2] || {}
 
-  const {
-    revenue, grossProfit, ebitda, ebit,
-    netIncome, eps, totalAssets, totalDebt,
-    totalEquity, cash, bookValuePerShare,
-    cfo, fcf, dividendsPaid,
-  } = latest
-
-  const mktCap = marketCap ?? latest.marketCap
-
-  // Enterprise Value
-  const evVal = (mktCap != null && totalDebt != null && cash != null)
-    ? mktCap + totalDebt - cash
-    : (mktCap != null && totalDebt != null)
-    ? mktCap + totalDebt                 // cash unknown — conservative
+  // Revenue CAGR (5 yr or available)
+  const oldest = incomeHistory[0] || {}
+  const n = incomeHistory.length - 1
+  const revCagr = (n > 0 && oldest.revenue > 0 && latest.revenue > 0)
+    ? (Math.pow(latest.revenue / oldest.revenue, 1 / n) - 1) * 100
     : null
 
-  // D/E: try calculated first, then Yahoo TTM pre-calculated
-  const deRatioCalc = safeDivide(totalDebt, totalEquity)
-  const deRatio     = deRatioCalc ?? ttm?.debtToEquity ?? null
+  // EPS
+  const eps = latest.eps ?? ttm.eps ?? safe(() =>
+    latest.netIncome / (sharesOutstanding || marketCap / price)
+  )
 
-  // ROE: try calculated, then Yahoo TTM (stored as decimal e.g. 0.112 → 11.2%)
-  const roeCalc = safePercent(netIncome, totalEquity)
-  const roe     = roeCalc ?? (ttm?.roe != null ? ttm.roe * 100 : null)
+  // EV
+  const totalDebt = latestB.totalDebt ?? ttm.totalDebt ?? 0
+  const cash      = latestB.cash      ?? ttm.totalCash  ?? 0
+  const ev        = marketCap != null ? marketCap + totalDebt - cash : null
 
-  // ROA: try calculated, then Yahoo TTM
-  const roaCalc = safePercent(netIncome, totalAssets)
-  const roa     = roaCalc ?? (ttm?.roa != null ? ttm.roa * 100 : null)
+  // EBITDA
+  const ebitda = latest.ebitda ?? ttm.ebitda ?? safe(() =>
+    latest.operatingProfit + (latest.depreciation || 0)
+  )
 
-  // ROCE: proxy using EBIT / total capital (debt + equity)
-  // When totalAssets null: use totalDebt + implied equity from D/E
-  let roce = null
-  if (ebit != null && totalAssets != null && totalEquity != null) {
-    roce = safePercent(ebit, totalAssets - totalEquity)
-  } else if (ebit != null && totalDebt != null && deRatio != null && deRatio > 0) {
-    const impliedEquity = totalDebt / deRatio
-    roce = safePercent(ebit, totalDebt + impliedEquity)
-  }
+  // Margins
+  const rev = latest.revenue ?? ttm.revenue
+  const ni  = latest.netIncome ?? ttm.netIncome
+  const gp  = latest.grossProfit ?? ttm.grossProfit
 
-  // Gross margin: try calculated, then Yahoo TTM (stored as decimal 0.478 → 47.8%)
-  const grossMarginCalc = safePercent(grossProfit, revenue)
-  const grossMargin     = grossMarginCalc ?? (ttm?.grossMargin != null ? ttm.grossMargin * 100 : null)
+  const grossMargin   = pct(gp, rev)     ?? pct100(ttm.grossMargins)
+  const ebitdaMargin  = pct(ebitda, rev) ?? pct100(ttm.ebitdaMargins)
+  const netMargin     = pct(ni, rev)     ?? pct100(ttm.profitMargins)
+  const operatingMargin = pct(latest.operatingProfit, rev)
 
-  // EBITDA margin: try calculated, then Yahoo TTM
-  const ebitdaMarginCalc = safePercent(ebitda, revenue)
-  const ebitdaMargin     = ebitdaMarginCalc ?? (ttm?.ebitdaMargin != null ? ttm.ebitdaMargin * 100 : null)
+  // Leverage
+  const totalEquity = latestB.totalEquity
+  const de = div(totalDebt, totalEquity) ?? ttm.debtToEquity
+  const netDebt = totalDebt != null ? totalDebt - cash : null
 
-  // Net margin: try calculated, then Yahoo TTM
-  const netMarginCalc = safePercent(netIncome, revenue)
-  const netMargin     = netMarginCalc ?? (ttm?.netMargin != null ? ttm.netMargin * 100 : null)
+  // Returns
+  const roe  = pct(ni, totalEquity) ?? pct100(ttm.roe)
+  const roce = safe(() => pct(ebitda, (totalEquity + totalDebt - cash)))
+
+  // Valuation multiples
+  const pe         = div(price, eps)             ?? meta.pe
+  const pb         = div(price, safe(() => totalEquity / sharesOutstanding)) ?? meta.pb
+  const ps         = div(marketCap, rev)
+  const evEbitda   = div(ev, ebitda)
+  const evRevenue  = div(ev, rev)
+
+  // FCF
+  const fcf         = latestCF.freeCashFlow ?? ttm.freeCashflow
+  const fcfYield    = div(fcf, marketCap) ? (fcf / marketCap) * 100 : null
+  const fcfConversion = div(fcf, ni) ? (fcf / ni) * 100 : null
+
+  // Interest coverage
+  const interestCoverage = div(ebitda, latest.interest)
+
+  // Graham Number
+  const bookPerShare = safe(() => totalEquity / sharesOutstanding) ?? safe(() =>
+    meta.bookValue // from Screener
+  )
+  const grahamNumber = (eps > 0 && bookPerShare > 0)
+    ? Math.sqrt(22.5 * eps * bookPerShare) : null
+
+  // YoY growth
+  const revenueGrowthYoY = pct(latest.revenue - (prev.revenue || 0), prev.revenue) ?? pct100(ttm.revenueGrowth)
+  const netIncomeGrowthYoY = pct(latest.netIncome - (prev.netIncome || 0), prev.netIncome) ?? pct100(ttm.earningsGrowth)
 
   return {
-    pe:            safeDivide(price, eps),
-    pb:            safeDivide(price, bookValuePerShare),
-    ps:            safeDivide(mktCap, revenue),
-    ev:            evVal,
-    evEbitda:      safeDivide(evVal, ebitda),
-    evGrossProfit: safeDivide(evVal, grossProfit),
-    grossMargin,
-    ebitdaMargin,
-    netMargin,
-    roe,
-    roa,
-    roce,
-    deRatio,
-    fcfConversion: safePercent(fcf, netIncome),
-    fcfYield:      safePercent(fcf, mktCap),
-    dividendYield: dividendsPaid && mktCap ? safePercent(-dividendsPaid, mktCap) : null,
-    grahamNumber:  grahamNumber(eps, bookValuePerShare),
+    // Core price data
+    price, marketCap, ev,
+    // Per share
+    eps, bookPerShare, grahamNumber,
+    // Valuation multiples
+    pe, pb, ps, evEbitda, evRevenue,
+    // Margins (%)
+    grossMargin, ebitdaMargin, netMargin, operatingMargin,
+    // Returns (%)
+    roe, roce,
+    // Leverage
+    totalDebt, totalEquity, cash, netDebt, de, interestCoverage,
+    // Growth (%)
+    revCagr, revenueGrowthYoY, netIncomeGrowthYoY,
+    // Cash flow
+    fcf, fcfYield, fcfConversion,
+    operatingCF: latestCF.operatingCF ?? ttm.operatingCashflow,
+    // Misc
+    divYield: meta.divYield, beta: meta.beta,
+    high52: meta.high52, low52: meta.low52,
+    // Raw for reference
+    revenue: rev, netIncome: ni, ebitda, grossProfit: gp
   }
 }
 
-// ── Historical ratios for trend charts ───────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-export function calculateHistoricalRatios(data) {
-  const { incomeHistory, balanceHistory, cashflowHistory } = data
-
-  return incomeHistory.map((inc, i) => {
-    const bal = balanceHistory[i] ?? {}
-    const cf  = cashflowHistory[i] ?? {}
-    return {
-      date:         inc.date,
-      grossMargin:  safePercent(inc.grossProfit, inc.revenue),
-      ebitdaMargin: safePercent(inc.ebitda, inc.revenue),
-      netMargin:    safePercent(inc.netIncome, inc.revenue),
-      roe:          safePercent(inc.netIncome, bal.totalEquity),
-      deRatio:      safeDivide(bal.totalDebt, bal.totalEquity),
-      fcfConversion:safePercent(cf.fcf, inc.netIncome),
-      revenue:      inc.revenue,
-      netIncome:    inc.netIncome,
-      fcf:          cf.fcf,
-      ebitda:       inc.ebitda,
-    }
-  }).reverse() // oldest first for charts
-}
-
-// ── Revenue CAGR ──────────────────────────────────────────
-
-export function revenueCAGR(incomeHistory, years = 5) {
-  const sorted = [...incomeHistory].sort((a, b) => new Date(b.date) - new Date(a.date))
-  const n      = Math.min(years, sorted.length - 1)
-  if (n < 1) return null
-  const latest = sorted[0].revenue
-  const oldest = sorted[n].revenue
-  if (!latest || !oldest || oldest <= 0) return null
-  return (Math.pow(latest / oldest, 1 / n) - 1) * 100
-}
-
-// ── Helpers ───────────────────────────────────────────────
-
-function safeDivide(numerator, denominator) {
-  if (numerator == null || denominator == null || denominator === 0) return null
-  return numerator / denominator
-}
-
-function safePercent(numerator, denominator) {
-  const r = safeDivide(numerator, denominator)
-  return r == null ? null : r * 100
-}
-
-function grahamNumber(eps, bvps) {
-  if (!eps || !bvps || eps <= 0 || bvps <= 0) return null
-  return Math.sqrt(22.5 * eps * bvps)
-}
+function safe(fn) { try { const v = fn(); return isFinite(v) ? v : null } catch { return null } }
+function div(a, b) { return (a != null && b != null && b !== 0) ? a / b : null }
+function pct(a, b) { const d = div(a, b); return d != null ? d * 100 : null }
+function pct100(v) { return v != null ? v * 100 : null }

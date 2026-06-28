@@ -3,63 +3,47 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
-  build: {
-    chunkSizeWarningLimit: 800,
-  },
-  server: {
-    proxy: {
-      // Proxy /api/screener to Screener.in in local dev
-      // (same as what the Vercel serverless function does in production)
-      '/api/screener': {
-        target: 'https://www.screener.in',
-        changeOrigin: true,
-        rewrite: (path) => {
-          const url = new URL(path, 'http://localhost')
-          const ticker = url.searchParams.get('ticker') ?? ''
-          return `/company/${ticker}/consolidated/`
-        },
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept':     'text/html,application/xhtml+xml',
-          'Referer':    'https://www.screener.in',
-        }
-      }
-    }
-  },
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icons/*.png'],
+      includeAssets: ['favicon.ico'],
       manifest: {
-        name: 'Stock Valuation Analyzer',
+        name: 'StockVal',
         short_name: 'StockVal',
-        description: 'Multi-model stock valuation with technicals and fundamentals',
+        description: 'Stock Valuation PWA',
         theme_color: '#0f172a',
         background_color: '#0f172a',
         display: 'standalone',
-        orientation: 'portrait-primary',
         icons: [
-          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
-          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+          { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }
         ]
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
         runtimeCaching: [
           {
-            urlPattern: /^https:\/\/financialmodelingprep\.com\/api/,
+            urlPattern: /^https:\/\/query1\.finance\.yahoo\.com\/.*/i,
             handler: 'NetworkFirst',
-            options: { cacheName: 'fmp-api-cache', expiration: { maxEntries: 50, maxAgeSeconds: 3600 } }
-          },
-          {
-            urlPattern: /^https:\/\/query1\.finance\.yahoo\.com/,
-            handler: 'NetworkFirst',
-            options: { cacheName: 'yahoo-api-cache', expiration: { maxEntries: 50, maxAgeSeconds: 3600 } }
+            options: { cacheName: 'yahoo-cache', expiration: { maxAgeSeconds: 3600 } }
           }
         ]
       }
     })
-  ]
+  ],
+  server: {
+    proxy: {
+      '/api/screener': {
+        target: 'https://www.screener.in',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/screener/, ''),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Referer': 'https://www.screener.in/'
+        }
+      }
+    }
+  }
 })

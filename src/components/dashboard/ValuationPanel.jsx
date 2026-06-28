@@ -1,185 +1,181 @@
-// ValuationPanel.jsx
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { MODEL_LABELS, DEFAULT_ASSUMPTIONS } from '../../engine/valuation.js'
-import { fmtPrice, fmtPct, fmt, upsideColor, signalChip, signalEmoji } from '../../utils/format.js'
+import { fmtPrice, fmtPct, fmtPctPlain, fmtMultiple } from '../../utils/format.js'
 
-export default function ValuationPanel() {
-  const { state, actions } = useApp()
-  const { valuation, data, assumptions } = state
-  const [showAssumptions, setShowAssumptions] = useState(false)
+export default function ValuationPanel({ open, onClose }) {
+  const { state, recalc } = useApp()
+  const { valuation, ratios, data } = state
 
-  if (!valuation || !data) return null
-  if (state.expandedPanel !== 'valuation') return null
+  const [assumptions, setAssumptions] = useState(valuation?.assumptions || {})
 
-  const currency = data.currency ?? 'USD'
-  const price    = data.price
+  if (!open || !valuation) return null
+
+  const cur = data?.currency || 'USD'
+  const sym = cur === 'INR' ? '₹' : '$'
+
+  const update = (key, value) => {
+    const next = { ...assumptions, [key]: value }
+    setAssumptions(next)
+    recalc(next, {})
+  }
+
+  const modelRows = [
+    { name: 'DCF (10yr)',        key: 'dcf',          weight: 'High' },
+    { name: 'P/E Based',         key: 'pe',           weight: 'Medium' },
+    { name: 'EV/EBITDA',         key: 'evEbitda',     weight: 'Medium' },
+    { name: 'Price / Book',      key: 'pb',           weight: 'Low' },
+    { name: 'Price / Sales',     key: 'ps',           weight: 'Low' },
+    { name: 'Graham Number',     key: 'graham',       weight: 'Low' },
+    { name: 'EV / Gross Profit', key: 'evGrossProfit',weight: 'Low' }
+  ]
 
   return (
-    <div className="card px-5 py-4 space-y-5">
+    <div className="card space-y-5">
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <h3 className="font-display font-semibold text-slate-100">Valuation Detail</h3>
-        <div className="flex items-center gap-2">
-          <button onClick={() => setShowAssumptions(s => !s)} className="btn-outline text-xs">
-            {showAssumptions ? 'Hide' : '✎ Edit'} Assumptions
-          </button>
-          <button onClick={actions.resetAssumptions} className="btn-ghost text-xs">↺ Reset</button>
-        </div>
+        <h2 className="font-semibold text-white">Valuation Detail</h2>
+        <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-lg">✕</button>
       </div>
 
-      {/* Assumptions editor */}
-      {showAssumptions && (
-        <AssumptionsEditor assumptions={assumptions} onUpdate={actions.updateAssumptions} />
-      )}
-
-      {/* Model table */}
-      <div className="space-y-2">
-        {Object.entries(valuation.models).map(([key, model]) => {
-          if (model.isGrowthRate) return null // show Reverse DCF separately
-          const label   = MODEL_LABELS[key] ?? key
-          const upside  = model.value && price ? ((model.value - price) / price) * 100 : null
-
-          return (
-            <div key={key} className={`card-inner px-4 py-3 flex items-center gap-4
-              ${!model.applicable ? 'opacity-40' : ''}`}>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-slate-200 font-medium">{label}</p>
-                {!model.applicable && (
-                  <p className="text-xs text-slate-500">{model.reason}</p>
-                )}
-              </div>
-
-              {model.applicable && model.value != null ? (
-                <>
-                  <div className="text-right">
-                    <p className="font-mono text-slate-100">{fmtPrice(model.value, currency)}</p>
-                  </div>
-                  <div className={`text-right w-20 font-mono text-sm ${upsideColor(upside)}`}>
-                    {fmtPct(upside)}
-                  </div>
-                  <div className="w-24">
-                    <UpsideBar upside={upside} />
-                  </div>
-                </>
-              ) : (
-                <span className="text-slate-600 text-sm font-mono ml-auto">N/A</span>
-              )}
-            </div>
-          )
-        })}
+      {/* Model Table */}
+      <div>
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Model Estimates</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-navy-700">
+                <th className="text-left py-2 text-slate-400 font-medium">Model</th>
+                <th className="text-right py-2 text-slate-400 font-medium">Fair Value</th>
+                <th className="text-right py-2 text-slate-400 font-medium">Upside</th>
+                <th className="text-right py-2 text-slate-400 font-medium">Weight</th>
+              </tr>
+            </thead>
+            <tbody>
+              {modelRows.map(row => {
+                const fv = valuation.models[row.key]
+                const up = fv && ratios?.price ? ((fv - ratios.price) / ratios.price) * 100 : null
+                return (
+                  <tr key={row.key} className="border-b border-navy-800/50">
+                    <td className="py-2 text-slate-300">{row.name}</td>
+                    <td className="py-2 text-right font-mono text-white">
+                      {fv ? sym + fv.toFixed(2) : '—'}
+                    </td>
+                    <td className={`py-2 text-right font-mono ${up == null ? 'text-slate-500' : up >= 0 ? 'text-bull' : 'text-bear'}`}>
+                      {up != null ? fmtPct(up) : '—'}
+                    </td>
+                    <td className="py-2 text-right text-slate-500 text-xs">{row.weight}</td>
+                  </tr>
+                )
+              })}
+              {/* Consensus */}
+              <tr className="bg-navy-800/40">
+                <td className="py-2 text-white font-semibold">Weighted Consensus</td>
+                <td className="py-2 text-right font-mono font-bold text-white">
+                  {valuation.fairValue ? sym + valuation.fairValue.toFixed(2) : '—'}
+                </td>
+                <td className={`py-2 text-right font-mono font-bold ${(valuation.upside || 0) >= 0 ? 'text-bull' : 'text-bear'}`}>
+                  {valuation.upside != null ? fmtPct(valuation.upside) : '—'}
+                </td>
+                <td className="py-2 text-right text-slate-400 text-xs">All</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {/* Reverse DCF */}
-      {valuation.models.reverseDCF?.applicable && (
-        <div className="card-inner px-4 py-3">
-          <p className="label mb-1">Reverse DCF — Implied Growth Rate</p>
-          <p className="text-slate-300 text-sm">
-            At the current price of{' '}
-            <span className="font-mono text-slate-100">{fmtPrice(price, currency)}</span>,
+      {valuation.impliedGrowth != null && (
+        <div className="card-sm">
+          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Reverse DCF</div>
+          <p className="text-sm text-slate-300">
+            At the current price of <span className="text-white font-mono">{sym}{ratios?.price?.toFixed(2)}</span>,
             the market is pricing in a FCF growth rate of{' '}
-            <span className={`font-mono font-semibold ${
-              valuation.models.reverseDCF.value > 20 ? 'text-accent-red'
-              : valuation.models.reverseDCF.value > 10 ? 'text-accent-amber'
-              : 'text-accent-green'}`}>
-              {fmt(valuation.models.reverseDCF.value)}%
-            </span>{' '}
-            per year — {valuation.models.reverseDCF.value > 20
-              ? 'very high expectations baked in'
-              : valuation.models.reverseDCF.value > 10
-              ? 'moderate growth expected'
-              : 'conservative growth assumed'}.
+            <span className="text-accent font-semibold font-mono">{valuation.impliedGrowth.toFixed(1)}%/yr</span> over the next 10 years.
           </p>
         </div>
       )}
 
-      {/* Consensus */}
-      <div className="card-inner px-4 py-3 flex items-center justify-between gap-4">
-        <div>
-          <p className="label mb-0.5">Weighted Consensus</p>
-          <p className="text-xs text-slate-500">Based on applicable models × weights</p>
-        </div>
-        <div className="text-right">
-          <p className="font-mono font-bold text-lg text-slate-100">
-            {fmtPrice(valuation.consensusValue, currency)}
-          </p>
-          <p className={`font-mono text-sm ${upsideColor(valuation.upside)}`}>
-            {fmtPct(valuation.upside)} vs CMP
-          </p>
-        </div>
-        <div>
-          <span className={`chip ${signalChip(valuation.signal)} text-sm`}>
-            {signalEmoji(valuation.signal)} {valuation.signal?.replace(/_/g, ' ')}
-          </span>
+      {/* Assumption Sliders */}
+      <div>
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Adjust Assumptions</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Slider
+            label="WACC"
+            value={(assumptions.wacc ?? 0.10) * 100}
+            min={5} max={20} step={0.5}
+            display={v => v.toFixed(1) + '%'}
+            onChange={v => update('wacc', v / 100)}
+          />
+          <Slider
+            label="Terminal Growth"
+            value={(assumptions.termGrowth ?? 0.03) * 100}
+            min={1} max={6} step={0.5}
+            display={v => v.toFixed(1) + '%'}
+            onChange={v => update('termGrowth', v / 100)}
+          />
+          <Slider
+            label="FCF Growth Rate"
+            value={(assumptions.growthRate ?? 0.10) * 100}
+            min={-10} max={40} step={1}
+            display={v => v.toFixed(0) + '%'}
+            onChange={v => update('growthRate', v / 100)}
+          />
+          <Slider
+            label="Sector P/E"
+            value={assumptions.sectorPe ?? 20}
+            min={5} max={50} step={1}
+            display={v => v.toFixed(0) + '×'}
+            onChange={v => update('sectorPe', v)}
+          />
         </div>
       </div>
 
-      <p className="text-xs text-slate-600">
-        Model weights are configurable in Scoring Studio. Sector multiples can be adjusted in assumptions.
-      </p>
+      {/* Key valuation ratios */}
+      <div>
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Key Ratios</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {[
+            { label: 'P/E', value: fmtMultiple(ratios?.pe) },
+            { label: 'P/B', value: fmtMultiple(ratios?.pb) },
+            { label: 'EV/EBITDA', value: fmtMultiple(ratios?.evEbitda) },
+            { label: 'P/S', value: fmtMultiple(ratios?.ps) },
+            { label: 'Graham', value: ratios?.grahamNumber ? sym + ratios.grahamNumber.toFixed(2) : '—' },
+            { label: 'FCF Yield', value: fmtPctPlain(ratios?.fcfYield) },
+            { label: 'EV/Rev', value: fmtMultiple(ratios?.evRevenue) },
+            { label: 'Market Cap', value: ratios?.marketCap ? formatLarge(ratios.marketCap, cur) : '—' }
+          ].map(r => (
+            <div key={r.label} className="card-sm">
+              <div className="text-xs text-slate-400">{r.label}</div>
+              <div className="font-mono text-white font-semibold">{r.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
 
-function UpsideBar({ upside }) {
-  if (upside == null) return null
-  const capped = Math.max(-50, Math.min(50, upside))
-  const width  = Math.abs(capped) * 2   // 0–100%
-  const isPos  = upside >= 0
-
+function Slider({ label, value, min, max, step, display, onChange }) {
   return (
-    <div className="h-1.5 bg-surface-900 rounded-full overflow-hidden relative">
-      <div className="absolute inset-y-0 left-1/2 w-px bg-slate-600" />
-      <div
-        className={`absolute inset-y-0 ${isPos ? 'left-1/2' : 'right-1/2'} rounded-full
-          ${isPos ? 'bg-accent-green' : 'bg-accent-red'}`}
-        style={{ width: `${width / 2}%` }}
+    <div>
+      <div className="flex justify-between text-xs text-slate-400 mb-1">
+        <span>{label}</span>
+        <span className="text-white font-mono">{display(value)}</span>
+      </div>
+      <input
+        type="range" min={min} max={max} step={step} value={value}
+        onChange={e => onChange(parseFloat(e.target.value))}
+        className="w-full accent-accent"
       />
     </div>
   )
 }
 
-function AssumptionsEditor({ assumptions, onUpdate }) {
-  const a = { ...DEFAULT_ASSUMPTIONS, ...assumptions }
-
-  function field(label, key, suffix = '', min, max, step = 0.5) {
-    return (
-      <div className="space-y-1">
-        <div className="flex justify-between">
-          <label className="text-xs text-slate-400">{label}</label>
-          <span className="text-xs font-mono text-slate-200">{a[key]}{suffix}</span>
-        </div>
-        <input
-          type="range" min={min} max={max} step={step}
-          value={a[key]}
-          onChange={e => onUpdate({ [key]: parseFloat(e.target.value) })}
-          className="w-full h-1 bg-surface-700 rounded appearance-none accent-cyan-400"
-        />
-      </div>
-    )
-  }
-
-  return (
-    <div className="card-inner px-4 py-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-      <div className="space-y-4">
-        <p className="label">DCF Assumptions</p>
-        {field('WACC / Discount Rate', 'wacc', '%', 5, 20)}
-        {field('Terminal Growth Rate', 'terminalGrowth', '%', 1, 8, 0.25)}
-        {field('Projection Years', 'projectionYears', ' yr', 3, 10, 1)}
-        {field('FCF Growth Rate Yr1', 'revenueGrowthYr1', '%', 0, 50)}
-      </div>
-      <div className="space-y-4">
-        <p className="label">Sector Multiples</p>
-        {field('Sector P/E', 'sectorPE', 'x', 5, 60, 1)}
-        {field('Sector EV/EBITDA', 'sectorEVEBITDA', 'x', 3, 30, 0.5)}
-        {field('Sector P/B', 'sectorPB', 'x', 0.5, 10, 0.25)}
-        {field('Sector P/S', 'sectorPS', 'x', 0.5, 20, 0.5)}
-      </div>
-      <div className="space-y-4">
-        <p className="label">Signal Brackets</p>
-        {field('Undervalued if upside >', 'upsideBracket', '%', 5, 40, 1)}
-        {field('Overvalued if downside >', 'downsideBracket', '%', 5, 30, 1)}
-        {field('Margin of Safety', 'marginOfSafety', '%', 0, 40, 5)}
-      </div>
-    </div>
-  )
+function formatLarge(v, currency) {
+  const sym = currency === 'INR' ? '₹' : '$'
+  if (v >= 1e12) return sym + (v / 1e12).toFixed(1) + 'T'
+  if (v >= 1e9)  return sym + (v / 1e9).toFixed(1)  + 'B'
+  if (v >= 1e7)  return sym + (v / 1e7).toFixed(1)  + 'Cr'
+  if (v >= 1e6)  return sym + (v / 1e6).toFixed(1)  + 'M'
+  return sym + v.toFixed(0)
 }

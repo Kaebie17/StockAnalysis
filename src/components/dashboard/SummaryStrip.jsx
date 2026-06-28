@@ -1,143 +1,120 @@
-// SummaryStrip.jsx
-// The crisp default view — 3 scores + combined verdict
-// Each card expands inline via togglePanel
-
 import React from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { signalEmoji, signalColor, signalChip, fmtPct, fmtPrice, fmt } from '../../utils/format.js'
+import { fmtPct, fmtMultiple, signalColor, signalBadgeClass } from '../../utils/format.js'
 
-export default function SummaryStrip() {
-  const { state, actions } = useApp()
-  const { valuation, fundScore, techScore, verdict, data } = state
+const VERDICTS = {
+  UNDERVALUED_BULLISH_EXCELLENT: 'Strong buy candidate — undervalued price, excellent fundamentals, and bullish momentum all aligning.',
+  UNDERVALUED_BULLISH_HEALTHY:   'Attractive setup — undervalued with solid fundamentals and bullish technical trend.',
+  UNDERVALUED_NEUTRAL_EXCELLENT: 'Fundamentally strong and undervalued; technicals are neutral — patient investors may find value here.',
+  UNDERVALUED_BEARISH_EXCELLENT: 'Fundamentally excellent and undervalued, but near-term technicals are bearish — consider a phased entry.',
+  UNDERVALUED_BULLISH_CONCERNS:  'Undervalued with bullish momentum, but watch the fundamental weaknesses before sizing up.',
+  UNDERVALUED_BULLISH_WEAK:      'Price looks cheap, but weak fundamentals are a concern — high risk/reward situation.',
+  FAIRLY_VALUED_BULLISH_EXCELLENT: 'Fairly priced quality business with bullish momentum — hold or accumulate on dips.',
+  FAIRLY_VALUED_NEUTRAL_HEALTHY:   'Fair price, healthy business, neutral trend — decent long-term hold, no urgency.',
+  OVERVALUED_BULLISH_EXCELLENT:    'Premium-quality business with momentum, but valuation looks stretched — existing holders hold; new buyers wait for a pullback.',
+  OVERVALUED_BEARISH_WEAK:         'Overvalued, bearish trend, weak fundamentals — avoid or consider exit.',
+  OVERVALUED_BEARISH_HEALTHY:      'Overvalued and technically bearish — consider taking profits even with solid fundamentals.',
+  DEFAULT: 'Mixed signals across valuation, fundamentals, and technicals — review each pillar below before deciding.'
+}
 
-  if (!data) return null
+function getVerdict(valuation, quality, technicals) {
+  if (!valuation || !quality || !technicals?.available) return VERDICTS.DEFAULT
+  const key = `${valuation.signal}_${technicals.label}_${quality.label}`
+  return VERDICTS[key] || VERDICTS.DEFAULT
+}
 
-  const currency = data.currency ?? 'USD'
+export default function SummaryStrip({ onExpand }) {
+  const { state } = useApp()
+  const { valuation, quality, technicals, ratios } = state
+
+  if (!valuation) return null
 
   return (
     <div className="space-y-4">
-      {/* 3 pillar cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <PillarCard
-          id="valuation"
-          title="Valuation"
-          signal={valuation?.signal}
-          lines={[
-            valuation?.consensusValue
-              ? `Fair value ${fmtPrice(valuation.consensusValue, currency)}`
-              : 'Fair value unavailable',
-            valuation?.upside != null
-              ? `${valuation.upside >= 0 ? '+' : ''}${valuation.upside.toFixed(1)}% upside`
-              : null,
-          ]}
-        />
-        <PillarCard
-          id="fundamentals"
-          title="Fundamentals"
-          signal={fundScore?.label}
-          score={fundScore?.score}
-          lines={[
-            fundScore?.score != null ? `Quality score ${fundScore.score.toFixed(1)}/10` : null,
-            fundScore?.results?.filter(r => r.pass).length != null
-              ? `${fundScore.results.filter(r => r.pass).length}/${fundScore.results.length} checks pass`
-              : null,
-          ]}
-        />
-        <PillarCard
-          id="technicals"
-          title="Technicals"
-          signal={techScore?.label}
-          score={techScore?.score}
-          lines={[
-            techScore?.label === 'INSUFFICIENT DATA' ? 'Need 30+ days price data' : null,
-            state.technicals?.latest?.rsi != null
-              ? `RSI ${state.technicals.latest.rsi.toFixed(0)}`
-              : null,
-            state.technicals?.latest?.recentCross
-              ? `${state.technicals.latest.recentCross.type === 'GOLDEN' ? '⚡ Golden' : '☠️ Death'} Cross ${state.technicals.latest.recentCross.daysAgo}d ago`
-              : null,
-          ]}
-        />
+      {/* Verdict */}
+      <div className="card border-accent/30 bg-accent/5">
+        <p className="text-sm text-slate-300 leading-relaxed">
+          {getVerdict(valuation, quality, technicals)}
+        </p>
       </div>
 
-      {/* Combined verdict */}
-      {verdict && (
-        <div className="card px-5 py-4">
-          <div className="flex items-start gap-3">
-            <div className="text-2xl mt-0.5">
-              {signalEmoji(valuation?.signal)}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="label mb-1">Combined Verdict</p>
-              <p className="text-slate-200 text-sm leading-relaxed">{verdict.text}</p>
-            </div>
-          </div>
-          <p className="mt-2 text-xs text-slate-600">
-            Not financial advice — signals are model outputs only. Always do your own research.
-          </p>
-        </div>
-      )}
+      {/* 3 Pillars */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {/* Valuation */}
+        <PillarCard
+          title="Valuation"
+          badge={valuation.signal}
+          score={valuation.upside != null ? fmtPct(valuation.upside) : '—'}
+          scoreLabel="vs fair value"
+          lines={[
+            valuation.fairValue && ratios?.price
+              ? `Fair: ${ratios?.price >= 100 ? '₹' : '$'}${valuation.fairValue.toFixed(2)}`
+              : null,
+            ratios?.pe != null  ? `P/E: ${fmtMultiple(ratios.pe)}` : null,
+            ratios?.evEbitda != null ? `EV/EBITDA: ${fmtMultiple(ratios.evEbitda)}` : null
+          ].filter(Boolean)}
+          onExpand={() => onExpand('valuation')}
+        />
+
+        {/* Fundamentals */}
+        <PillarCard
+          title="Fundamentals"
+          badge={quality?.label}
+          score={quality ? quality.score.toFixed(1) + '/10' : '—'}
+          scoreLabel="quality score"
+          lines={[
+            ratios?.roe != null     ? `ROE: ${ratios.roe.toFixed(1)}%` : null,
+            ratios?.netMargin != null ? `Net Margin: ${ratios.netMargin.toFixed(1)}%` : null,
+            ratios?.revCagr != null ? `Rev CAGR: ${ratios.revCagr.toFixed(1)}%` : null
+          ].filter(Boolean)}
+          onExpand={() => onExpand('fundamentals')}
+        />
+
+        {/* Technicals */}
+        <PillarCard
+          title="Technicals"
+          badge={technicals?.available ? technicals.label : 'NO DATA'}
+          score={technicals?.available ? technicals.score.toFixed(1) + '/10' : '—'}
+          scoreLabel="technical score"
+          lines={technicals?.available ? [
+            `RSI: ${technicals.indicators.rsi}`,
+            technicals.signals.goldenCross ? 'Golden Cross ✓' : technicals.signals.deathCross ? 'Death Cross ✗' : null,
+            technicals.patterns?.[0]?.name || null
+          ].filter(Boolean) : ['Price history unavailable']}
+          onExpand={() => onExpand('technicals')}
+        />
+      </div>
     </div>
   )
 }
 
-function PillarCard({ id, title, signal, score, lines }) {
-  const { state, actions } = useApp()
-  const isExpanded = state.expandedPanel === id
-
-  const validLines = (lines ?? []).filter(Boolean)
-
+function PillarCard({ title, badge, score, scoreLabel, lines, onExpand }) {
   return (
-    <div className={`card px-4 py-4 transition-all ${isExpanded ? 'border-accent-cyan/40' : ''}`}>
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <div>
-          <p className="label mb-1">{title}</p>
-          <div className="flex items-center gap-2">
-            <span className={`chip ${signalChip(signal)} text-sm font-semibold`}>
-              {signalEmoji(signal)} {formatSignal(signal)}
-            </span>
-          </div>
-        </div>
-        {score != null && (
-          <ScoreBadge score={score} />
-        )}
+    <div className="card flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{title}</span>
+        {badge && <span className={`badge ${signalBadgeClass(badge)}`}>{badge.replace(/_/g, ' ')}</span>}
       </div>
 
-      <div className="space-y-0.5 mt-2 min-h-[2.5rem]">
-        {validLines.map((line, i) => (
-          <p key={i} className="text-xs text-slate-400">{line}</p>
-        ))}
+      <div>
+        <div className={`text-2xl font-bold font-mono ${signalColor(badge)}`}>{score}</div>
+        <div className="text-xs text-slate-500">{scoreLabel}</div>
       </div>
+
+      <ul className="space-y-1">
+        {lines.map((l, i) => (
+          <li key={i} className="text-xs text-slate-400 flex items-center gap-1">
+            <span className="text-navy-700">·</span>{l}
+          </li>
+        ))}
+      </ul>
 
       <button
-        onClick={() => actions.togglePanel(id)}
-        className="expand-btn mt-3"
+        onClick={onExpand}
+        className="mt-auto text-xs text-accent hover:text-accent-light transition-colors text-left"
       >
-        <svg
-          className={`w-3.5 h-3.5 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-        {isExpanded ? 'Collapse' : 'Explore detail'}
+        Explore ▼
       </button>
     </div>
   )
-}
-
-function ScoreBadge({ score }) {
-  const color = score >= 8 ? 'text-accent-green'
-              : score >= 5 ? 'text-accent-amber'
-              : 'text-accent-red'
-  return (
-    <div className="text-right">
-      <span className={`font-mono font-bold text-xl ${color}`}>{score.toFixed(1)}</span>
-      <span className="text-slate-600 text-xs">/10</span>
-    </div>
-  )
-}
-
-function formatSignal(signal) {
-  if (!signal) return '—'
-  return signal.replace(/_/g, ' ')
 }

@@ -1,120 +1,102 @@
-// Raw IndexedDB utility — no external modules
-// Stores: financials, scoringProfiles, cachedTickers
+/**
+ * src/utils/db.js — Raw IndexedDB, no Dexie
+ */
 
-const DB_NAME    = 'StockValDB'
+const DB_NAME = 'stockval'
 const DB_VERSION = 1
-
-const STORES = {
-  FINANCIALS: 'financials',
-  PROFILES:   'profiles',
-  CACHE:      'cache',
-}
+let db = null
 
 function openDB() {
+  if (db) return Promise.resolve(db)
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
-
-    req.onupgradeneeded = (e) => {
-      const db = e.target.result
-      if (!db.objectStoreNames.contains(STORES.FINANCIALS)) {
-        db.createObjectStore(STORES.FINANCIALS, { keyPath: 'ticker' })
+    req.onupgradeneeded = e => {
+      const d = e.target.result
+      if (!d.objectStoreNames.contains('financials')) {
+        d.createObjectStore('financials', { keyPath: 'key' })
       }
-      if (!db.objectStoreNames.contains(STORES.PROFILES)) {
-        db.createObjectStore(STORES.PROFILES, { keyPath: 'id' })
-      }
-      if (!db.objectStoreNames.contains(STORES.CACHE)) {
-        const cacheStore = db.createObjectStore(STORES.CACHE, { keyPath: 'key' })
-        cacheStore.createIndex('expiry', 'expiry', { unique: false })
+      if (!d.objectStoreNames.contains('profiles')) {
+        d.createObjectStore('profiles', { keyPath: 'name' })
       }
     }
-
-    req.onsuccess  = () => resolve(req.result)
-    req.onerror    = () => reject(req.error)
-  })
-}
-
-function tx(db, storeName, mode = 'readonly') {
-  return db.transaction([storeName], mode).objectStore(storeName)
-}
-
-async function dbGet(storeName, key) {
-  const db    = await openDB()
-  const store = tx(db, storeName)
-  return new Promise((resolve, reject) => {
-    const req  = store.get(key)
-    req.onsuccess = () => resolve(req.result ?? null)
+    req.onsuccess = e => { db = e.target.result; resolve(db) }
     req.onerror   = () => reject(req.error)
   })
 }
 
-async function dbPut(storeName, value) {
-  const db    = await openDB()
-  const store = tx(db, storeName, 'readwrite')
+async function txGet(store, key) {
+  const d = await openDB()
   return new Promise((resolve, reject) => {
-    const req  = store.put(value)
+    const tx = d.transaction(store, 'readonly')
+    const req = tx.objectStore(store).get(key)
     req.onsuccess = () => resolve(req.result)
     req.onerror   = () => reject(req.error)
   })
 }
 
-async function dbDelete(storeName, key) {
-  const db    = await openDB()
-  const store = tx(db, storeName, 'readwrite')
+async function txPut(store, value) {
+  const d = await openDB()
   return new Promise((resolve, reject) => {
-    const req  = store.delete(key)
+    const tx = d.transaction(store, 'readwrite')
+    const req = tx.objectStore(store).put(value)
+    req.onsuccess = () => resolve(req.result)
+    req.onerror   = () => reject(req.error)
+  })
+}
+
+async function txDelete(store, key) {
+  const d = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = d.transaction(store, 'readwrite')
+    const req = tx.objectStore(store).delete(key)
     req.onsuccess = () => resolve()
     req.onerror   = () => reject(req.error)
   })
 }
 
-async function dbGetAll(storeName) {
-  const db    = await openDB()
-  const store = tx(db, storeName)
+async function txGetAll(store) {
+  const d = await openDB()
   return new Promise((resolve, reject) => {
-    const req  = store.getAll()
-    req.onsuccess = () => resolve(req.result ?? [])
+    const tx = d.transaction(store, 'readonly')
+    const req = tx.objectStore(store).getAll()
+    req.onsuccess = () => resolve(req.result)
     req.onerror   = () => reject(req.error)
   })
 }
 
-// ── Public API ────────────────────────────────────────────
+// ─── Public API ───────────────────────────────────────────────────────────────
 
-// Financials: store/retrieve fetched raw data per ticker
-export async function saveFinancials(ticker, data) {
-  await dbPut(STORES.FINANCIALS, { ticker: ticker.toUpperCase(), ...data, savedAt: Date.now() })
+const TTL = 3600 * 1000 // 1 hour
+
+export async function getCached(ticker) {
+  try {
+    const rec = await txGet('financials', ticker.toUpperCase())
+    if (!rec) return null
+    if (Date.now() - rec.timestamp > TTL) { await txDelete('financials', ticker.toUpperCase()); return null }
+    return rec.data
+  } catch { return null }
 }
 
-export async function loadFinancials(ticker) {
-  return dbGet(STORES.FINANCIALS, ticker.toUpperCase())
+export async function setCached(ticker, data) {
+  try {
+    await txPut('financials', { key: ticker.toUpperCase(), data, timestamp: Date.now() })
+  } catch { /* non-critical */ }
 }
 
-// Profiles: scoring profiles
-export async function saveProfile(profile) {
-  await dbPut(STORES.PROFILES, profile)
+export async function saveProfile(name, config) {
+  await txPut('profiles', { name, config, updatedAt: Date.now() })
 }
 
-export async function loadProfile(id) {
-  return dbGet(STORES.PROFILES, id)
+export async function loadProfile(name) {
+  const rec = await txGet('profiles', name)
+  return rec?.config ?? null
 }
 
-export async function loadAllProfiles() {
-  return dbGetAll(STORES.PROFILES)
+export async function listProfiles() {
+  const all = await txGetAll('profiles')
+  return all.map(r => ({ name: r.name, updatedAt: r.updatedAt }))
 }
 
-export async function deleteProfile(id) {
-  return dbDelete(STORES.PROFILES, id)
-}
-
-// Cache: short-lived API responses (1 hour default)
-const CACHE_TTL = 60 * 60 * 1000 // 1 hour
-
-export async function cacheSet(key, value, ttl = CACHE_TTL) {
-  await dbPut(STORES.CACHE, { key, value, expiry: Date.now() + ttl })
-}
-
-export async function cacheGet(key) {
-  const entry = await dbGet(STORES.CACHE, key)
-  if (!entry) return null
-  if (Date.now() > entry.expiry) { await dbDelete(STORES.CACHE, key); return null }
-  return entry.value
+export async function deleteProfile(name) {
+  await txDelete('profiles', name)
 }

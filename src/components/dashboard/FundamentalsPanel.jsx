@@ -1,200 +1,130 @@
-// FundamentalsPanel.jsx
 import React from 'react'
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { useApp } from '../../store/AppContext.jsx'
-import { fmtCompact, fmtPctAbs, fmt, fmtMultiple } from '../../utils/format.js'
-import {
-  ResponsiveContainer, LineChart, Line, BarChart, Bar,
-  XAxis, YAxis, Tooltip, ReferenceLine
-} from 'recharts'
+import { fmtPctPlain, fmtNum, fmtMultiple } from '../../utils/format.js'
 
-export default function FundamentalsPanel() {
+export default function FundamentalsPanel({ open, onClose }) {
   const { state } = useApp()
-  const { fundScore, data, histRatios, ratios } = state
+  const { data, ratios, quality } = state
 
-  if (!fundScore || !data) return null
-  if (state.expandedPanel !== 'fundamentals') return null
+  if (!open || !data) return null
 
-  const currency = data.currency ?? 'USD'
+  const cur = data.currency || 'USD'
+  const sym = cur === 'INR' ? '₹' : '$'
+  const unit = cur === 'INR' ? 'Cr' : 'M'
+  const divisor = cur === 'INR' ? 1e7 : 1e6
 
-  // Build chart data from historical ratios (oldest → newest)
-  const chartData = (histRatios ?? []).map(h => ({
-    year:         h.date?.slice(0, 4) ?? '',
-    revenue:      h.revenue,
-    netIncome:    h.netIncome,
-    fcf:          h.fcf,
-    grossMargin:  h.grossMargin,
-    ebitdaMargin: h.ebitdaMargin,
-    netMargin:    h.netMargin,
-    deRatio:      h.deRatio,
+  const incomeChart = data.incomeHistory.map(r => ({
+    year: r.year,
+    Revenue: r.revenue ? +(r.revenue / divisor).toFixed(1) : 0,
+    'Net Income': r.netIncome ? +(r.netIncome / divisor).toFixed(1) : 0
+  }))
+
+  const marginChart = data.incomeHistory.map(r => ({
+    year: r.year,
+    'Gross %': r.revenue && r.grossProfit ? +((r.grossProfit / r.revenue) * 100).toFixed(1) : null,
+    'Net %':   r.revenue && r.netIncome   ? +((r.netIncome / r.revenue) * 100).toFixed(1) : null,
+    'EBITDA %': r.revenue && r.ebitda     ? +((r.ebitda / r.revenue) * 100).toFixed(1) : null
   }))
 
   return (
-    <div className="card px-5 py-4 space-y-5">
+    <div className="card space-y-5">
       <div className="flex items-center justify-between">
-        <h3 className="font-display font-semibold text-slate-100">Fundamental Quality</h3>
-        <span className="text-xs text-slate-500">{fundScore.results.filter(r => r.pass).length}/{fundScore.results.length} checks pass</span>
+        <h2 className="font-semibold text-white">Fundamentals Detail</h2>
+        <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-lg">✕</button>
       </div>
 
-      {/* Predictor results */}
-      <div className="space-y-2">
-        {fundScore.results.map(r => (
-          <div key={r.id} className="card-inner px-4 py-3 flex items-center gap-4">
-            <div className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0
-              ${r.pass ? 'bg-green-500/20 text-accent-green' : 'bg-red-500/20 text-accent-red'}`}>
-              {r.pass ? '✓' : '✗'}
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm text-slate-200">{r.label}</p>
-              <p className="text-xs text-slate-500">{r.desc}</p>
-            </div>
-            <div className="text-right">
-              {r.value != null ? (
-                <span className="font-mono text-sm text-slate-300">
-                  {r.unit === '%' ? fmtPctAbs(r.value) : r.unit === 'x' ? fmtMultiple(r.value) : fmt(r.value)}{' '}
-                  {!['%','x',''].includes(r.unit) && <span className="text-slate-500">{r.unit}</span>}
-                </span>
-              ) : (
-                <span className="text-slate-600 text-sm">—</span>
-              )}
-            </div>
-            <div className="text-right w-14 text-xs text-slate-500">
-              wt {r.weight}%
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Key ratios snapshot */}
-      {ratios && (
+      {/* Quality Predictors */}
+      {quality?.predictors && (
         <div>
-          <p className="label mb-2">Key Ratios (Latest)</p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {[
-              { label: 'Gross Margin', value: fmtPctAbs(ratios.grossMargin) },
-              { label: 'EBITDA Margin', value: fmtPctAbs(ratios.ebitdaMargin) },
-              { label: 'Net Margin', value: fmtPctAbs(ratios.netMargin) },
-              { label: 'ROE', value: fmtPctAbs(ratios.roe) },
-              { label: 'ROCE', value: fmtPctAbs(ratios.roce) },
-              { label: 'D/E Ratio', value: fmtMultiple(ratios.deRatio) },
-              { label: 'FCF Yield', value: fmtPctAbs(ratios.fcfYield) },
-              { label: 'FCF Conversion', value: fmtPctAbs(ratios.fcfConversion) },
-            ].map(({ label, value }) => (
-              <div key={label} className="card-inner px-3 py-2">
-                <p className="text-xs text-slate-500">{label}</p>
-                <p className="font-mono text-sm text-slate-200 mt-0.5">{value}</p>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+            Quality Score: {quality.score}/10 — {quality.label}
+          </h3>
+          <div className="space-y-2">
+            {quality.predictors.filter(p => p.value !== null || p.key === 'consistency').map(p => (
+              <div key={p.key} className="flex items-center gap-3">
+                <span className={`text-lg ${p.pass === true ? 'text-bull' : p.pass === false ? 'text-bear' : 'text-slate-500'}`}>
+                  {p.pass === true ? '✓' : p.pass === false ? '✗' : '—'}
+                </span>
+                <span className="text-sm text-slate-300 flex-1">{p.label}</span>
+                <span className="text-sm font-mono text-slate-400">
+                  {p.value != null ? (p.key.includes('margin') || p.key === 'roe' || p.key === 'fcfConversion' || p.key === 'revenueGrowth'
+                    ? p.value.toFixed(1) + '%'
+                    : p.value.toFixed(2)) : '—'}
+                </span>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* 5-year trend charts */}
-      {chartData.length > 1 && (
-        <div className="space-y-4">
-          <p className="label">5-Year Trends</p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <ChartCard title="Revenue & Net Income" currency={currency}>
-              <ResponsiveContainer width="100%" height={120}>
-                <BarChart data={chartData} barGap={2}>
-                  <XAxis dataKey="year" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                  <YAxis hide />
-                  <Tooltip content={<CompactTooltip currency={currency} isCompact />} />
-                  <Bar dataKey="revenue"   fill="#818cf8" radius={[3,3,0,0]} name="Revenue" />
-                  <Bar dataKey="netIncome" fill="#4ade80" radius={[3,3,0,0]} name="Net Income" />
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="flex gap-4 mt-1">
-                <Legend color="bg-accent-indigo" label="Revenue" />
-                <Legend color="bg-accent-green"  label="Net Income" />
-              </div>
-            </ChartCard>
-
-            <ChartCard title="Margins (%)" currency={currency}>
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={chartData}>
-                  <XAxis dataKey="year" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                  <YAxis hide />
-                  <Tooltip content={<CompactTooltip suffix="%" />} />
-                  <ReferenceLine y={0} stroke="#334155" />
-                  <Line type="monotone" dataKey="grossMargin"  stroke="#22d3ee" dot={false} strokeWidth={1.5} name="Gross" />
-                  <Line type="monotone" dataKey="ebitdaMargin" stroke="#818cf8" dot={false} strokeWidth={1.5} name="EBITDA" />
-                  <Line type="monotone" dataKey="netMargin"    stroke="#4ade80" dot={false} strokeWidth={1.5} name="Net" />
-                </LineChart>
-              </ResponsiveContainer>
-              <div className="flex gap-4 mt-1">
-                <Legend color="bg-accent-cyan"   label="Gross" />
-                <Legend color="bg-accent-indigo" label="EBITDA" />
-                <Legend color="bg-accent-green"  label="Net" />
-              </div>
-            </ChartCard>
-
-            <ChartCard title="Free Cash Flow" currency={currency}>
-              <ResponsiveContainer width="100%" height={120}>
-                <BarChart data={chartData}>
-                  <XAxis dataKey="year" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                  <YAxis hide />
-                  <Tooltip content={<CompactTooltip currency={currency} isCompact />} />
-                  <ReferenceLine y={0} stroke="#334155" />
-                  <Bar dataKey="fcf" name="FCF"
-                    fill="#22d3ee"
-                    radius={[3,3,0,0]}
-                    // Negative FCF bars in red
-                    label={false}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </ChartCard>
-
-            <ChartCard title="D/E Ratio" currency={currency}>
-              <ResponsiveContainer width="100%" height={120}>
-                <LineChart data={chartData}>
-                  <XAxis dataKey="year" tick={{ fontSize: 10, fill: '#64748b' }} axisLine={false} tickLine={false} />
-                  <YAxis hide />
-                  <Tooltip content={<CompactTooltip suffix="x" />} />
-                  <Line type="monotone" dataKey="deRatio" stroke="#fbbf24" dot={false} strokeWidth={1.5} name="D/E" />
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartCard>
-          </div>
+      {/* Revenue & Income Chart */}
+      {incomeChart.length > 1 && (
+        <div>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+            Revenue vs Net Income ({unit})
+          </h3>
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={incomeChart} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="year" tick={{ fontSize: 10, fill: '#94a3b8' }} />
+              <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }} width={40} />
+              <Tooltip
+                contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+                labelStyle={{ color: '#e2e8f0' }}
+              />
+              <Bar dataKey="Revenue"    fill="#6366f1" radius={[3,3,0,0]} />
+              <Bar dataKey="Net Income" fill="#22c55e" radius={[3,3,0,0]} />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       )}
+
+      {/* Margin Chart */}
+      {marginChart.length > 1 && (
+        <div>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Margin Trends (%)</h3>
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={marginChart} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="year" tick={{ fontSize: 10, fill: '#94a3b8' }} />
+              <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }} width={35} />
+              <Tooltip
+                contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }}
+              />
+              <Line type="monotone" dataKey="Gross %"  stroke="#6366f1" dot={false} strokeWidth={2} />
+              <Line type="monotone" dataKey="EBITDA %" stroke="#f59e0b" dot={false} strokeWidth={2} />
+              <Line type="monotone" dataKey="Net %"    stroke="#22c55e" dot={false} strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Key Ratios Grid */}
+      <div>
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Key Ratios</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {[
+            { label: 'ROE',             value: fmtPctPlain(ratios?.roe) },
+            { label: 'ROCE',            value: fmtPctPlain(ratios?.roce) },
+            { label: 'Gross Margin',    value: fmtPctPlain(ratios?.grossMargin) },
+            { label: 'EBITDA Margin',   value: fmtPctPlain(ratios?.ebitdaMargin) },
+            { label: 'Net Margin',      value: fmtPctPlain(ratios?.netMargin) },
+            { label: 'Revenue 5yr CAGR',value: fmtPctPlain(ratios?.revCagr) },
+            { label: 'Debt / Equity',   value: fmtMultiple(ratios?.de, 'x') },
+            { label: 'Interest Cover',  value: fmtMultiple(ratios?.interestCoverage, 'x') },
+            { label: 'FCF Conversion',  value: fmtPctPlain(ratios?.fcfConversion) },
+            { label: 'Current Ratio',   value: fmtMultiple(data?.ttm?.currentRatio, 'x') },
+            { label: 'EPS',             value: ratios?.eps != null ? sym + ratios.eps.toFixed(2) : '—' },
+            { label: 'Book Value/Share',value: ratios?.bookPerShare != null ? sym + ratios.bookPerShare.toFixed(2) : '—' }
+          ].map(r => (
+            <div key={r.label} className="card-sm">
+              <div className="text-xs text-slate-400">{r.label}</div>
+              <div className="font-mono text-white font-semibold text-sm">{r.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   )
 }
-
-function ChartCard({ title, children }) {
-  return (
-    <div className="card-inner px-3 py-3">
-      <p className="text-xs text-slate-500 mb-2">{title}</p>
-      {children}
-    </div>
-  )
-}
-
-function Legend({ color, label }) {
-  return (
-    <div className="flex items-center gap-1">
-      <div className={`w-2 h-2 rounded-full ${color}`} />
-      <span className="text-xs text-slate-500">{label}</span>
-    </div>
-  )
-}
-
-function CompactTooltip({ active, payload, label, suffix, isCompact, currency }) {
-  if (!active || !payload?.length) return null
-  return (
-    <div className="bg-surface-800 border border-slate-600 rounded-lg px-2 py-1.5 text-xs shadow-xl">
-      <p className="text-slate-400 mb-1">{label}</p>
-      {payload.map(p => (
-        <p key={p.dataKey} style={{ color: p.color }}>
-          {p.name}: {isCompact
-            ? fmtCompact(p.value, currency)
-            : `${p.value?.toFixed(1)}${suffix ?? ''}`}
-        </p>
-      ))}
-    </div>
-  )
-}
-
-

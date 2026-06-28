@@ -1,259 +1,184 @@
-// TechnicalsPanel.jsx
-import React, { useState } from 'react'
+import React from 'react'
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from 'recharts'
 import { useApp } from '../../store/AppContext.jsx'
-import { fmt, fmtVolume, fmtPctAbs, fmtPrice } from '../../utils/format.js'
-import {
-  ResponsiveContainer, ComposedChart, LineChart, BarChart,
-  Line, Bar, XAxis, YAxis, Tooltip, ReferenceLine, Area
-} from 'recharts'
 
-export default function TechnicalsPanel() {
+export default function TechnicalsPanel({ open, onClose }) {
   const { state } = useApp()
-  const { technicals, techScore, data } = state
-  const [chartRange, setChartRange] = useState(90)
+  const { technicals } = state
 
-  if (!techScore || !data) return null
-  if (state.expandedPanel !== 'technicals') return null
+  if (!open) return null
 
-  const currency = data.currency ?? 'USD'
-  const price    = data.price
+  if (!technicals?.available) {
+    return (
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-white">Technicals Detail</h2>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-lg">✕</button>
+        </div>
+        <p className="text-slate-400 text-sm">
+          {technicals?.reason || 'Technical analysis unavailable — no price history from this source.'}
+        </p>
+      </div>
+    )
+  }
 
-  const hasData = technicals && !technicals.error
-  const lat     = technicals?.latest ?? {}
+  const { series, indicators, signals, patterns } = technicals
 
-  // Build chart series — slice to requested range
-  const priceHistory = data.priceHistory ?? []
-  const sliced       = priceHistory.slice(-chartRange)
-  const rsiSeries    = (technicals?.series?.rsi ?? []).slice(-chartRange)
-  const macdSeries   = (technicals?.series?.macdLine ?? []).slice(-chartRange)
-  const histSeries   = (technicals?.series?.histogram ?? []).slice(-chartRange)
-  const sma50series  = (technicals?.series?.sma50?.values ?? []).slice(-chartRange)
-  const sma200series = (technicals?.series?.sma200?.values ?? []).slice(-chartRange)
-
-  const priceChartData = sliced.map((d, i) => ({
-    date:   d.date?.slice(5),  // MM-DD
-    close:  d.close,
-    volume: d.volume,
-    sma50:  sma50series[i]  ?? null,
-    sma200: sma200series[i] ?? null,
-    rsi:    rsiSeries[i]    ?? null,
-    macd:   macdSeries[i]   ?? null,
-    hist:   histSeries[i]   ?? null,
+  // Build chart data
+  const priceData = series.dates.map((d, i) => ({
+    date: d,
+    Price: series.closes[i],
+    SMA50: series.sma50[i],
+    SMA200: series.sma200[i],
+    BBUpper: series.bbUpper[i],
+    BBLower: series.bbLower[i]
   }))
 
+  const rsiData = series.dates.map((d, i) => ({
+    date: d,
+    RSI: series.rsi[i]
+  })).filter(d => d.RSI != null)
+
+  const macdData = series.dates.map((d, i) => ({
+    date: d,
+    MACD: series.macd[i],
+    Signal: series.signal[i],
+    Histogram: series.histogram[i]
+  })).filter(d => d.MACD != null)
+
+  const ttip = {
+    contentStyle: { background: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: 11 },
+    labelStyle: { color: '#94a3b8' }
+  }
+
+  const signalList = [
+    { label: 'Above SMA 50',    value: signals.aboveSma50,   good: true },
+    { label: 'Above SMA 200',   value: signals.aboveSma200,  good: true },
+    { label: 'Golden Cross',    value: signals.goldenCross,  good: true },
+    { label: 'Death Cross',     value: signals.deathCross,   good: false },
+    { label: 'MACD Bull Cross', value: signals.macdBullCross,good: true },
+    { label: 'MACD Bear Cross', value: signals.macdBearCross,good: false },
+    { label: 'RSI Oversold',    value: signals.rsiOversold,  good: true },
+    { label: 'RSI Overbought',  value: signals.rsiOverbought,good: false },
+    { label: 'Bull Divergence', value: signals.rsiBullDiv,   good: true },
+    { label: 'Bear Divergence', value: signals.rsiBearDiv,   good: false }
+  ].filter(s => s.value)
+
   return (
-    <div className="card px-5 py-4 space-y-5">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h3 className="font-display font-semibold text-slate-100">Technical Detail</h3>
-        <div className="flex items-center gap-1">
-          {[30, 90, 180, 365].map(d => (
-            <button
-              key={d}
-              onClick={() => setChartRange(d)}
-              className={`px-2.5 py-1 rounded-lg text-xs transition-colors
-                ${chartRange === d ? 'bg-accent-cyan text-surface-900 font-medium' : 'text-slate-400 hover:text-slate-200'}`}
-            >
-              {d}D
-            </button>
-          ))}
+    <div className="card space-y-5">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-white">Technicals Detail</h2>
+        <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-lg">✕</button>
+      </div>
+
+      {/* Key indicators */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <IndicatorCard label="RSI (14)" value={indicators.rsi}
+          sub={indicators.rsi > 70 ? 'Overbought' : indicators.rsi < 30 ? 'Oversold' : 'Neutral'}
+          color={indicators.rsi > 70 ? 'text-bear' : indicators.rsi < 30 ? 'text-bull' : 'text-neutral'} />
+        <IndicatorCard label="MACD" value={indicators.macd.macd.toFixed(3)}
+          sub={indicators.macd.histogram > 0 ? 'Bullish' : 'Bearish'}
+          color={indicators.macd.histogram > 0 ? 'text-bull' : 'text-bear'} />
+        <IndicatorCard label="BB Position" value={(indicators.bollinger.position * 100).toFixed(0) + '%'}
+          sub={indicators.bollinger.position > 0.8 ? 'Near Upper' : indicators.bollinger.position < 0.2 ? 'Near Lower' : 'Mid Range'}
+          color="text-slate-300" />
+        <IndicatorCard label="Volume Ratio" value={indicators.volume.ratio.toFixed(2) + '×'}
+          sub={indicators.volume.ratio > 1.5 ? 'High' : indicators.volume.ratio < 0.5 ? 'Low' : 'Normal'}
+          color={indicators.volume.ratio > 1.5 ? 'text-accent' : 'text-slate-300'} />
+      </div>
+
+      {/* Price + MAs chart */}
+      <div>
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Price & Moving Averages</h3>
+        <ResponsiveContainer width="100%" height={200}>
+          <LineChart data={priceData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+            <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#64748b' }} tickFormatter={d => d?.slice(5)} />
+            <YAxis tick={{ fontSize: 9, fill: '#64748b' }} width={50} domain={['auto','auto']} />
+            <Tooltip {...ttip} />
+            <Line type="monotone" dataKey="Price"  stroke="#e2e8f0" dot={false} strokeWidth={1.5} />
+            <Line type="monotone" dataKey="SMA50"  stroke="#6366f1" dot={false} strokeWidth={1} strokeDasharray="4 2" />
+            <Line type="monotone" dataKey="SMA200" stroke="#f59e0b" dot={false} strokeWidth={1} strokeDasharray="4 2" />
+            <Line type="monotone" dataKey="BBUpper" stroke="#334155" dot={false} strokeWidth={1} />
+            <Line type="monotone" dataKey="BBLower" stroke="#334155" dot={false} strokeWidth={1} />
+          </LineChart>
+        </ResponsiveContainer>
+        <div className="flex gap-3 text-xs mt-1">
+          <span className="flex items-center gap-1"><span style={{color:'#6366f1'}}>─ ─</span> SMA50</span>
+          <span className="flex items-center gap-1"><span style={{color:'#f59e0b'}}>─ ─</span> SMA200</span>
+          <span className="flex items-center gap-1"><span style={{color:'#334155'}}>──</span> Bollinger</span>
         </div>
       </div>
 
-      {!hasData ? (
-        <div className="text-slate-500 text-sm py-4 text-center">
-          {technicals?.error ?? 'No price history available for technical analysis.'}
+      {/* RSI */}
+      <div>
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">RSI (14)</h3>
+        <ResponsiveContainer width="100%" height={120}>
+          <LineChart data={rsiData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+            <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#64748b' }} tickFormatter={d => d?.slice(5)} />
+            <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#64748b' }} width={30} />
+            <Tooltip {...ttip} />
+            <ReferenceLine y={70} stroke="#ef4444" strokeDasharray="3 3" />
+            <ReferenceLine y={30} stroke="#22c55e" strokeDasharray="3 3" />
+            <Line type="monotone" dataKey="RSI" stroke="#818cf8" dot={false} strokeWidth={1.5} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* MACD */}
+      <div>
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">MACD</h3>
+        <ResponsiveContainer width="100%" height={120}>
+          <LineChart data={macdData} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+            <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#64748b' }} tickFormatter={d => d?.slice(5)} />
+            <YAxis tick={{ fontSize: 9, fill: '#64748b' }} width={40} />
+            <Tooltip {...ttip} />
+            <ReferenceLine y={0} stroke="#475569" />
+            <Line type="monotone" dataKey="MACD"   stroke="#6366f1" dot={false} strokeWidth={1.5} />
+            <Line type="monotone" dataKey="Signal" stroke="#f59e0b" dot={false} strokeWidth={1} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Signals */}
+      {signalList.length > 0 && (
+        <div>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Active Signals</h3>
+          <div className="flex flex-wrap gap-2">
+            {signalList.map(s => (
+              <span key={s.label} className={`badge ${s.good ? 'badge-bull' : 'badge-bear'}`}>
+                {s.label}
+              </span>
+            ))}
+          </div>
         </div>
-      ) : (
-        <>
-          {/* Signal grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <SignalTile
-              label="Trend"
-              value={lat.goldenCross ? 'Uptrend' : lat.deathCross ? 'Downtrend' : 'Mixed'}
-              sub={lat.recentCross
-                ? `${lat.recentCross.type === 'GOLDEN' ? '⚡ Golden' : '☠️ Death'} Cross ${lat.recentCross.daysAgo}d ago`
-                : `SMA50 ${lat.sma50 ? fmtPrice(lat.sma50, currency) : '—'}`}
-              positive={lat.goldenCross}
-              negative={lat.deathCross}
-            />
-            <SignalTile
-              label={`RSI (14)`}
-              value={lat.rsi != null ? lat.rsi.toFixed(1) : '—'}
-              sub={lat.rsi > 70 ? 'Overbought' : lat.rsi < 30 ? 'Oversold' : lat.rsi >= 50 ? 'Bullish territory' : 'Bearish territory'}
-              positive={lat.rsi >= 40 && lat.rsi <= 70}
-              negative={lat.rsi > 80 || lat.rsi < 25}
-            />
-            <SignalTile
-              label="MACD"
-              value={lat.macd != null ? (lat.macd >= lat.macdSignal ? 'Bullish' : 'Bearish') : '—'}
-              sub={`Hist ${lat.macdHist != null ? lat.macdHist.toFixed(3) : '—'}`}
-              positive={lat.macd != null && lat.macd > lat.macdSignal}
-              negative={lat.macd != null && lat.macd < lat.macdSignal}
-            />
-            <SignalTile
-              label="Volume"
-              value={lat.volumeRatio != null ? `${lat.volumeRatio.toFixed(1)}x avg` : '—'}
-              sub={`OBV ${lat.obvTrend === 'RISING' ? '↑ Accumulation' : '↓ Distribution'}`}
-              positive={lat.volumeRatio > 1.2 && lat.obvTrend === 'RISING'}
-              negative={lat.obvTrend === 'FALLING'}
-            />
+      )}
+
+      {/* Patterns */}
+      {patterns?.length > 0 && (
+        <div>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Candlestick Patterns</h3>
+          <div className="flex flex-wrap gap-2">
+            {patterns.map((p, i) => (
+              <span key={i} className={`badge ${p.type === 'bullish' ? 'badge-bull' : p.type === 'bearish' ? 'badge-bear' : 'badge-neutral'}`}>
+                {p.name}
+              </span>
+            ))}
           </div>
-
-          {/* Divergence alert */}
-          {(lat.divergence?.bullish || lat.divergence?.bearish) && (
-            <div className={`card-inner px-4 py-3 border ${lat.divergence.bullish ? 'border-green-500/30' : 'border-red-500/30'}`}>
-              <p className="text-sm font-medium text-slate-200">
-                {lat.divergence.bullish ? '🔍 Bullish RSI Divergence Detected' : '🔍 Bearish RSI Divergence Detected'}
-              </p>
-              <p className="text-xs text-slate-400 mt-0.5">
-                {lat.divergence.bullish
-                  ? 'Price making lower lows while RSI makes higher lows — potential upside reversal ahead.'
-                  : 'Price making higher highs while RSI makes lower highs — potential downside reversal ahead.'}
-              </p>
-            </div>
-          )}
-
-          {/* Candlestick patterns */}
-          {lat.patterns && lat.patterns.length > 0 && (
-            <div>
-              <p className="label mb-2">Recent Candlestick Patterns</p>
-              <div className="flex flex-wrap gap-2">
-                {lat.patterns.map((p, i) => (
-                  <div key={i} className={`card-inner px-3 py-2 flex items-center gap-2
-                    ${p.signal === 'BULLISH' ? 'border-green-500/30' : p.signal === 'BEARISH' ? 'border-red-500/30' : ''}`}>
-                    <span className="text-sm">
-                      {p.signal === 'BULLISH' ? '🟢' : p.signal === 'BEARISH' ? '🔴' : '🟡'}
-                    </span>
-                    <div>
-                      <p className="text-xs font-medium text-slate-200">{p.name}</p>
-                      <p className="text-xs text-slate-500">{p.desc}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Predictor detail */}
-          <div>
-            <p className="label mb-2">Technical Predictor Breakdown</p>
-            <div className="space-y-2">
-              {techScore.results.map(r => (
-                <div key={r.id} className="card-inner px-4 py-2.5 flex items-center gap-3">
-                  <div className={`w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0 text-xs
-                    ${r.pass ? 'bg-green-500/20 text-accent-green' : 'bg-red-500/20 text-accent-red'}`}>
-                    {r.pass ? '✓' : '✗'}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs text-slate-300">{r.label}</p>
-                    <p className="text-xs text-slate-600">{r.desc}</p>
-                  </div>
-                  {r.value != null && (
-                    <span className="font-mono text-xs text-slate-400">
-                      {typeof r.value === 'number' ? r.value.toFixed(2) : r.value}
-                      {r.unit ? ` ${r.unit}` : ''}
-                    </span>
-                  )}
-                  <span className="text-xs text-slate-600 w-14 text-right">wt {r.weight}%</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Price + SMA chart */}
-          {priceChartData.length > 0 && (
-            <div>
-              <p className="label mb-2">Price Action</p>
-              <div className="card-inner px-3 py-3">
-                <ResponsiveContainer width="100%" height={160}>
-                  <ComposedChart data={priceChartData}>
-                    <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#475569' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-                    <YAxis hide domain={['auto','auto']} />
-                    <Tooltip content={<PriceTooltip currency={currency} />} />
-                    <Area type="monotone" dataKey="close" stroke="#22d3ee" fill="#22d3ee10" strokeWidth={1.5} dot={false} name="Price" />
-                    <Line type="monotone" dataKey="sma50"  stroke="#818cf8" dot={false} strokeWidth={1} strokeDasharray="4 2" name="SMA50" />
-                    <Line type="monotone" dataKey="sma200" stroke="#fbbf24" dot={false} strokeWidth={1} strokeDasharray="4 2" name="SMA200" />
-                  </ComposedChart>
-                </ResponsiveContainer>
-                <div className="flex gap-4 mt-1">
-                  <Legend color="bg-accent-cyan"   label="Price" />
-                  <Legend color="bg-accent-indigo" label="SMA50" />
-                  <Legend color="bg-accent-amber"  label="SMA200" />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* RSI chart */}
-          {priceChartData.length > 0 && (
-            <div className="card-inner px-3 py-3">
-              <p className="text-xs text-slate-500 mb-2">RSI (14)</p>
-              <ResponsiveContainer width="100%" height={80}>
-                <LineChart data={priceChartData}>
-                  <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#475569' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-                  <YAxis hide domain={[0, 100]} />
-                  <Tooltip formatter={(v) => v?.toFixed(1)} />
-                  <ReferenceLine y={70} stroke="#f87171" strokeDasharray="3 3" />
-                  <ReferenceLine y={30} stroke="#4ade80" strokeDasharray="3 3" />
-                  <ReferenceLine y={50} stroke="#334155" />
-                  <Line type="monotone" dataKey="rsi" stroke="#22d3ee" dot={false} strokeWidth={1.5} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-
-          {/* Volume chart */}
-          {priceChartData.length > 0 && (
-            <div className="card-inner px-3 py-3">
-              <p className="text-xs text-slate-500 mb-2">Volume</p>
-              <ResponsiveContainer width="100%" height={60}>
-                <BarChart data={priceChartData}>
-                  <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#475569' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-                  <YAxis hide />
-                  <Tooltip formatter={(v) => fmtVolume(v)} />
-                  <Bar dataKey="volume" fill="#334155" radius={[1,1,0,0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </>
+        </div>
       )}
     </div>
   )
 }
 
-function SignalTile({ label, value, sub, positive, negative }) {
-  const color = positive ? 'text-accent-green' : negative ? 'text-accent-red' : 'text-accent-amber'
+function IndicatorCard({ label, value, sub, color }) {
   return (
-    <div className="card-inner px-3 py-3">
-      <p className="text-xs text-slate-500 mb-1">{label}</p>
-      <p className={`font-mono font-semibold text-sm ${color}`}>{value}</p>
-      <p className="text-xs text-slate-500 mt-0.5">{sub}</p>
+    <div className="card-sm">
+      <div className="text-xs text-slate-400">{label}</div>
+      <div className={`font-mono font-bold ${color}`}>{value}</div>
+      <div className="text-xs text-slate-500">{sub}</div>
     </div>
   )
 }
-
-function Legend({ color, label }) {
-  return (
-    <div className="flex items-center gap-1">
-      <div className={`w-2 h-2 rounded-full ${color}`} />
-      <span className="text-xs text-slate-500">{label}</span>
-    </div>
-  )
-}
-
-function PriceTooltip({ active, payload, label, currency }) {
-  if (!active || !payload?.length) return null
-  return (
-    <div className="bg-surface-800 border border-slate-600 rounded-lg px-2 py-1.5 text-xs shadow-xl">
-      <p className="text-slate-400 mb-1">{label}</p>
-      {payload.map(p => p.value != null && (
-        <p key={p.dataKey} style={{ color: p.color }}>
-          {p.name}: {typeof p.value === 'number' ? fmtPrice(p.value, currency) : p.value}
-        </p>
-      ))}
-    </div>
-  )
-}
-
-

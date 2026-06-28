@@ -1,117 +1,64 @@
-# StockVal — Multi-Model Stock Valuation PWA
+# StockVal PWA
 
-A Progressive Web App for stock valuation analysis combining fundamental valuation models, business quality scoring, and technical analysis signals.
-
----
-
-## Features
-
-- **Multi-model valuation** — DCF, P/E, EV/EBITDA, P/B, P/S, Graham Number, Reverse DCF
-- **Fundamental quality scoring** — configurable predictors with editable weights and thresholds
-- **Technical analysis** — RSI, MACD, SMA/EMA, volume, OBV, candlestick patterns, divergence detection
-- **Progressive disclosure** — crisp summary view, drill down on demand
-- **Fully configurable** — Scoring Studio to edit every weight, threshold, and formula
-- **Named profiles** — save configurations for different investment styles or sectors
-- **Offline capable** — cached data works without internet (PWA)
-- **Data fallback** — FMP API → Screener.in (Indian stocks) → file upload (Phase 3)
-
----
+Stock valuation PWA with Yahoo Finance + Screener.in fallback.
 
 ## Setup
-
-### 1. Install dependencies
 
 ```bash
 npm install
 ```
 
-### 2. Get a free FMP API key
-
-Visit [financialmodelingprep.com](https://financialmodelingprep.com) and sign up for a free account.
-Free tier: 250 API calls/day.
-
-### 3. Run locally
-
+### Development (requires Vercel CLI for the /api routes)
 ```bash
-npm run dev
+npm install -g vercel
+vercel dev
 ```
+> `vercel dev` runs both the Vite frontend AND the /api serverless functions locally.
+> Plain `npm run dev` works for UI only — Yahoo data won't load because the /api/yahoo proxy won't exist.
 
-Open http://localhost:5173 in your browser.
-
-### 4. Enter your API key
-
-Click **API Key** in the top right and paste your FMP key. It's saved locally in your browser.
-
----
-
-## Build & Deploy
-
-### Build for production
-
+### Production (deploy to Vercel)
 ```bash
-npm run build
+vercel deploy
 ```
+Or connect your GitHub repo in the Vercel dashboard — it auto-deploys on push.
 
-### Deploy to Vercel
+## How it works
 
-1. Push this repo to GitHub
-2. Import the repo in [vercel.com](https://vercel.com)
-3. Vercel auto-detects Vite — no config needed
-4. Deploy
+**Data flow:**
+1. You enter a ticker (e.g. `AAPL`, `RELIANCE.NS`, `TCS.NS`)
+2. App calls `/api/yahoo` (Vercel serverless) which:
+   - Visits finance.yahoo.com to get a session cookie
+   - Fetches a crumb token from Yahoo's getCrumb endpoint
+   - Uses both to make authenticated calls to Yahoo's data APIs
+3. If Yahoo fails, falls back to `/api/screener` which proxies Screener.in
+4. If both fail, prompts CSV upload
 
-The `/api/screener.js` file is automatically deployed as a Vercel Serverless Function (Screener.in proxy for Indian stocks).
+**Why a proxy is required:** Yahoo Finance blocks direct browser requests via CORS. The crumb + cookie flow must happen server-side. This is the fix for the 401/Unauthorized errors.
 
----
+## Indian stocks
+- Add `.NS` for NSE: `RELIANCE.NS`, `TCS.NS`, `INFY.NS`
+- Add `.BO` for BSE: `500325.BO`
+- Or just enter `RELIANCE` — the app will try to auto-resolve to the NSE symbol via Yahoo search
 
-## Project Structure
+## Features
+- 7 valuation models (DCF, P/E, EV/EBITDA, P/B, P/S, Graham, EV/GP)
+- Reverse DCF (implied growth rate)
+- RSI, MACD, Bollinger Bands, SMA 50/200, patterns
+- Quality score across 9 fundamental predictors
+- Scoring Studio (⚙ button) — adjust weights and DCF assumptions live
+- PWA — installable, works offline for recently fetched tickers
+- 1-hour IndexedDB cache
+- CSV upload fallback
 
+## Project structure
 ```
-src/
-  api/
-    fmp.js          — FMP API fetcher (all raw data)
-    screener.js     — Screener.in HTML parser (fallback)
-  engine/
-    normalize.js    — Raw API → clean standard object
-    ratios.js       — All derived ratio calculations
-    stage.js        — Company stage auto-detection
-    valuation.js    — DCF, P/E, EV/EBITDA etc.
-    technicals.js   — RSI, MACD, SMA, patterns, volume
-    quality.js      — Configurable scoring engine + verdict
-  store/
-    AppContext.jsx  — Global state (React Context)
-  utils/
-    db.js           — Raw IndexedDB (no module)
-    format.js       — Number/currency formatters
-  components/
-    dashboard/      — Header, SummaryStrip, panels
-    studio/         — ScoringStudio configuration UI
 api/
-  screener.js       — Vercel Serverless Function (CORS proxy)
+  yahoo.js         ← Vercel serverless: Yahoo proxy with crumb/cookie
+  screener.js      ← Vercel serverless: Screener.in HTML parser
+src/
+  api/             ← Client-side fetchers (call the proxy, not Yahoo directly)
+  engine/          ← Pure calculations: normalize, ratios, valuation, technicals, quality
+  store/           ← React Context global state
+  utils/           ← IndexedDB, number formatters
+  components/      ← UI panels
 ```
-
----
-
-## Data Philosophy
-
-- **Raw data** is fetched from APIs exactly as returned — never derived
-- **All ratios and metrics** are calculated in the app from raw data
-- **Formulas are transparent** — visible and editable in Scoring Studio
-- **Sources are independent** — switching source doesn't change how ratios are calculated
-
----
-
-## Phase Roadmap
-
-- ✅ Phase 1 — FMP API + Valuation engine + Dashboard
-- ✅ Phase 2 — Screener.in fallback (Vercel proxy included)
-- 🔲 Phase 3 — File upload (CSV/Excel/image)
-- 🔲 Phase 4 — Sector presets (Banking, Tech, FMCG etc.)
-- 🔲 Phase 5 — Peer comparison strip
-- 🔲 Phase 6 — Historical valuation band (P/E range chart)
-- 🔲 Phase 7 — PWA polish, icons, offline UX
-
----
-
-## Disclaimer
-
-StockVal is for research and educational purposes only. All signals are model outputs based on available data and configurable assumptions. This is not financial advice. Always conduct your own due diligence.

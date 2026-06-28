@@ -1,136 +1,65 @@
-// format.js — display formatting helpers
+/**
+ * src/utils/format.js
+ */
 
-export function fmt(value, decimals = 2) {
-  if (value == null || isNaN(value)) return '—'
-  return value.toFixed(decimals)
+export function fmtNum(v, decimals = 1) {
+  if (v == null || isNaN(v)) return '—'
+  if (Math.abs(v) >= 1e12) return (v / 1e12).toFixed(decimals) + 'T'
+  if (Math.abs(v) >= 1e9)  return (v / 1e9).toFixed(decimals) + 'B'
+  if (Math.abs(v) >= 1e6)  return (v / 1e6).toFixed(decimals) + 'M'
+  if (Math.abs(v) >= 1e3)  return (v / 1e3).toFixed(decimals) + 'K'
+  return v.toFixed(decimals)
 }
 
-export function fmtPct(value, decimals = 1) {
-  if (value == null || isNaN(value)) return '—'
-  return `${value >= 0 ? '+' : ''}${value.toFixed(decimals)}%`
+export function fmtINR(v, decimals = 1) {
+  if (v == null || isNaN(v)) return '—'
+  if (Math.abs(v) >= 1e12) return '₹' + (v / 1e12).toFixed(decimals) + 'L Cr'
+  if (Math.abs(v) >= 1e7)  return '₹' + (v / 1e7).toFixed(decimals) + 'Cr'
+  if (Math.abs(v) >= 1e5)  return '₹' + (v / 1e5).toFixed(decimals) + 'L'
+  return '₹' + v.toFixed(0)
 }
 
-export function fmtPctAbs(value, decimals = 1) {
-  if (value == null || isNaN(value)) return '—'
-  return `${value.toFixed(decimals)}%`
+export function fmtCurrency(v, currency = 'USD', decimals = 1) {
+  if (v == null || isNaN(v)) return '—'
+  if (currency === 'INR') return fmtINR(v, decimals)
+  const sym = currency === 'USD' ? '$' : currency === 'GBP' ? '£' : currency === 'EUR' ? '€' : currency + ' '
+  return sym + fmtNum(v, decimals)
 }
 
-export function fmtCurrency(value, currency = 'USD', compact = false) {
-  if (value == null || isNaN(value)) return '—'
-  if (compact) return fmtCompact(value, currency)
-  return new Intl.NumberFormat('en-US', {
-    style:                 'currency',
-    currency:              currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value)
+export function fmtPct(v, decimals = 1) {
+  if (v == null || isNaN(v)) return '—'
+  return (v >= 0 ? '+' : '') + v.toFixed(decimals) + '%'
 }
 
-export function fmtPrice(value, currency = 'USD') {
-  if (value == null || isNaN(value)) return '—'
-  const symbol = CURRENCY_SYMBOLS[currency] ?? currency + ' '
-  return `${symbol}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+export function fmtPctPlain(v, decimals = 1) {
+  if (v == null || isNaN(v)) return '—'
+  return v.toFixed(decimals) + '%'
 }
 
-export function fmtCompact(value, currency = 'USD') {
-  if (value == null || isNaN(value)) return '—'
-  const symbol = CURRENCY_SYMBOLS[currency] ?? currency + ' '
-  const abs    = Math.abs(value)
-  const sign   = value < 0 ? '-' : ''
-  if (abs >= 1e12) return `${sign}${symbol}${(abs / 1e12).toFixed(2)}T`
-  if (abs >= 1e9)  return `${sign}${symbol}${(abs / 1e9).toFixed(2)}B`
-  if (abs >= 1e6)  return `${sign}${symbol}${(abs / 1e6).toFixed(2)}M`
-  if (abs >= 1e3)  return `${sign}${symbol}${(abs / 1e3).toFixed(2)}K`
-  return `${sign}${symbol}${abs.toFixed(2)}`
+export function fmtMultiple(v, suffix = 'x', decimals = 1) {
+  if (v == null || isNaN(v)) return '—'
+  return v.toFixed(decimals) + suffix
 }
 
-export function fmtMultiple(value, decimals = 1) {
-  if (value == null || isNaN(value)) return '—'
-  return `${value.toFixed(decimals)}x`
-}
-
-export function fmtVolume(value) {
-  if (value == null || isNaN(value)) return '—'
-  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`
-  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`
-  if (value >= 1e3) return `${(value / 1e3).toFixed(2)}K`
-  return value.toLocaleString()
-}
-
-export function fmtDate(dateStr) {
-  if (!dateStr) return '—'
-  return new Date(dateStr).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+export function fmtPrice(v, currency = 'USD') {
+  if (v == null || isNaN(v)) return '—'
+  if (currency === 'INR') return '₹' + v.toFixed(2)
+  const sym = currency === 'USD' ? '$' : currency === 'GBP' ? '£' : ''
+  return sym + v.toFixed(2)
 }
 
 export function signalColor(signal) {
-  switch (signal) {
-    case 'UNDERVALUED':
-    case 'BULLISH':
-    case 'EXCELLENT':
-    case 'HEALTHY':
-    case 'ACCUMULATION':
-      return 'text-accent-green'
-    case 'OVERVALUED':
-    case 'BEARISH':
-    case 'WEAK':
-    case 'DISTRIBUTION':
-    case 'OVERBOUGHT':
-      return 'text-accent-red'
-    case 'FAIRLY_VALUED':
-    case 'NEUTRAL':
-    case 'CONCERNS':
-    case 'OVERSOLD':
-      return 'text-accent-amber'
-    default:
-      return 'text-slate-400'
-  }
+  if (!signal) return 'text-slate-400'
+  const s = signal.toUpperCase()
+  if (s.includes('UNDER') || s === 'BULLISH' || s === 'EXCELLENT' || s === 'HEALTHY') return 'text-bull'
+  if (s.includes('OVER')  || s === 'BEARISH' || s === 'WEAK')                         return 'text-bear'
+  return 'text-neutral'
 }
 
-export function signalChip(signal) {
-  switch (signal) {
-    case 'UNDERVALUED':
-    case 'BULLISH':
-    case 'EXCELLENT':
-    case 'HEALTHY':
-      return 'chip-green'
-    case 'OVERVALUED':
-    case 'BEARISH':
-    case 'WEAK':
-      return 'chip-red'
-    case 'FAIRLY_VALUED':
-    case 'NEUTRAL':
-    case 'CONCERNS':
-      return 'chip-amber'
-    default:
-      return 'chip-slate'
-  }
-}
-
-export function signalEmoji(signal) {
-  switch (signal) {
-    case 'UNDERVALUED':  return '💎'
-    case 'FAIRLY_VALUED':return '⚖️'
-    case 'OVERVALUED':   return '⚠️'
-    case 'BULLISH':      return '📈'
-    case 'NEUTRAL':      return '➡️'
-    case 'BEARISH':      return '📉'
-    case 'EXCELLENT':    return '🌟'
-    case 'HEALTHY':      return '✅'
-    case 'CONCERNS':     return '⚠️'
-    case 'WEAK':         return '🚨'
-    default:             return '—'
-  }
-}
-
-export function upsideColor(upside) {
-  if (upside == null) return 'text-slate-400'
-  if (upside >  15) return 'text-accent-green'
-  if (upside < -10) return 'text-accent-red'
-  return 'text-accent-amber'
-}
-
-const CURRENCY_SYMBOLS = {
-  USD: '$', EUR: '€', GBP: '£',
-  INR: '₹', JPY: '¥', CNY: '¥',
-  AUD: 'A$', CAD: 'C$', SGD: 'S$',
+export function signalBadgeClass(signal) {
+  if (!signal) return 'badge-neutral'
+  const s = signal.toUpperCase()
+  if (s.includes('UNDER') || s === 'BULLISH' || s === 'EXCELLENT' || s === 'HEALTHY') return 'badge-bull'
+  if (s.includes('OVER')  || s === 'BEARISH' || s === 'WEAK')                         return 'badge-bear'
+  return 'badge-neutral'
 }

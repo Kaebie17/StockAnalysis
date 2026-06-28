@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
 import Papa from 'papaparse'
 import { AppProvider, useApp } from './store/AppContext.jsx'
 import Header from './components/dashboard/Header.jsx'
@@ -6,179 +6,159 @@ import SummaryStrip from './components/dashboard/SummaryStrip.jsx'
 import ValuationPanel from './components/dashboard/ValuationPanel.jsx'
 import FundamentalsPanel from './components/dashboard/FundamentalsPanel.jsx'
 import TechnicalsPanel from './components/dashboard/TechnicalsPanel.jsx'
+import EmptyState from './components/dashboard/EmptyState.jsx'
 import ScoringStudio from './components/studio/ScoringStudio.jsx'
-import { EmptyState, LoadingSkeleton } from './components/dashboard/EmptyState.jsx'
-
-// ── Upload prompt — shown when all auto sources fail ──────
-
-function UploadPrompt({ ticker }) {
-  const { actions } = useApp()
-
-  function handleFile(e) {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    const ext = file.name.split('.').pop().toLowerCase()
-
-    if (ext === 'csv') {
-      Papa.parse(file, {
-        header: true,
-        skipEmptyLines: true,
-        complete: (results) => {
-          const rawResult = csvToRawResult(results.data, ticker)
-          actions.injectUploadedData(rawResult)
-        },
-        error: () => alert('CSV parsing failed. Please check the file format.')
-      })
-    } else if (ext === 'xlsx' || ext === 'xls') {
-      alert('Please save your Excel file as CSV first (File → Save As → CSV), then upload the CSV.')
-      e.target.value = ''
-    } else {
-      alert('Please upload a CSV or Excel (.xlsx) file.')
-    }
-  }
-
-  return (
-    <div className="card px-6 py-8 text-center space-y-4 max-w-lg mx-auto mt-8">
-      <div className="text-4xl">📂</div>
-      <div>
-        <h3 className="font-display font-semibold text-slate-100 mb-1">Upload Financial Statements</h3>
-        <p className="text-sm text-slate-400">
-          Automatic data fetch failed for <span className="font-mono text-accent-cyan">{ticker}</span>.
-          Upload a CSV or Excel file with financial data to continue.
-        </p>
-      </div>
-
-      <label className="btn-primary cursor-pointer inline-block">
-        Choose CSV File
-        <input type="file" accept=".csv" onChange={handleFile} className="hidden" />
-      </label>
-
-      <p className="text-xs text-slate-500">
-        Have an Excel file? Open it and use <span className="font-mono">File → Save As → CSV</span> first.
-      </p>
-
-      <div className="text-left card-inner px-4 py-3 space-y-1">
-        <p className="label mb-2">Expected columns (any order)</p>
-        {[
-          'ticker, name, price, marketCap, sharesOutstanding',
-          'revenue, grossProfit, ebitda, ebit, netIncome, eps',
-          'totalAssets, totalDebt, totalEquity, cash, bookValuePerShare',
-          'cfo, capex, fcf',
-        ].map(line => (
-          <p key={line} className="text-xs font-mono text-slate-400">{line}</p>
-        ))}
-        <p className="text-xs text-slate-500 mt-2">
-          Each row = one fiscal year. Include a <span className="font-mono">date</span> or <span className="font-mono">year</span> column for trend charts.
-        </p>
-      </div>
-    </div>
-  )
-}
-
-// ── Minimal CSV → rawResult converter ────────────────────
-
-function csvToRawResult(rows, ticker) {
-  const latest = rows[rows.length - 1] ?? {}
-  const n = (k) => parseFloat(latest[k]) || null
-
-  return {
-    raw: {
-      profile: {
-        symbol: ticker, companyName: latest.name ?? ticker,
-        price: n('price'), mktCap: n('marketCap'),
-        currency: latest.currency ?? 'USD', sector: latest.sector ?? '',
-      },
-      income:   rows.map(r => ({
-        date: r.date ?? r.year ?? '',
-        revenue: parseFloat(r.revenue) || null,
-        grossProfit: parseFloat(r.grossProfit) || null,
-        ebitda: parseFloat(r.ebitda) || null,
-        operatingIncome: parseFloat(r.ebit) || null,
-        netIncome: parseFloat(r.netIncome) || null,
-        eps: parseFloat(r.eps) || null,
-      })).reverse(),
-      balance: rows.map(r => ({
-        date: r.date ?? r.year ?? '',
-        totalAssets: parseFloat(r.totalAssets) || null,
-        totalDebt: parseFloat(r.totalDebt) || null,
-        totalStockholdersEquity: parseFloat(r.totalEquity) || null,
-        cashAndCashEquivalents: parseFloat(r.cash) || null,
-        bookValuePerShare: parseFloat(r.bookValuePerShare) || null,
-      })).reverse(),
-      cashflow: rows.map(r => ({
-        date: r.date ?? r.year ?? '',
-        operatingCashFlow: parseFloat(r.cfo) || null,
-        capitalExpenditure: parseFloat(r.capex) || null,
-        freeCashFlow: parseFloat(r.fcf) || null,
-        dividendsPaid: parseFloat(r.dividendsPaid) || null,
-      })).reverse(),
-      metrics: [],
-      history: null,
-      quote: {
-        price: n('price'), marketCap: n('marketCap'),
-        sharesOutstanding: n('sharesOutstanding'),
-        eps: n('eps'), yearHigh: n('high52w'), yearLow: n('low52w'),
-      },
-    },
-    source: 'Uploaded file',
-    errors: [],
-    fetchedAt: Date.now(),
-  }
-}
-
-
 
 function Dashboard() {
-  const { state } = useApp()
-  const [showStudio, setShowStudio] = useState(false)
+  const { state, loadFromCSV } = useApp()
+  const [expanded, setExpanded] = useState(null) // 'valuation' | 'fundamentals' | 'technicals'
+  const [studioOpen, setStudioOpen] = useState(false)
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const fileRef = useRef()
 
-  const { status, data } = state
+  const handleExpand = (panel) => {
+    setExpanded(prev => prev === panel ? null : panel)
+    // Scroll to panel
+    setTimeout(() => {
+      document.getElementById(`panel-${panel}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 100)
+  }
+
+  const handleCSV = (file) => {
+    Papa.parse(file, {
+      header: true, dynamicTyping: true, skipEmptyLines: true,
+      complete: ({ data }) => {
+        try {
+          // Build normalized data object from CSV
+          const incomeHistory = data.map(row => ({
+            year:            String(row.year || row.Year || ''),
+            revenue:         row.revenue || row.Revenue || null,
+            grossProfit:     row.grossProfit || row.gross_profit || null,
+            operatingProfit: row.operatingProfit || row.ebit || null,
+            ebitda:          row.ebitda || row.EBITDA || null,
+            netIncome:       row.netIncome || row.net_income || null,
+            interest:        row.interest || row.interestExpense || null,
+            depreciation:    row.depreciation || null,
+            eps:             row.eps || row.EPS || null
+          })).filter(r => r.year && r.revenue)
+
+          const balanceHistory = data.map(row => ({
+            year:        String(row.year || row.Year || ''),
+            totalDebt:   row.totalDebt || row.total_debt || null,
+            totalEquity: row.totalEquity || row.equity || null,
+            cash:        row.cash || null,
+            totalAssets: row.totalAssets || null
+          })).filter(r => r.year)
+
+          const cashflowHistory = data.map(row => ({
+            year:         String(row.year || row.Year || ''),
+            operatingCF:  row.operatingCF || row.operating_cashflow || null,
+            freeCashFlow: row.freeCashFlow || row.fcf || null,
+            capex:        row.capex || null
+          })).filter(r => r.year)
+
+          const latest = incomeHistory[incomeHistory.length - 1] || {}
+          const latestB = balanceHistory[balanceHistory.length - 1] || {}
+
+          const normalized = {
+            ticker:   'CSV',
+            name:     'Uploaded Data',
+            source:   'csv',
+            currency: 'USD',
+            price:    data[0]?.price || null,
+            marketCap: data[0]?.marketCap || null,
+            sharesOutstanding: data[0]?.sharesOutstanding || null,
+            priceHistory: [],
+            incomeHistory,
+            balanceHistory,
+            cashflowHistory,
+            ttm: {
+              revenue:    latest.revenue,
+              netIncome:  latest.netIncome,
+              ebitda:     latest.ebitda,
+              freeCashflow: cashflowHistory[cashflowHistory.length - 1]?.freeCashFlow,
+              totalDebt:  latestB.totalDebt,
+              totalCash:  latestB.cash
+            },
+            meta: { sector: null, industry: null, pe: null, pb: null }
+          }
+          loadFromCSV(normalized)
+          setUploadOpen(false)
+        } catch (err) {
+          alert('CSV parse error: ' + err.message)
+        }
+      },
+      error: (err) => alert('Could not read file: ' + err.message)
+    })
+  }
+
+  const showDashboard = state.status === 'success'
 
   return (
-    <div className="min-h-screen bg-surface-900 font-display">
+    <div className="min-h-screen bg-navy-950">
       <Header />
 
-      <main className="max-w-6xl mx-auto px-4 py-6 space-y-4">
-        {status === 'idle' && <EmptyState />}
-        {status === 'loading' && <LoadingSkeleton />}
-
-        {status === 'needs_upload' && (
-          <UploadPrompt ticker={state.pendingTicker} />
-        )}
-
-        {status === 'success' && data && (
+      <main className="max-w-7xl mx-auto px-4 py-6 space-y-5">
+        {!showDashboard ? (
+          <EmptyState onUpload={() => setUploadOpen(true)} />
+        ) : (
           <>
-            <SummaryStrip />
-            <ValuationPanel />
-            <FundamentalsPanel />
-            <TechnicalsPanel />
+            <SummaryStrip onExpand={handleExpand} />
+
+            {/* Expandable panels */}
+            <div id="panel-valuation">
+              <ValuationPanel open={expanded === 'valuation'} onClose={() => setExpanded(null)} />
+            </div>
+            <div id="panel-fundamentals">
+              <FundamentalsPanel open={expanded === 'fundamentals'} onClose={() => setExpanded(null)} />
+            </div>
+            <div id="panel-technicals">
+              <TechnicalsPanel open={expanded === 'technicals'} onClose={() => setExpanded(null)} />
+            </div>
           </>
         )}
       </main>
 
-      {/* Floating Scoring Studio button */}
-      {data && (
+      {/* Scoring Studio FAB */}
+      {showDashboard && (
         <button
-          onClick={() => setShowStudio(true)}
-          className="fixed bottom-6 right-6 bg-surface-800 border border-slate-600 hover:border-accent-cyan
-                     text-slate-300 hover:text-accent-cyan rounded-2xl px-4 py-3 text-sm font-medium
-                     shadow-xl transition-all flex items-center gap-2 z-30"
+          onClick={() => setStudioOpen(true)}
+          className="fixed bottom-6 right-6 w-12 h-12 rounded-full bg-accent shadow-lg hover:bg-accent-dark active:scale-95 transition-all flex items-center justify-center text-white text-lg z-40"
+          title="Scoring Studio"
         >
-          ⚙️ <span className="hidden sm:block">Scoring Studio</span>
+          ⚙
         </button>
       )}
 
-      {/* Scoring Studio overlay */}
-      {showStudio && <ScoringStudio onClose={() => setShowStudio(false)} />}
+      <ScoringStudio open={studioOpen} onClose={() => setStudioOpen(false)} />
 
-      {/* Disclaimer */}
-      <footer className="max-w-6xl mx-auto px-4 py-6 border-t border-slate-800 mt-8">
-        <p className="text-xs text-slate-700 text-center">
-          StockVal is for research and educational purposes only. Not financial advice.
-          All signals are model outputs — always conduct your own due diligence before making investment decisions.
-        </p>
-      </footer>
+      {/* CSV Upload modal */}
+      {uploadOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+             onClick={e => e.target === e.currentTarget && setUploadOpen(false)}>
+          <div className="card max-w-md w-full space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold text-white">Upload Financial Data</h2>
+              <button onClick={() => setUploadOpen(false)} className="text-slate-500 hover:text-white">✕</button>
+            </div>
+            <p className="text-sm text-slate-400">
+              CSV should have columns: <code className="text-accent">year, revenue, netIncome</code> (required),
+              plus optional: <code className="text-accent">ebitda, freeCashFlow, totalDebt, totalEquity, eps, price</code>
+            </p>
+            <div
+              className="border-2 border-dashed border-navy-700 rounded-xl p-8 text-center cursor-pointer hover:border-accent transition-colors"
+              onClick={() => fileRef.current?.click()}
+            >
+              <div className="text-3xl mb-2">📂</div>
+              <div className="text-sm text-slate-400">Click to select a CSV file</div>
+              <input
+                ref={fileRef} type="file" accept=".csv" className="hidden"
+                onChange={e => { if (e.target.files[0]) handleCSV(e.target.files[0]) }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
