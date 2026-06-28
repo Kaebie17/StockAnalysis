@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { font-family: 'DM Sans', sans-serif; }
+  body { @apply bg-surface-900 text-slate-100 antialiased; }
+  * { @apply box-border; }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { @apply bg-surface-800; }
+  ::-webkit-scrollbar-thumb { @apply bg-surface-600 rounded-full; }
+}
+
+@layer components {
+  .card         { @apply bg-surface-800 rounded-2xl border border-slate-700/50; }
+  .card-inner   { @apply bg-surface-700 rounded-xl border border-slate-600/40; }
+  .label        { @apply text-xs font-medium text-slate-400 uppercase tracking-widest; }
+  .val          { @apply font-mono text-slate-100; }
+  .btn-ghost    { @apply px-3 py-1.5 rounded-lg text-sm text-slate-400 hover:text-slate-100 hover:bg-surface-700 transition-colors; }
+  .btn-primary  { @apply px-4 py-2 rounded-xl text-sm font-medium bg-accent-cyan text-surface-900 hover:bg-cyan-300 transition-colors; }
+  .btn-outline  { @apply px-3 py-1.5 rounded-lg text-sm border border-slate-600 text-slate-300 hover:border-slate-400 hover:text-slate-100 transition-colors; }
+  .signal-up    { @apply text-accent-green; }
+  .signal-down  { @apply text-accent-red; }
+  .signal-neu   { @apply text-accent-amber; }
+  .chip         { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium; }
+  .chip-green   { @apply chip bg-green-500/15 text-accent-green; }
+  .chip-red     { @apply chip bg-red-500/15 text-accent-red; }
+  .chip-amber   { @apply chip bg-amber-500/15 text-accent-amber; }
+  .chip-cyan    { @apply chip bg-cyan-500/15 text-accent-cyan; }
+  .chip-slate   { @apply chip bg-slate-700 text-slate-400; }
+  .divider      { @apply border-t border-slate-700/60; }
+  .expand-btn   { @apply flex items-center gap-1.5 text-xs text-slate-400 hover:text-accent-cyan transition-colors cursor-pointer select-none; }
+}
+
+@layer utilities {
+  .font-display { font-family: 'DM Sans', sans-serif; }
+  .font-data    { font-family: 'JetBrains Mono', monospace; }
+}
