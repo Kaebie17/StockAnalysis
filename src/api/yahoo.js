@@ -1,81 +1,155 @@
-// yahoo.js — Yahoo Finance, no API key needed, global coverage including India
-// Uses v8/finance/chart for price history + v10/finance/quoteSummary for fundamentals
-// Field names verified against real Yahoo API responses
+// yahoo.js — Yahoo Finance, no API key, global coverage including India
+// Uses 3 endpoints verified from node-yahoo-finance2 v3.15.3 (June 2026):
+//
+//  1. /v8/finance/chart/{ticker}?range=1y&interval=1d
+//     → price, OHLCV history
+//
+//  2. /v10/finance/quoteSummary/{ticker}?modules=price,financialData,defaultKeyStatistics,summaryDetail,assetProfile
+//     → current price, TTM financials, sector, industry
+//
+//  3. /ws/fundamentals-timeseries/v1/finance/timeseries/{ticker}
+//     → full annual income, balance sheet, cash flow (5 years)
+//
+// All work from the browser (CORS open). Field names verified from real fixtures.
 
-const BASE_CHART   = 'https://query1.finance.yahoo.com/v8/finance/chart'
-const BASE_SUMMARY = 'https://query1.finance.yahoo.com/v10/finance/quoteSummary'
+const Y1 = 'https://query1.finance.yahoo.com'
+const Y2 = 'https://query2.finance.yahoo.com'
 
-// Yahoo Finance works from the browser (CORS open) but NOT from Node.js server-side.
-// In dev: call directly from browser. On Vercel: also from browser (client-side fetch).
+// Standard headers that work in 2026
+const HEADERS = {
+  'Accept': 'application/json',
+  'Accept-Language': 'en-US,en;q=0.9',
+}
+
+async function yFetch(url) {
+  // Try query1 first, fall back to query2
+  for (const base of [Y1, Y2]) {
+    try {
+      const fullUrl = url.startsWith('http') ? url : base + url
+      const r = await fetch(fullUrl, { headers: HEADERS })
+      if (r.ok) return r.json()
+      if (r.status === 429) throw new Error('Yahoo rate limited')
+    } catch (e) {
+      if (e.message.includes('rate limited')) throw e
+      // network error — try query2
+    }
+  }
+  throw new Error(`Yahoo fetch failed: ${url.slice(0, 60)}`)
+}
 
 export async function fetchAllYahoo(ticker) {
   const T = encodeURIComponent(ticker)
+  const now = new Date()
+  const fiveYearsAgo = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate())
+  const period1 = Math.floor(fiveYearsAgo.getTime() / 1000)
+  const period2 = Math.floor(now.getTime() / 1000)
 
-  // Run both requests in parallel
-  const [chartRes, summaryRes] = await Promise.all([
-    fetch(`${BASE_CHART}/${T}?interval=1d&range=1y`, {
-      headers: { 'Accept': 'application/json' }
-    }),
-    fetch(
-      `${BASE_SUMMARY}/${T}?modules=` + [
-        'price',
-        'financialData',
-        'defaultKeyStatistics',
-        'summaryDetail',
-        'assetProfile',
-        'incomeStatementHistory',
-        'balanceSheetHistory',
-        'cashflowStatementHistory',
-      ].join(','),
-      { headers: { 'Accept': 'application/json' } }
-    )
+  // Run chart + summary in parallel, then fetch fundamentals timeseries
+  const [chartData, summaryData] = await Promise.all([
+    yFetch(`/v8/finance/chart/${T}?interval=1d&range=1y`),
+    yFetch(`/v10/finance/quoteSummary/${T}?modules=price,financialData,defaultKeyStatistics,summaryDetail,assetProfile`),
   ])
 
-  if (!chartRes.ok)   throw new Error(`Yahoo chart HTTP ${chartRes.status}`)
-  if (!summaryRes.ok) throw new Error(`Yahoo summary HTTP ${summaryRes.status}`)
+  // Validate responses
+  if (chartData?.chart?.error)          throw new Error(chartData.chart.error.description ?? 'Yahoo chart error')
+  if (summaryData?.quoteSummary?.error) throw new Error(summaryData.quoteSummary.error.description ?? 'Yahoo summary error')
 
-  const chartJson   = await chartRes.json()
-  const summaryJson = await summaryRes.json()
+  const chart   = chartData?.chart?.result?.[0]
+  const summary = summaryData?.quoteSummary?.result?.[0]
 
-  if (chartJson.chart?.error)           throw new Error(chartJson.chart.error.description   ?? 'Yahoo chart error')
-  if (summaryJson.quoteSummary?.error)  throw new Error(summaryJson.quoteSummary.error.description ?? 'Yahoo summary error')
+  if (!chart && !summary) throw new Error(`Yahoo: no data returned for ${ticker}`)
 
-  const chartResult  = chartJson.chart?.result?.[0]
-  const summaryResult = summaryJson.quoteSummary?.result?.[0]
-
-  if (!chartResult)   throw new Error(`Yahoo: no chart data for ${ticker}`)
-  if (!summaryResult) throw new Error(`Yahoo: no summary data for ${ticker}`)
+  // Fetch annual fundamentals — income, balance sheet, cash flow
+  // URL: /ws/fundamentals-timeseries/v1/finance/timeseries/{ticker}
+  // Each module fetched separately to avoid size limits
+  let fundData = null
+  try {
+    fundData = await fetchFundamentalsTimeSeries(T, period1, period2)
+  } catch (e) {
+    console.warn('[Yahoo fundamentals failed, using summary only]', e.message)
+  }
 
   return {
-    raw:       buildRaw(ticker, chartResult, summaryResult),
+    raw:       buildRaw(ticker, chart, summary, fundData),
     source:    'Yahoo Finance',
     errors:    [],
     fetchedAt: Date.now(),
   }
 }
 
-// ── Build normalized raw object matching FMP shape ────────
-// All values are plain numbers (not {raw,fmt} objects)
-// r(obj) safely extracts .raw from Yahoo's {raw,fmt} wrapper
+// ── fundamentalsTimeSeries endpoint ──────────────────────
+// Returns all financial statements as time series arrays
+// Each item: { dataId, asOfDate, periodType, currencyCode, reportedValue: { raw, fmt } }
 
-function r(obj) {
-  if (obj == null) return null
-  if (typeof obj === 'number') return obj
-  if (typeof obj === 'object' && 'raw' in obj) return obj.raw ?? null
-  return null
+async function fetchFundamentalsTimeSeries(ticker, period1, period2) {
+  // The 'all' module type fetches income + balance + cashflow in one call
+  // type=annual gives 5 years of annual data
+  const url = `${Y1}/ws/fundamentals-timeseries/v1/finance/timeseries/${ticker}` +
+    `?type=annual&period1=${period1}&period2=${period2}&padTimeSeries=false&merge=false`
+
+  const data = await yFetch(url)
+  if (data?.timeseries?.error) throw new Error(data.timeseries.error.description)
+
+  const results = data?.timeseries?.result ?? []
+
+  // results is an array where each item is an object keyed by field name
+  // e.g. { annualTotalRevenue: [{asOfDate, reportedValue: {raw}}] }
+  // Build a lookup: fieldName → array of {date, value}
+  const lookup = {}
+  for (const item of results) {
+    const keys = Object.keys(item).filter(k => k.startsWith('annual'))
+    for (const key of keys) {
+      const series = item[key]
+      if (!Array.isArray(series)) continue
+      lookup[key] = series
+        .filter(d => d.reportedValue?.raw != null)
+        .map(d => ({ date: d.asOfDate, value: d.reportedValue.raw }))
+        .sort((a, b) => new Date(b.date) - new Date(a.date)) // newest first
+    }
+  }
+
+  return lookup
 }
 
-function buildRaw(ticker, chart, summary) {
-  const meta   = chart.meta   ?? {}
-  const price  = summary.price ?? {}
-  const fin    = summary.financialData ?? {}
-  const stats  = summary.defaultKeyStatistics ?? {}
-  const detail = summary.summaryDetail ?? {}
-  const profile = summary.assetProfile  ?? {}
+// Extract latest value from a timeseries array for a specific date
+function tsVal(lookup, fieldName, date) {
+  const series = lookup?.[fieldName]
+  if (!series) return null
+  if (date) {
+    const entry = series.find(s => s.date === date)
+    return entry?.value ?? null
+  }
+  return series[0]?.value ?? null
+}
 
-  // ── Price history from chart ─────────────────────────
-  const timestamps = chart.timestamp ?? []
-  const q          = chart.indicators?.quote?.[0] ?? {}
+// Get all dates from a field (for building year-by-year history)
+function tsDates(lookup, ...fieldNames) {
+  const dates = new Set()
+  for (const field of fieldNames) {
+    const series = lookup?.[field] ?? []
+    series.forEach(s => dates.add(s.date))
+  }
+  return [...dates].sort((a, b) => new Date(b) - new Date(a)) // newest first
+}
+
+// ── Build raw object matching FMP shape ───────────────────
+
+function buildRaw(ticker, chart, summary, tsLookup) {
+  const meta    = chart?.meta ?? {}
+  const price   = summary?.price ?? {}
+  const fin     = summary?.financialData ?? {}
+  const stats   = summary?.defaultKeyStatistics ?? {}
+  const detail  = summary?.summaryDetail ?? {}
+  const profile = summary?.assetProfile ?? {}
+
+  // ── Current price & market data ──────────────────────
+  const currentPrice = r(price.regularMarketPrice) ?? meta.regularMarketPrice ?? null
+  const marketCap    = r(price.marketCap) ?? r(detail.marketCap) ?? null
+  const sharesOut    = r(stats.sharesOutstanding) ?? null
+
+  // ── Price history from chart ──────────────────────────
+  const timestamps = chart?.timestamp ?? []
+  const q          = chart?.indicators?.quote?.[0] ?? {}
   const historical = timestamps
     .map((ts, i) => ({
       date:   new Date(ts * 1000).toISOString().split('T')[0],
@@ -87,135 +161,149 @@ function buildRaw(ticker, chart, summary) {
     }))
     .filter(d => d.close != null && d.close > 0)
 
-  // ── Income statement history (4 annual years) ────────
-  // Yahoo gives: totalRevenue, netIncome, ebit, grossProfit (often 0), costOfRevenue
-  const incStmts = summary.incomeStatementHistory?.incomeStatementHistory ?? []
-  const income = incStmts.map(s => ({
-    date:            s.endDate?.fmt ?? toDateStr(r(s.endDate)),
-    revenue:         r(s.totalRevenue)        ?? null,
-    grossProfit:     r(s.grossProfit) || null,   // often 0 — use null if 0
-    ebitda:          null,                        // not in income history; use fin.ebitda for TTM
-    operatingIncome: r(s.operatingIncome)     ?? r(s.ebit) ?? null,
-    netIncome:       r(s.netIncome)           ?? null,
-    eps:             null,                        // not per-year; use stats.trailingEps for TTM
-  }))
+  // ── Income history (from fundamentalsTimeSeries) ──────
+  // Fields verified: annualTotalRevenue, annualGrossProfit, annualEBITDA,
+  //                  annualOperatingIncome, annualNetIncome, annualBasicEPS
+  const incomeDates = tsDates(tsLookup,
+    'annualTotalRevenue', 'annualNetIncome', 'annualGrossProfit'
+  )
 
-  // ── Balance sheet — Yahoo history is mostly empty ────
-  // Use financialData for TTM snapshot + inject as single year
-  const balStmts = summary.balanceSheetHistory?.balanceSheetStatements ?? []
-  const balance = balStmts.length > 0
-    ? balStmts.map(s => ({
-        date:                    s.endDate?.fmt ?? toDateStr(r(s.endDate)),
-        totalAssets:             r(s.totalAssets)               ?? null,
-        totalDebt:               r(s.totalDebt) ?? r(s.longTermDebt) ?? null,
-        totalStockholdersEquity: r(s.totalStockholderEquity)    ?? null,
-        cashAndCashEquivalents:  r(s.cash) ?? r(s.cashAndCashEquivalents) ?? null,
-        bookValuePerShare:       r(stats.bookValue)             ?? null,
-      }))
-    : [{
-        // Fallback: build single entry from financialData + stats (TTM)
-        date:                    new Date().toISOString().split('T')[0],
-        totalAssets:             null,
-        totalDebt:               r(fin.totalDebt)              ?? null,
-        totalStockholdersEquity: null,
-        cashAndCashEquivalents:  r(fin.totalCash)              ?? null,
-        bookValuePerShare:       r(stats.bookValue)            ?? null,
-      }]
+  const income = incomeDates.map(date => ({
+    date,
+    revenue:         tsVal(tsLookup, 'annualTotalRevenue',    date),
+    grossProfit:     tsVal(tsLookup, 'annualGrossProfit',     date),
+    ebitda:          tsVal(tsLookup, 'annualEBITDA',          date)
+                  ?? tsVal(tsLookup, 'annualNormalizedEBITDA', date),
+    operatingIncome: tsVal(tsLookup, 'annualOperatingIncome', date)
+                  ?? tsVal(tsLookup, 'annualTotalOperatingIncomeAsReported', date),
+    netIncome:       tsVal(tsLookup, 'annualNetIncome',       date)
+                  ?? tsVal(tsLookup, 'annualNetIncomeCommonStockholders', date),
+    eps:             tsVal(tsLookup, 'annualBasicEPS',        date)
+                  ?? tsVal(tsLookup, 'annualDilutedEPS',      date),
+  })).filter(y => y.revenue != null || y.netIncome != null)
 
-  // ── Cash flow — Yahoo history only has netIncome ─────
-  // Use financialData for TTM FCF and CFO
-  const cfStmts = summary.cashflowStatementHistory?.cashflowStatements ?? []
-  const cashflow = cfStmts.length > 0
-    ? cfStmts.map(s => ({
-        date:              s.endDate?.fmt ?? toDateStr(r(s.endDate)),
-        operatingCashFlow: r(s.totalCashFromOperatingActivities) ?? null,
-        capitalExpenditure:r(s.capitalExpenditures)              ?? null,
-        freeCashFlow:      r(s.freeCashflow)                     ?? null,
-        dividendsPaid:     r(s.dividendsPaid)                    ?? null,
-      }))
-    : [{
-        // Fallback: TTM from financialData
-        date:              new Date().toISOString().split('T')[0],
-        operatingCashFlow: r(fin.operatingCashflow)  ?? null,
-        capitalExpenditure:null,
-        freeCashFlow:      r(fin.freeCashflow)        ?? null,
-        dividendsPaid:     null,
-      }]
+  // ── Balance sheet history ─────────────────────────────
+  // Fields: annualTotalAssets, annualTotalDebt, annualStockholdersEquity,
+  //         annualCashAndCashEquivalents, annualCommonStockEquity
+  const balDates = tsDates(tsLookup, 'annualTotalAssets', 'annualTotalDebt', 'annualStockholdersEquity')
 
-  const currentPrice = r(price.regularMarketPrice) ?? r(meta.regularMarketPrice) ?? null
-  const marketCap    = r(price.marketCap)   ?? r(detail.marketCap) ?? null
-  const sharesOut    = r(stats.sharesOutstanding) ?? null
+  const balance = balDates.map(date => ({
+    date,
+    totalAssets:              tsVal(tsLookup, 'annualTotalAssets',              date),
+    totalDebt:                tsVal(tsLookup, 'annualTotalDebt',                date),
+    totalStockholdersEquity:  tsVal(tsLookup, 'annualStockholdersEquity',       date)
+                           ?? tsVal(tsLookup, 'annualCommonStockEquity',        date),
+    cashAndCashEquivalents:   tsVal(tsLookup, 'annualCashAndCashEquivalents',   date)
+                           ?? tsVal(tsLookup, 'annualCashCashEquivalentsAndShortTermInvestments', date),
+    bookValuePerShare:        sharesOut && tsVal(tsLookup, 'annualCommonStockEquity', date)
+                              ? tsVal(tsLookup, 'annualCommonStockEquity', date) / sharesOut
+                              : r(stats.bookValue) ?? null,
+  })).filter(y => y.totalAssets != null || y.totalDebt != null)
+
+  // ── Cash flow history ─────────────────────────────────
+  // Fields: annualOperatingCashFlow, annualCapitalExpenditure, annualFreeCashFlow
+  const cfDates = tsDates(tsLookup, 'annualOperatingCashFlow', 'annualFreeCashFlow')
+
+  const cashflow = cfDates.map(date => ({
+    date,
+    operatingCashFlow: tsVal(tsLookup, 'annualOperatingCashFlow',              date)
+                    ?? tsVal(tsLookup, 'annualCashFlowFromContinuingOperatingActivities', date),
+    capitalExpenditure:tsVal(tsLookup, 'annualCapitalExpenditure',             date),
+    freeCashFlow:      tsVal(tsLookup, 'annualFreeCashFlow',                   date),
+    dividendsPaid:     tsVal(tsLookup, 'annualCashDividendsPaid',              date)
+                    ?? tsVal(tsLookup, 'annualCommonStockDividendPaid',        date),
+  })).filter(y => y.operatingCashFlow != null || y.freeCashFlow != null)
+
+  // ── TTM supplement from financialData ─────────────────
+  // Used to fill gaps when fundamentalsTimeSeries has no recent data
+  const ttm = {
+    revenue:           r(fin.totalRevenue)       ?? null,
+    grossProfit:       r(fin.grossProfits)        ?? null,
+    ebitda:            r(fin.ebitda)              ?? null,
+    netIncome:         r(stats.netIncomeToCommon) ?? null,
+    eps:               r(stats.trailingEps)       ?? null,
+    totalDebt:         r(fin.totalDebt)           ?? null,
+    cash:              r(fin.totalCash)           ?? null,
+    fcf:               r(fin.freeCashflow)        ?? null,
+    cfo:               r(fin.operatingCashflow)   ?? null,
+    bookValuePerShare: r(stats.bookValue)         ?? null,
+    sharesOut:         r(stats.sharesOutstanding) ?? null,
+    debtToEquity:      r(fin.debtToEquity)        ?? null,  // already a ratio
+    grossMargin:       r(fin.grossMargins)        ?? null,  // 0.0–1.0
+    ebitdaMargin:      r(fin.ebitdaMargins)       ?? null,
+    netMargin:         r(fin.profitMargins)        ?? null,
+    roe:               r(fin.returnOnEquity)      ?? null,
+    roa:               r(fin.returnOnAssets)      ?? null,
+  }
 
   return {
     profile: {
-      symbol:           ticker.toUpperCase(),
-      companyName:      price.longName ?? price.shortName ?? meta.longName ?? meta.shortName ?? ticker,
-      sector:           profile.sector   ?? null,
-      industry:         profile.industry ?? null,
-      exchangeShortName:price.exchangeName ?? meta.exchangeName ?? '',
-      currency:         price.currency ?? meta.currency ?? 'USD',
-      country:          profile.country ?? null,
-      beta:             r(stats.beta)    ?? r(detail.beta) ?? null,
-      price:            currentPrice,
-      mktCap:           marketCap,
-      description:      profile.longBusinessSummary ?? '',
+      symbol:            ticker.toUpperCase(),
+      companyName:       price.longName ?? price.shortName ?? meta.longName ?? meta.shortName ?? ticker,
+      sector:            profile.sector   ?? null,
+      industry:          profile.industry ?? null,
+      exchangeShortName: price.exchangeName ?? meta.exchangeName ?? '',
+      currency:          price.currency ?? meta.currency ?? 'USD',
+      country:           profile.country ?? null,
+      beta:              r(stats.beta) ?? r(detail.beta) ?? null,
+      price:             currentPrice,
+      mktCap:            marketCap,
+      description:       profile.longBusinessSummary ?? '',
     },
 
-    // Income: mix of history + TTM patch for missing fields
-    income: income.map((y, i) => ({
-      ...y,
-      // Patch EPS and EBITDA into latest year only from TTM stats
-      ...(i === 0 ? {
-        eps:    r(stats.trailingEps) ?? null,
-        ebitda: r(fin.ebitda)        ?? null,
-      } : {})
-    })),
+    // If no timeseries data (e.g. fundamentals failed), inject a single TTM entry
+    income:   income.length > 0 ? income : ttm.revenue ? [{
+      date:            new Date().toISOString().split('T')[0],
+      revenue:         ttm.revenue,
+      grossProfit:     ttm.grossProfit,
+      ebitda:          ttm.ebitda,
+      operatingIncome: null,
+      netIncome:       ttm.netIncome,
+      eps:             ttm.eps,
+    }] : [],
 
-    balance,
-    cashflow,
+    balance: balance.length > 0 ? balance : ttm.totalDebt ? [{
+      date:                   new Date().toISOString().split('T')[0],
+      totalAssets:            null,
+      totalDebt:              ttm.totalDebt,
+      totalStockholdersEquity:null,
+      cashAndCashEquivalents: ttm.cash,
+      bookValuePerShare:      ttm.bookValuePerShare,
+    }] : [],
+
+    cashflow: cashflow.length > 0 ? cashflow : ttm.fcf ? [{
+      date:              new Date().toISOString().split('T')[0],
+      operatingCashFlow: ttm.cfo,
+      capitalExpenditure:null,
+      freeCashFlow:      ttm.fcf,
+      dividendsPaid:     null,
+    }] : [],
+
     metrics: [],
-
     history: { historical },
-
     quote: {
-      price:              currentPrice,
+      price:             currentPrice,
       marketCap,
-      sharesOutstanding:  sharesOut,
-      eps:                r(stats.trailingEps) ?? null,
-      yearHigh:           r(detail.fiftyTwoWeekHigh) ?? r(meta.fiftyTwoWeekHigh) ?? null,
-      yearLow:            r(detail.fiftyTwoWeekLow)  ?? r(meta.fiftyTwoWeekLow)  ?? null,
-      avgVolume:          r(detail.averageVolume)     ?? null,
-      volume:             r(price.regularMarketVolume) ?? null,
-      change:             r(price.regularMarketChange) ?? null,
-      changesPercentage:  r(price.regularMarketChangePercent) != null
-                          ? r(price.regularMarketChangePercent) * 100
-                          : null,
+      sharesOutstanding: sharesOut,
+      eps:               r(stats.trailingEps) ?? null,
+      yearHigh:          r(detail.fiftyTwoWeekHigh) ?? meta.fiftyTwoWeekHigh ?? null,
+      yearLow:           r(detail.fiftyTwoWeekLow)  ?? meta.fiftyTwoWeekLow  ?? null,
+      avgVolume:         r(detail.averageVolume)     ?? r(price.averageDailyVolume3Month) ?? null,
+      volume:            r(price.regularMarketVolume) ?? null,
+      change:            r(price.regularMarketChange) ?? null,
+      // Yahoo returns percent as decimal (0.0065 = 0.65%) — multiply by 100
+      changesPercentage: r(price.regularMarketChangePercent) != null
+                         ? r(price.regularMarketChangePercent) * 100
+                         : null,
     },
-
-    // Bonus: TTM financials directly for ratios (supplement sparse history)
-    ttm: {
-      revenue:           r(fin.totalRevenue)     ?? null,
-      grossProfit:       r(fin.grossProfits)      ?? null,
-      ebitda:            r(fin.ebitda)            ?? null,
-      netIncome:         r(stats.netIncomeToCommon) ?? null,
-      eps:               r(stats.trailingEps)     ?? null,
-      totalDebt:         r(fin.totalDebt)         ?? null,
-      cash:              r(fin.totalCash)         ?? null,
-      fcf:               r(fin.freeCashflow)      ?? null,
-      cfo:               r(fin.operatingCashflow) ?? null,
-      bookValuePerShare: r(stats.bookValue)       ?? null,
-      sharesOut:         r(stats.sharesOutstanding) ?? null,
-      debtToEquity:      r(fin.debtToEquity)      ?? null,
-      grossMargin:       r(fin.grossMargins)       ?? null,
-      ebitdaMargin:      r(fin.ebitdaMargins)      ?? null,
-      netMargin:         r(fin.profitMargins)      ?? null,
-      roe:               r(fin.returnOnEquity)     ?? null,
-      roa:               r(fin.returnOnAssets)     ?? null,
-    }
+    ttm,
   }
 }
 
-function toDateStr(epochSeconds) {
-  if (!epochSeconds) return ''
-  return new Date(epochSeconds * 1000).toISOString().split('T')[0]
+// Safely extract .raw from Yahoo's {raw, fmt} wrapper, or return number directly
+function r(obj) {
+  if (obj == null) return null
+  if (typeof obj === 'number') return obj
+  if (typeof obj === 'object' && 'raw' in obj) return obj.raw ?? null
+  return null
 }

@@ -15,16 +15,15 @@ import { scoreFundamentals, scoreTechnicals, buildVerdict, DEFAULT_FUNDAMENTAL_P
 
 const initialState = {
   // API key
-  apiKey: localStorage.getItem('fmp_api_key') ?? '',
+  apiKey: '',
 
   // Fetch state
   status:  'idle',      // idle | loading | success | error | needs_upload
   error:   null,
   source:  null,        // which source succeeded
   sourceProgress: {     // live status of each source attempt
-    fmp:      SOURCE_STATUS.IDLE,
+    yahoo:    SOURCE_STATUS.IDLE,
     screener: SOURCE_STATUS.IDLE,
-    upload:   SOURCE_STATUS.IDLE,
   },
 
   // Raw + normalized data
@@ -72,7 +71,7 @@ function reducer(state, action) {
         ...state,
         status: 'loading',
         error: null,
-        sourceProgress: { fmp: SOURCE_STATUS.IDLE, screener: SOURCE_STATUS.IDLE, upload: SOURCE_STATUS.IDLE },
+        sourceProgress: { yahoo: SOURCE_STATUS.IDLE, screener: SOURCE_STATUS.IDLE },
         pendingTicker: action.payload,
       }
 

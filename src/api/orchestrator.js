@@ -1,8 +1,8 @@
 // orchestrator.js
-// Source priority: FMP (key required) → Yahoo Finance (no key) → Screener (Indian, via proxy) → Upload
+// Source priority: Yahoo Finance (no key) → Screener.in (Indian, proxy) → CSV upload
+// FMP removed: free tier has no price data and is US-only
 
-import { fetchAllRawData } from './fmp.js'
-import { fetchAllYahoo }   from './yahoo.js'
+import { fetchAllYahoo }     from './yahoo.js'
 import { fetchFromScreener } from './screener.js'
 import { loadFinancials, saveFinancials } from '../utils/db.js'
 
@@ -16,11 +16,10 @@ export const SOURCE_STATUS = {
   SKIPPED: 'skipped',
 }
 
-export async function fetchWithFallback(ticker, apiKey, onProgress) {
+export async function fetchWithFallback(ticker, _apiKey, onProgress) {
   const T = ticker.toUpperCase()
 
   const progress = {
-    fmp:      SOURCE_STATUS.IDLE,
     yahoo:    SOURCE_STATUS.IDLE,
     screener: SOURCE_STATUS.IDLE,
   }
@@ -30,67 +29,46 @@ export async function fetchWithFallback(ticker, apiKey, onProgress) {
     onProgress?.({ ...progress })
   }
 
-  // ── Check cache first ──────────────────────────────────
-  const cached = await loadFinancials(T)
-  if (cached?.rawResult && (Date.now() - cached.savedAt < ONE_HOUR)) {
-    const src = cached.rawResult.source
-    const key = src === 'Yahoo Finance' ? 'yahoo'
-              : src === 'Screener.in'   ? 'screener'
-              : 'fmp'
-    emit({ [key]: SOURCE_STATUS.SUCCESS })
-    return { ...cached.rawResult, fromCache: true }
-  }
-
-  // ── Layer 1: FMP (if key provided) ────────────────────
-  if (apiKey) {
-    emit({ fmp: SOURCE_STATUS.TRYING })
-    try {
-      const result = await fetchAllRawData(T, apiKey)
-      if (!result.raw?.profile && !result.raw?.quote) {
-        throw new Error('FMP returned empty — check ticker or API key')
-      }
-      emit({ fmp: SOURCE_STATUS.SUCCESS, yahoo: SOURCE_STATUS.SKIPPED, screener: SOURCE_STATUS.SKIPPED })
-      await saveFinancials(T, { rawResult: result })
-      return result
-    } catch (err) {
-      emit({ fmp: SOURCE_STATUS.FAILED })
-      console.warn('[FMP failed]', err.message)
-      // fall through to Yahoo
+  // ── Check cache first ─────────────────────────────────
+  try {
+    const cached = await loadFinancials(T)
+    if (cached?.rawResult && (Date.now() - cached.savedAt < ONE_HOUR)) {
+      const src = cached.rawResult.source
+      emit({ [src === 'Screener.in' ? 'screener' : 'yahoo']: SOURCE_STATUS.SUCCESS })
+      return { ...cached.rawResult, fromCache: true }
     }
-  } else {
-    emit({ fmp: SOURCE_STATUS.SKIPPED })
-  }
+  } catch { /* ignore cache errors */ }
 
-  // ── Layer 2: Yahoo Finance (no key, browser CORS open) ─
+  // ── Layer 1: Yahoo Finance ────────────────────────────
   emit({ yahoo: SOURCE_STATUS.TRYING })
   try {
     const result = await fetchAllYahoo(T)
-    if (!result.raw?.profile) throw new Error('Yahoo returned no profile data')
+    if (!result.raw?.profile?.symbol) throw new Error('Yahoo returned no profile data')
     emit({ yahoo: SOURCE_STATUS.SUCCESS, screener: SOURCE_STATUS.SKIPPED })
-    await saveFinancials(T, { rawResult: result })
+    await saveFinancials(T, { rawResult: result }).catch(() => {})
     return result
-  } catch (err) {
+  } catch (yahooErr) {
     emit({ yahoo: SOURCE_STATUS.FAILED })
-    console.warn('[Yahoo failed]', err.message)
-    // fall through to Screener
+    console.warn('[Yahoo failed]', yahooErr.message)
   }
 
-  // ── Layer 3: Screener.in (Indian stocks, via Vite/Vercel proxy) ─
+  // ── Layer 2: Screener.in (Indian stocks) ─────────────
   emit({ screener: SOURCE_STATUS.TRYING })
   try {
     const result = await fetchFromScreener(T)
-    if (!result.raw?.profile) throw new Error('Screener returned no data')
+    if (!result.raw?.profile?.symbol) throw new Error('Screener returned no data')
     emit({ screener: SOURCE_STATUS.SUCCESS })
-    await saveFinancials(T, { rawResult: result })
+    await saveFinancials(T, { rawResult: result }).catch(() => {})
     return result
-  } catch (err) {
+  } catch (screenerErr) {
     emit({ screener: SOURCE_STATUS.FAILED })
-    console.warn('[Screener failed]', err.message)
+    console.warn('[Screener failed]', screenerErr.message)
   }
 
-  // ── All failed → signal upload ─────────────────────────
+  // ── All failed → signal upload ────────────────────────
   throw new OrchestratorError(
-    `Could not fetch data for "${T}" from any source. Please upload a financial statement CSV.`,
+    `Could not fetch data for "${T}" from Yahoo Finance or Screener.in. ` +
+    `Upload a CSV financial statement to continue.`,
     { progress: { ...progress } }
   )
 }

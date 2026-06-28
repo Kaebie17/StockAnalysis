@@ -7,9 +7,7 @@ import { SOURCE_STATUS } from '../../api/orchestrator.js'
 
 export default function Header() {
   const { state, actions } = useApp()
-  const [ticker, setTicker]     = useState('')
-  const [showKey, setShowKey]   = useState(false)
-  const [keyInput, setKeyInput] = useState(state.apiKey)
+  const [ticker, setTicker] = useState('')
 
   const { data, status, error, source, sourceProgress } = state
   const isLoading = status === 'loading'
@@ -17,12 +15,6 @@ export default function Header() {
   function handleSearch(e) {
     e.preventDefault()
     if (ticker.trim()) actions.fetchTicker(ticker.trim().toUpperCase())
-  }
-
-  function handleSaveKey(e) {
-    e.preventDefault()
-    actions.setApiKey(keyInput.trim())
-    setShowKey(false)
   }
 
   const stage = state.stage ? getStageConfig(state.stageOverride ?? state.stage) : null
@@ -33,9 +25,7 @@ export default function Header() {
 
         {/* Top bar */}
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <span className="text-accent-cyan font-display font-bold text-lg tracking-tight">StockVal</span>
-          </div>
+          <span className="text-accent-cyan font-display font-bold text-lg tracking-tight flex-shrink-0">StockVal</span>
 
           {/* Search */}
           <form onSubmit={handleSearch} className="flex items-center gap-2 flex-1 max-w-sm">
@@ -43,15 +33,13 @@ export default function Header() {
               type="text"
               value={ticker}
               onChange={e => setTicker(e.target.value.toUpperCase())}
-              placeholder={state.apiKey ? 'Ticker — e.g. AAPL, RELIANCE' : 'Add API key first ↓'}
-              disabled={!state.apiKey}
+              placeholder="Ticker — e.g. AAPL, RELIANCE.NS, TCS.NS"
               className="w-full bg-surface-800 border border-slate-600 rounded-xl px-3 py-2 text-sm text-slate-100
-                         placeholder-slate-500 focus:outline-none focus:border-accent-cyan transition-colors font-mono
-                         disabled:opacity-40 disabled:cursor-not-allowed"
+                         placeholder-slate-500 focus:outline-none focus:border-accent-cyan transition-colors font-mono"
             />
             <button
               type="submit"
-              disabled={isLoading || !ticker.trim() || !state.apiKey}
+              disabled={isLoading || !ticker.trim()}
               className="btn-primary whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isLoading ? (
@@ -66,68 +54,31 @@ export default function Header() {
             </button>
           </form>
 
-          {/* API Key indicator */}
-          <button
-            onClick={() => setShowKey(s => !s)}
-            className="btn-ghost text-xs flex items-center gap-1.5 flex-shrink-0"
-          >
-            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0
-              ${state.apiKey ? 'bg-accent-green' : 'bg-accent-red'}`}
-            />
-            <span className="hidden sm:block">{state.apiKey ? 'API Key ✓' : 'Add API Key'}</span>
-          </button>
+          <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-500 flex-shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-accent-green" />
+            No API key needed
+          </div>
         </div>
 
-        {/* API Key form */}
-        {showKey && (
-          <form onSubmit={handleSaveKey} className="flex items-center gap-2">
-            <input
-              type="password"
-              value={keyInput}
-              onChange={e => setKeyInput(e.target.value)}
-              placeholder="FMP API key — free at financialmodelingprep.com"
-              className="flex-1 bg-surface-800 border border-slate-600 rounded-xl px-3 py-2 text-sm
-                         text-slate-100 placeholder-slate-500 focus:outline-none focus:border-accent-cyan"
-              autoFocus
-            />
-            <button type="submit" className="btn-primary">Save</button>
-            <button type="button" onClick={() => setShowKey(false)} className="btn-ghost">Cancel</button>
-          </form>
-        )}
-
         {/* Source progress — shown while loading */}
-        {isLoading && (
-          <SourceProgress progress={sourceProgress} />
-        )}
+        {isLoading && <SourceProgress progress={sourceProgress} />}
 
         {/* Error */}
-        {(status === 'error') && error && (
+        {status === 'error' && error && (
           <div className="px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-xl text-xs text-accent-red flex items-start gap-2">
             <span className="flex-shrink-0 mt-0.5">⚠</span>
-            <div>
-              <span>{error}</span>
-              {!state.apiKey && (
-                <button onClick={() => setShowKey(true)} className="ml-2 underline text-accent-cyan">
-                  Add API key
-                </button>
-              )}
-            </div>
+            <span>{error}</span>
           </div>
         )}
 
-        {/* Needs upload — all sources failed */}
+        {/* Needs upload */}
         {status === 'needs_upload' && (
           <div className="px-3 py-2.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs flex items-start gap-2">
             <span className="flex-shrink-0 mt-0.5 text-accent-amber">⚡</span>
             <div className="space-y-1 flex-1">
-              <p className="text-accent-amber font-medium">Automatic sources failed — upload required</p>
+              <p className="text-accent-amber font-medium">All sources failed — upload required</p>
               <SourceProgress progress={sourceProgress} compact />
-              <p className="text-slate-400">
-                Upload an annual report, balance sheet, or financial statement below to continue.
-                {!state.apiKey && (
-                  <> Or <button onClick={() => setShowKey(true)} className="underline text-accent-cyan">add an FMP API key</button> for automatic data.</>
-                )}
-              </p>
+              <p className="text-slate-400">Upload a financial statement CSV below to continue.</p>
             </div>
           </div>
         )}
@@ -140,16 +91,18 @@ export default function Header() {
               <span className="font-mono text-sm text-slate-400">{data.ticker}</span>
             </div>
 
-            <div className="flex items-baseline gap-1.5">
-              <span className="font-mono font-semibold text-slate-100">
-                {fmtPrice(data.price, data.currency)}
-              </span>
-              {data.changePct1d != null && (
-                <span className={`text-xs font-mono ${data.changePct1d >= 0 ? 'text-accent-green' : 'text-accent-red'}`}>
-                  {fmtPct(data.changePct1d)}
+            {data.price != null && (
+              <div className="flex items-baseline gap-1.5">
+                <span className="font-mono font-semibold text-slate-100">
+                  {fmtPrice(data.price, data.currency)}
                 </span>
-              )}
-            </div>
+                {data.changePct1d != null && (
+                  <span className={`text-xs font-mono ${data.changePct1d >= 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                    {fmtPct(data.changePct1d)}
+                  </span>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center gap-3 text-xs text-slate-400">
               {data.marketCap && <span>Mkt Cap <span className="text-slate-200">{fmtCompact(data.marketCap, data.currency)}</span></span>}
@@ -173,24 +126,23 @@ export default function Header() {
 
 function SourceProgress({ progress, compact }) {
   const sources = [
-    { key: 'fmp',      label: 'FMP API' },
+    { key: 'yahoo',    label: 'Yahoo Finance' },
     { key: 'screener', label: 'Screener.in' },
-    { key: 'upload',   label: 'Upload' },
   ]
 
   return (
-    <div className={`flex items-center gap-3 ${compact ? '' : 'py-1'}`}>
+    <div className={`flex items-center gap-4 ${compact ? '' : 'py-1'}`}>
       {sources.map(({ key, label }) => {
-        const st = progress[key]
+        const st = progress?.[key] ?? SOURCE_STATUS.IDLE
+        if (st === SOURCE_STATUS.IDLE || st === SOURCE_STATUS.SKIPPED) return null
         return (
           <div key={key} className="flex items-center gap-1.5">
             <StatusDot status={st} />
             <span className={`text-xs ${
               st === SOURCE_STATUS.SUCCESS ? 'text-accent-green' :
-              st === SOURCE_STATUS.FAILED  ? 'text-accent-red' :
-              st === SOURCE_STATUS.TRYING  ? 'text-accent-cyan' :
-              st === SOURCE_STATUS.SKIPPED ? 'text-slate-600' :
-              'text-slate-600'
+              st === SOURCE_STATUS.FAILED  ? 'text-accent-red'   :
+              st === SOURCE_STATUS.TRYING  ? 'text-accent-cyan'  :
+              'text-slate-500'
             }`}>{label}</span>
           </div>
         )
@@ -201,10 +153,12 @@ function SourceProgress({ progress, compact }) {
 
 function StatusDot({ status }) {
   if (status === SOURCE_STATUS.TRYING) {
-    return <svg className="animate-spin h-3 w-3 text-accent-cyan" viewBox="0 0 24 24" fill="none">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-    </svg>
+    return (
+      <svg className="animate-spin h-3 w-3 text-accent-cyan" viewBox="0 0 24 24" fill="none">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+      </svg>
+    )
   }
   const colors = {
     [SOURCE_STATUS.SUCCESS]: 'bg-accent-green',
@@ -224,10 +178,7 @@ function StageSelector({ stage, stageOverride }) {
 
   return (
     <div className="relative">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="chip chip-cyan flex items-center gap-1 cursor-pointer"
-      >
+      <button onClick={() => setOpen(o => !o)} className="chip chip-cyan flex items-center gap-1 cursor-pointer">
         <span>{cfg.emoji}</span>
         <span>{cfg.label}</span>
         {stageOverride && <span className="text-slate-400 text-xs">(override)</span>}
