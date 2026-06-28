@@ -1,122 +1,129 @@
 // normalize.js
-// Converts raw API data → clean standard financial object
-// ALL derived metrics are calculated elsewhere (ratios.js, valuation.js)
-// This file only extracts and structures raw reported numbers
+// Converts raw API/scrape data → clean standard financial object
+// Handles FMP, Yahoo Finance, and Screener.in source shapes
+// ALL derived metrics are calculated elsewhere (ratios.js)
 
 export function normalizeRawData({ raw }) {
-  const { profile, income, balance, cashflow, metrics, history, quote } = raw
+  const { profile, income, balance, cashflow, history, quote, ttm } = raw
 
-  return {
-    // ── Identity ───────────────────────────────────────
-    ticker:       profile?.symbol        ?? '',
-    name:         profile?.companyName   ?? '',
-    sector:       profile?.sector        ?? '',
-    industry:     profile?.industry      ?? '',
-    exchange:     profile?.exchangeShortName ?? '',
-    description:  profile?.description   ?? '',
-    country:      profile?.country       ?? '',
-    currency:     profile?.currency      ?? 'USD',
-    beta:         profile?.beta          ?? null,
+  // ── Identity ─────────────────────────────────────────
+  const normalized = {
+    ticker:      profile?.symbol           ?? '',
+    name:        profile?.companyName      ?? '',
+    sector:      profile?.sector           ?? '',
+    industry:    profile?.industry         ?? '',
+    exchange:    profile?.exchangeShortName ?? '',
+    description: profile?.description      ?? '',
+    country:     profile?.country          ?? '',
+    currency:    profile?.currency         ?? 'USD',
+    beta:        profile?.beta             ?? null,
 
-    // ── Current Market Data (raw, from quote) ──────────
-    price:        quote?.price           ?? profile?.price ?? null,
-    marketCap:    quote?.marketCap       ?? profile?.mktCap ?? null,
-    sharesOut:    quote?.sharesOutstanding ?? null,
-    eps:          quote?.eps             ?? null,
-    pe:           null,  // calculated in ratios.js
-    high52w:      quote?.yearHigh        ?? null,
-    low52w:       quote?.yearLow         ?? null,
-    avgVolume:    quote?.avgVolume       ?? null,
-    volume:       quote?.volume          ?? null,
-    change1d:     quote?.change          ?? null,
-    changePct1d:  quote?.changesPercentage ?? null,
+    // ── Market data ───────────────────────────────────
+    price:        quote?.price                   ?? profile?.price ?? null,
+    marketCap:    quote?.marketCap               ?? profile?.mktCap ?? null,
+    sharesOut:    quote?.sharesOutstanding        ?? null,
+    eps:          quote?.eps                     ?? null,
+    high52w:      quote?.yearHigh                ?? null,
+    low52w:       quote?.yearLow                 ?? null,
+    avgVolume:    quote?.avgVolume               ?? null,
+    volume:       quote?.volume                  ?? null,
+    change1d:     quote?.change                  ?? null,
+    changePct1d:  quote?.changesPercentage        ?? null,
 
-    // ── Income Statement (5 years, newest first) ───────
-    // Each year: { date, revenue, grossProfit, ebitda, ebit, netIncome, eps }
+    // ── Income history (newest first) ─────────────────
     incomeHistory: (income ?? []).map(y => ({
       date:        y.date,
-      revenue:     y.revenue              ?? null,
-      grossProfit: y.grossProfit          ?? null,
-      ebitda:      y.ebitda               ?? null,
-      ebit:        y.operatingIncome      ?? null,
-      netIncome:   y.netIncome            ?? null,
-      eps:         y.eps                  ?? null,
-    })),
+      revenue:     y.revenue          ?? null,
+      grossProfit: y.grossProfit       ?? null,
+      ebitda:      y.ebitda            ?? null,
+      ebit:        y.operatingIncome   ?? null,
+      netIncome:   y.netIncome         ?? null,
+      eps:         y.eps               ?? null,
+    })).filter(y => y.date),
 
-    // ── Balance Sheet (5 years, newest first) ──────────
-    // Each year: { date, totalAssets, totalDebt, totalEquity, cash, bookValuePerShare }
+    // ── Balance sheet history (newest first) ──────────
     balanceHistory: (balance ?? []).map(y => ({
-      date:             y.date,
-      totalAssets:      y.totalAssets               ?? null,
-      totalDebt:        y.totalDebt                 ?? null,
-      totalEquity:      y.totalStockholdersEquity   ?? null,
-      cash:             y.cashAndCashEquivalents     ?? null,
-      bookValuePerShare: y.bookValuePerShare         ?? null,
-    })),
+      date:              y.date,
+      totalAssets:       y.totalAssets               ?? null,
+      totalDebt:         y.totalDebt                 ?? null,
+      totalEquity:       y.totalStockholdersEquity   ?? null,
+      cash:              y.cashAndCashEquivalents     ?? null,
+      bookValuePerShare: y.bookValuePerShare          ?? null,
+    })).filter(y => y.date),
 
-    // ── Cash Flow (5 years, newest first) ──────────────
-    // Each year: { date, cfo, capex, fcf, dividendsPaid }
+    // ── Cash flow history (newest first) ──────────────
     cashflowHistory: (cashflow ?? []).map(y => ({
       date:          y.date,
       cfo:           y.operatingCashFlow   ?? null,
       capex:         y.capitalExpenditure  ?? null,
       fcf:           y.freeCashFlow        ?? null,
       dividendsPaid: y.dividendsPaid       ?? null,
-    })),
+    })).filter(y => y.date),
 
-    // ── OHLCV Price History (for technicals) ───────────
-    // Array of { date, open, high, low, close, volume } newest first
+    // ── Price history (oldest first, for TA) ──────────
     priceHistory: normalizePriceHistory(history),
 
-    // ── Convenience: latest year snapshot ──────────────
-    latest: buildLatestSnapshot(income, balance, cashflow, quote, profile),
+    // ── TTM supplement (Yahoo financialData) ──────────
+    // Passed through so ratios.js can fill gaps when balance/cashflow history is sparse
+    ttm: ttm ?? null,
   }
+
+  // ── Latest year snapshot ──────────────────────────────
+  // For Yahoo: income history + balance may be sparse.
+  // ttm supplements with TTM financial data from financialData module.
+  normalized.latest = buildLatest(normalized, quote, profile, ttm)
+
+  return normalized
 }
 
 function normalizePriceHistory(history) {
   if (!history?.historical) return []
   return [...history.historical]
-    .sort((a, b) => new Date(a.date) - new Date(b.date)) // oldest first for TA calculations
+    .filter(d => d.close != null && d.close > 0)
+    .sort((a, b) => new Date(a.date) - new Date(b.date)) // oldest first for TA
     .map(d => ({
       date:   d.date,
-      open:   d.open,
-      high:   d.high,
-      low:    d.low,
+      open:   d.open   ?? null,
+      high:   d.high   ?? null,
+      low:    d.low    ?? null,
       close:  d.close,
-      volume: d.volume,
+      volume: d.volume ?? null,
     }))
 }
 
-function buildLatestSnapshot(income, balance, cashflow, quote, profile) {
-  const i  = income?.[0]    ?? {}
-  const b  = balance?.[0]   ?? {}
-  const cf = cashflow?.[0]  ?? {}
+function buildLatest(data, quote, profile, ttm) {
+  const i  = data.incomeHistory[0]  ?? {}
+  const b  = data.balanceHistory[0] ?? {}
+  const cf = data.cashflowHistory[0] ?? {}
+
+  // ttm from Yahoo financialData supplements sparse Yahoo history
+  const t = ttm ?? {}
 
   return {
-    // Income
-    revenue:     i.revenue           ?? null,
-    grossProfit: i.grossProfit       ?? null,
-    ebitda:      i.ebitda            ?? null,
-    ebit:        i.operatingIncome   ?? null,
-    netIncome:   i.netIncome         ?? null,
-    eps:         i.eps ?? quote?.eps ?? null,
+    // Income — prefer history, fallback to TTM
+    revenue:     i.revenue     ?? t.revenue     ?? null,
+    grossProfit: i.grossProfit ?? t.grossProfit ?? null,
+    ebitda:      i.ebitda      ?? t.ebitda      ?? null,
+    ebit:        i.ebit        ?? null,
+    netIncome:   i.netIncome   ?? t.netIncome   ?? null,
+    eps:         i.eps         ?? t.eps         ?? quote?.eps ?? null,
 
     // Balance sheet
-    totalAssets:       b.totalAssets                  ?? null,
-    totalDebt:         b.totalDebt                    ?? null,
-    totalEquity:       b.totalStockholdersEquity      ?? null,
-    cash:              b.cashAndCashEquivalents        ?? null,
-    bookValuePerShare: b.bookValuePerShare             ?? null,
+    totalAssets:       b.totalAssets       ?? null,
+    totalDebt:         b.totalDebt         ?? t.totalDebt   ?? null,
+    totalEquity:       b.totalEquity       ?? null,
+    cash:              b.cash              ?? t.cash        ?? null,
+    bookValuePerShare: b.bookValuePerShare ?? t.bookValuePerShare ?? null,
 
     // Cash flow
-    cfo:           cf.operatingCashFlow   ?? null,
-    capex:         cf.capitalExpenditure  ?? null,
-    fcf:           cf.freeCashFlow        ?? null,
-    dividendsPaid: cf.dividendsPaid       ?? null,
+    cfo:           cf.cfo   ?? t.cfo   ?? null,
+    capex:         cf.capex ?? null,
+    fcf:           cf.fcf   ?? t.fcf   ?? null,
+    dividendsPaid: cf.dividendsPaid ?? null,
 
     // Market
-    price:      quote?.price     ?? profile?.price  ?? null,
-    marketCap:  quote?.marketCap ?? profile?.mktCap ?? null,
-    sharesOut:  quote?.sharesOutstanding             ?? null,
+    price:      quote?.price     ?? profile?.price    ?? null,
+    marketCap:  quote?.marketCap ?? profile?.mktCap   ?? null,
+    sharesOut:  quote?.sharesOutstanding               ?? t.sharesOut ?? null,
   }
 }

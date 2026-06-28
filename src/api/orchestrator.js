@@ -1,10 +1,10 @@
 // orchestrator.js
-// Tries data sources in sequence: FMP → Screener → signals upload needed
-// Returns a standard { raw, source, errors, fetchedAt } object regardless of source
+// Source priority: FMP (key required) → Yahoo Finance (no key) → Screener (Indian, via proxy) → Upload
 
 import { fetchAllRawData } from './fmp.js'
+import { fetchAllYahoo }   from './yahoo.js'
 import { fetchFromScreener } from './screener.js'
-import { cacheGet, cacheSet, loadFinancials, saveFinancials } from '../utils/db.js'
+import { loadFinancials, saveFinancials } from '../utils/db.js'
 
 const ONE_HOUR = 60 * 60 * 1000
 
@@ -16,14 +16,13 @@ export const SOURCE_STATUS = {
   SKIPPED: 'skipped',
 }
 
-// onProgress({ fmp, screener, upload }) — called as each source is tried
 export async function fetchWithFallback(ticker, apiKey, onProgress) {
   const T = ticker.toUpperCase()
 
   const progress = {
     fmp:      SOURCE_STATUS.IDLE,
+    yahoo:    SOURCE_STATUS.IDLE,
     screener: SOURCE_STATUS.IDLE,
-    upload:   SOURCE_STATUS.IDLE,
   }
 
   function emit(updates) {
@@ -31,88 +30,76 @@ export async function fetchWithFallback(ticker, apiKey, onProgress) {
     onProgress?.({ ...progress })
   }
 
-  // ── Check IndexedDB cache first (any source) ──────────
+  // ── Check cache first ──────────────────────────────────
   const cached = await loadFinancials(T)
   if (cached?.rawResult && (Date.now() - cached.savedAt < ONE_HOUR)) {
-    emit({ [cached.rawResult.source === 'Screener.in' ? 'screener' : 'fmp']: SOURCE_STATUS.SUCCESS })
+    const src = cached.rawResult.source
+    const key = src === 'Yahoo Finance' ? 'yahoo'
+              : src === 'Screener.in'   ? 'screener'
+              : 'fmp'
+    emit({ [key]: SOURCE_STATUS.SUCCESS })
     return { ...cached.rawResult, fromCache: true }
   }
 
-  // ── Layer 1: FMP API ───────────────────────────────────
+  // ── Layer 1: FMP (if key provided) ────────────────────
   if (apiKey) {
     emit({ fmp: SOURCE_STATUS.TRYING })
     try {
       const result = await fetchAllRawData(T, apiKey)
-
-      // FMP succeeded but may have partial data — check profile at minimum
       if (!result.raw?.profile && !result.raw?.quote) {
-        throw new Error('FMP returned empty profile — ticker may not exist or key is invalid')
+        throw new Error('FMP returned empty — check ticker or API key')
       }
-
-      emit({ fmp: SOURCE_STATUS.SUCCESS, screener: SOURCE_STATUS.SKIPPED })
+      emit({ fmp: SOURCE_STATUS.SUCCESS, yahoo: SOURCE_STATUS.SKIPPED, screener: SOURCE_STATUS.SKIPPED })
       await saveFinancials(T, { rawResult: result })
       return result
-
-    } catch (fmpErr) {
+    } catch (err) {
       emit({ fmp: SOURCE_STATUS.FAILED })
-      console.warn('[FMP failed]', fmpErr.message)
-
-      // ── Layer 2: Screener.in (Indian stocks) ──────────
-      emit({ screener: SOURCE_STATUS.TRYING })
-      try {
-        const result = await fetchFromScreener(T)
-
-        if (!result.raw?.profile) {
-          throw new Error('Screener returned no data for this ticker')
-        }
-
-        emit({ screener: SOURCE_STATUS.SUCCESS })
-        await saveFinancials(T, { rawResult: result })
-        return result
-
-      } catch (screenerErr) {
-        emit({ screener: SOURCE_STATUS.FAILED })
-        console.warn('[Screener failed]', screenerErr.message)
-
-        // ── Layer 3: Signal upload needed ─────────────
-        emit({ upload: SOURCE_STATUS.TRYING })
-        throw new OrchestratorError(
-          'All automatic sources failed. Please upload financial statements.',
-          { fmpError: fmpErr.message, screenerError: screenerErr.message }
-        )
-      }
+      console.warn('[FMP failed]', err.message)
+      // fall through to Yahoo
     }
   } else {
-    // No API key — skip FMP, go straight to Screener
-    emit({ fmp: SOURCE_STATUS.SKIPPED, screener: SOURCE_STATUS.TRYING })
-    try {
-      const result = await fetchFromScreener(T)
-
-      if (!result.raw?.profile) {
-        throw new Error('Screener returned no data for this ticker')
-      }
-
-      emit({ screener: SOURCE_STATUS.SUCCESS })
-      await saveFinancials(T, { rawResult: result })
-      return result
-
-    } catch (screenerErr) {
-      emit({ screener: SOURCE_STATUS.FAILED })
-      emit({ upload: SOURCE_STATUS.TRYING })
-      throw new OrchestratorError(
-        'No API key set and Screener fallback also failed. Please add an FMP API key or upload financial statements.',
-        { screenerError: screenerErr.message }
-      )
-    }
+    emit({ fmp: SOURCE_STATUS.SKIPPED })
   }
+
+  // ── Layer 2: Yahoo Finance (no key, browser CORS open) ─
+  emit({ yahoo: SOURCE_STATUS.TRYING })
+  try {
+    const result = await fetchAllYahoo(T)
+    if (!result.raw?.profile) throw new Error('Yahoo returned no profile data')
+    emit({ yahoo: SOURCE_STATUS.SUCCESS, screener: SOURCE_STATUS.SKIPPED })
+    await saveFinancials(T, { rawResult: result })
+    return result
+  } catch (err) {
+    emit({ yahoo: SOURCE_STATUS.FAILED })
+    console.warn('[Yahoo failed]', err.message)
+    // fall through to Screener
+  }
+
+  // ── Layer 3: Screener.in (Indian stocks, via Vite/Vercel proxy) ─
+  emit({ screener: SOURCE_STATUS.TRYING })
+  try {
+    const result = await fetchFromScreener(T)
+    if (!result.raw?.profile) throw new Error('Screener returned no data')
+    emit({ screener: SOURCE_STATUS.SUCCESS })
+    await saveFinancials(T, { rawResult: result })
+    return result
+  } catch (err) {
+    emit({ screener: SOURCE_STATUS.FAILED })
+    console.warn('[Screener failed]', err.message)
+  }
+
+  // ── All failed → signal upload ─────────────────────────
+  throw new OrchestratorError(
+    `Could not fetch data for "${T}" from any source. Please upload a financial statement CSV.`,
+    { progress: { ...progress } }
+  )
 }
 
-// Custom error so AppContext can distinguish "needs upload" from other errors
 export class OrchestratorError extends Error {
   constructor(message, details = {}) {
     super(message)
-    this.name = 'OrchestratorError'
-    this.details = details
+    this.name        = 'OrchestratorError'
+    this.details     = details
     this.needsUpload = true
   }
 }

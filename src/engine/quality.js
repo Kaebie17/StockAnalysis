@@ -22,13 +22,17 @@ export const DEFAULT_FUNDAMENTAL_PREDICTORS = [
   {
     id:       'gross_margin',
     label:    'Gross Margin',
-    desc:     'Latest gross margin',
+    desc:     'Latest gross margin (or net margin if gross unavailable)',
     weight:   15,
     threshold:30,
     direction:'higher',
     evaluate: (data, ratios) => {
-      const gm = ratios.grossMargin
-      return { value: gm, unit: '%', pass: gm != null && gm >= 30 }
+      // Yahoo often lacks grossProfit; fall back to ebitdaMargin or netMargin
+      const gm = ratios.grossMargin ?? ratios.ebitdaMargin ?? ratios.netMargin
+      const threshold = ratios.grossMargin != null ? 30
+                      : ratios.ebitdaMargin != null ? 15
+                      : 8   // net margin threshold
+      return { value: gm, unit: '%', pass: gm != null && gm >= threshold }
     }
   },
   {
@@ -46,28 +50,38 @@ export const DEFAULT_FUNDAMENTAL_PREDICTORS = [
   {
     id:       'debt_trajectory',
     label:    'Debt Trend',
-    desc:     'D/E ratio falling or stable',
+    desc:     'D/E ratio falling or stable (uses TTM D/E when history unavailable)',
     weight:   15,
     threshold:null,
     direction:'lower',
     evaluate: (data, ratios, hist) => {
-      if (!hist || hist.length < 2) return { value: null, unit: 'x', pass: false }
-      const latest = hist[hist.length - 1]?.deRatio
-      const prior  = hist[hist.length - 2]?.deRatio
-      const falling = latest != null && prior != null && latest <= prior * 1.05
-      return { value: ratios.deRatio, unit: 'x', pass: falling }
+      const currentDE = ratios.deRatio
+      // If we have multi-year D/E history, check trend
+      const validHist = (hist ?? []).filter(h => h.deRatio != null)
+      if (validHist.length >= 2) {
+        const latest = validHist[validHist.length - 1].deRatio
+        const prior  = validHist[validHist.length - 2].deRatio
+        const falling = latest <= prior * 1.05
+        return { value: currentDE, unit: 'x', pass: falling }
+      }
+      // Fallback: if only TTM D/E available, pass if D/E < 1.0 (reasonable threshold)
+      if (currentDE != null) {
+        return { value: currentDE, unit: 'x', pass: currentDE < 1.0 }
+      }
+      return { value: null, unit: 'x', pass: false }
     }
   },
   {
     id:       'roce',
-    label:    'ROCE',
-    desc:     'Return on Capital Employed',
+    label:    'ROCE / ROE',
+    desc:     'Return on Capital Employed (ROE used as fallback)',
     weight:   15,
     threshold:15,
     direction:'higher',
     evaluate: (data, ratios) => {
-      const r = ratios.roce
-      return { value: r, unit: '%', pass: r != null && r >= 15 }
+      const r = ratios.roce ?? ratios.roe  // ROE from TTM when ROCE unavailable
+      const threshold = ratios.roce != null ? 15 : 10  // lower bar for ROE
+      return { value: r, unit: '%', pass: r != null && r >= threshold }
     }
   },
   {
@@ -85,16 +99,35 @@ export const DEFAULT_FUNDAMENTAL_PREDICTORS = [
   {
     id:       'margin_trend',
     label:    'Margin Trend',
-    desc:     'EBITDA margin stable or expanding',
+    desc:     'Operating/net margin stable or expanding over available history',
     weight:   10,
     threshold:null,
     direction:'higher',
     evaluate: (data, ratios, hist) => {
-      if (!hist || hist.length < 2) return { value: null, unit: '%', pass: false }
-      const latest = hist[hist.length - 1]?.ebitdaMargin
-      const prior  = hist[0]?.ebitdaMargin
-      const stable = latest != null && prior != null && latest >= prior - 2
-      return { value: ratios.ebitdaMargin, unit: '%', pass: stable }
+      // Try EBITDA margin first, then net margin from history
+      const pick = (arr, key) => arr.filter(h => h[key] != null)
+      const ebitdaH = pick(hist ?? [], 'ebitdaMargin')
+      const netH    = pick(hist ?? [], 'netMargin')
+
+      let value = ratios.ebitdaMargin ?? ratios.netMargin
+      let pass  = false
+
+      if (ebitdaH.length >= 2) {
+        const latest = ebitdaH[ebitdaH.length - 1].ebitdaMargin
+        const prior  = ebitdaH[0].ebitdaMargin
+        pass  = latest >= prior - 2  // allow 2pp deterioration
+        value = ratios.ebitdaMargin
+      } else if (netH.length >= 2) {
+        const latest = netH[netH.length - 1].netMargin
+        const prior  = netH[0].netMargin
+        pass  = latest >= prior - 1
+        value = ratios.netMargin
+      } else if (value != null) {
+        // Only TTM available — pass if margin is positive and reasonable
+        pass = value > 5
+      }
+
+      return { value, unit: '%', pass }
     }
   },
 ]

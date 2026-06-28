@@ -43,13 +43,15 @@ export default function Header() {
               type="text"
               value={ticker}
               onChange={e => setTicker(e.target.value.toUpperCase())}
-              placeholder="Ticker — e.g. AAPL, RELIANCE"
+              placeholder={state.apiKey ? 'Ticker — e.g. AAPL, RELIANCE' : 'Add API key first ↓'}
+              disabled={!state.apiKey}
               className="w-full bg-surface-800 border border-slate-600 rounded-xl px-3 py-2 text-sm text-slate-100
-                         placeholder-slate-500 focus:outline-none focus:border-accent-cyan transition-colors font-mono"
+                         placeholder-slate-500 focus:outline-none focus:border-accent-cyan transition-colors font-mono
+                         disabled:opacity-40 disabled:cursor-not-allowed"
             />
             <button
               type="submit"
-              disabled={isLoading || !ticker.trim()}
+              disabled={isLoading || !ticker.trim() || !state.apiKey}
               className="btn-primary whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isLoading ? (
