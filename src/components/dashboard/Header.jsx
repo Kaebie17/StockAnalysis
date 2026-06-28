@@ -126,7 +126,7 @@ function IdentityBar({ data, ratios }) {
       {data.meta?.sector && (
         <span className="text-xs text-slate-500">{data.meta.sector}</span>
       )}
-      <span className="text-xs text-slate-600 capitalize">{data.source}</span>
+      <span className="text-xs text-slate-600 capitalize">{data.source === "merged" ? "yahoo+screener" : data.source}</span>
     </div>
   )
 }

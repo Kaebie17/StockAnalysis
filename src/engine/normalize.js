@@ -1,20 +1,109 @@
 /**
  * src/engine/normalize.js
  *
- * Converts raw API responses into a standard data object.
+ * Converts raw API data into a standard shape.
+ * Handles: yahoo, screener, merged (both), csv.
  *
- * Yahoo data strategy (June 2026):
- * - Price/volume: v8/chart → result[0].indicators.quote[0] for OHLCV,
- *   result[0].indicators.adjclose[0].adjclose for adjusted close.
- * - Financials: incomeStatementHistory (NOT fundamentalsTimeSeries — empty for Indian stocks).
- * - TTM: financialData module.
+ * Merge strategy (Yahoo takes precedence):
+ *   price / priceHistory / TTM    → Yahoo
+ *   incomeHistory / balance / CF  → whichever has more years; fill nulls from the other
  */
 
 export function normalize(source, raw) {
   if (source === 'yahoo')   return normalizeYahoo(raw)
   if (source === 'screener') return normalizeScreener(raw)
-  if (source === 'csv')     return raw // already normalized by App.jsx
+  if (source === 'merged')  return normalizeMerged(raw)
+  if (source === 'csv')     return raw
   throw new Error(`Unknown source: ${source}`)
+}
+
+// ─── Merged ───────────────────────────────────────────────────────────────────
+
+function normalizeMerged({ yahoo, screener }) {
+  const y = normalizeYahoo(yahoo)
+  const s = normalizeScreener(screener)
+
+  // Yahoo wins on price data and TTM
+  // Screener wins if it has more years of history (common for Indian stocks)
+  const income   = mergeHistories(y.incomeHistory,   s.incomeHistory,   mergeIncomeRow)
+  const balance  = mergeHistories(y.balanceHistory,  s.balanceHistory,  mergeBalanceRow)
+  const cashflow = mergeHistories(y.cashflowHistory, s.cashflowHistory, mergeCFRow)
+
+  return {
+    ...y,                        // Yahoo base (price, TTM, meta)
+    source: 'merged',
+    incomeHistory:  income,
+    balanceHistory: balance,
+    cashflowHistory: cashflow,
+    // Fill TTM gaps from Screener
+    ttm: mergeTTM(y.ttm, s.ttm)
+  }
+}
+
+/**
+ * Merge two history arrays by year.
+ * For each year, use Yahoo values where non-null, fill nulls from Screener.
+ * Include years that only appear in Screener (older history).
+ */
+function mergeHistories(yahooArr, screenerArr, mergeRow) {
+  const map = {}
+  // Screener goes in first (lower priority)
+  for (const row of (screenerArr || [])) {
+    if (row.year) map[row.year] = row
+  }
+  // Yahoo overwrites / fills (higher priority)
+  for (const row of (yahooArr || [])) {
+    if (!row.year) continue
+    map[row.year] = map[row.year] ? mergeRow(row, map[row.year]) : row
+  }
+  return Object.values(map).sort((a, b) => a.year.localeCompare(b.year))
+}
+
+// For each field: use Yahoo value if non-null, else Screener
+function mergeIncomeRow(y, s) {
+  return {
+    year:            y.year,
+    revenue:         y.revenue         ?? s.revenue,
+    grossProfit:     y.grossProfit     ?? s.grossProfit,
+    operatingProfit: y.operatingProfit ?? s.operatingProfit,
+    ebitda:          y.ebitda          ?? s.ebitda,
+    netIncome:       y.netIncome       ?? s.netIncome,
+    interest:        y.interest        ?? s.interest,
+    depreciation:    y.depreciation    ?? s.depreciation,
+    eps:             y.eps             ?? s.eps
+  }
+}
+
+function mergeBalanceRow(y, s) {
+  return {
+    year:            y.year,
+    totalAssets:     y.totalAssets     ?? s.totalAssets,
+    totalDebt:       y.totalDebt       ?? s.totalDebt,
+    totalEquity:     y.totalEquity     ?? s.totalEquity,
+    cash:            y.cash            ?? s.cash,
+    totalLiabilities: y.totalLiabilities ?? s.totalLiabilities
+  }
+}
+
+function mergeCFRow(y, s) {
+  return {
+    year:         y.year,
+    operatingCF:  y.operatingCF  ?? s.operatingCF,
+    investingCF:  y.investingCF  ?? s.investingCF,
+    financingCF:  y.financingCF  ?? s.financingCF,
+    capex:        y.capex        ?? s.capex,
+    freeCashFlow: y.freeCashFlow ?? s.freeCashFlow
+  }
+}
+
+function mergeTTM(y, s) {
+  if (!y) return s
+  if (!s) return y
+  const out = { ...y }
+  for (const k of Object.keys(s)) {
+    if (out[k] == null && s[k] != null) out[k] = s[k]
+  }
+  return out
 }
 
 // ─── Yahoo ────────────────────────────────────────────────────────────────────
@@ -27,54 +116,43 @@ function normalizeYahoo({ ticker, chart, quote }) {
   const summaryDetail = qs.summaryDetail      || {}
   const assetProfile  = qs.assetProfile       || {}
 
-  // ── Price history from v8 chart ────────────────────────────────────────────
-  // Structure: chart.chart.result[0]
-  //   .timestamp[]                          — unix seconds
-  //   .indicators.quote[0].open/high/low/close/volume[]
-  //   .indicators.adjclose[0].adjclose[]    — split/dividend adjusted close
+  // Price history — v8 chart
   const chartResult = chart?.chart?.result?.[0]
   const timestamps  = chartResult?.timestamp || []
   const q0          = chartResult?.indicators?.quote?.[0]          || {}
-  const adjClose    = chartResult?.indicators?.adjclose?.[0]?.adjclose || []
+  const adjCloses   = chartResult?.indicators?.adjclose?.[0]?.adjclose || []
 
-  const priceHistory = timestamps.map((ts, i) => {
-    const close = adjClose[i] ?? q0.close?.[i] ?? null
-    return {
-      date:   new Date(ts * 1000).toISOString().slice(0, 10),
-      open:   q0.open?.[i]   ?? null,
-      high:   q0.high?.[i]   ?? null,
-      low:    q0.low?.[i]    ?? null,
-      close,                              // use adjClose preferentially
-      volume: q0.volume?.[i] ?? null      // allow null — non-trading days
-    }
-  }).filter(d => d.close !== null)        // only drop if close itself is null
+  const priceHistory = timestamps.map((ts, i) => ({
+    date:   new Date(ts * 1000).toISOString().slice(0, 10),
+    open:   q0.open?.[i]   ?? null,
+    high:   q0.high?.[i]   ?? null,
+    low:    q0.low?.[i]    ?? null,
+    close:  adjCloses[i]   ?? q0.close?.[i] ?? null,
+    volume: q0.volume?.[i] ?? null
+  })).filter(d => d.close !== null)
 
-  // ── Income history from incomeStatementHistory ─────────────────────────────
-  // This is the reliable source for ALL markets including Indian stocks.
-  // fundamentalsTimeSeries is intentionally NOT used — empty for .NS/.BO.
+  // Income — from incomeStatementHistory (reliable for all markets)
   const incStmt = qs.incomeStatementHistory?.incomeStatementHistory || []
   const incomeHistory = incStmt.map(s => ({
     year:            yearOf(rv(s.endDate)),
     revenue:         rv(s.totalRevenue),
     grossProfit:     rv(s.grossProfit),
     operatingProfit: rv(s.operatingIncome) ?? rv(s.ebit),
-    ebitda:          null, // not in this module; computed in ratios.js
+    ebitda:          null,
     netIncome:       rv(s.netIncome),
     interest:        rv(s.interestExpense),
     depreciation:    null,
-    eps:             null  // from earnings module below
+    eps:             null
   })).filter(r => r.year && r.revenue != null)
     .sort((a, b) => a.year.localeCompare(b.year))
 
   // Supplement EPS from earnings module
-  const epsHistory = (qs.earnings?.financialsChart?.yearly || [])
-  epsHistory.forEach(e => {
-    const yr = String(e.date)
-    const row = incomeHistory.find(r => r.year === yr)
+  for (const e of (qs.earnings?.financialsChart?.yearly || [])) {
+    const row = incomeHistory.find(r => r.year === String(e.date))
     if (row) row.eps = rv(e.earnings)
-  })
+  }
 
-  // ── Balance sheet ──────────────────────────────────────────────────────────
+  // Balance sheet
   const bsStmt = qs.balanceSheetHistory?.balanceSheetStatements || []
   const balanceHistory = bsStmt.map(s => ({
     year:            yearOf(rv(s.endDate)),
@@ -86,30 +164,29 @@ function normalizeYahoo({ ticker, chart, quote }) {
   })).filter(r => r.year && r.totalAssets != null)
     .sort((a, b) => a.year.localeCompare(b.year))
 
-  // ── Cash flow ──────────────────────────────────────────────────────────────
+  // Cash flow
   const cfStmt = qs.cashflowStatementHistory?.cashflowStatements || []
   const cashflowHistory = cfStmt.map(s => {
     const opCF  = rv(s.totalCashFromOperatingActivities)
-    const capex = rv(s.capitalExpenditures)              // usually negative
-    const fcf   = rv(s.freeCashFlow) ?? computeFCF(opCF, capex)
+    const capex = rv(s.capitalExpenditures)
     return {
       year:        yearOf(rv(s.endDate)),
       operatingCF: opCF,
       investingCF: rv(s.totalCashflowsFromInvestingActivities),
       financingCF: rv(s.totalCashFromFinancingActivities),
       capex,
-      freeCashFlow: fcf
+      freeCashFlow: rv(s.freeCashFlow) ?? computeFCF(opCF, capex)
     }
   }).filter(r => r.year && r.operatingCF != null)
     .sort((a, b) => a.year.localeCompare(b.year))
 
-  // ── TTM from financialData module ──────────────────────────────────────────
+  // TTM
   const ttm = {
     revenue:          rv(finData.totalRevenue),
     grossProfit:      rv(finData.grossProfits),
     ebitda:           rv(finData.ebitda),
     netIncome:        rv(finData.netIncomeToCommon),
-    eps:              rv(finData.trailingEps)    ?? rv(keyStats.trailingEps),
+    eps:              rv(finData.trailingEps) ?? rv(keyStats.trailingEps),
     debtToEquity:     rv(finData.debtToEquity),
     roe:              rv(finData.returnOnEquity),
     ebitdaMargins:    rv(finData.ebitdaMargins),
@@ -153,8 +230,7 @@ function normalizeYahoo({ ticker, chart, quote }) {
       beta:        rv(summaryDetail.beta),
       high52:      rv(summaryDetail.fiftyTwoWeekHigh),
       low52:       rv(summaryDetail.fiftyTwoWeekLow),
-      avgVolume:   rv(summaryDetail.averageVolume),
-      sharesFloat: rv(keyStats.floatShares)
+      avgVolume:   rv(summaryDetail.averageVolume)
     }
   }
 }
@@ -162,7 +238,7 @@ function normalizeYahoo({ ticker, chart, quote }) {
 // ─── Screener ─────────────────────────────────────────────────────────────────
 
 function normalizeScreener(raw) {
-  const CR = 1e7 // Crores → absolute INR
+  const CR = 1e7
 
   const incomeHistory = (raw.incomeHistory || []).map(r => ({
     year:            r.year,
@@ -175,7 +251,7 @@ function normalizeScreener(raw) {
     netIncome:    mul(r.netIncome, CR),
     interest:     mul(r.interest, CR),
     depreciation: mul(r.depreciation, CR),
-    eps:          r.eps  // already per-share, no scaling
+    eps:          r.eps
   }))
 
   const balanceHistory = (raw.balanceHistory || []).map(r => ({
@@ -200,8 +276,8 @@ function normalizeScreener(raw) {
     }
   })
 
-  const latest  = incomeHistory[incomeHistory.length - 1]  || {}
-  const latestB = balanceHistory[balanceHistory.length - 1] || {}
+  const latest   = incomeHistory[incomeHistory.length - 1]  || {}
+  const latestB  = balanceHistory[balanceHistory.length - 1] || {}
   const latestCF = cashflowHistory[cashflowHistory.length - 1] || {}
 
   return {
@@ -212,24 +288,24 @@ function normalizeScreener(raw) {
     price:    raw.price,
     marketCap: raw.marketCap,
     sharesOutstanding: null,
-    priceHistory: [],  // Screener doesn't provide price history
+    priceHistory: [],
     incomeHistory,
     balanceHistory,
     cashflowHistory,
     ttm: {
-      revenue:       latest.revenue,
-      grossProfit:   latest.grossProfit,
-      ebitda:        latest.ebitda,
-      netIncome:     latest.netIncome,
-      eps:           latest.eps,
-      debtToEquity:  null,
-      roe:           raw.ratios?.roe ? raw.ratios.roe / 100 : null,
-      ebitdaMargins: latest.ebitda && latest.revenue ? latest.ebitda / latest.revenue : null,
-      grossMargins:  latest.grossProfit && latest.revenue ? latest.grossProfit / latest.revenue : null,
-      profitMargins: latest.netIncome && latest.revenue ? latest.netIncome / latest.revenue : null,
-      totalDebt:     latestB.totalDebt,
-      totalCash:     latestB.cash,
-      freeCashflow:  latestCF.freeCashFlow,
+      revenue:          latest.revenue,
+      grossProfit:      latest.grossProfit,
+      ebitda:           latest.ebitda,
+      netIncome:        latest.netIncome,
+      eps:              latest.eps,
+      debtToEquity:     null,
+      roe:              raw.ratios?.roe ? raw.ratios.roe / 100 : null,
+      ebitdaMargins:    latest.ebitda && latest.revenue ? latest.ebitda / latest.revenue : null,
+      grossMargins:     latest.grossProfit && latest.revenue ? latest.grossProfit / latest.revenue : null,
+      profitMargins:    latest.netIncome && latest.revenue ? latest.netIncome / latest.revenue : null,
+      totalDebt:        latestB.totalDebt,
+      totalCash:        latestB.cash,
+      freeCashflow:     latestCF.freeCashFlow,
       operatingCashflow: latestCF.operatingCF
     },
     meta: {
@@ -243,7 +319,6 @@ function normalizeScreener(raw) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Extract .raw from Yahoo value objects {raw: 1234, fmt: "1,234"} or return number directly */
 function rv(v) {
   if (v == null) return null
   if (typeof v === 'object' && 'raw' in v) return v.raw
@@ -251,20 +326,19 @@ function rv(v) {
   return null
 }
 
-function mul(v, factor) { return v != null ? v * factor : null }
+function mul(v, f) { return v != null ? v * f : null }
 
-function yearOf(unixSeconds) {
-  if (!unixSeconds) return null
-  return new Date(unixSeconds * 1000).getFullYear().toString()
+function yearOf(unix) {
+  if (!unix) return null
+  return new Date(unix * 1000).getFullYear().toString()
 }
 
-function computeFCF(operatingCF, capex) {
-  if (operatingCF == null) return null
-  // Capex from Yahoo is negative, so we subtract the absolute value
-  return operatingCF - Math.abs(capex || 0)
+function computeFCF(opCF, capex) {
+  if (opCF == null) return null
+  return opCF - Math.abs(capex || 0)
 }
 
-function computeEbitda(operatingProfit, depreciation) {
-  if (operatingProfit == null) return null
-  return operatingProfit + (depreciation || 0)
+function computeEbitda(opProfit, dep) {
+  if (opProfit == null) return null
+  return opProfit + (dep || 0)
 }
