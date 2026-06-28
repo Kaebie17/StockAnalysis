@@ -1,12 +1,10 @@
 /**
- * src/api/yahoo.js
+ * src/api/yahoo.js — client-side fetcher
+ * All calls go through /api/yahoo (Vercel serverless).
  *
- * All calls go through /api/yahoo (Vercel serverless) which handles
- * the Yahoo session cookie + crumb requirement server-side.
- *
- * In dev mode, Vite does NOT proxy /api/yahoo — it runs via `vercel dev`
- * or you set VITE_USE_VERCEL_DEV=true.
- * For pure Vite dev, we expose a fallback note in the error.
+ * NOTE: chart and quote are fetched in parallel — chart doesn't need crumb
+ * so it never blocks on the crumb fetch server-side.
+ * timeseries endpoint removed — empty for Indian stocks, redundant for US.
  */
 
 const BASE = '/api/yahoo'
@@ -14,61 +12,60 @@ const BASE = '/api/yahoo'
 async function yFetch(params) {
   const qs = new URLSearchParams(params).toString()
   const res = await fetch(`${BASE}?${qs}`)
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
-    throw new Error(err.error || `Yahoo proxy error ${res.status}`)
-  }
-  return res.json()
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || `Yahoo proxy error ${res.status}`)
+  return data
 }
 
-/** Auto-resolve Indian tickers: try bare name, then .NS, then .BO */
+/** Resolve bare Indian tickers to Yahoo symbol (e.g. RELIANCE → RELIANCE.NS) */
 async function resolveTicker(rawTicker) {
   const ticker = rawTicker.trim().toUpperCase()
+  if (ticker.includes('.')) return ticker  // already has suffix
 
-  // Already has exchange suffix
-  if (ticker.includes('.')) return ticker
-
-  // Try to resolve via Yahoo search
   try {
     const data = await yFetch({ endpoint: 'search', query: ticker })
-    const quotes = data?.quotes || []
-    // Prefer NSE (.NS) then BSE (.BO) then first result
-    const nse = quotes.find(q => q.symbol?.endsWith('.NS') && q.typeDisp === 'Equity')
-    const bse = quotes.find(q => q.symbol?.endsWith('.BO') && q.typeDisp === 'Equity')
-    const first = quotes.find(q => q.typeDisp === 'Equity')
-    if (nse) return nse.symbol
-    if (bse) return bse.symbol
-    if (first) return first.symbol
+    const quotes = (data?.quotes || []).filter(q => q.typeDisp === 'Equity')
+    // Prefer NSE (.NS), then BSE (.BO), then first equity result
+    const nse   = quotes.find(q => q.symbol?.endsWith('.NS'))
+    const bse   = quotes.find(q => q.symbol?.endsWith('.BO'))
+    const first = quotes[0]
+    const resolved = (nse || bse || first)?.symbol
+    if (resolved) {
+      console.log(`[yahoo] Resolved "${ticker}" → "${resolved}"`)
+      return resolved
+    }
   } catch (_) {
-    // Search failed — try appending .NS for common Indian tickers
+    // Search failed — fall through to heuristic
   }
 
-  // Heuristic: if it looks like an Indian ticker, try .NS
-  // (Many NSE tickers are pure alpha, <= 10 chars)
-  if (/^[A-Z&]{2,15}$/.test(ticker)) {
-    return `${ticker}.NS`
-  }
-
+  // Heuristic: pure alpha ticker <= 15 chars → try .NS first
+  if (/^[A-Z&-]{2,15}$/.test(ticker)) return `${ticker}.NS`
   return ticker
 }
 
 export async function fetchYahoo(rawTicker) {
   const ticker = await resolveTicker(rawTicker)
 
-  // Fetch all 3 endpoints in parallel
-  const [chartData, quoteData, timeseriesData] = await Promise.allSettled([
+  // Fetch chart and quote in parallel
+  const [chartResult, quoteResult] = await Promise.allSettled([
     yFetch({ endpoint: 'chart', ticker }),
-    yFetch({ endpoint: 'quote', ticker }),
-    yFetch({ endpoint: 'timeseries', ticker })
+    yFetch({ endpoint: 'quote', ticker })
   ])
 
-  const chart = chartData.status === 'fulfilled' ? chartData.value : null
-  const quote = quoteData.status === 'fulfilled' ? quoteData.value : null
-  const ts    = timeseriesData.status === 'fulfilled' ? timeseriesData.value : null
+  const chart = chartResult.status === 'fulfilled' ? chartResult.value : null
+  const quote = quoteResult.status === 'fulfilled' ? quoteResult.value : null
 
   if (!chart && !quote) {
-    throw new Error(`No data returned for "${ticker}". Check the ticker symbol.`)
+    const err = chartResult.reason?.message || quoteResult.reason?.message || 'No data'
+    throw new Error(`Yahoo fetch failed for "${ticker}": ${err}`)
   }
 
-  return { ticker, chart, quote, timeseries: ts }
+  if (chartResult.status === 'rejected') {
+    console.warn('[yahoo] Chart failed:', chartResult.reason?.message)
+  }
+  if (quoteResult.status === 'rejected') {
+    console.warn('[yahoo] Quote failed:', quoteResult.reason?.message)
+  }
+
+  return { ticker, chart, quote }
 }
