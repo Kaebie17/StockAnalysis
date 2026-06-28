@@ -4,70 +4,66 @@
 
 import { cacheGet, cacheSet } from '../utils/db.js'
 
-const BASE = 'https://financialmodelingprep.com/api'
+const BASE = 'https://financialmodelingprep.com/stable/'
 
-async function fmpFetch(path, apiKey) {
-  const url       = `${BASE}${path}&apikey=${apiKey}`
-  const cacheKey  = path
+async function fmpFetch(endpoint, params = {}, apiKey) {
+  // Convert params object to query string format
+  const queryParams = new URLSearchParams({ ...params, apikey: apiKey }).toString()
+  const url = `${BASE}${endpoint}?${queryParams}`
+  const cacheKey = `${endpoint}?${queryParams}`
 
   // Try cache first
   const cached = await cacheGet(cacheKey)
   if (cached) return cached
 
-  const res  = await fetch(url)
+  const res = await fetch(url)
   if (!res.ok) throw new Error(`FMP ${res.status}: ${res.statusText}`)
   const data = await res.json()
 
   // FMP returns { "Error Message": "..." } on bad key / limit
-  if (data['Error Message']) throw new Error(data['Error Message'])
+  if (data && data['Error Message']) throw new Error(data['Error Message'])
   if (!data || (Array.isArray(data) && data.length === 0)) throw new Error('No data returned')
 
   await cacheSet(cacheKey, data)
   return data
 }
 
-// ── Raw data fetchers — return exactly what FMP sends ────
+// ── Raw data fetchers — matching stable endpoints ────
 
 export async function fetchProfile(ticker, apiKey) {
-  // Company name, sector, industry, exchange, description, beta, mktCap, price
-  return fmpFetch(`/v3/profile/${ticker}?`, apiKey)
+  // Suffix is dropping /v3/ and using symbol= parameter
+  return fmpFetch('profile', { symbol: ticker }, apiKey)
 }
 
 export async function fetchIncomeStatements(ticker, apiKey, limit = 5) {
-  // Revenue, grossProfit, ebitda, operatingIncome, netIncome, eps — annual
-  return fmpFetch(`/v3/income-statement/${ticker}?limit=${limit}&`, apiKey)
+  return fmpFetch('income-statement', { symbol: ticker, limit }, apiKey)
 }
 
 export async function fetchBalanceSheets(ticker, apiKey, limit = 5) {
-  // totalAssets, totalDebt, totalEquity, cashAndCashEquivalents, bookValuePerShare
-  return fmpFetch(`/v3/balance-sheet-statement/${ticker}?limit=${limit}&`, apiKey)
+  return fmpFetch('balance-sheet-statement', { symbol: ticker, limit }, apiKey)
 }
 
 export async function fetchCashFlowStatements(ticker, apiKey, limit = 5) {
-  // operatingCashFlow, capitalExpenditure, freeCashFlow, dividendsPaid
-  return fmpFetch(`/v3/cash-flow-statement/${ticker}?limit=${limit}&`, apiKey)
+  return fmpFetch('cash-flow-statement', { symbol: ticker, limit }, apiKey)
 }
 
 export async function fetchKeyMetrics(ticker, apiKey, limit = 5) {
-  // revenuePerShare, netIncomePerShare, operatingCashFlowPerShare, pe, pb
-  return fmpFetch(`/v3/key-metrics/${ticker}?limit=${limit}&`, apiKey)
+  return fmpFetch('key-metrics', { symbol: ticker, limit }, apiKey)
 }
 
 export async function fetchHistoricalPrice(ticker, apiKey, from, to) {
-  // OHLCV daily — used for technicals
+  // Note: Confirm endpoint availability under /stable/ rules or adjust accordingly
   const fromStr = from || getDateNDaysAgo(365)
   const toStr   = to   || getTodayStr()
-  return fmpFetch(`/v3/historical-price-full/${ticker}?from=${fromStr}&to=${toStr}&`, apiKey)
+  return fmpFetch('historical-price-full', { symbol: ticker, from: fromStr, to: toStr }, apiKey)
 }
 
 export async function fetchQuote(ticker, apiKey) {
-  // Current price, change, volume, marketCap, pe, eps, 52w high/low
-  return fmpFetch(`/v3/quote/${ticker}?`, apiKey)
+  return fmpFetch('quote', { symbol: ticker }, apiKey)
 }
 
 export async function fetchPeers(ticker, apiKey) {
-  // Array of peer tickers in same sector
-  return fmpFetch(`/v4/stock_peers?symbol=${ticker}&`, apiKey)
+  return fmpFetch('stock_peers', { symbol: ticker }, apiKey)
 }
 
 // ── Orchestrator: fetch all raw data for a ticker ────────
