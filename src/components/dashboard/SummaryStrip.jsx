@@ -177,7 +177,7 @@ export default function SummaryStrip({ onExpand, expanded }) {
         </PillarCard>
       </div>
 
-      {/* Combined verdict */
+      {/* Combined verdict */}
       <div className="card border-navy-700 bg-navy-900/60 py-3 px-4">
         <div className="flex items-start gap-3">
           <span className="text-xl mt-0.5">💡</span>
