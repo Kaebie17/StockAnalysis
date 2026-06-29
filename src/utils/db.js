@@ -1,9 +1,17 @@
 /**
- * src/utils/db.js — Raw IndexedDB, no Dexie
+ * src/utils/db.js — IndexedDB with eviction policy
+ *
+ * Stores: financials (ephemeral, evictable), profiles, swapStates
+ * Does NOT store: CSV data (lives in file system)
+ *
+ * Eviction: if total financial cache > 40MB, evict oldest-accessed entries
+ * Never evict: profiles, swapStates (user-generated)
  */
 
-const DB_NAME = 'stockval'
-const DB_VERSION = 1
+const DB_NAME    = 'stockval'
+const DB_VERSION = 2
+const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
+
 let db = null
 
 function openDB() {
@@ -13,10 +21,18 @@ function openDB() {
     req.onupgradeneeded = e => {
       const d = e.target.result
       if (!d.objectStoreNames.contains('financials')) {
-        d.createObjectStore('financials', { keyPath: 'key' })
+        const s = d.createObjectStore('financials', { keyPath: 'key' })
+        s.createIndex('lastAccessed', 'lastAccessed')
       }
       if (!d.objectStoreNames.contains('profiles')) {
         d.createObjectStore('profiles', { keyPath: 'name' })
+      }
+      if (!d.objectStoreNames.contains('swapStates')) {
+        d.createObjectStore('swapStates', { keyPath: 'ticker' })
+      }
+      // folderHandle store for File System Access API
+      if (!d.objectStoreNames.contains('fsHandles')) {
+        d.createObjectStore('fsHandles', { keyPath: 'id' })
       }
     }
     req.onsuccess = e => { db = e.target.result; resolve(db) }
@@ -27,9 +43,8 @@ function openDB() {
 async function txGet(store, key) {
   const d = await openDB()
   return new Promise((resolve, reject) => {
-    const tx = d.transaction(store, 'readonly')
-    const req = tx.objectStore(store).get(key)
-    req.onsuccess = () => resolve(req.result)
+    const req = d.transaction(store, 'readonly').objectStore(store).get(key)
+    req.onsuccess = () => resolve(req.result ?? null)
     req.onerror   = () => reject(req.error)
   })
 }
@@ -37,9 +52,8 @@ async function txGet(store, key) {
 async function txPut(store, value) {
   const d = await openDB()
   return new Promise((resolve, reject) => {
-    const tx = d.transaction(store, 'readwrite')
-    const req = tx.objectStore(store).put(value)
-    req.onsuccess = () => resolve(req.result)
+    const req = d.transaction(store, 'readwrite').objectStore(store).put(value)
+    req.onsuccess = () => resolve()
     req.onerror   = () => reject(req.error)
   })
 }
@@ -47,8 +61,7 @@ async function txPut(store, value) {
 async function txDelete(store, key) {
   const d = await openDB()
   return new Promise((resolve, reject) => {
-    const tx = d.transaction(store, 'readwrite')
-    const req = tx.objectStore(store).delete(key)
+    const req = d.transaction(store, 'readwrite').objectStore(store).delete(key)
     req.onsuccess = () => resolve()
     req.onerror   = () => reject(req.error)
   })
@@ -57,31 +70,66 @@ async function txDelete(store, key) {
 async function txGetAll(store) {
   const d = await openDB()
   return new Promise((resolve, reject) => {
-    const tx = d.transaction(store, 'readonly')
-    const req = tx.objectStore(store).getAll()
-    req.onsuccess = () => resolve(req.result)
+    const req = d.transaction(store, 'readonly').objectStore(store).getAll()
+    req.onsuccess = () => resolve(req.result ?? [])
     req.onerror   = () => reject(req.error)
   })
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
+// ─── Financial cache (ephemeral) ──────────────────────────────────────────────
 
-const TTL = 3600 * 1000 // 1 hour
+const TTL = 3600 * 1000  // 1 hour
 
 export async function getCached(ticker) {
   try {
     const rec = await txGet('financials', ticker.toUpperCase())
     if (!rec) return null
-    if (Date.now() - rec.timestamp > TTL) { await txDelete('financials', ticker.toUpperCase()); return null }
+    if (Date.now() - rec.timestamp > TTL) {
+      await txDelete('financials', ticker.toUpperCase())
+      return null
+    }
+    // Update last accessed for eviction ordering
+    await txPut('financials', { ...rec, lastAccessed: Date.now() })
     return rec.data
   } catch { return null }
 }
 
 export async function setCached(ticker, data) {
   try {
-    await txPut('financials', { key: ticker.toUpperCase(), data, timestamp: Date.now() })
+    const serialized = JSON.stringify(data)
+    const bytes      = new TextEncoder().encode(serialized).length
+
+    await txPut('financials', {
+      key:          ticker.toUpperCase(),
+      data,
+      timestamp:    Date.now(),
+      lastAccessed: Date.now(),
+      bytes
+    })
+
+    // Run eviction check asynchronously — don't block the caller
+    evictIfNeeded().catch(() => {})
   } catch { /* non-critical */ }
 }
+
+async function evictIfNeeded() {
+  try {
+    const all   = await txGetAll('financials')
+    const total = all.reduce((s, r) => s + (r.bytes || 0), 0)
+    if (total <= MAX_CACHE_BYTES) return
+
+    // Evict oldest-accessed entries until under limit
+    const sorted = [...all].sort((a, b) => (a.lastAccessed || 0) - (b.lastAccessed || 0))
+    let remaining = total
+    for (const rec of sorted) {
+      if (remaining <= MAX_CACHE_BYTES * 0.8) break  // evict to 80% capacity
+      await txDelete('financials', rec.key)
+      remaining -= (rec.bytes || 0)
+    }
+  } catch { /* non-critical */ }
+}
+
+// ─── Scoring profiles ─────────────────────────────────────────────────────────
 
 export async function saveProfile(name, config) {
   await txPut('profiles', { name, config, updatedAt: Date.now() })
@@ -99,4 +147,40 @@ export async function listProfiles() {
 
 export async function deleteProfile(name) {
   await txDelete('profiles', name)
+}
+
+// ─── Swap states (which fields user has swapped to CSV) ───────────────────────
+
+export async function saveSwapState(ticker, swaps) {
+  await txPut('swapStates', { ticker: ticker.toUpperCase(), swaps, updatedAt: Date.now() })
+}
+
+export async function loadSwapState(ticker) {
+  const rec = await txGet('swapStates', ticker.toUpperCase())
+  return rec?.swaps ?? {}
+}
+
+export async function clearSwapState(ticker) {
+  await txDelete('swapStates', ticker.toUpperCase())
+}
+
+// ─── File System folder handle (Chrome/Android persistence) ──────────────────
+
+export async function saveFolderHandle(handle) {
+  try {
+    await txPut('fsHandles', { id: 'stockvalFolder', handle })
+  } catch { /* IndexedDB can't always store FileSystemDirectoryHandle */ }
+}
+
+export async function loadFolderHandle() {
+  try {
+    const rec = await txGet('fsHandles', 'stockvalFolder')
+    if (!rec?.handle) return null
+    // Verify permission is still granted
+    const perm = await rec.handle.queryPermission({ mode: 'readwrite' })
+    if (perm === 'granted') return rec.handle
+    // Try to re-request
+    const req = await rec.handle.requestPermission({ mode: 'readwrite' })
+    return req === 'granted' ? rec.handle : null
+  } catch { return null }
 }
