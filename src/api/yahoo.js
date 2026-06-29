@@ -1,44 +1,38 @@
 /**
- * src/api/yahoo.js — client-side fetcher
- * All calls go through /api/yahoo (Vercel serverless).
- *
- * NOTE: chart and quote are fetched in parallel — chart doesn't need crumb
- * so it never blocks on the crumb fetch server-side.
- * timeseries endpoint removed — empty for Indian stocks, redundant for US.
+ * src/api/yahoo.js
+ * Fires chart + quote + fundamentals in parallel.
+ * Auto-appends .NS for bare Indian tickers via search.
  */
 
 const BASE = '/api/yahoo'
 
 async function yFetch(params) {
-  const qs = new URLSearchParams(params).toString()
-  const res = await fetch(`${BASE}?${qs}`)
-  const data = await res.json()
-  if (!res.ok) throw new Error(data.error || `Yahoo proxy error ${res.status}`)
+  const r = await fetch(`${BASE}?${new URLSearchParams(params)}`)
+  const data = await r.json()
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`)
   return data
 }
 
-/** Resolve bare Indian tickers to Yahoo symbol (e.g. RELIANCE → RELIANCE.NS) */
-async function resolveTicker(rawTicker) {
-  const ticker = rawTicker.trim().toUpperCase()
+// Known Indian stock exchanges on Yahoo — if search returns one of these, add .NS/.BO
+const INDIAN_EXCHANGES = new Set(['NSI', 'BSE', 'NSE', 'BOM'])
+
+async function resolveTicker(raw) {
+  const ticker = raw.trim().toUpperCase()
   if (ticker.includes('.')) return ticker  // already has suffix
 
   try {
     const data = await yFetch({ endpoint: 'search', query: ticker })
-    const quotes = (data?.quotes || []).filter(q => q.typeDisp === 'Equity')
-    // Prefer NSE (.NS), then BSE (.BO), then first equity result
+    const quotes = (data?.quotes || []).filter(q => q.typeDisp === 'Equity' || q.quoteType === 'EQUITY')
+    // Prefer exact symbol match first
+    const exact = quotes.find(q => q.symbol?.replace(/\.(NS|BO)$/, '') === ticker)
     const nse   = quotes.find(q => q.symbol?.endsWith('.NS'))
     const bse   = quotes.find(q => q.symbol?.endsWith('.BO'))
-    const first = quotes[0]
-    const resolved = (nse || bse || first)?.symbol
-    if (resolved) {
-      console.log(`[yahoo] Resolved "${ticker}" → "${resolved}"`)
-      return resolved
-    }
-  } catch (_) {
-    // Search failed — fall through to heuristic
-  }
+    const indian = quotes.find(q => INDIAN_EXCHANGES.has(q.exchange))
+    const resolved = (exact || nse || bse || indian || quotes[0])?.symbol
+    if (resolved) return resolved
+  } catch (_) {}
 
-  // Heuristic: pure alpha ticker <= 15 chars → try .NS first
+  // Fallback heuristic: pure alpha → try .NS
   if (/^[A-Z&-]{2,15}$/.test(ticker)) return `${ticker}.NS`
   return ticker
 }
@@ -46,26 +40,25 @@ async function resolveTicker(rawTicker) {
 export async function fetchYahoo(rawTicker) {
   const ticker = await resolveTicker(rawTicker)
 
-  // Fetch chart and quote in parallel
-  const [chartResult, quoteResult] = await Promise.allSettled([
-    yFetch({ endpoint: 'chart', ticker }),
-    yFetch({ endpoint: 'quote', ticker })
+  // All three in parallel — none block each other
+  const [chartRes, quoteRes, fundsRes] = await Promise.allSettled([
+    yFetch({ endpoint: 'chart',        ticker }),
+    yFetch({ endpoint: 'quote',        ticker }),
+    yFetch({ endpoint: 'fundamentals', ticker })
   ])
 
-  const chart = chartResult.status === 'fulfilled' ? chartResult.value : null
-  const quote = quoteResult.status === 'fulfilled' ? quoteResult.value : null
+  const chart  = chartRes.status  === 'fulfilled' ? chartRes.value  : null
+  const quote  = quoteRes.status  === 'fulfilled' ? quoteRes.value  : null
+  const funds  = fundsRes.status  === 'fulfilled' ? fundsRes.value  : null
 
-  if (!chart && !quote) {
-    const err = chartResult.reason?.message || quoteResult.reason?.message || 'No data'
-    throw new Error(`Yahoo fetch failed for "${ticker}": ${err}`)
+  if (!chart && !quote && !funds) {
+    const err = [chartRes, quoteRes, fundsRes].map(r => r.reason?.message).find(Boolean)
+    throw new Error(`Yahoo returned no data for "${ticker}": ${err}`)
   }
 
-  if (chartResult.status === 'rejected') {
-    console.warn('[yahoo] Chart failed:', chartResult.reason?.message)
-  }
-  if (quoteResult.status === 'rejected') {
-    console.warn('[yahoo] Quote failed:', quoteResult.reason?.message)
-  }
+  if (chartRes.status === 'rejected') console.warn('[yahoo] chart failed:', chartRes.reason?.message)
+  if (quoteRes.status === 'rejected') console.warn('[yahoo] quote failed:', quoteRes.reason?.message)
+  if (fundsRes.status === 'rejected') console.warn('[yahoo] fundamentals failed:', fundsRes.reason?.message)
 
-  return { ticker, chart, quote }
+  return { ticker, chart, quote, fundamentals: funds }
 }
