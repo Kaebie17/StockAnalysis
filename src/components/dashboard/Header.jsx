@@ -73,7 +73,7 @@ export default function Header() {
 
 function IdentityBar() {
   const { state, overrideStage } = useApp()
-  const { data, ratioResult, stage } = state
+  const { data, ratioResult, stage, validation } = state
   const stageInfo = STAGES[stage] || STAGES.ESTABLISHED
 
   const price     = ratioResult?.price
@@ -115,8 +115,15 @@ function IdentityBar() {
         {mcapStr && <span className="text-xs text-slate-400">Mkt Cap: {mcapStr}</span>}
         {data.meta?.sector && <span className="text-xs text-slate-500">Sector: {data.meta.sector}</span>}
         <span className="text-xs text-slate-600 capitalize">
-          {data.source === 'merged' ? '📡 Yahoo + Screener' : `📡 ${data.source}`}
+          {data.source === 'merged'
+            ? `📡 Yahoo + Screener (${(data.historyYears || 0) + 4}yr history)`
+            : '📡 Yahoo (4yr history)'}
         </span>
+        {validation && !validation.passed && validation.failedMetrics?.length > 0 && (
+          <span className="text-xs text-neutral" title={validation.message}>
+            ⚠️ History limited
+          </span>
+        )}
       </div>
 
       {/* Right: stage */}

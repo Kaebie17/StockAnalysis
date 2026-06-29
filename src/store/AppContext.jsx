@@ -14,7 +14,7 @@ import { applyCSVOverrides, swapField, autoLoadOverride } from '../utils/csv.js'
 const AppContext = createContext(null)
 
 const initial = {
-  status: 'idle', progress: null, error: null, ticker: '',
+  status: 'idle', progress: null, error: null, ticker: '', validation: null,
   data: null, ratioResult: null,
   valuation: null, technicals: null, quality: null,
   marketExpectation: null,
@@ -97,8 +97,11 @@ export function AppProvider({ children }) {
         return
       }
 
-      const { source, raw } = await fetchTicker(rawTicker, p => dispatch({ type: 'PROGRESS', payload: p }))
-      const data = normalize(source, raw)
+      const { source, raw, validation } = await fetchTicker(rawTicker, p => dispatch({ type: 'PROGRESS', payload: p }))
+      // Pass validated historical years to normalize so only those are merged
+      const data = source === 'merged'
+        ? normalize(source, raw, validation?.validHistoricalYears)
+        : normalize(source, raw)
 
       // Try auto-load CSV for this ticker (Chrome/Android)
       let finalData = data
@@ -113,7 +116,7 @@ export function AppProvider({ children }) {
       }
 
       const computed = computeAll(finalData, {}, {}, {})
-      const payload  = { data: finalData, ...computed, csvData, csvActive }
+      const payload  = { data: finalData, ...computed, csvData, csvActive, validation }
       await setCached(ticker, { data, ...computeAll(data, {}, {}, {}) })  // cache without CSV
       dispatch({ type: 'FETCH_SUCCESS', payload })
 

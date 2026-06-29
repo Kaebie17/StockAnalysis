@@ -79,17 +79,47 @@ module.exports = async function handler(req, res) {
 
       const quote   = quoteResult.status   === 'fulfilled' ? quoteResult.value   : null
       const summary = summaryResult.status === 'fulfilled' ? summaryResult.value : null
-      const history = historyResult.status === 'fulfilled' ? historyResult.value : null
-
-      if (!quote && !summary && !history) {
-        const err = [quoteResult, summaryResult, historyResult]
-          .map(r => r.reason?.message).find(Boolean) || 'No data returned'
-        return res.status(404).json({ error: `No data for "${ticker}": ${err}` })
-      }
+      let   history = historyResult.status === 'fulfilled' ? historyResult.value : null
 
       if (quoteResult.status   === 'rejected') console.warn('[yf2] quote failed:',   quoteResult.reason?.message)
       if (summaryResult.status === 'rejected') console.warn('[yf2] summary failed:', summaryResult.reason?.message)
       if (historyResult.status === 'rejected') console.warn('[yf2] history failed:', historyResult.reason?.message)
+
+      // Fallback: if yahoo-finance2 historical() failed, use Yahoo v8/finance/chart directly
+      // This endpoint needs no crumb and reliably returns 2yr OHLCV for all tickers
+      if (!history || history.length < 30) {
+        try {
+          const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=2y&interval=1d&includePrePost=false`
+          const chartRes = await fetch(chartUrl, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36' }
+          })
+          if (chartRes.ok) {
+            const chartData = await chartRes.json()
+            const result    = chartData?.chart?.result?.[0]
+            const ts        = result?.timestamp || []
+            const ohlcv     = result?.indicators?.quote?.[0] || {}
+            const adj       = result?.indicators?.adjclose?.[0]?.adjclose || []
+            if (ts.length > 0) {
+              history = ts.map((t, i) => ({
+                date:     new Date(t * 1000),
+                open:     ohlcv.open?.[i]   ?? null,
+                high:     ohlcv.high?.[i]   ?? null,
+                low:      ohlcv.low?.[i]    ?? null,
+                close:    ohlcv.close?.[i]  ?? null,
+                adjClose: adj[i]            ?? ohlcv.close?.[i] ?? null,
+                volume:   ohlcv.volume?.[i] ?? null
+              })).filter(d => d.close != null)
+              console.log(`[yf2] chart fallback: got ${history.length} days for ${ticker}`)
+            }
+          }
+        } catch(e) {
+          console.warn('[yf2] chart fallback failed:', e.message)
+        }
+      }
+
+      if (!quote && !summary && (!history || history.length === 0)) {
+        return res.status(404).json({ error: `No data for "${ticker}"` })
+      }
 
       res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate')
       return res.status(200).json({ ticker, quote, summary, history })

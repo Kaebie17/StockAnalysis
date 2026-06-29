@@ -8,10 +8,10 @@
  * ALL values stored with resolution metadata: { value, status, formula }
  */
 
-export function normalize(source, raw) {
+export function normalize(source, raw, validHistoricalYears = null) {
   if (source === 'yahoo')    return normalizeYahoo(raw)
   if (source === 'screener') return normalizeScreener(raw)
-  if (source === 'merged')   return normalizeMerged(raw)
+  if (source === 'merged')   return normalizeMerged(raw, validHistoricalYears)
   if (source === 'csv')      return raw
   throw new Error(`Unknown source: ${source}`)
 }
@@ -345,24 +345,45 @@ function normalizeScreener(raw) {
 
 // ─── Merged normalizer ────────────────────────────────────────────────────────
 
-function normalizeMerged({ yahoo, screener }) {
+function normalizeMerged({ yahoo, screener }, validHistoricalYears = null) {
   const y = normalizeYahoo(yahoo)
   const s = normalizeScreener(screener)
 
-  const income   = mergeByYear(y.incomeHistory,   s.incomeHistory,   mergeIncomeRow)
-  const balance  = mergeByYear(y.balanceHistory,  s.balanceHistory,  mergeBalanceRow)
-  const cashflow = mergeByYear(y.cashflowHistory, s.cashflowHistory, mergeCFRow)
+  // Only use Screener rows for years that:
+  // 1. Are NOT in Yahoo (pre-Yahoo historical years)
+  // 2. Have passed validation (validHistoricalYears list)
+  // Yahoo ALWAYS wins for overlapping years — never override with Screener
+  const filterScreener = (rows) => {
+    if (!rows) return []
+    if (!validHistoricalYears || validHistoricalYears.length === 0) return []
+    return rows.filter(r => validHistoricalYears.includes(r.year))
+  }
+
+  // Merge: Yahoo years first, then append validated Screener pre-Yahoo years
+  const mergeHistorical = (yArr, sArr, mergeFn) => {
+    const yahooRows    = yArr || []
+    const screenerRows = filterScreener(sArr)
+    // No overlap possible since screenerRows are pre-Yahoo years only
+    return [...screenerRows, ...yahooRows].sort((a, b) => a.year.localeCompare(b.year))
+  }
+
+  const income   = mergeHistorical(y.incomeHistory,   s.incomeHistory,   mergeIncomeRow)
+  const balance  = mergeHistorical(y.balanceHistory,  s.balanceHistory,  mergeBalanceRow)
+  const cashflow = mergeHistorical(y.cashflowHistory, s.cashflowHistory, mergeCFRow)
+
+  const histYears = validHistoricalYears?.length || 0
 
   return {
     ...y,
-    source: 'merged',
-    price:           y.price     ?? s.price,
-    marketCap:       y.marketCap ?? s.marketCap,
-    incomeHistory:   income,
-    balanceHistory:  balance,
+    source:         histYears > 0 ? 'merged' : 'yahoo',
+    historyYears:   histYears,  // how many extra years Screener added
+    price:          y.price     ?? s.price,
+    marketCap:      y.marketCap ?? s.marketCap,
+    incomeHistory:  income,
+    balanceHistory: balance,
     cashflowHistory: cashflow,
-    ttm:             mergeTTM(y.ttm, s.ttm),
-    sourceStats:     s.keyStats ?? {}
+    ttm:            mergeTTM(y.ttm, s.ttm),
+    sourceStats:    s.keyStats ?? {}
   }
 }
 
