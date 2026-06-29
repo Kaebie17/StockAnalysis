@@ -1,31 +1,19 @@
 /**
  * api/yahoo.js — Vercel serverless (CommonJS)
- * MUST use module.exports — Vercel /api/ functions are CommonJS by default
+ *
+ * Uses yahoo-finance2 npm package which handles cookies, crumbs,
+ * and session management automatically. Works reliably from any
+ * Node.js environment including Vercel serverless functions.
+ *
+ * Replaces broken manual crumb implementation entirely.
  */
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+const YahooFinance = require('yahoo-finance2').default
 
-async function getSessionCookieAndCrumb() {
-  const homeRes = await fetch('https://finance.yahoo.com', {
-    headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
-    redirect: 'follow'
-  })
-  const rawCookies = homeRes.headers.getSetCookie
-    ? homeRes.headers.getSetCookie()
-    : (homeRes.headers.get('set-cookie') || '').split(/,(?=[^ ])/)
-  const cookieStr = rawCookies.map(c => c.split(';')[0].trim()).filter(Boolean).join('; ')
-
-  const crumbRes = await fetch('https://query1.finance.yahoo.com/v1/finance/getCrumb', {
-    headers: {
-      'User-Agent': UA, 'Cookie': cookieStr,
-      'Accept': 'text/plain, */*', 'Referer': 'https://finance.yahoo.com/'
-    }
-  })
-  if (!crumbRes.ok) throw new Error(`Crumb fetch failed: ${crumbRes.status}`)
-  const crumb = (await crumbRes.text()).trim()
-  if (!crumb || crumb.includes('{')) throw new Error(`Invalid crumb`)
-  return { cookieStr, crumb }
-}
+const yf = new YahooFinance({
+  suppressNotices: ['yahooSurvey'],
+  validation: { logErrors: false }
+})
 
 module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -33,62 +21,84 @@ module.exports = async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end()
 
   const { ticker, endpoint, query } = req.query
-  if (!endpoint) return res.status(400).json({ error: 'Missing endpoint' })
 
   try {
-    // SEARCH — no auth needed
+    // ── SEARCH ───────────────────────────────────────────────────────────────
     if (endpoint === 'search') {
-      const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0`
-      const r = await fetch(url, { headers: { 'User-Agent': UA } })
-      return res.status(200).json(await r.json())
+      if (!query) return res.status(400).json({ error: 'Missing query' })
+      const results = await yf.search(query, {
+        quotesCount: 10,
+        newsCount: 0,
+        enableFuzzyQuery: false
+      })
+      res.setHeader('Cache-Control', 's-maxage=300')
+      return res.status(200).json(results)
     }
 
     if (!ticker) return res.status(400).json({ error: 'Missing ticker' })
 
-    // CHART — no auth needed
-    if (endpoint === 'chart') {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=2y&interval=1d&includePrePost=false&events=div%2Csplit`
-      const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } })
-      if (!r.ok) return res.status(r.status).json({ error: `Chart failed: ${r.status}` })
-      res.setHeader('Cache-Control', 's-maxage=900')
-      return res.status(200).json(await r.json())
-    }
+    // ── ALL DATA — single endpoint returns everything ──────────────────────
+    // Client calls /api/yahoo?endpoint=all&ticker=TCS.NS
+    // We run quote + quoteSummary + historical in parallel
+    if (endpoint === 'all') {
+      const [quoteResult, summaryResult, historyResult] = await Promise.allSettled([
 
-    // QUOTE (v7) — no auth needed, returns live price + ratios
-    if (endpoint === 'quote') {
-      const fields = 'regularMarketPrice,regularMarketVolume,regularMarketChangePercent,marketCap,trailingPE,forwardPE,priceToBook,trailingAnnualDividendYield,fiftyTwoWeekHigh,fiftyTwoWeekLow,averageDailyVolume3Month,sharesOutstanding,beta,currency,shortName,longName,exchange'
-      const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(ticker)}&fields=${fields}`
-      const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } })
-      if (!r.ok) return res.status(r.status).json({ error: `Quote failed: ${r.status}` })
-      res.setHeader('Cache-Control', 's-maxage=300')
-      return res.status(200).json(await r.json())
-    }
+        // Quote — live price, market data
+        yf.quote(ticker, {
+          fields: [
+            'regularMarketPrice', 'regularMarketChangePercent',
+            'regularMarketVolume', 'regularMarketDayHigh', 'regularMarketDayLow',
+            'marketCap', 'sharesOutstanding', 'trailingPE', 'forwardPE',
+            'priceToBook', 'trailingAnnualDividendYield',
+            'fiftyTwoWeekHigh', 'fiftyTwoWeekLow',
+            'averageDailyVolume3Month', 'beta',
+            'currency', 'shortName', 'longName', 'exchange', 'symbol'
+          ]
+        }),
 
-    // FUNDAMENTALS — needs crumb + cookie
-    if (endpoint === 'fundamentals') {
-      const { cookieStr, crumb } = await getSessionCookieAndCrumb()
-      const modules = [
-        'financialData', 'defaultKeyStatistics', 'summaryDetail', 'assetProfile',
-        'incomeStatementHistory', 'balanceSheetHistory', 'cashflowStatementHistory', 'earnings'
-      ].join('%2C')
-      const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=${modules}&crumb=${encodeURIComponent(crumb)}`
-      const r = await fetch(url, {
-        headers: {
-          'User-Agent': UA, 'Cookie': cookieStr,
-          'Accept': 'application/json', 'Referer': 'https://finance.yahoo.com/'
-        }
-      })
-      if (!r.ok) {
-        const txt = await r.text()
-        return res.status(r.status).json({ error: `Fundamentals failed: ${r.status}`, details: txt.slice(0, 300) })
+        // QuoteSummary — financial statements + TTM data
+        yf.quoteSummary(ticker, {
+          modules: [
+            'financialData',           // TTM: revenue, ebitda, margins, roe, d/e, fcf
+            'defaultKeyStatistics',    // shares, trailing eps, book value
+            'summaryDetail',           // pe, pb, dividend
+            'assetProfile',            // sector, industry
+            'incomeStatementHistory',  // 4yr annual income statements
+            'balanceSheetHistory',     // 4yr annual balance sheets
+            'cashflowStatementHistory',// 4yr annual cash flows
+            'earnings'                 // quarterly + annual EPS history
+          ]
+        }),
+
+        // Historical — 2 years of daily OHLCV for technicals
+        yf.historical(ticker, {
+          period1: new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000),
+          interval: '1d'
+        })
+      ])
+
+      const quote   = quoteResult.status   === 'fulfilled' ? quoteResult.value   : null
+      const summary = summaryResult.status === 'fulfilled' ? summaryResult.value : null
+      const history = historyResult.status === 'fulfilled' ? historyResult.value : null
+
+      if (!quote && !summary && !history) {
+        const err = [quoteResult, summaryResult, historyResult]
+          .map(r => r.reason?.message).find(Boolean) || 'No data returned'
+        return res.status(404).json({ error: `No data for "${ticker}": ${err}` })
       }
-      res.setHeader('Cache-Control', 's-maxage=3600')
-      return res.status(200).json(await r.json())
+
+      if (quoteResult.status   === 'rejected') console.warn('[yf2] quote failed:',   quoteResult.reason?.message)
+      if (summaryResult.status === 'rejected') console.warn('[yf2] summary failed:', summaryResult.reason?.message)
+      if (historyResult.status === 'rejected') console.warn('[yf2] history failed:', historyResult.reason?.message)
+
+      res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate')
+      return res.status(200).json({ ticker, quote, summary, history })
     }
 
     return res.status(400).json({ error: `Unknown endpoint: ${endpoint}` })
+
   } catch (err) {
-    console.error('[yahoo proxy]', err)
+    console.error('[yahoo2 proxy]', err.message)
     return res.status(500).json({ error: err.message })
   }
 }
