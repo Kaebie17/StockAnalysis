@@ -4,17 +4,19 @@
  * Converts raw source data into a standard shape.
  * ALL values stored with resolution metadata: { value, status, formula }
  * status: 'source' | 'derived' | 'positional' | 'cross-source' | 'ttm' | 'unavailable'
+ *
+ * Priority Hierarchical Order: CSV > Screener > Yahoo Finance
  */
 
 export function normalize(source, raw) {
-  if (source === 'yahoo')    return normalizeYahoo(raw)
+  if (source === 'csv')      return raw // CSV has the absolute highest priority and bypasses mergers
   if (source === 'screener') return normalizeScreener(raw)
+  if (source === 'yahoo')    return normalizeYahoo(raw)
   if (source === 'merged')   return normalizeMerged(raw)
-  if (source === 'csv')      return raw
   throw new Error(`Unknown source: ${source}`)
 }
 
-const CR = 1e7  // Crore to absolute INR
+const CR = 1e7  // Crore to absolute INR multiplier
 
 function src(value)                      { return { value: value != null ? Number(value) : null, status: 'source',       formula: null } }
 function derived(value, formula)         { return { value: value != null ? Number(value) : null, status: 'derived',      formula } }
@@ -29,103 +31,116 @@ function scaleCr(tagged) {
   return { value: numericalVal * CR, status: tagged.status || 'source', formula: tagged.formula || null }
 }
 
+/**
+ * Merges datasets prioritizing Screener data as the structural baseline,
+ * falling back to Yahoo metrics only if Screener values are missing or unavailable.
+ */
 export function normalizeMerged({ yahoo, screener }) {
-  const y = normalizeYahoo(yahoo || {})
   const s = normalizeScreener(screener || {})
+  const y = normalizeYahoo(yahoo || {})
 
-  const income   = mergeByYear(y.incomeHistory,   s.incomeHistory,   mergeIncomeRow)
-  const balance  = mergeByYear(y.balanceHistory,  s.balanceHistory,  mergeBalanceRow)
-  const cashflow = mergeByYear(y.cashflowHistory, s.cashflowHistory, mergeCFRow)
+  // Merge historical statements using Screener as primary and Yahoo as fallback
+  const income   = mergeByYear(s.incomeHistory,   y.incomeHistory,   mergeIncomeRow)
+  const balance  = mergeByYear(s.balanceHistory,  y.balanceHistory,  mergeBalanceRow)
+  const cashflow = mergeByYear(s.cashflowHistory, y.cashflowHistory, mergeCFRow)
 
   return {
-    ...y,
-    ticker: y.ticker || s.ticker,
-    name: y.name || s.name,
-    currency: y.currency || s.currency || 'INR',
+    ...s, // Anchor base properties to Screener
+    ticker: s.ticker || y.ticker,
+    name: s.name || y.name,
+    currency: s.currency || y.currency || 'INR',
     source: 'merged',
-    price:     y.price     ?? s.price,
-    marketCap: y.marketCap ?? s.marketCap,
-    shares:    y.shares    ?? s.shares,
+    price:     s.price     ?? y.price,
+    marketCap: s.marketCap ?? y.marketCap,
+    shares:    s.shares    ?? y.shares,
     incomeHistory:  income,
     balanceHistory: balance,
     cashflowHistory: cashflow,
-    ttm: mergeTTM(y.ttm, s.ttm),
-    meta: { ...(s.meta || {}), ...(y.meta || {}) },
-    sourceStats: s.keyStats || {}
+    ttm: mergeTTM(s.ttm, y.ttm),
+    meta: { ...(y.meta || {}), ...(s.meta || {}) },
+    sourceStats: s.keyStats || y.sourceStats || {}
   }
 }
 
-function mergeByYear(yArr, sArr, mergeFn) {
+function mergeByYear(primaryArr, fallbackArr, mergeFn) {
   const map = {}
-  for (const r of (sArr || [])) if (r.year) map[r.year] = r
-  for (const r of (yArr || [])) {
+  for (const r of (fallbackArr || [])) {
+    if (r.year) map[r.year] = r
+  }
+  for (const r of (primaryArr || [])) {
     if (!r.year) continue
     map[r.year] = map[r.year] ? mergeFn(r, map[r.year]) : r
   }
   return Object.values(map).sort((a, b) => String(a.year).localeCompare(String(b.year)))
 }
 
-function mergeIncomeRow(y, s) {
-  const pick = (yf, sf, name) => {
-    if (yf?.value != null) return yf
-    if (sf?.value != null) return { ...sf, status: 'cross-source', formula: `From Screener (Yahoo missing ${name})` }
+function mergeIncomeRow(primary, fallback) {
+  const pick = (pField, fField, name) => {
+    if (pField?.value != null && pField.status !== 'unavailable') return pField
+    if (fField?.value != null && fField.status !== 'unavailable') {
+      return { ...fField, status: 'cross-source', formula: `From Yahoo (Screener missing ${name})` }
+    }
     return unavailable()
   }
   return {
-    year: y.year || s.year,
-    revenue:         pick(y.revenue,         s.revenue,         'revenue'),
-    expenses:        pick(y.expenses,        s.expenses,        'expenses'),
-    operatingProfit: pick(y.operatingProfit, s.operatingProfit, 'operatingProfit'),
-    ebitda:          pick(y.ebitda,          s.ebitda,          'ebitda'),
-    depreciation:    pick(y.depreciation,    s.depreciation,    'depreciation'),
-    interest:        pick(y.interest,        s.interest,        'interest'),
-    otherIncome:     pick(y.otherIncome,     s.otherIncome,     'otherIncome'),
-    netProfit:       pick(y.netProfit,       s.netProfit,       'netProfit'),
-    eps:             pick(y.eps,             s.eps,             'eps'),
+    year: primary.year || fallback.year,
+    revenue:         pick(primary.revenue,         fallback.revenue,         'revenue'),
+    expenses:        pick(primary.expenses,        fallback.expenses,        'expenses'),
+    operatingProfit: pick(primary.operatingProfit, fallback.operatingProfit, 'operatingProfit'),
+    ebitda:          pick(primary.ebitda,          fallback.ebitda,          'ebitda'),
+    depreciation:    pick(primary.depreciation,    fallback.depreciation,    'depreciation'),
+    interest:        pick(primary.interest,        fallback.interest,        'interest'),
+    otherIncome:     pick(primary.otherIncome,     fallback.otherIncome,     'otherIncome'),
+    netProfit:       pick(primary.netProfit,       fallback.netProfit,       'netProfit'),
+    eps:             pick(primary.eps,             fallback.eps,             'eps'),
   }
 }
 
-function mergeBalanceRow(y, s) {
-  const pick = (yf, sf, name) => {
-    if (yf?.value != null) return yf
-    if (sf?.value != null) return { ...sf, status: 'cross-source', formula: `From Screener (Yahoo missing ${name})` }
+function mergeBalanceRow(primary, fallback) {
+  const pick = (pField, fField, name) => {
+    if (pField?.value != null && pField.status !== 'unavailable') return pField
+    if (fField?.value != null && fField.status !== 'unavailable') {
+      return { ...fField, status: 'cross-source', formula: `From Yahoo (Screener missing ${name})` }
+    }
     return unavailable()
   }
   return {
-    year: y.year || s.year,
-    equityCapital:   pick(y.equityCapital,    s.equityCapital,    'equityCapital'),
-    reserves:        pick(y.reserves,         s.reserves,         'reserves'),
-    totalEquity:     pick(y.totalEquity,      s.totalEquity,      'totalEquity'),
-    totalDebt:       pick(y.totalDebt,        s.totalDebt,        'totalDebt'),
-    totalAssets:     pick(y.totalAssets,      s.totalAssets,      'totalAssets'),
-    totalLiabilities:pick(y.totalLiabilities, s.totalLiabilities, 'totalLiabilities'),
-    fixedAssets:     pick(y.fixedAssets,      s.fixedAssets,      'fixedAssets'),
-    investments:     pick(y.investments,      s.investments,      'investments'),
-    cash:            pick(y.cash,             s.cash,             'cash'),
+    year: primary.year || fallback.year,
+    equityCapital:   pick(primary.equityCapital,    fallback.equityCapital,    'equityCapital'),
+    reserves:        pick(primary.reserves,         fallback.reserves,         'reserves'),
+    totalEquity:     pick(primary.totalEquity,      fallback.totalEquity,      'totalEquity'),
+    totalDebt:       pick(primary.totalDebt,        fallback.totalDebt,        'totalDebt'),
+    totalAssets:     pick(primary.totalAssets,      fallback.totalAssets,      'totalAssets'),
+    totalLiabilities:pick(primary.totalLiabilities, fallback.totalLiabilities, 'totalLiabilities'),
+    fixedAssets:     pick(primary.fixedAssets,      fallback.fixedAssets,      'fixedAssets'),
+    investments:     pick(primary.investments,      fallback.investments,      'investments'),
+    cash:            pick(primary.cash,             fallback.cash,             'cash'),
   }
 }
 
-function mergeCFRow(y, s) {
-  const pick = (yf, sf, name) => {
-    if (yf?.value != null) return yf
-    if (sf?.value != null) return { ...sf, status: 'cross-source', formula: `From Screener (Yahoo missing ${name})` }
+function mergeCFRow(primary, fallback) {
+  const pick = (pField, fField, name) => {
+    if (pField?.value != null && pField.status !== 'unavailable') return pField
+    if (fField?.value != null && fField.status !== 'unavailable') {
+      return { ...fField, status: 'cross-source', formula: `From Yahoo (Screener missing ${name})` }
+    }
     return unavailable()
   }
   return {
-    year: y.year || s.year,
-    operatingCF:  pick(y.operatingCF,  s.operatingCF,  'operatingCF'),
-    investingCF:  pick(y.investingCF,  s.investingCF,  'investingCF'),
-    financingCF:  pick(y.financingCF,  s.financingCF,  'financingCF'),
-    freeCashFlow: pick(y.freeCashFlow, s.freeCashFlow, 'freeCashFlow'),
+    year: primary.year || fallback.year,
+    operatingCF:  pick(primary.operatingCF,  fallback.operatingCF,  'operatingCF'),
+    investingCF:  pick(primary.investingCF,  fallback.investingCF,  'investingCF'),
+    financingCF:  pick(primary.financingCF,  fallback.financingCF,  'financingCF'),
+    freeCashFlow: pick(primary.freeCashFlow, fallback.freeCashFlow, 'freeCashFlow'),
   }
 }
 
-function mergeTTM(y, s) {
-  if (!y) return s || {}; if (!s) return y || {}
-  const out = { ...y }
-  for (const k of Object.keys(s ?? {})) {
-    if (out[k]?.value == null && s[k]?.value != null) {
-      out[k] = s[k]
+function mergeTTM(primary, fallback) {
+  if (!primary) return fallback || {}; if (!fallback) return primary || {}
+  const out = { ...primary }
+  for (const k of Object.keys(fallback ?? {})) {
+    if ((out[k]?.value == null || out[k]?.status === 'unavailable') && fallback[k]?.value != null) {
+      out[k] = { ...fallback[k], status: 'cross-source', formula: 'TTM from Yahoo fallback' }
     }
   }
   return out
@@ -270,15 +285,22 @@ export function normalizeScreener(raw) {
 
   const bal = (raw.balanceHistory || []).map(r => ({
     year:             r.year,
+    equityCapital:    scaleCr(wrapScreenerField(r.equityCapital)),
+    reserves:         scaleCr(wrapScreenerField(r.reserves)),
     totalEquity:      scaleCr(wrapScreenerField(r.totalEquity)),
     totalDebt:        scaleCr(wrapScreenerField(r.totalDebt)),
     totalAssets:      scaleCr(wrapScreenerField(r.totalAssets)),
+    totalLiabilities: scaleCr(wrapScreenerField(r.totalLiabilities)),
+    fixedAssets:      scaleCr(wrapScreenerField(r.fixedAssets)),
+    investments:      scaleCr(wrapScreenerField(r.investments)),
     cash:             scaleCr(wrapScreenerField(r.cash)),
   }))
 
   const cf = (raw.cashflowHistory || []).map(r => ({
     year:         r.year,
     operatingCF:  scaleCr(wrapScreenerField(r.operatingCF)),
+    investingCF:  scaleCr(wrapScreenerField(r.investingCF)),
+    financingCF:  scaleCr(wrapScreenerField(r.financingCF)),
     freeCashFlow: scaleCr(wrapScreenerField(r.freeCashFlow)),
   }))
 
@@ -293,13 +315,28 @@ export function normalizeScreener(raw) {
 
   return {
     ticker: raw.ticker, name: raw.name || raw.ticker, source: 'screener', currency: 'INR', price, marketCap, shares: null,
-    incomeHistory: inc, balanceHistory: bal, cashflowHistory: cf,
+    priceHistory: [], incomeHistory: inc, balanceHistory: bal, cashflowHistory: cf,
     ttm: {
-      revenue: latestInc.revenue || unavailable(), netProfit: latestInc.netProfit || unavailable(), ebitda: latestInc.ebitda || unavailable(),
-      operatingCF: latestCF.operatingCF || unavailable(), freeCashFlow: latestCF.freeCashFlow || unavailable(),
-      totalDebt: latestBal.totalDebt || unavailable(), cash: latestBal.cash || unavailable(),
+      revenue:       latestInc.revenue || unavailable(),
+      netProfit:     latestInc.netProfit || unavailable(),
+      ebitda:        latestInc.ebitda || unavailable(),
+      operatingCF:   latestCF.operatingCF || unavailable(),
+      freeCashFlow:  latestCF.freeCashFlow || unavailable(),
+      totalDebt:     latestBal.totalDebt || unavailable(),
+      cash:          latestBal.cash || unavailable(),
+      grossMargins:  unavailable(),
+      profitMargins: unavailable(),
+      ebitdaMargins: unavailable(),
     },
-    meta: { pe: ks['stockpe']?.value, pb: ks['pricetobook']?.value, divYield: ks['dividendyield']?.value }
+    meta: {
+      sector: null, industry: null, website: null, exchange: 'NSE/BSE',
+      pe:      ks['stockpe']?.value   ?? null,
+      pb:      ks['pricetobook']?.value ?? null,
+      divYield: ks['dividendyield']?.value ?? null,
+    },
+    keyStats: raw.keyStats,
+    sourceStats: raw.keyStats || {},
+    parserStatus: raw.parserStatus
   }
 }
 
