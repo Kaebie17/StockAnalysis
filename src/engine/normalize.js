@@ -264,80 +264,107 @@ export function normalizeYahoo(raw) {
 export function normalizeScreener(raw) {
   if (!raw) return { ttm: {}, incomeHistory: [], balanceHistory: [], cashflowHistory: [] }
   
-  const wrapScreenerField = (f) => {
-    if (f && typeof f === 'object' && 'value' in f) return src(f.value)
-    if (typeof f === 'number') return src(f)
-    return unavailable()
-  }
+  const CR = 1e7; // Multiplier to scale Crores to absolute INR
 
-  const inc = (raw.incomeHistory  || []).map(r => ({
+  // Helper that safely preserves the server-side resolution status while multiplying by Crore
+  const adaptAndScaleCr = (fieldObj) => {
+    if (!fieldObj || fieldObj.value == null || fieldObj.status === 'unavailable') {
+      return { value: null, status: 'unavailable', formula: null };
+    }
+    return {
+      value: Number(fieldObj.value) * CR,
+      status: fieldObj.status || 'source',
+      formula: fieldObj.formula || null
+    };
+  };
+
+  // 1. Map Income History
+  const inc = (raw.incomeHistory || []).map(r => ({
     year:            r.year,
-    revenue:         scaleCr(wrapScreenerField(r.revenue)),
-    expenses:        scaleCr(wrapScreenerField(r.expenses)),
-    operatingProfit: scaleCr(wrapScreenerField(r.operatingProfit)),
-    ebitda:          scaleCr(wrapScreenerField(r.ebitda)),
-    depreciation:    scaleCr(wrapScreenerField(r.depreciation)),
-    interest:        scaleCr(wrapScreenerField(r.interest)),
-    otherIncome:     scaleCr(wrapScreenerField(r.otherIncome)),
-    netProfit:       scaleCr(wrapScreenerField(r.netProfit)),
-    eps:             r.eps != null ? wrapScreenerField(r.eps) : unavailable(),
-  }))
+    revenue:         adaptAndScaleCr(r.revenue),
+    expenses:        adaptAndScaleCr(r.expenses),
+    operatingProfit: adaptAndScaleCr(r.operatingProfit),
+    ebitda:          adaptAndScaleCr(r.ebitda),
+    depreciation:    adaptAndScaleCr(r.depreciation),
+    interest:        adaptAndScaleCr(r.interest),
+    otherIncome:     adaptAndScaleCr(r.otherIncome),
+    profitBeforeTax: adaptAndScaleCr(r.profitBeforeTax),
+    netProfit:       adaptAndScaleCr(r.netProfit),
+    eps:             r.eps && r.eps.value != null ? { ...r.eps } : { value: null, status: 'unavailable', formula: null } // EPS is not multiplied by Crore
+  }));
 
+  // 2. Map Balance History
   const bal = (raw.balanceHistory || []).map(r => ({
     year:             r.year,
-    equityCapital:    scaleCr(wrapScreenerField(r.equityCapital)),
-    reserves:         scaleCr(wrapScreenerField(r.reserves)),
-    totalEquity:      scaleCr(wrapScreenerField(r.totalEquity)),
-    totalDebt:        scaleCr(wrapScreenerField(r.totalDebt)),
-    totalAssets:      scaleCr(wrapScreenerField(r.totalAssets)),
-    totalLiabilities: scaleCr(wrapScreenerField(r.totalLiabilities)),
-    fixedAssets:      scaleCr(wrapScreenerField(r.fixedAssets)),
-    investments:      scaleCr(wrapScreenerField(r.investments)),
-    cash:             scaleCr(wrapScreenerField(r.cash)),
-  }))
+    equityCapital:    adaptAndScaleCr(r.equityCapital),
+    reserves:         adaptAndScaleCr(r.reserves),
+    totalEquity:      adaptAndScaleCr(r.totalEquity),
+    totalDebt:        adaptAndScaleCr(r.totalDebt),
+    totalAssets:      adaptAndScaleCr(r.totalAssets),
+    totalLiabilities: adaptAndScaleCr(r.totalLiabilities),
+    fixedAssets:      adaptAndScaleCr(r.fixedAssets),
+    investments:      adaptAndScaleCr(r.investments),
+  }));
 
+  // 3. Map Cash Flow History
   const cf = (raw.cashflowHistory || []).map(r => ({
     year:         r.year,
-    operatingCF:  scaleCr(wrapScreenerField(r.operatingCF)),
-    investingCF:  scaleCr(wrapScreenerField(r.investingCF)),
-    financingCF:  scaleCr(wrapScreenerField(r.financingCF)),
-    freeCashFlow: scaleCr(wrapScreenerField(r.freeCashFlow)),
-  }))
+    operatingCF:  adaptAndScaleCr(r.operatingCF),
+    investingCF:  adaptAndScaleCr(r.investingCF),
+    financingCF:  adaptAndScaleCr(r.financingCF),
+    freeCashFlow: adaptAndScaleCr(r.freeCashFlow),
+  }));
 
-  const ks       = raw.keyStats || {}
-  const price    = ks['currentprice']?.value  ?? ks['price']?.value
-  const mcapCr   = ks['marketcap']?.value
-  const marketCap = mcapCr != null ? mcapCr * CR : null
+  // 4. Handle Key Live Stats (Market Cap & Current Price)
+  const ks = raw.keyStats || {};
+  
+  // Safely find pricing keys from your keyStats parser
+  const rawPrice = ks['currentprice']?.value ?? ks['stockprice']?.value ?? null;
+  const rawMcap  = ks['marketcap']?.value ?? null;
 
-  const latestInc = inc[inc.length - 1] || {}
-  const latestBal = bal[bal.length - 1] || {}
-  const latestCF  = cf[cf.length - 1]  || {}
+  const price     = rawPrice != null ? Number(rawPrice) : null;
+  const marketCap = rawMcap != null ? Number(rawMcap) * CR : null;
+
+  // Extract the latest year's records to formulate the baseline TTM object
+  const latestInc = inc[inc.length - 1] || {};
+  const latestBal = bal[bal.length - 1] || {};
+  const latestCF  = cf[cf.length - 1]  || {};
 
   return {
-    ticker: raw.ticker, name: raw.name || raw.ticker, source: 'screener', currency: 'INR', price, marketCap, shares: null,
-    priceHistory: [], incomeHistory: inc, balanceHistory: bal, cashflowHistory: cf,
+    ticker: raw.ticker || '',
+    name: raw.name || raw.ticker || '',
+    source: 'screener',
+    currency: 'INR',
+    price,
+    marketCap,
+    shares: marketCap && price ? (marketCap / price) : null,
+    priceHistory: [],
+    incomeHistory: inc,
+    balanceHistory: bal,
+    cashflowHistory: cf,
     ttm: {
-      revenue:       latestInc.revenue || unavailable(),
-      netProfit:     latestInc.netProfit || unavailable(),
-      ebitda:        latestInc.ebitda || unavailable(),
-      operatingCF:   latestCF.operatingCF || unavailable(),
-      freeCashFlow:  latestCF.freeCashFlow || unavailable(),
-      totalDebt:     latestBal.totalDebt || unavailable(),
-      cash:          latestBal.cash || unavailable(),
-      grossMargins:  unavailable(),
-      profitMargins: unavailable(),
-      ebitdaMargins: unavailable(),
+      revenue:       latestInc.revenue         || { value: null, status: 'unavailable', formula: null },
+      netProfit:     latestInc.netProfit       || { value: null, status: 'unavailable', formula: null },
+      ebitda:        latestInc.ebitda          || { value: null, status: 'unavailable', formula: null },
+      operatingCF:   latestCF.operatingCF      || { value: null, status: 'unavailable', formula: null },
+      freeCashFlow:  latestCF.freeCashFlow     || { value: null, status: 'unavailable', formula: null },
+      totalDebt:     latestBal.totalDebt       || { value: null, status: 'unavailable', formula: null },
+      cash:          latestBal.cash            || { value: null, status: 'unavailable', formula: null },
+      grossMargins:  { value: null, status: 'unavailable', formula: null },
+      profitMargins: { value: null, status: 'unavailable', formula: null },
+      ebitdaMargins: { value: null, status: 'unavailable', formula: null }
     },
     meta: {
-      sector: null, industry: null, website: null, exchange: 'NSE/BSE',
-      pe:      ks['stockpe']?.value   ?? null,
-      pb:      ks['pricetobook']?.value ?? null,
+      sector: null,
+      industry: null,
+      exchange: 'NSE/BSE',
+      pe:       ks['stockpe']?.value       ?? null,
+      pb:       ks['pricetobook']?.value   ?? null,
       divYield: ks['dividendyield']?.value ?? null,
     },
-    keyStats: raw.keyStats,
-    sourceStats: raw.keyStats || {},
-    parserStatus: raw.parserStatus
-  }
+    sourceStats: ks,
+    parserStatus: raw.parserStatus || { degraded: false, missingCore: [] }
+  };
 }
 
 function rv(v) { return v != null && typeof v === 'object' && 'raw' in v ? v.raw : (typeof v === 'number' ? v : null) }

@@ -4,7 +4,13 @@
  */
 
 export async function fetchScreener(ticker, consolidated = true) {
-  const params = new URLSearchParams({ ticker, consolidated: String(consolidated) })
+  // Appending a dynamic timestamp cache-buster to completely bypass Vercel's s-maxage caching
+  const params = new URLSearchParams({ 
+    ticker, 
+    consolidated: String(consolidated),
+    _cb: String(Date.now()) 
+  })
+  
   const res = await fetch(`/api/screener?${params}`)
 
   if (res.status === 404) {
