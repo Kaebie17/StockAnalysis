@@ -255,7 +255,7 @@ function normalizeYahoo({ ticker, chart, quote, fundamentals }) {
     grossProfit:      rv(fin.grossProfits)      != null ? src(rv(fin.grossProfits))      : unavailable(),
     ebitda:           rv(fin.ebitda)            != null ? src(rv(fin.ebitda))            : unavailable(),
     netProfit:        rv(fin.netIncomeToCommon) != null ? src(rv(fin.netIncomeToCommon)) : unavailable(),
-    eps:              rv(fin.trailingEps) ?? rv(ks.trailingEps) != null
+    eps:              (rv(fin.trailingEps) ?? rv(ks.trailingEps)) != null
                         ? src(rv(fin.trailingEps) ?? rv(ks.trailingEps)) : unavailable(),
     operatingCF:      rv(fin.operatingCashflow) != null ? src(rv(fin.operatingCashflow)) : unavailable(),
     freeCashFlow:     rv(fin.freeCashflow)       != null ? src(rv(fin.freeCashflow))      : unavailable(),
@@ -270,6 +270,75 @@ function normalizeYahoo({ ticker, chart, quote, fundamentals }) {
     currentRatio:     rv(fin.currentRatio)       != null ? ttm(rv(fin.currentRatio))      : unavailable(),
     revenueGrowth:    rv(fin.revenueGrowth)      != null ? ttm(rv(fin.revenueGrowth))     : unavailable(),
     earningsGrowth:   rv(fin.earningsGrowth)     != null ? ttm(rv(fin.earningsGrowth))    : unavailable(),
+  }
+
+  // ── Synthesize from TTM when statement history is sparse ──────────────────
+  // Yahoo often returns limited statement history for Indian stocks.
+  // Fall back to TTM financialData fields to ensure valuation models have data.
+  const ttmRevenue = rv(fin.totalRevenue)
+  const ttmEbitda  = rv(fin.ebitda)
+  const ttmNP      = rv(fin.netIncomeToCommon)
+  const ttmEps     = rv(fin.trailingEps) ?? rv(ks.trailingEps)
+  const ttmOpCF    = rv(fin.operatingCashflow)
+  const ttmFCF     = rv(fin.freeCashflow)
+  const ttmDebt    = rv(fin.totalDebt)
+  const ttmCash    = rv(fin.totalCash)
+  const ttmROE     = rv(fin.returnOnEquity)  // fraction e.g. 0.106
+  const ttmDE      = rv(fin.debtToEquity)    // e.g. 33.5 (= D/E as %)
+  const ttmOpM     = rv(fin.operatingMargins)
+
+  if (incomeHistory.length === 0 && (ttmRevenue || ttmNP)) {
+    const yr = new Date().getFullYear().toString()
+    incomeHistory.push({
+      year:            yr,
+      revenue:         ttmRevenue != null ? src(ttmRevenue)                         : unavailable(),
+      expenses:        unavailable(),
+      grossProfit:     rv(fin.grossProfits) != null ? src(rv(fin.grossProfits))     : unavailable(),
+      operatingProfit: ttmRevenue && ttmOpM ? derived(ttmRevenue * ttmOpM, 'Revenue × Operating Margin (TTM)') : unavailable(),
+      ebitda:          ttmEbitda  != null ? src(ttmEbitda)                          : unavailable(),
+      depreciation:    unavailable(),
+      interest:        unavailable(),
+      otherIncome:     unavailable(),
+      netProfit:       ttmNP      != null ? src(ttmNP)                              : unavailable(),
+      eps:             ttmEps     != null ? src(ttmEps)                             : unavailable(),
+    })
+  }
+
+  if (balanceHistory.length === 0 && (ttmDebt != null || ttmDE != null)) {
+    // Derive totalEquity from D/E ratio: equity = debt / (D/E)
+    // Yahoo D/E for Indian stocks is typically given as percentage e.g. 33.5 means 33.5%
+    // Sanity check: if D/E > 10, it's likely a % not a ratio
+    const deRatio    = ttmDE != null ? (ttmDE > 10 ? ttmDE / 100 : ttmDE) : null
+    const equityFromDE  = ttmDebt && deRatio ? ttmDebt / deRatio : null
+    // Alternatively derive from ROE: equity = netProfit / ROE
+    const equityFromROE = ttmNP && ttmROE && ttmROE > 0 ? ttmNP / ttmROE : null
+    const equity = equityFromDE ?? equityFromROE
+
+    const yr = new Date().getFullYear().toString()
+    balanceHistory.push({
+      year:            yr,
+      equityCapital:   unavailable(),
+      reserves:        unavailable(),
+      totalEquity:     equity != null ? derived(equity, deRatio ? 'Total Debt ÷ D/E Ratio (TTM)' : 'Net Profit ÷ ROE (TTM)') : unavailable(),
+      totalDebt:       ttmDebt != null ? src(ttmDebt)   : unavailable(),
+      totalAssets:     unavailable(),
+      totalLiabilities: unavailable(),
+      fixedAssets:     unavailable(),
+      investments:     unavailable(),
+      cash:            ttmCash != null ? src(ttmCash)   : unavailable(),
+    })
+  }
+
+  if (cashflowHistory.length === 0 && (ttmOpCF || ttmFCF)) {
+    const yr = new Date().getFullYear().toString()
+    const fcfDerived = ttmOpCF && !ttmFCF ? derived(ttmOpCF * 0.7, 'Operating CF × 0.7 (proxy)') : null
+    cashflowHistory.push({
+      year:         yr,
+      operatingCF:  ttmOpCF != null ? src(ttmOpCF)         : unavailable(),
+      investingCF:  unavailable(),
+      financingCF:  unavailable(),
+      freeCashFlow: ttmFCF  != null ? src(ttmFCF) : fcfDerived ?? unavailable(),
+    })
   }
 
   return {

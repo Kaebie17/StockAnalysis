@@ -103,6 +103,21 @@ module.exports = async function handler(req, res) {
     if (r.status === 404) return res.status(404).json({ error: `"${ticker}" not found on Screener.in` })
     if (!r.ok) return res.status(r.status).json({ error: `Screener returned ${r.status}` })
     html = await r.text()
+
+    // Detect Cloudflare challenge page - screener.in uses CF protection
+    // CF challenge has no profit-loss section and shows "Just a moment" or cf-browser-verification
+    const isCloudflare = html.includes('cf-browser-verification')
+      || html.includes('Just a moment')
+      || html.includes('_cf_chl_')
+      || html.includes('challenge-platform')
+      || !html.includes('id="profit-loss"')  // valid screener page always has this
+
+    if (isCloudflare) {
+      console.warn('[screener] Cloudflare challenge detected for', ticker)
+      return res.status(503).json({
+        error: `Screener.in blocked this request (Cloudflare). Data will come from Yahoo Finance only.`
+      })
+    }
   } catch (err) {
     return res.status(500).json({ error: `Network error: ${err.message}` })
   }

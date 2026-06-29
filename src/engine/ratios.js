@@ -35,7 +35,15 @@ export function calcRatios(data) {
   const depreciation= val(latestI.depreciation)
   const interest    = val(latestI.interest)
   const netProfit   = val(latestI.netProfit)   ?? val(ttm?.netProfit)
-  const totalEquity = val(latestB.totalEquity)
+  // totalEquity: statement → derive from TTM D/E ratio → derive from TTM ROE
+  const rawEquity = val(latestB.totalEquity)
+  const ttmDebt2  = val(latestB.totalDebt) ?? val(ttm?.totalDebt) ?? 0
+  const ttmDE     = val(ttm?.debtToEquity)
+  const deRatio   = ttmDE != null ? (ttmDE > 10 ? ttmDE / 100 : ttmDE) : null
+  const equityFromDE  = ttmDebt2 > 0 && deRatio ? ttmDebt2 / deRatio : null
+  const equityFromROE = val(ttm?.netProfit) && val(ttm?.roe) && val(ttm?.roe) > 0
+    ? val(ttm.netProfit) / val(ttm.roe) : null
+  const totalEquity = rawEquity ?? equityFromDE ?? equityFromROE
   const totalDebt   = val(latestB.totalDebt)   ?? val(ttm?.totalDebt) ?? 0
   const cash        = val(latestB.cash)        ?? val(ttm?.cash)       ?? 0
   const opCF        = val(latestCF.operatingCF) ?? val(ttm?.operatingCF)
