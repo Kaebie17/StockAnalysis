@@ -1,17 +1,36 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { fmtPrice, fmtPct, fmtPctPlain, fmtMultiple } from '../../utils/format.js'
+import { fmtPct, fmtMultiple, fmtPctPlain } from '../../utils/format.js'
+
+const MODEL_META = {
+  dcf:          { name: 'DCF (10yr)',        weight: 'High' },
+  pe:           { name: 'P/E Based',         weight: 'Medium' },
+  evEbitda:     { name: 'EV/EBITDA',         weight: 'Medium' },
+  pb:           { name: 'Price / Book',      weight: 'Low' },
+  ps:           { name: 'Price / Sales',     weight: 'Low' },
+  graham:       { name: 'Graham Number',     weight: 'Low' },
+  evGrossProfit:{ name: 'EV / Gross Profit', weight: 'Low' }
+}
+
+function ProgressBar({ value, max, color = 'bg-accent' }) {
+  const pct = Math.min(Math.max((value / max) * 100, 0), 100)
+  return (
+    <div className="h-1.5 bg-navy-800 rounded-full overflow-hidden w-24">
+      <div className={`h-full ${color} rounded-full`} style={{ width: `${pct}%` }} />
+    </div>
+  )
+}
 
 export default function ValuationPanel({ open, onClose }) {
   const { state, recalc } = useApp()
   const { valuation, ratios, data } = state
-
+  const [showSliders, setShowSliders] = useState(false)
   const [assumptions, setAssumptions] = useState(valuation?.assumptions || {})
 
   if (!open || !valuation) return null
 
-  const cur = data?.currency || 'USD'
-  const sym = cur === 'INR' ? '₹' : '$'
+  const cur = data?.currency === 'INR' ? '₹' : '$'
+  const { models, modelMeta, fairValue, upside, impliedGrowth } = valuation
 
   const update = (key, value) => {
     const next = { ...assumptions, [key]: value }
@@ -19,163 +38,150 @@ export default function ValuationPanel({ open, onClose }) {
     recalc(next, {})
   }
 
-  const modelRows = [
-    { name: 'DCF (10yr)',        key: 'dcf',          weight: 'High' },
-    { name: 'P/E Based',         key: 'pe',           weight: 'Medium' },
-    { name: 'EV/EBITDA',         key: 'evEbitda',     weight: 'Medium' },
-    { name: 'Price / Book',      key: 'pb',           weight: 'Low' },
-    { name: 'Price / Sales',     key: 'ps',           weight: 'Low' },
-    { name: 'Graham Number',     key: 'graham',       weight: 'Low' },
-    { name: 'EV / Gross Profit', key: 'evGrossProfit',weight: 'Low' }
-  ]
+  const maxUpside = 60 // for progress bar scaling
 
   return (
     <div className="card space-y-5">
-      {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="font-semibold text-white">Valuation Detail</h2>
-        <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-lg">✕</button>
+        <h2 className="font-semibold text-white">⚖️ Valuation Detail</h2>
+        <button onClick={onClose} className="text-slate-500 hover:text-white text-lg">✕</button>
       </div>
 
-      {/* Model Table */}
-      <div>
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Model Estimates</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-navy-700">
-                <th className="text-left py-2 text-slate-400 font-medium">Model</th>
-                <th className="text-right py-2 text-slate-400 font-medium">Fair Value</th>
-                <th className="text-right py-2 text-slate-400 font-medium">Upside</th>
-                <th className="text-right py-2 text-slate-400 font-medium">Weight</th>
-              </tr>
-            </thead>
-            <tbody>
-              {modelRows.map(row => {
-                const fv = valuation.models[row.key]
-                const up = fv && ratios?.price ? ((fv - ratios.price) / ratios.price) * 100 : null
-                return (
-                  <tr key={row.key} className="border-b border-navy-800/50">
-                    <td className="py-2 text-slate-300">{row.name}</td>
-                    <td className="py-2 text-right font-mono text-white">
-                      {fv ? sym + fv.toFixed(2) : '—'}
-                    </td>
-                    <td className={`py-2 text-right font-mono ${up == null ? 'text-slate-500' : up >= 0 ? 'text-bull' : 'text-bear'}`}>
-                      {up != null ? fmtPct(up) : '—'}
-                    </td>
-                    <td className="py-2 text-right text-slate-500 text-xs">{row.weight}</td>
-                  </tr>
-                )
-              })}
-              {/* Consensus */}
-              <tr className="bg-navy-800/40">
-                <td className="py-2 text-white font-semibold">Weighted Consensus</td>
-                <td className="py-2 text-right font-mono font-bold text-white">
-                  {valuation.fairValue ? sym + valuation.fairValue.toFixed(2) : '—'}
-                </td>
-                <td className={`py-2 text-right font-mono font-bold ${(valuation.upside || 0) >= 0 ? 'text-bull' : 'text-bear'}`}>
-                  {valuation.upside != null ? fmtPct(valuation.upside) : '—'}
-                </td>
-                <td className="py-2 text-right text-slate-400 text-xs">All</td>
-              </tr>
-            </tbody>
-          </table>
+      {/* Applicable models note */}
+      {modelMeta?.note && (
+        <div className="card-sm border-accent/20 bg-accent/5 text-xs text-slate-300">
+          ℹ️ {modelMeta.note}
         </div>
+      )}
+
+      {/* Model Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-navy-700">
+              <th className="text-left py-2 text-slate-400 font-medium text-xs">Model</th>
+              <th className="text-right py-2 text-slate-400 font-medium text-xs">Fair Value</th>
+              <th className="text-right py-2 text-slate-400 font-medium text-xs">vs CMP</th>
+              <th className="py-2 text-slate-400 font-medium text-xs pl-3">Range</th>
+              <th className="text-right py-2 text-slate-400 font-medium text-xs">Weight</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(MODEL_META).map(([key, meta]) => {
+              const fv  = models[key]
+              const up  = fv && ratios?.price ? ((fv - ratios.price) / ratios.price) * 100 : null
+              const isNA = modelMeta?.notApplicable?.includes(key)
+              const isCaution = modelMeta?.caution?.includes(key)
+
+              return (
+                <tr key={key} className={`border-b border-navy-800/50 ${isNA ? 'opacity-30' : ''}`}>
+                  <td className="py-2 text-slate-300 text-xs">
+                    {isNA ? <span className="text-slate-600 line-through">{meta.name}</span>
+                     : isCaution ? <span>{meta.name} <span className="text-neutral text-xs">⚠️</span></span>
+                     : meta.name}
+                  </td>
+                  <td className="py-2 text-right font-mono text-white text-xs">
+                    {fv ? cur + fv.toFixed(2) : isNA ? 'N/A' : '—'}
+                  </td>
+                  <td className={`py-2 text-right font-mono text-xs ${up == null ? 'text-slate-500' : up >= 0 ? 'text-bull' : 'text-bear'}`}>
+                    {up != null ? fmtPct(up) : '—'}
+                  </td>
+                  <td className="py-2 pl-3">
+                    {up != null && (
+                      <ProgressBar
+                        value={Math.abs(up)}
+                        max={maxUpside}
+                        color={up >= 0 ? 'bg-bull' : 'bg-bear'}
+                      />
+                    )}
+                  </td>
+                  <td className="py-2 text-right text-slate-500 text-xs">{meta.weight}</td>
+                </tr>
+              )
+            })}
+            {/* Consensus row */}
+            <tr className="bg-navy-800/30 border-t border-navy-700">
+              <td className="py-2.5 text-white font-semibold text-sm">Consensus</td>
+              <td className="py-2.5 text-right font-mono font-bold text-white">
+                {fairValue ? cur + fairValue.toFixed(2) : '—'}
+              </td>
+              <td className={`py-2.5 text-right font-mono font-bold text-sm ${(upside || 0) >= 0 ? 'text-bull' : 'text-bear'}`}>
+                {upside != null ? fmtPct(upside) : '—'}
+              </td>
+              <td className="py-2.5 pl-3">
+                {upside != null && (
+                  <ProgressBar value={Math.abs(upside)} max={maxUpside} color={upside >= 0 ? 'bg-bull' : 'bg-bear'} />
+                )}
+              </td>
+              <td className="py-2.5 text-right text-slate-400 text-xs">All</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       {/* Reverse DCF */}
-      {valuation.impliedGrowth != null && (
+      {impliedGrowth != null && (
         <div className="card-sm">
-          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Reverse DCF</div>
+          <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Reverse DCF</div>
           <p className="text-sm text-slate-300">
-            At the current price of <span className="text-white font-mono">{sym}{ratios?.price?.toFixed(2)}</span>,
-            the market is pricing in a FCF growth rate of{' '}
-            <span className="text-accent font-semibold font-mono">{valuation.impliedGrowth.toFixed(1)}%/yr</span> over the next 10 years.
+            At CMP <span className="text-white font-mono">{cur}{ratios?.price?.toFixed(2)}</span>, the market prices in FCF growth of{' '}
+            <span className="text-accent font-semibold">{impliedGrowth.toFixed(1)}%/yr</span> over 10 years.
+            {impliedGrowth > 30 && <span className="text-bear"> (Very high expectation)</span>}
+            {impliedGrowth < 0  && <span className="text-bull"> (Market expects contraction)</span>}
           </p>
         </div>
       )}
 
-      {/* Assumption Sliders */}
+      {/* Assumption sliders toggle */}
       <div>
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Adjust Assumptions</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Slider
-            label="WACC"
-            value={(assumptions.wacc ?? 0.10) * 100}
-            min={5} max={20} step={0.5}
-            display={v => v.toFixed(1) + '%'}
-            onChange={v => update('wacc', v / 100)}
-          />
-          <Slider
-            label="Terminal Growth"
-            value={(assumptions.termGrowth ?? 0.03) * 100}
-            min={1} max={6} step={0.5}
-            display={v => v.toFixed(1) + '%'}
-            onChange={v => update('termGrowth', v / 100)}
-          />
-          <Slider
-            label="FCF Growth Rate"
-            value={(assumptions.growthRate ?? 0.10) * 100}
-            min={-10} max={40} step={1}
-            display={v => v.toFixed(0) + '%'}
-            onChange={v => update('growthRate', v / 100)}
-          />
-          <Slider
-            label="Sector P/E"
-            value={assumptions.sectorPe ?? 20}
-            min={5} max={50} step={1}
-            display={v => v.toFixed(0) + '×'}
-            onChange={v => update('sectorPe', v)}
-          />
-        </div>
+        <button onClick={() => setShowSliders(!showSliders)}
+          className="text-xs text-accent hover:text-accent-light flex items-center gap-1">
+          {showSliders ? '▲' : '▼'} {showSliders ? 'Hide' : 'Edit'} Assumptions ✎
+        </button>
+        {showSliders && (
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {[
+              { key: 'wacc',       label: 'WACC',             min: 5, max: 20, step: 0.5, cur: (assumptions.wacc ?? 0.10)*100,   fmt: v => v.toFixed(1)+'%',   toVal: v => v/100 },
+              { key: 'termGrowth', label: 'Terminal Growth',  min: 1, max: 6,  step: 0.5, cur: (assumptions.termGrowth ?? 0.03)*100, fmt: v => v.toFixed(1)+'%', toVal: v => v/100 },
+              { key: 'growthRate', label: 'FCF Growth',       min:-5, max: 40, step: 1,   cur: (assumptions.growthRate ?? 0.08)*100, fmt: v => v.toFixed(0)+'%', toVal: v => v/100 },
+              { key: 'sectorPe',   label: 'Sector P/E',       min: 5, max: 60, step: 1,   cur: assumptions.sectorPe ?? 20,       fmt: v => v.toFixed(0)+'×',   toVal: v => v },
+              { key: 'sectorEvEb', label: 'Sector EV/EBITDA', min: 4, max: 30, step: 0.5, cur: assumptions.sectorEvEb ?? 12,     fmt: v => v.toFixed(1)+'×',   toVal: v => v }
+            ].map(s => (
+              <div key={s.key}>
+                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                  <span>{s.label}</span>
+                  <span className="text-white font-mono">{s.fmt(s.cur)}</span>
+                </div>
+                <input type="range" min={s.min} max={s.max} step={s.step} value={s.cur}
+                  onChange={e => update(s.key, s.toVal(parseFloat(e.target.value)))}
+                  className="w-full accent-accent" />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Key valuation ratios */}
+      {/* Key ratios */}
       <div>
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Key Ratios</h3>
+        <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Key Ratios</div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {[
-            { label: 'P/E', value: fmtMultiple(ratios?.pe) },
-            { label: 'P/B', value: fmtMultiple(ratios?.pb) },
-            { label: 'EV/EBITDA', value: fmtMultiple(ratios?.evEbitda) },
-            { label: 'P/S', value: fmtMultiple(ratios?.ps) },
-            { label: 'Graham', value: ratios?.grahamNumber ? sym + ratios.grahamNumber.toFixed(2) : '—' },
-            { label: 'FCF Yield', value: fmtPctPlain(ratios?.fcfYield) },
-            { label: 'EV/Rev', value: fmtMultiple(ratios?.evRevenue) },
-            { label: 'Market Cap', value: ratios?.marketCap ? formatLarge(ratios.marketCap, cur) : '—' }
+            { label: 'P/E',      value: ratios?.pe        != null ? `${ratios.pe.toFixed(1)}×`        : '—' },
+            { label: 'P/B',      value: ratios?.pb        != null ? `${ratios.pb.toFixed(1)}×`        : '—' },
+            { label: 'EV/EBITDA',value: ratios?.evEbitda  != null ? `${ratios.evEbitda.toFixed(1)}×`  : '—' },
+            { label: 'P/S',      value: ratios?.ps        != null ? `${ratios.ps.toFixed(1)}×`        : '—' },
+            { label: 'Graham',   value: ratios?.grahamNumber ? `${cur}${ratios.grahamNumber.toFixed(0)}` : '—' },
+            { label: 'FCF Yield',value: ratios?.fcfYield  != null ? fmtPctPlain(ratios.fcfYield)      : '—' },
+            { label: '52W High', value: ratios?.high52    != null ? `${cur}${ratios.high52.toFixed(0)}` : '—' },
+            { label: '52W Low',  value: ratios?.low52     != null ? `${cur}${ratios.low52.toFixed(0)}` : '—' }
           ].map(r => (
             <div key={r.label} className="card-sm">
               <div className="text-xs text-slate-400">{r.label}</div>
-              <div className="font-mono text-white font-semibold">{r.value}</div>
+              <div className="font-mono text-white text-sm font-semibold">{r.value}</div>
             </div>
           ))}
         </div>
       </div>
     </div>
   )
-}
-
-function Slider({ label, value, min, max, step, display, onChange }) {
-  return (
-    <div>
-      <div className="flex justify-between text-xs text-slate-400 mb-1">
-        <span>{label}</span>
-        <span className="text-white font-mono">{display(value)}</span>
-      </div>
-      <input
-        type="range" min={min} max={max} step={step} value={value}
-        onChange={e => onChange(parseFloat(e.target.value))}
-        className="w-full accent-accent"
-      />
-    </div>
-  )
-}
-
-function formatLarge(v, currency) {
-  const sym = currency === 'INR' ? '₹' : '$'
-  if (v >= 1e12) return sym + (v / 1e12).toFixed(1) + 'T'
-  if (v >= 1e9)  return sym + (v / 1e9).toFixed(1)  + 'B'
-  if (v >= 1e7)  return sym + (v / 1e7).toFixed(1)  + 'Cr'
-  if (v >= 1e6)  return sym + (v / 1e6).toFixed(1)  + 'M'
-  return sym + v.toFixed(0)
 }

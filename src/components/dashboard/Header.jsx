@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
+import { STAGES } from '../../engine/stage.js'
 
-const EXAMPLES = ['AAPL', 'RELIANCE.NS', 'TCS.NS', 'MSFT', 'INFY.NS', 'GOOGL']
+const EXAMPLES = ['AAPL', 'RELIANCE', 'TCS', 'MARUTI', 'LICI', 'ZOMATO', 'MSFT', 'HDFCBANK']
 
 export default function Header() {
   const { state, load } = useApp()
@@ -17,73 +18,51 @@ export default function Header() {
 
   return (
     <header className="sticky top-0 z-50 bg-navy-950/95 backdrop-blur border-b border-navy-800">
-      <div className="max-w-7xl mx-auto px-4 py-3">
-        {/* Logo + Search row */}
-        <div className="flex items-center gap-4">
-          {/* Logo */}
-          <div className="flex items-center gap-2 shrink-0">
-            <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm">
-              SV
-            </div>
-            <span className="font-semibold text-white hidden sm:block">StockVal</span>
-          </div>
-
-          {/* Search */}
-          <form onSubmit={submit} className="flex-1 flex gap-2 max-w-lg">
+      <div className="max-w-5xl mx-auto px-4 py-3 space-y-2">
+        {/* Row 1: logo + search */}
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm shrink-0">SV</div>
+          <form onSubmit={submit} className="flex-1 flex gap-2">
             <div className="relative flex-1">
               <input
-                className="input-field pr-10 uppercase"
-                placeholder="Ticker: AAPL, RELIANCE.NS, TCS.NS…"
+                className="input-field uppercase pr-10 text-sm"
+                placeholder="Ticker — RELIANCE, TCS, LICI, AAPL…"
                 value={input}
                 onChange={e => setInput(e.target.value.toUpperCase())}
                 disabled={isLoading}
               />
               {isLoading && (
-                <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                  <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-                </div>
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
               )}
             </div>
-            <button
-              type="submit"
-              className="btn-primary shrink-0"
-              disabled={isLoading || !input.trim()}
-            >
+            <button type="submit" className="btn-primary text-sm shrink-0" disabled={isLoading || !input.trim()}>
               Analyse
             </button>
           </form>
         </div>
 
-        {/* Progress bar */}
+        {/* Progress */}
         {isLoading && state.progress && (
-          <div className="mt-2">
-            <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
-              <span className="text-accent">●</span>
-              {state.progress.msg}
-            </div>
+          <div className="space-y-1">
+            <p className="text-xs text-accent">{state.progress.msg}</p>
             <div className="h-0.5 bg-navy-800 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-accent transition-all duration-500"
-                style={{ width: `${(state.progress.step / 2) * 100}%` }}
-              />
+              <div className="h-full bg-accent transition-all duration-700" style={{ width: `${(state.progress.step / 2) * 100}%` }} />
             </div>
           </div>
         )}
 
         {/* Stock identity bar */}
         {state.status === 'success' && state.data && (
-          <IdentityBar data={state.data} ratios={state.ratios} />
+          <IdentityBar />
         )}
 
         {/* Example tickers */}
         {state.status === 'idle' && (
-          <div className="mt-2 flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            <span className="text-xs text-slate-600">Try:</span>
             {EXAMPLES.map(t => (
-              <button
-                key={t}
-                onClick={() => { setInput(t); load(t) }}
-                className="text-xs px-2 py-0.5 rounded-md bg-navy-800 text-slate-400 hover:text-white hover:bg-navy-700 transition-colors font-mono"
-              >
+              <button key={t} onClick={() => { setInput(t); load(t) }}
+                className="text-xs px-2 py-0.5 rounded bg-navy-800 text-slate-400 hover:text-white hover:bg-navy-700 transition-colors font-mono">
                 {t}
               </button>
             ))}
@@ -94,39 +73,64 @@ export default function Header() {
   )
 }
 
-function IdentityBar({ data, ratios }) {
-  const priceChange = data.priceHistory?.length >= 2
-    ? ((data.priceHistory[data.priceHistory.length - 1].close -
-        data.priceHistory[data.priceHistory.length - 2].close) /
-        data.priceHistory[data.priceHistory.length - 2].close) * 100
+function IdentityBar() {
+  const { state, overrideStage } = useApp()
+  const { data, ratios, stage, sectorType } = state
+  const stageInfo = STAGES[stage] || STAGES.ESTABLISHED
+
+  const price = ratios?.price
+  const change = ratios?.change1d
+  const cur = data.currency === 'INR' ? '₹' : '$'
+
+  const mcap = ratios?.marketCap
+  const mcapStr = mcap
+    ? cur + (data.currency === 'INR'
+        ? mcap >= 1e12 ? (mcap/1e12).toFixed(1)+'L Cr' : (mcap/1e7).toFixed(0)+' Cr'
+        : mcap >= 1e12 ? (mcap/1e12).toFixed(1)+'T' : (mcap/1e9).toFixed(1)+'B')
     : null
 
-  const isUp = priceChange >= 0
-
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-      <div>
-        <span className="font-mono font-bold text-white">{data.ticker}</span>
-        {data.name && data.name !== data.ticker && (
-          <span className="text-slate-400 ml-2 text-xs">{data.name}</span>
-        )}
-      </div>
-      {ratios?.price && (
-        <div className="flex items-center gap-2">
-          <span className="font-semibold text-white">
-            {data.currency === 'INR' ? '₹' : '$'}{ratios.price?.toFixed(2)}
-          </span>
-          {priceChange != null && (
-            <span className={isUp ? 'text-bull text-xs' : 'text-bear text-xs'}>
-              {isUp ? '▲' : '▼'} {Math.abs(priceChange).toFixed(2)}%
-            </span>
+    <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-navy-800">
+      {/* Left: name + price */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div>
+          <span className="font-mono font-bold text-white">{data.ticker}</span>
+          {data.name && data.name !== data.ticker && (
+            <span className="text-slate-400 text-xs ml-2">{data.name}</span>
           )}
         </div>
-      )}
-      {data.meta?.sector && (
-        <span className="text-xs text-slate-500">{data.meta.sector}</span>
-      )}
-      <span className="text-xs text-slate-600 capitalize">{data.source === "merged" ? "yahoo+screener" : data.source}</span>
+        {price && (
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-white text-lg">{cur}{price.toFixed(2)}</span>
+            {change != null && (
+              <span className={change >= 0 ? 'text-bull text-xs' : 'text-bear text-xs'}>
+                {change >= 0 ? '▲' : '▼'} {Math.abs(change).toFixed(2)}%
+              </span>
+            )}
+          </div>
+        )}
+        {mcapStr && <span className="text-xs text-slate-400">Mkt Cap: {mcapStr}</span>}
+        {data.meta?.sector && <span className="text-xs text-slate-500">Sector: {data.meta.sector}</span>}
+        <span className="text-xs text-slate-600 capitalize">{data.source}</span>
+      </div>
+
+      {/* Right: stage badge + override */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-slate-400">Stage:</span>
+        <span className="badge badge-neutral text-xs">
+          {stageInfo.emoji} {stageInfo.label}
+        </span>
+        <select
+          className="text-xs bg-navy-800 border border-navy-700 text-slate-300 rounded px-1.5 py-0.5 cursor-pointer"
+          value={stage || ''}
+          onChange={e => overrideStage(e.target.value)}
+        >
+          <option value="PRE_REVENUE">🌱 Pre-Revenue</option>
+          <option value="GROWTH">🚀 Growth</option>
+          <option value="TRANSITION">🔄 Transition</option>
+          <option value="ESTABLISHED">🏛️ Established</option>
+        </select>
+      </div>
     </div>
   )
 }
