@@ -213,13 +213,45 @@ function parseScreenerHTML(html, ticker) {
   }
 }
 
+function extractSectionHTML(html, sectionId) {
+  // Find section by id - robust, handles nested tags correctly
+  const idPattern = new RegExp(`id=["']${sectionId}["']`, 'i')
+  const idMatch = idPattern.exec(html)
+  if (!idMatch) return ''
+
+  // Find start of the opening tag
+  const tagStart = html.lastIndexOf('<', idMatch.index)
+  if (tagStart === -1) return ''
+
+  const afterTag = html.slice(tagStart)
+  const contentStart = afterTag.indexOf('>') + 1
+
+  // Walk forward tracking section nesting depth to find matching close
+  const openRe  = /<section[\s\S]*?>/gi
+  const closeRe = /<\/section>/gi
+  let depth = 0, pos = 0, endPos = afterTag.length
+
+  while (pos < afterTag.length) {
+    openRe.lastIndex  = pos
+    closeRe.lastIndex = pos
+    const nextOpen  = openRe.exec(afterTag)
+    const nextClose = closeRe.exec(afterTag)
+    const openPos   = nextOpen  ? nextOpen.index  : Infinity
+    const closePos  = nextClose ? nextClose.index : Infinity
+    if (openPos === Infinity && closePos === Infinity) break
+    if (openPos < closePos) {
+      depth++; pos = openPos + 1
+    } else {
+      depth--; pos = closePos + 1
+      if (depth === 0) { endPos = closePos; break }
+    }
+  }
+  return afterTag.slice(contentStart, endPos)
+}
+
 function parseSection(html, sectionId, aliasMap) {
-  const re = new RegExp(
-    `<section[^>]+id=["']${sectionId}["'][^>]*>([\\s\\S]*?)</section>`, 'i'
-  )
-  const match = html.match(re)
-  if (!match) return { headers: [], rows: {}, rawRows: [] }
-  const sectionHTML = match[1]
+  const sectionHTML = extractSectionHTML(html, sectionId)
+  if (!sectionHTML) return { headers: [], rows: {}, rawRows: [] }
 
   // Parse headers
   const theadMatch = sectionHTML.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i)
