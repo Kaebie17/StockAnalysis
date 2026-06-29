@@ -45,7 +45,8 @@ function getVerdict(valuation, quality, technicals) {
 
 export default function SummaryStrip({ onExpand, expanded }) {
   const { state } = useApp()
-  const { valuation, quality, technicals, ratios } = state
+  const { valuation, quality, technicals, ratioResult } = state
+  const ratios = ratioResult?.ratios
   if (!valuation) return null
 
   const cur = state.data?.currency === 'INR' ? '₹' : '$'
@@ -61,8 +62,8 @@ export default function SummaryStrip({ onExpand, expanded }) {
           headline={valuation.fairValue ? `${cur}${valuation.fairValue.toFixed(2)} fair value` : 'Insufficient data'}
           lines={[
             valuation.upside != null ? `${valuation.upside > 0 ? '+' : ''}${valuation.upside.toFixed(1)}% vs CMP` : null,
-            ratios?.pe    != null ? `P/E: ${ratios.pe.toFixed(1)}×` : null,
-            ratios?.evEbitda != null ? `EV/EBITDA: ${ratios.evEbitda.toFixed(1)}×` : null
+            ratios?.pe?.value    != null ? `P/E: ${ratios.pe.toFixed(1)}×` : null,
+            ratios?.evEbitda?.value != null ? `EV/EBITDA: ${ratios.evEbitda.toFixed(1)}×` : null
           ].filter(Boolean)}
           isExpanded={expanded === 'valuation'}
           onExpand={() => onExpand('valuation')}
@@ -72,9 +73,9 @@ export default function SummaryStrip({ onExpand, expanded }) {
           badge={quality?.label}
           headline={quality ? `Quality score ${quality.score}/10` : '—'}
           lines={[
-            ratios?.roe      != null ? `ROE: ${ratios.roe.toFixed(1)}%` : null,
-            ratios?.netMargin != null ? `Net Margin: ${ratios.netMargin.toFixed(1)}%` : null,
-            ratios?.fcf      != null ? (ratios.fcf > 0 ? 'FCF positive' : 'FCF negative') : null
+            ratios?.roe?.value      != null ? `ROE: ${ratios.roe.toFixed(1)}%` : null,
+            ratios?.netMargin?.value != null ? `Net Margin: ${ratios.netMargin.toFixed(1)}%` : null,
+            ratioResult?.fcf      != null ? (ratios.fcf > 0 ? 'FCF positive' : 'FCF negative') : null
           ].filter(Boolean)}
           isExpanded={expanded === 'fundamentals'}
           onExpand={() => onExpand('fundamentals')}

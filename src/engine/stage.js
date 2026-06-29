@@ -50,15 +50,15 @@ export function detectSectorType(data) {
   return SECTOR_TYPES.STANDARD
 }
 
-export function detectStage(data, ratios) {
+export function detectStage(data, ratioResult) {
   const inc = data.incomeHistory || []
-  const rev = ratios.revenue
+  const rev = ratioResult?.revenue
 
   if (!rev || rev <= 0) return 'PRE_REVENUE'
 
-  const cagr = ratios.revCagr
-  const netMargin = ratios.netMargin
-  const fcf = ratios.fcf
+  const cagr = ratioResult?.ratios?.revCagr?.value
+  const netMargin = ratioResult?.ratios?.netMargin?.value
+  const fcf = ratioResult?.fcf
 
   // High growth: >25% CAGR and not yet consistently profitable
   if (cagr > 25 && (netMargin == null || netMargin < 5)) return 'GROWTH'

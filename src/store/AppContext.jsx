@@ -12,7 +12,9 @@ const AppContext = createContext(null)
 
 const initial = {
   status: 'idle', progress: null, error: null, ticker: '',
-  data: null, ratios: null, valuation: null, technicals: null, quality: null,
+  data: null,
+  ratioResult: null,  // full object from calcRatios (scalars + tagged .ratios)
+  valuation: null, technicals: null, quality: null,
   stage: null, sectorType: null,
   assumptions: {}, scoreWeights: {}, uploadRequired: false
 }
@@ -31,13 +33,13 @@ function reducer(s, a) {
 }
 
 function computeAll(data, assumptions, weights) {
-  const ratios     = calcRatios(data)
-  const sectorType = detectSectorType(data)
-  const stage      = detectStage(data, ratios)
-  const valuation  = runValuation(data, ratios, stage, sectorType, assumptions)
-  const technicals = runTechnicals(data.priceHistory)
-  const quality    = scoreQuality(data, ratios, weights)
-  return { ratios, sectorType, stage, valuation, technicals, quality }
+  const ratioResult = calcRatios(data)
+  const sectorType  = detectSectorType(data)
+  const stage       = detectStage(data, ratioResult)
+  const valuation   = runValuation(data, ratioResult, stage, sectorType, assumptions)
+  const technicals  = runTechnicals(data.priceHistory || [])
+  const quality     = scoreQuality(data, ratioResult, weights)
+  return { ratioResult, sectorType, stage, valuation, technicals, quality }
 }
 
 export function AppProvider({ children }) {
@@ -50,7 +52,8 @@ export function AppProvider({ children }) {
       const cached = await getCached(rawTicker)
       if (cached) { dispatch({ type: 'FETCH_SUCCESS', payload: cached }); return }
 
-      const { source, raw } = await fetchTicker(rawTicker, p => dispatch({ type: 'PROGRESS', payload: p }))
+      const { source, raw } = await fetchTicker(rawTicker,
+        p => dispatch({ type: 'PROGRESS', payload: p }))
       const data = normalize(source, raw)
       const computed = computeAll(data, {}, {})
       const payload = { data, ...computed }
@@ -66,14 +69,14 @@ export function AppProvider({ children }) {
     if (!state.data) return
     const assumptions = { ...state.assumptions, ...newAssumptions }
     const weights     = { ...state.scoreWeights, ...newWeights }
-    const valuation   = runValuation(state.data, state.ratios, state.stage, state.sectorType, assumptions)
-    const quality     = scoreQuality(state.data, state.ratios, weights)
+    const valuation   = runValuation(state.data, state.ratioResult, state.stage, state.sectorType, assumptions)
+    const quality     = scoreQuality(state.data, state.ratioResult, weights)
     dispatch({ type: 'RECALC', payload: { valuation, quality, assumptions, scoreWeights: weights } })
   }, [state])
 
   const overrideStage = useCallback((stage) => {
     if (!state.data) return
-    const valuation = runValuation(state.data, state.ratios, stage, state.sectorType, state.assumptions)
+    const valuation = runValuation(state.data, state.ratioResult, stage, state.sectorType, state.assumptions)
     dispatch({ type: 'SET_STAGE', stage, valuation })
   }, [state])
 

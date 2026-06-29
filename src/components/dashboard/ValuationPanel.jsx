@@ -23,7 +23,8 @@ function ProgressBar({ value, max, color = 'bg-accent' }) {
 
 export default function ValuationPanel({ open, onClose }) {
   const { state, recalc } = useApp()
-  const { valuation, ratios, data } = state
+  const { valuation, ratioResult, data } = state
+  const ratios = ratioResult?.ratios
   const [showSliders, setShowSliders] = useState(false)
   const [assumptions, setAssumptions] = useState(valuation?.assumptions || {})
 
@@ -69,7 +70,7 @@ export default function ValuationPanel({ open, onClose }) {
           <tbody>
             {Object.entries(MODEL_META).map(([key, meta]) => {
               const fv  = models[key]
-              const up  = fv && ratios?.price ? ((fv - ratios.price) / ratios.price) * 100 : null
+              const up  = fv && ratioResult?.price ? ((fv - ratios.price) / ratios.price) * 100 : null
               const isNA = modelMeta?.notApplicable?.includes(key)
               const isCaution = modelMeta?.caution?.includes(key)
 
@@ -124,7 +125,7 @@ export default function ValuationPanel({ open, onClose }) {
         <div className="card-sm">
           <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Reverse DCF</div>
           <p className="text-sm text-slate-300">
-            At CMP <span className="text-white font-mono">{cur}{ratios?.price?.toFixed(2)}</span>, the market prices in FCF growth of{' '}
+            At CMP <span className="text-white font-mono">{cur}{ratioResult?.price?.toFixed(2)}</span>, the market prices in FCF growth of{' '}
             <span className="text-accent font-semibold">{impliedGrowth.toFixed(1)}%/yr</span> over 10 years.
             {impliedGrowth > 30 && <span className="text-bear"> (Very high expectation)</span>}
             {impliedGrowth < 0  && <span className="text-bull"> (Market expects contraction)</span>}
@@ -166,14 +167,14 @@ export default function ValuationPanel({ open, onClose }) {
         <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Key Ratios</div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {[
-            { label: 'P/E',      value: ratios?.pe        != null ? `${ratios.pe.toFixed(1)}×`        : '—' },
-            { label: 'P/B',      value: ratios?.pb        != null ? `${ratios.pb.toFixed(1)}×`        : '—' },
-            { label: 'EV/EBITDA',value: ratios?.evEbitda  != null ? `${ratios.evEbitda.toFixed(1)}×`  : '—' },
-            { label: 'P/S',      value: ratios?.ps        != null ? `${ratios.ps.toFixed(1)}×`        : '—' },
-            { label: 'Graham',   value: ratios?.grahamNumber ? `${cur}${ratios.grahamNumber.toFixed(0)}` : '—' },
-            { label: 'FCF Yield',value: ratios?.fcfYield  != null ? fmtPctPlain(ratios.fcfYield)      : '—' },
-            { label: '52W High', value: ratios?.high52    != null ? `${cur}${ratios.high52.toFixed(0)}` : '—' },
-            { label: '52W Low',  value: ratios?.low52     != null ? `${cur}${ratios.low52.toFixed(0)}` : '—' }
+            { label: 'P/E',      value: ratios?.pe?.value        != null ? `${ratios.pe.toFixed(1)}×`        : '—' },
+            { label: 'P/B',      value: ratios?.pb?.value        != null ? `${ratios.pb.toFixed(1)}×`        : '—' },
+            { label: 'EV/EBITDA',value: ratios?.evEbitda?.value  != null ? `${ratios.evEbitda.toFixed(1)}×`  : '—' },
+            { label: 'P/S',      value: ratios?.ps?.value        != null ? `${ratios.ps.toFixed(1)}×`        : '—' },
+            { label: 'Graham',   value: ratioResult?.grahamNumber ? `${cur}${ratios.grahamNumber.toFixed(0)}` : '—' },
+            { label: 'FCF Yield',value: ratios?.fcfYield?.value  != null ? fmtPctPlain(ratios.fcfYield)      : '—' },
+            { label: '52W High', value: ratios?.high52?.value    != null ? `${cur}${ratios.high52.toFixed(0)}` : '—' },
+            { label: '52W Low',  value: ratios?.low52?.value     != null ? `${cur}${ratios.low52.toFixed(0)}` : '—' }
           ].map(r => (
             <div key={r.label} className="card-sm">
               <div className="text-xs text-slate-400">{r.label}</div>

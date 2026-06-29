@@ -75,14 +75,15 @@ export default function Header() {
 
 function IdentityBar() {
   const { state, overrideStage } = useApp()
-  const { data, ratios, stage, sectorType } = state
+  const { data, ratioResult, stage, sectorType } = state
+  const ratios = ratioResult
   const stageInfo = STAGES[stage] || STAGES.ESTABLISHED
 
-  const price = ratios?.price
-  const change = ratios?.change1d
+  const price = ratioResult?.price
+  const change = ratioResult?.meta?.change1d
   const cur = data.currency === 'INR' ? '₹' : '$'
 
-  const mcap = ratios?.marketCap
+  const mcap = ratioResult?.marketCap
   const mcapStr = mcap
     ? cur + (data.currency === 'INR'
         ? mcap >= 1e12 ? (mcap/1e12).toFixed(1)+'L Cr' : (mcap/1e7).toFixed(0)+' Cr'

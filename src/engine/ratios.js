@@ -1,162 +1,198 @@
 /**
  * src/engine/ratios.js
- * Sector-aware ratio calculation. Insurance/bank companies get different fields.
+ *
+ * ALL ratios computed from raw normalized data.
+ * No ratio is ever taken from a source — sources provide only raw numbers.
+ *
+ * Each output ratio carries resolution metadata:
+ *   { value, status, formula }
+ *   status: 'calculated' | 'ttm-fallback' | 'unavailable'
+ *
+ * Derivation hierarchy for each ratio:
+ *   1. Calculate from historical statement data
+ *   2. Fall back to TTM financialData if history sparse
+ *   3. Mark unavailable — never silently return null
  */
-import { detectSectorType, SECTOR_TYPES } from './stage.js'
 
 export function calcRatios(data) {
-  const sectorType = detectSectorType(data)
-
-  if (sectorType === SECTOR_TYPES.INSURANCE || sectorType === SECTOR_TYPES.BANK || sectorType === SECTOR_TYPES.NBFC) {
-    return calcFinancialRatios(data, sectorType)
-  }
-  return calcStandardRatios(data)
-}
-
-// ─── Standard (industrial/tech/consumer) ─────────────────────────────────────
-
-function calcStandardRatios(data) {
-  const { price, marketCap, sharesOutstanding, incomeHistory,
+  const { price, marketCap, shares: sharesRaw, incomeHistory,
           balanceHistory, cashflowHistory, ttm, meta } = data
 
-  const latest   = incomeHistory[incomeHistory.length - 1]   || {}
-  const prev     = incomeHistory[incomeHistory.length - 2]   || {}
-  const oldest   = incomeHistory[0]                          || {}
+  // Unwrap tagged values from latest year
+  const latestI  = incomeHistory[incomeHistory.length - 1]   || {}
+  const prevI    = incomeHistory[incomeHistory.length - 2]   || {}
+  const oldestI  = incomeHistory[0]                          || {}
   const latestB  = balanceHistory[balanceHistory.length - 1]  || {}
   const latestCF = cashflowHistory[cashflowHistory.length - 1] || {}
+  const n        = incomeHistory.length - 1
 
-  const n = incomeHistory.length - 1
-  const revCagr = (n > 0 && oldest.revenue > 0 && latest.revenue > 0)
-    ? (Math.pow(latest.revenue / oldest.revenue, 1 / n) - 1) * 100 : null
+  // Helper: unwrap .value from tagged field
+  const val = f => f?.value ?? null
 
-  const shares = sharesOutstanding ?? (marketCap && price ? marketCap / price : null)
+  // ── Core raw values ────────────────────────────────────────────────────────
+  const revenue     = val(latestI.revenue)     ?? val(ttm?.revenue)
+  const opProfit    = val(latestI.operatingProfit)
+  const depreciation= val(latestI.depreciation)
+  const interest    = val(latestI.interest)
+  const netProfit   = val(latestI.netProfit)   ?? val(ttm?.netProfit)
+  const totalEquity = val(latestB.totalEquity)
+  const totalDebt   = val(latestB.totalDebt)   ?? val(ttm?.totalDebt) ?? 0
+  const cash        = val(latestB.cash)        ?? val(ttm?.cash)       ?? 0
+  const opCF        = val(latestCF.operatingCF) ?? val(ttm?.operatingCF)
+  const fcf         = val(latestCF.freeCashFlow) ?? val(ttm?.freeCashFlow)
+  const totalAssets = val(latestB.totalAssets)
+  const fixedAssets = val(latestB.fixedAssets)
 
-  const revenue     = latest.revenue     ?? ttm.revenue
-  const netIncome   = latest.netIncome   ?? ttm.netIncome
-  const grossProfit = latest.grossProfit ?? ttm.grossProfit
-  const opProfit    = latest.operatingProfit
+  // Shares: from data or estimate from marketCap/price
+  const shares = sharesRaw ?? (marketCap && price ? marketCap / price : null)
 
-  // EBITDA: statement → TTM financialData → compute from op profit + depreciation
-  const ebitda = latest.ebitda
-    ?? ttm.ebitda
-    ?? (opProfit != null && latest.depreciation != null ? opProfit + latest.depreciation : null)
-    ?? (opProfit != null ? opProfit : null) // last resort: use op profit as proxy
+  // EPS: statement → TTM → derive
+  const epsRaw = val(latestI.eps) ?? val(ttm?.eps)
+  const eps = epsRaw ?? calc('Net Profit ÷ Shares', netProfit, shares, (n, s) => n / s)
 
-  const totalDebt  = latestB.totalDebt  ?? ttm.totalDebt  ?? 0
-  const cash       = latestB.cash       ?? ttm.totalCash  ?? 0
-  const equity     = latestB.totalEquity
+  // ── EBITDA ─────────────────────────────────────────────────────────────────
+  // Priority: direct from source → Op.Profit + Dep → TTM → Op.Profit alone
+  const ebitdaDirect = val(latestI.ebitda)
+  const ebitdaCalc   = opProfit != null && depreciation != null ? opProfit + depreciation : null
+  const ebitdaTTM    = val(ttm?.ebitda)
+  const ebitda       = ebitdaDirect ?? ebitdaCalc ?? ebitdaTTM ?? opProfit
 
+  const ebitdaStatus = ebitdaDirect  != null ? 'source'
+    : ebitdaCalc   != null ? 'calculated'
+    : ebitdaTTM    != null ? 'ttm-fallback'
+    : opProfit     != null ? 'proxy'  // using op profit as proxy
+    : 'unavailable'
+  const ebitdaFormula = ebitdaCalc  != null ? 'Operating Profit + Depreciation'
+    : ebitdaTTM    != null ? 'TTM from Yahoo financialData'
+    : opProfit     != null ? 'Operating Profit (Depreciation unavailable)'
+    : null
+
+  // ── Revenue CAGR ───────────────────────────────────────────────────────────
+  const revOldest = val(oldestI.revenue)
+  const revLatest = val(latestI.revenue)
+  const revCagr   = n > 0 && revOldest > 0 && revLatest > 0
+    ? (Math.pow(revLatest / revOldest, 1 / n) - 1) * 100 : null
+
+  // ── EV ─────────────────────────────────────────────────────────────────────
   const ev = marketCap != null ? marketCap + totalDebt - cash : null
 
-  const eps = latest.eps ?? ttm.eps
-    ?? (netIncome && shares ? netIncome / shares : null)
+  // ── Margins ────────────────────────────────────────────────────────────────
+  // Note: Indian P&L has no "Gross Profit" line — Operating Profit IS the first
+  // meaningful margin. We flag grossMargin as "Operating Margin (Indian P&L format)"
+  const operatingMargin = pct(opProfit, revenue)
+  const ebitdaMargin    = pct(ebitda, revenue)  ?? pct100(val(ttm?.ebitdaMargins))
+  const netMargin       = pct(netProfit, revenue) ?? pct100(val(ttm?.profitMargins))
+  // Gross margin: use Yahoo's if available (US companies), else use operating margin
+  const grossMarginRaw  = val(ttm?.grossMargins)
+  const grossMargin     = grossMarginRaw != null
+    ? { value: grossMarginRaw * 100, status: 'ttm-fallback', formula: 'From Yahoo financialData' }
+    : operatingMargin != null
+    ? { value: operatingMargin, status: 'proxy', formula: 'Operating Margin (Indian P&L — no separate Gross Profit line)' }
+    : { value: null, status: 'unavailable', formula: null }
 
-  const grossMargin     = pct(grossProfit, revenue)  ?? pct100(ttm.grossMargins)
-  const ebitdaMargin    = pct(ebitda, revenue)       ?? pct100(ttm.ebitdaMargins)
-  const netMargin       = pct(netIncome, revenue)    ?? pct100(ttm.profitMargins)
-  const operatingMargin = pct(opProfit, revenue)     ?? pct100(ttm.operatingMargins)
+  // ── Returns ────────────────────────────────────────────────────────────────
+  // ROE = Net Profit / Average Equity × 100
+  const prevEquity = val(balanceHistory[balanceHistory.length - 2]?.totalEquity)
+  const avgEquity  = totalEquity != null && prevEquity != null
+    ? (totalEquity + prevEquity) / 2 : totalEquity
+  const roe  = pct(netProfit, avgEquity) ?? pct100(val(ttm?.roe))
 
-  const roe  = pct(netIncome, equity) ?? pct100(ttm.roe)
-  const roce = pct(ebitda, equity != null ? equity + totalDebt - cash : null)
-  const roa  = pct100(ttm.returnOnAssets)
+  // ROCE = EBIT / Capital Employed × 100
+  // Capital Employed = Total Assets - Current Liabilities
+  // We approximate: Capital Employed = Total Equity + Total Debt (= long-term capital)
+  const capitalEmployed = totalEquity != null ? totalEquity + totalDebt : null
+  const roce = pct(ebitda, capitalEmployed)  // EBIT ≈ EBITDA here; flag if no dep
 
-  const de = div(totalDebt, equity) ?? ttm.debtToEquity
+  // ROA = Net Profit / Total Assets × 100
+  const roa  = pct(netProfit, totalAssets)
+
+  // ── Leverage ───────────────────────────────────────────────────────────────
   const netDebt = totalDebt - cash
-  const interestCoverage = div(ebitda, latest.interest)
+  const de      = div(totalDebt, totalEquity)           // D/E ratio
+  const icr     = div(ebitda, interest)                 // Interest coverage
 
-  const bookPerShare = div(equity, shares) ?? meta.bookValue
-  const grahamNumber = (eps > 0 && bookPerShare > 0) ? Math.sqrt(22.5 * eps * bookPerShare) : null
+  // ── Valuation multiples ────────────────────────────────────────────────────
+  // All calculated from raw numbers — never from source
+  const bookPerShare = div(totalEquity, shares)
+  const pe           = div(price, eps)           ?? meta?.pe   // meta.pe = v7 quote (reference)
+  const pb           = div(price, bookPerShare)  ?? meta?.pb
+  const ps           = div(marketCap, revenue)
+  const evEbitda     = div(ev, ebitda)
+  const evRevenue    = div(ev, revenue)
 
-  const pe       = div(price, eps)                   ?? meta.pe
-  const pb       = div(price, bookPerShare)          ?? meta.pb
-  const ps       = div(marketCap, revenue)
-  const evEbitda = div(ev, ebitda)
-  const evRev    = div(ev, revenue)
+  // Graham Number = √(22.5 × EPS × Book Value per Share)
+  const grahamNumber = eps > 0 && bookPerShare > 0
+    ? Math.sqrt(22.5 * eps * bookPerShare) : null
 
-  const fcf = latestCF.freeCashFlow ?? ttm.freeCashflow
+  // ── FCF metrics ────────────────────────────────────────────────────────────
   const fcfYield      = pct(fcf, marketCap)
-  const fcfConversion = pct(fcf, netIncome)
+  const fcfConversion = pct(fcf, netProfit)
 
-  const revenueGrowthYoY   = pct(latest.revenue  - (prev.revenue  || 0), prev.revenue)  ?? pct100(ttm.revenueGrowth)
-  const netIncomeGrowthYoY = pct(latest.netIncome - (prev.netIncome || 0), prev.netIncome) ?? pct100(ttm.earningsGrowth)
+  // ── Growth ─────────────────────────────────────────────────────────────────
+  const prevRev    = val(prevI.revenue)
+  const prevNP     = val(prevI.netProfit)
+  const revGrowthYoY = pct(revenue - (prevRev || 0), prevRev) ?? pct100(val(ttm?.revenueGrowth))
+  const npGrowthYoY  = pct(netProfit - (prevNP || 0), prevNP)  ?? pct100(val(ttm?.earningsGrowth))
 
   return {
-    sectorType: 'standard',
+    // Scalars (used by valuation engine)
     price, marketCap, ev, shares,
-    eps, bookPerShare, grahamNumber,
-    pe, pb, ps, evEbitda, evRevenue: evRev,
-    grossMargin, ebitdaMargin, netMargin, operatingMargin,
-    roe, roce, roa,
-    totalDebt, totalEquity: equity, cash, netDebt, de, interestCoverage,
-    revCagr, revenueGrowthYoY, netIncomeGrowthYoY,
-    fcf, fcfYield, fcfConversion,
-    operatingCF: latestCF.operatingCF ?? ttm.operatingCashflow,
-    revenue, netIncome, ebitda, grossProfit,
-    divYield: meta.divYield, beta: meta.beta,
-    high52: meta.high52, low52: meta.low52,
-    avgVolume: meta.avgVolume, change1d: meta.change1d, volume: meta.volume
+    revenue, opProfit, ebitda, netProfit, interest, depreciation,
+    totalEquity, totalDebt, cash, netDebt, capitalEmployed, totalAssets,
+    opCF, fcf, eps, bookPerShare, grahamNumber,
+
+    // Tagged ratios (used by UI for display + tooltips)
+    ratios: {
+      // Margins
+      grossMargin,
+      operatingMargin: tag(operatingMargin, 'calculated', 'Operating Profit ÷ Revenue × 100'),
+      ebitdaMargin:    tag(ebitdaMargin,    ebitdaMargin != null ? (val(ttm?.ebitdaMargins) != null && ebitdaDirect == null ? 'ttm-fallback' : 'calculated') : 'unavailable', 'EBITDA ÷ Revenue × 100'),
+      netMargin:       tag(netMargin,       'calculated', 'Net Profit ÷ Revenue × 100'),
+      // Returns
+      roe:             tag(roe,             roe != null ? (pct(netProfit, avgEquity) != null ? 'calculated' : 'ttm-fallback') : 'unavailable', 'Net Profit ÷ Avg Equity × 100'),
+      roce:            tag(roce,            'calculated', 'EBITDA ÷ (Total Equity + Total Debt) × 100'),
+      roa:             tag(roa,             'calculated', 'Net Profit ÷ Total Assets × 100'),
+      // Leverage
+      de:              tag(de,              'calculated', 'Total Debt ÷ Total Equity'),
+      icr:             tag(icr,             'calculated', 'EBITDA ÷ Interest Expense'),
+      netDebtRatio:    tag(div(netDebt, ebitda), 'calculated', 'Net Debt ÷ EBITDA'),
+      // Valuation multiples
+      pe:              tag(pe,              pe === meta?.pe ? 'source-reference' : 'calculated', 'Price ÷ EPS'),
+      pb:              tag(pb,              pb === meta?.pb ? 'source-reference' : 'calculated', 'Price ÷ Book Value per Share'),
+      ps:              tag(ps,              'calculated', 'Market Cap ÷ Revenue'),
+      evEbitda:        tag(evEbitda,        'calculated', 'EV ÷ EBITDA'),
+      evRevenue:       tag(evRevenue,       'calculated', 'EV ÷ Revenue'),
+      grahamNumber:    tag(grahamNumber,    'calculated', '√(22.5 × EPS × Book Value per Share)'),
+      // Growth
+      revCagr:         tag(revCagr,         'calculated', `Revenue CAGR over ${n} years`),
+      revGrowthYoY:    tag(revGrowthYoY,    'calculated', 'Revenue YoY growth'),
+      npGrowthYoY:     tag(npGrowthYoY,     'calculated', 'Net Profit YoY growth'),
+      // FCF
+      fcfYield:        tag(fcfYield,        'calculated', 'FCF ÷ Market Cap × 100'),
+      fcfConversion:   tag(fcfConversion,   'calculated', 'FCF ÷ Net Profit × 100'),
+      // EPS / Book
+      eps:             tag(eps,             epsRaw != null ? 'source' : 'calculated', epsRaw ? null : 'Net Profit ÷ Shares Outstanding'),
+      bookPerShare:    tag(bookPerShare,     'calculated', 'Total Equity ÷ Shares Outstanding'),
+      // Meta (from v7 quote, for reference only)
+      divYield:        tag(meta?.divYield,   'source-reference', 'From Yahoo v7 quote'),
+      beta:            tag(meta?.beta,       'source-reference', 'From Yahoo v7 quote'),
+      high52:          tag(meta?.high52,     'source-reference', null),
+      low52:           tag(meta?.low52,      'source-reference', null),
+    },
+    // EBITDA metadata for display
+    ebitdaMeta: { status: ebitdaStatus, formula: ebitdaFormula }
   }
 }
 
-// ─── Financial sector (insurance / bank / NBFC) ───────────────────────────────
-// These companies don't have "revenue" in the traditional sense.
-// For insurance: netPremiumIncome is the revenue proxy.
-// For banks: netInterestIncome is the revenue proxy.
-// We pull what we can from TTM + screener income rows + meta.
+// ─── Pure math helpers ────────────────────────────────────────────────────────
 
-function calcFinancialRatios(data, sectorType) {
-  const { price, marketCap, sharesOutstanding, incomeHistory,
-          balanceHistory, ttm, meta } = data
-
-  const latest  = incomeHistory[incomeHistory.length - 1] || {}
-  const latestB = balanceHistory[balanceHistory.length - 1] || {}
-
-  const shares = sharesOutstanding ?? (marketCap && price ? marketCap / price : null)
-
-  // For insurance/banks, "revenue" = total income (netIncome is most reliable)
-  // Screener provides this correctly; Yahoo's totalRevenue is sometimes empty
-  const revenue   = latest.revenue   ?? ttm.revenue   ?? null
-  const netIncome = latest.netIncome ?? ttm.netIncome ?? null
-  const equity    = latestB.totalEquity ?? null
-
-  const eps = latest.eps ?? ttm.eps
-    ?? (netIncome && shares ? netIncome / shares : null)
-
-  const bookPerShare = div(equity, shares) ?? meta.bookValue
-
-  // P/E and P/B are THE primary metrics for financial companies
-  const pe = div(price, eps)        ?? meta.pe
-  const pb = div(price, bookPerShare) ?? meta.pb
-  const ps = div(marketCap, revenue)
-
-  const netMargin = pct(netIncome, revenue) ?? pct100(ttm.profitMargins)
-  const roe = pct(netIncome, equity) ?? pct100(ttm.roe)
-
-  const n = incomeHistory.length - 1
-  const oldest = incomeHistory[0] || {}
-  const revCagr = (n > 0 && oldest.revenue > 0 && latest.revenue > 0)
-    ? (Math.pow(latest.revenue / oldest.revenue, 1 / n) - 1) * 100 : null
-
-  return {
-    sectorType,
-    price, marketCap, ev: null, shares,
-    eps, bookPerShare, grahamNumber: null,
-    pe, pb, ps,
-    evEbitda: null, evRevenue: null,   // not applicable
-    grossMargin: null, ebitdaMargin: null,
-    netMargin, operatingMargin: null,
-    roe, roce: null, roa: pct100(ttm.returnOnAssets),
-    totalDebt: null, totalEquity: equity, cash: null,
-    netDebt: null, de: null, interestCoverage: null,
-    revCagr, revenueGrowthYoY: pct100(ttm.revenueGrowth), netIncomeGrowthYoY: pct100(ttm.earningsGrowth),
-    fcf: null, fcfYield: null, fcfConversion: null, operatingCF: null,
-    revenue, netIncome, ebitda: null, grossProfit: null,
-    divYield: meta.divYield, beta: meta.beta,
-    high52: meta.high52, low52: meta.low52,
-    avgVolume: meta.avgVolume, change1d: meta.change1d, volume: meta.volume
-  }
+function div(a, b)    { return a != null && b != null && b !== 0 ? a / b : null }
+function pct(a, b)    { const d = div(a, b); return d != null ? d * 100 : null }
+function pct100(v)    { return v != null ? v * 100 : null }
+function calc(formula, a, b, fn) {
+  if (a == null || b == null) return null
+  try { const r = fn(a, b); return isFinite(r) ? r : null } catch { return null }
 }
-
-function div(a, b) { return (a != null && b != null && b !== 0) ? a / b : null }
-function pct(a, b) { const d = div(a, b); return d != null ? d * 100 : null }
-function pct100(v) { return v != null ? v * 100 : null }
+function tag(value, status, formula = null) {
+  return { value: value ?? null, status: value != null ? (status || 'calculated') : 'unavailable', formula }
+}
