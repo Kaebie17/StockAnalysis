@@ -3,152 +3,146 @@
  *
  * Converts raw source data into a standard shape.
  * ALL values stored with resolution metadata: { value, status, formula }
- * status: 'source' | 'derived' | 'positional' | 'cross-source' | 'ttm' | 'unavailable'
+ *   status: 'source' | 'derived' | 'positional' | 'cross-source' | 'ttm' | 'unavailable'
  *
- * Priority Hierarchical Order: CSV > Screener > Yahoo Finance
+ * The engine (ratios.js, valuation.js) reads .value from each field.
+ * The UI reads .status and .formula for tooltips/badges.
+ *
+ * Numbers from Screener are in CRORES. We store them as-is in Crores for INR.
+ * Numbers from Yahoo are in absolute units (INR or USD).
+ * normalize.js converts everything to absolute units: Crores × 1e7.
  */
 
 export function normalize(source, raw) {
-  if (source === 'csv')      return raw // CSV has the absolute highest priority and bypasses mergers
-  if (source === 'screener') return normalizeScreener(raw)
   if (source === 'yahoo')    return normalizeYahoo(raw)
+  if (source === 'screener') return normalizeScreener(raw)
   if (source === 'merged')   return normalizeMerged(raw)
+  if (source === 'csv')      return raw
   throw new Error(`Unknown source: ${source}`)
 }
 
-const CR = 1e7  // Crore to absolute INR multiplier
+// ─── Tag helpers ──────────────────────────────────────────────────────────────
 
-function src(value)                      { return { value: value != null ? Number(value) : null, status: 'source',       formula: null } }
-function derived(value, formula)         { return { value: value != null ? Number(value) : null, status: 'derived',      formula } }
-function crossSrc(value, srcName)        { return { value: value != null ? Number(value) : null, status: 'cross-source', formula: srcName } }
-function ttm(value)                      { return { value: value != null ? Number(value) : null, status: 'ttm',          formula: 'TTM from financialData' } }
+const CR = 1e7  // Crore to absolute INR
+
+function src(value)                      { return { value, status: 'source',       formula: null } }
+function derived(value, formula)         { return { value, status: 'derived',      formula } }
+function crossSrc(value, srcName)        { return { value, status: 'cross-source', formula: srcName } }
+function ttm(value)                      { return { value, status: 'ttm',          formula: 'TTM from financialData' } }
 function unavailable()                   { return { value: null, status: 'unavailable', formula: null } }
+function best(a, b)                      { return a?.value != null ? a : b }  // prefer a, fallback b
 
+/** Scale a Screener tagged value from Crores to absolute */
 function scaleCr(tagged) {
-  if (!tagged) return unavailable()
-  const numericalVal = tagged.value != null ? tagged.value : (typeof tagged === 'number' ? tagged : null)
-  if (numericalVal == null) return unavailable()
-  return { value: numericalVal * CR, status: tagged.status || 'source', formula: tagged.formula || null }
+  if (!tagged || tagged.value == null) return tagged ?? unavailable()
+  return { ...tagged, value: tagged.value * CR }
 }
 
-/**
- * Merges datasets prioritizing Screener data as the structural baseline,
- * falling back to Yahoo metrics only if Screener values are missing or unavailable.
- */
-export function normalizeMerged({ yahoo, screener }) {
-  const s = normalizeScreener(screener || {})
-  const y = normalizeYahoo(yahoo || {})
+/** Pull .value safely */
+function v(tagged) { return tagged?.value ?? null }
 
-  // Merge historical statements using Screener as primary and Yahoo as fallback
-  const income   = mergeByYear(s.incomeHistory,   y.incomeHistory,   mergeIncomeRow)
-  const balance  = mergeByYear(s.balanceHistory,  y.balanceHistory,  mergeBalanceRow)
-  const cashflow = mergeByYear(s.cashflowHistory, y.cashflowHistory, mergeCFRow)
+// ─── Merged ───────────────────────────────────────────────────────────────────
+
+function normalizeMerged({ yahoo, screener }) {
+  const y = normalizeYahoo(yahoo)
+  const s = normalizeScreener(screener)
+
+  // Merge by year — Screener has more years (10yr), Yahoo has 4yr
+  const income   = mergeByYear(y.incomeHistory,   s.incomeHistory,   mergeIncomeRow)
+  const balance  = mergeByYear(y.balanceHistory,  s.balanceHistory,  mergeBalanceRow)
+  const cashflow = mergeByYear(y.cashflowHistory, s.cashflowHistory, mergeCFRow)
 
   return {
-    ...s, // Anchor base properties to Screener
-    ticker: s.ticker || y.ticker,
-    name: s.name || y.name,
-    currency: s.currency || y.currency || 'INR',
+    ...y,
     source: 'merged',
-    price:     s.price     ?? y.price,
-    marketCap: s.marketCap ?? y.marketCap,
-    shares:    s.shares    ?? y.shares,
+    // Price from Yahoo is authoritative
+    price:     y.price     ?? s.price,
+    marketCap: y.marketCap ?? s.marketCap,
     incomeHistory:  income,
     balanceHistory: balance,
     cashflowHistory: cashflow,
-    ttm: mergeTTM(s.ttm, y.ttm),
-    meta: { ...(y.meta || {}), ...(s.meta || {}) },
-    sourceStats: s.keyStats || y.sourceStats || {}
+    // TTM: Yahoo wins, Screener fills gaps
+    ttm: mergeTTM(y.ttm, s.ttm),
+    // Keep source key stats for reference tooltips
+    sourceStats: s.keyStats ?? {}
   }
 }
 
-function mergeByYear(primaryArr, fallbackArr, mergeFn) {
+function mergeByYear(yArr, sArr, mergeFn) {
   const map = {}
-  for (const r of (fallbackArr || [])) {
-    if (r.year) map[r.year] = r
-  }
-  for (const r of (primaryArr || [])) {
+  for (const r of (sArr || [])) if (r.year) map[r.year] = r
+  for (const r of (yArr || [])) {
     if (!r.year) continue
     map[r.year] = map[r.year] ? mergeFn(r, map[r.year]) : r
   }
-  return Object.values(map).sort((a, b) => String(a.year).localeCompare(String(b.year)))
+  return Object.values(map).sort((a, b) => a.year.localeCompare(b.year))
 }
 
-function mergeIncomeRow(primary, fallback) {
-  const pick = (pField, fField, name) => {
-    if (pField?.value != null && pField.status !== 'unavailable') return pField
-    if (fField?.value != null && fField.status !== 'unavailable') {
-      return { ...fField, status: 'cross-source', formula: `From Yahoo (Screener missing ${name})` }
-    }
+function mergeIncomeRow(y, s) {
+  // Yahoo wins (more precise), Screener fills nulls, mark cross-source
+  const pick = (yf, sf, name) => {
+    if (yf?.value != null) return yf
+    if (sf?.value != null) return { ...sf, status: 'cross-source', formula: `From Screener (Yahoo missing ${name})` }
     return unavailable()
   }
   return {
-    year: primary.year || fallback.year,
-    revenue:         pick(primary.revenue,         fallback.revenue,         'revenue'),
-    expenses:        pick(primary.expenses,        fallback.expenses,        'expenses'),
-    operatingProfit: pick(primary.operatingProfit, fallback.operatingProfit, 'operatingProfit'),
-    ebitda:          pick(primary.ebitda,          fallback.ebitda,          'ebitda'),
-    depreciation:    pick(primary.depreciation,    fallback.depreciation,    'depreciation'),
-    interest:        pick(primary.interest,        fallback.interest,        'interest'),
-    otherIncome:     pick(primary.otherIncome,     fallback.otherIncome,     'otherIncome'),
-    netProfit:       pick(primary.netProfit,       fallback.netProfit,       'netProfit'),
-    eps:             pick(primary.eps,             fallback.eps,             'eps'),
+    year: y.year,
+    revenue:         pick(y.revenue,         s.revenue,         'revenue'),
+    expenses:        pick(y.expenses,        s.expenses,        'expenses'),
+    operatingProfit: pick(y.operatingProfit, s.operatingProfit, 'operatingProfit'),
+    ebitda:          pick(y.ebitda,          s.ebitda,          'ebitda'),
+    depreciation:    pick(y.depreciation,    s.depreciation,    'depreciation'),
+    interest:        pick(y.interest,        s.interest,        'interest'),
+    otherIncome:     pick(y.otherIncome,     s.otherIncome,     'otherIncome'),
+    netProfit:       pick(y.netProfit,       s.netProfit,       'netProfit'),
+    eps:             pick(y.eps,             s.eps,             'eps'),
   }
 }
 
-function mergeBalanceRow(primary, fallback) {
-  const pick = (pField, fField, name) => {
-    if (pField?.value != null && pField.status !== 'unavailable') return pField
-    if (fField?.value != null && fField.status !== 'unavailable') {
-      return { ...fField, status: 'cross-source', formula: `From Yahoo (Screener missing ${name})` }
-    }
+function mergeBalanceRow(y, s) {
+  const pick = (yf, sf, name) => {
+    if (yf?.value != null) return yf
+    if (sf?.value != null) return { ...sf, status: 'cross-source', formula: `From Screener (Yahoo missing ${name})` }
     return unavailable()
   }
   return {
-    year: primary.year || fallback.year,
-    equityCapital:   pick(primary.equityCapital,    fallback.equityCapital,    'equityCapital'),
-    reserves:        pick(primary.reserves,         fallback.reserves,         'reserves'),
-    totalEquity:     pick(primary.totalEquity,      fallback.totalEquity,      'totalEquity'),
-    totalDebt:       pick(primary.totalDebt,        fallback.totalDebt,        'totalDebt'),
-    totalAssets:     pick(primary.totalAssets,      fallback.totalAssets,      'totalAssets'),
-    totalLiabilities:pick(primary.totalLiabilities, fallback.totalLiabilities, 'totalLiabilities'),
-    fixedAssets:     pick(primary.fixedAssets,      fallback.fixedAssets,      'fixedAssets'),
-    investments:     pick(primary.investments,      fallback.investments,      'investments'),
-    cash:            pick(primary.cash,             fallback.cash,             'cash'),
+    year: y.year,
+    equityCapital:   pick(y.equityCapital,    s.equityCapital,    'equityCapital'),
+    reserves:        pick(y.reserves,         s.reserves,         'reserves'),
+    totalEquity:     pick(y.totalEquity,      s.totalEquity,      'totalEquity'),
+    totalDebt:       pick(y.totalDebt,        s.totalDebt,        'totalDebt'),
+    totalAssets:     pick(y.totalAssets,      s.totalAssets,      'totalAssets'),
+    totalLiabilities:pick(y.totalLiabilities, s.totalLiabilities, 'totalLiabilities'),
+    fixedAssets:     pick(y.fixedAssets,      s.fixedAssets,      'fixedAssets'),
+    investments:     pick(y.investments,      s.investments,      'investments'),
   }
 }
 
-function mergeCFRow(primary, fallback) {
-  const pick = (pField, fField, name) => {
-    if (pField?.value != null && pField.status !== 'unavailable') return pField
-    if (fField?.value != null && fField.status !== 'unavailable') {
-      return { ...fField, status: 'cross-source', formula: `From Yahoo (Screener missing ${name})` }
-    }
+function mergeCFRow(y, s) {
+  const pick = (yf, sf, name) => {
+    if (yf?.value != null) return yf
+    if (sf?.value != null) return { ...sf, status: 'cross-source', formula: `From Screener (Yahoo missing ${name})` }
     return unavailable()
   }
   return {
-    year: primary.year || fallback.year,
-    operatingCF:  pick(primary.operatingCF,  fallback.operatingCF,  'operatingCF'),
-    investingCF:  pick(primary.investingCF,  fallback.investingCF,  'investingCF'),
-    financingCF:  pick(primary.financingCF,  fallback.financingCF,  'financingCF'),
-    freeCashFlow: pick(primary.freeCashFlow, fallback.freeCashFlow, 'freeCashFlow'),
+    year: y.year,
+    operatingCF:  pick(y.operatingCF,  s.operatingCF,  'operatingCF'),
+    investingCF:  pick(y.investingCF,  s.investingCF,  'investingCF'),
+    financingCF:  pick(y.financingCF,  s.financingCF,  'financingCF'),
+    freeCashFlow: pick(y.freeCashFlow, s.freeCashFlow, 'freeCashFlow'),
   }
 }
 
-function mergeTTM(primary, fallback) {
-  if (!primary) return fallback || {}; if (!fallback) return primary || {}
-  const out = { ...primary }
-  for (const k of Object.keys(fallback ?? {})) {
-    if ((out[k]?.value == null || out[k]?.status === 'unavailable') && fallback[k]?.value != null) {
-      out[k] = { ...fallback[k], status: 'cross-source', formula: 'TTM from Yahoo fallback' }
-    }
-  }
+function mergeTTM(y, s) {
+  if (!y) return s; if (!s) return y
+  const out = { ...y }
+  for (const k of Object.keys(s ?? {})) if (out[k]?.value == null && s[k]?.value != null) out[k] = s[k]
   return out
 }
 
-export function normalizeYahoo(raw) {
-  if (!raw) return { ttm: {}, incomeHistory: [], balanceHistory: [], cashflowHistory: [] }
-  const { ticker, chart, quote, fundamentals } = raw
+// ─── Yahoo normalizer ─────────────────────────────────────────────────────────
+
+function normalizeYahoo({ ticker, chart, quote, fundamentals }) {
   const q7  = quote?.quoteResponse?.result?.[0]      || {}
   const qs  = fundamentals?.quoteSummary?.result?.[0] || {}
   const fin = qs.financialData      || {}
@@ -157,11 +151,30 @@ export function normalizeYahoo(raw) {
   const ap  = qs.assetProfile       || {}
   const chartMeta = chart?.chart?.result?.[0]?.meta || {}
 
+  // Currency
   const currency = chartMeta.currency || q7.currency || 'USD'
+
+  // Price — v7 quote most reliable for Indian stocks
   const price     = q7.regularMarketPrice ?? chartMeta.regularMarketPrice ?? rv(fin.currentPrice)
   const marketCap = q7.marketCap          ?? rv(ks.marketCap)
   const shares    = q7.sharesOutstanding  ?? rv(ks.sharesOutstanding)
 
+  // Price history
+  const cr     = chart?.chart?.result?.[0]
+  const ts     = cr?.timestamp || []
+  const ohlcv  = cr?.indicators?.quote?.[0] || {}
+  const adj    = cr?.indicators?.adjclose?.[0]?.adjclose || []
+
+  const priceHistory = ts.map((t, i) => ({
+    date:   new Date(t * 1000).toISOString().slice(0, 10),
+    open:   ohlcv.open?.[i]   ?? null,
+    high:   ohlcv.high?.[i]   ?? null,
+    low:    ohlcv.low?.[i]    ?? null,
+    close:  adj[i] ?? ohlcv.close?.[i] ?? null,
+    volume: ohlcv.volume?.[i] ?? null
+  })).filter(d => d.close !== null)
+
+  // Income from incomeStatementHistory
   const incStmt = qs.incomeStatementHistory?.incomeStatementHistory || []
   const incomeHistory = incStmt.map(s => {
     const rev  = rv(s.totalRevenue)
@@ -172,23 +185,26 @@ export function normalizeYahoo(raw) {
     return {
       year:            yearOf(rv(s.endDate)),
       revenue:         rev  != null ? src(rev)  : unavailable(),
-      expenses:        unavailable(),
+      expenses:        unavailable(),  // Yahoo doesn't provide expenses line
       grossProfit:     gp   != null ? src(gp)   : unavailable(),
       operatingProfit: opI  != null ? src(opI)  : unavailable(),
-      ebitda:          unavailable(),
-      depreciation:    unavailable(),
+      ebitda:          unavailable(),  // will be derived in ratios.js
+      depreciation:    unavailable(),  // not in Yahoo income statement
       interest:        int  != null ? src(int)  : unavailable(),
       otherIncome:     unavailable(),
       netProfit:       ni   != null ? src(ni)   : unavailable(),
-      eps:             unavailable(),
+      eps:             unavailable(),  // from earnings module below
     }
   }).filter(r => r.year && r.revenue.value != null)
+    .sort((a, b) => a.year.localeCompare(b.year))
 
+  // EPS from earnings
   for (const e of (qs.earnings?.financialsChart?.yearly || [])) {
-    const row = incomeHistory.find(r => String(r.year) === String(e.date))
+    const row = incomeHistory.find(r => r.year === String(e.date))
     if (row && e.earnings != null) row.eps = src(rv(e.earnings))
   }
 
+  // Balance from balanceSheetHistory
   const bsStmt = qs.balanceSheetHistory?.balanceSheetStatements || []
   const balanceHistory = bsStmt.map(s => {
     const ta  = rv(s.totalAssets)
@@ -209,7 +225,9 @@ export function normalizeYahoo(raw) {
       investments:      unavailable(),
     }
   }).filter(r => r.year && r.totalAssets.value != null)
+    .sort((a, b) => a.year.localeCompare(b.year))
 
+  // Cash flow
   const cfStmt = qs.cashflowStatementHistory?.cashflowStatements || []
   const cashflowHistory = cfStmt.map(s => {
     const opCF  = rv(s.totalCashFromOperatingActivities)
@@ -229,13 +247,16 @@ export function normalizeYahoo(raw) {
                   : unavailable(),
     }
   }).filter(r => r.year && r.operatingCF.value != null)
+    .sort((a, b) => a.year.localeCompare(b.year))
 
+  // TTM from financialData
   const ttmData = {
     revenue:          rv(fin.totalRevenue)      != null ? src(rv(fin.totalRevenue))      : unavailable(),
     grossProfit:      rv(fin.grossProfits)      != null ? src(rv(fin.grossProfits))      : unavailable(),
     ebitda:           rv(fin.ebitda)            != null ? src(rv(fin.ebitda))            : unavailable(),
     netProfit:        rv(fin.netIncomeToCommon) != null ? src(rv(fin.netIncomeToCommon)) : unavailable(),
-    eps:              rv(fin.trailingEps) ?? rv(ks.trailingEps) != null ? src(rv(fin.trailingEps) ?? rv(ks.trailingEps)) : unavailable(),
+    eps:              rv(fin.trailingEps) ?? rv(ks.trailingEps) != null
+                        ? src(rv(fin.trailingEps) ?? rv(ks.trailingEps)) : unavailable(),
     operatingCF:      rv(fin.operatingCashflow) != null ? src(rv(fin.operatingCashflow)) : unavailable(),
     freeCashFlow:     rv(fin.freeCashflow)       != null ? src(rv(fin.freeCashflow))      : unavailable(),
     totalDebt:        rv(fin.totalDebt)          != null ? src(rv(fin.totalDebt))         : unavailable(),
@@ -252,120 +273,131 @@ export function normalizeYahoo(raw) {
   }
 
   return {
-    ticker, name: q7.longName || q7.shortName || ticker, source: 'yahoo', currency, price, marketCap, shares,
-    priceHistory: [], incomeHistory, balanceHistory, cashflowHistory, ttm: ttmData,
+    ticker,
+    name:     q7.longName || q7.shortName || chartMeta.instrumentType || ticker,
+    source:   'yahoo',
+    currency,
+    price,
+    marketCap,
+    shares,
+    priceHistory,
+    incomeHistory,
+    balanceHistory,
+    cashflowHistory,
+    ttm: ttmData,
     meta: {
-      sector: ap.sector || null, industry: ap.industry || null, exchange: q7.exchange || null,
-      pe: q7.trailingPE ?? rv(sd.trailingPE), pb: q7.priceToBook ?? rv(ks.priceToBook), divYield: q7.trailingAnnualDividendYield ?? rv(sd.dividendYield),
-    }
+      sector:    ap.sector    || null,
+      industry:  ap.industry  || null,
+      website:   ap.website   || null,
+      exchange:  q7.exchange  || chartMeta.exchangeName || null,
+      pe:        q7.trailingPE ?? rv(sd.trailingPE),
+      pb:        q7.priceToBook ?? rv(ks.priceToBook),
+      divYield:  q7.trailingAnnualDividendYield ?? rv(sd.dividendYield),
+      beta:      q7.beta      ?? rv(sd.beta),
+      high52:    q7.fiftyTwoWeekHigh  ?? rv(sd.fiftyTwoWeekHigh),
+      low52:     q7.fiftyTwoWeekLow   ?? rv(sd.fiftyTwoWeekLow),
+      avgVolume: q7.averageDailyVolume3Month ?? rv(sd.averageVolume),
+      change1d:  q7.regularMarketChangePercent ?? null,
+      volume:    q7.regularMarketVolume ?? null,
+    },
+    sourceStats: {}
   }
 }
 
-export function normalizeScreener(raw) {
-  if (!raw) return { ttm: {}, incomeHistory: [], balanceHistory: [], cashflowHistory: [] }
-  
-  const CR = 1e7; // Multiplier to scale Crores to absolute INR
+// ─── Screener normalizer ──────────────────────────────────────────────────────
 
-  // Helper that safely preserves the server-side resolution status while multiplying by Crore
-  const adaptAndScaleCr = (fieldObj) => {
-    if (!fieldObj || fieldObj.value == null || fieldObj.status === 'unavailable') {
-      return { value: null, status: 'unavailable', formula: null };
-    }
-    return {
-      value: Number(fieldObj.value) * CR,
-      status: fieldObj.status || 'source',
-      formula: fieldObj.formula || null
-    };
-  };
-
-  // 1. Map Income History
-  const inc = (raw.incomeHistory || []).map(r => ({
+function normalizeScreener(raw) {
+  // Screener values are in Crores — scale to absolute INR (× 1e7)
+  const inc = (raw.incomeHistory  || []).map(r => ({
     year:            r.year,
-    revenue:         adaptAndScaleCr(r.revenue),
-    expenses:        adaptAndScaleCr(r.expenses),
-    operatingProfit: adaptAndScaleCr(r.operatingProfit),
-    ebitda:          adaptAndScaleCr(r.ebitda),
-    depreciation:    adaptAndScaleCr(r.depreciation),
-    interest:        adaptAndScaleCr(r.interest),
-    otherIncome:     adaptAndScaleCr(r.otherIncome),
-    profitBeforeTax: adaptAndScaleCr(r.profitBeforeTax),
-    netProfit:       adaptAndScaleCr(r.netProfit),
-    eps:             r.eps && r.eps.value != null ? { ...r.eps } : { value: null, status: 'unavailable', formula: null } // EPS is not multiplied by Crore
-  }));
+    revenue:         scaleCr(r.revenue),
+    expenses:        scaleCr(r.expenses),
+    operatingProfit: scaleCr(r.operatingProfit),
+    ebitda:          scaleCr(r.ebitda),
+    depreciation:    scaleCr(r.depreciation),
+    interest:        scaleCr(r.interest),
+    otherIncome:     scaleCr(r.otherIncome),
+    netProfit:       scaleCr(r.netProfit),
+    eps:             r.eps ?? unavailable(),  // EPS is per-share, not in Crores
+    grossProfit:     unavailable(),  // not a separate line in Indian P&L
+  }))
 
-  // 2. Map Balance History
   const bal = (raw.balanceHistory || []).map(r => ({
     year:             r.year,
-    equityCapital:    adaptAndScaleCr(r.equityCapital),
-    reserves:         adaptAndScaleCr(r.reserves),
-    totalEquity:      adaptAndScaleCr(r.totalEquity),
-    totalDebt:        adaptAndScaleCr(r.totalDebt),
-    totalAssets:      adaptAndScaleCr(r.totalAssets),
-    totalLiabilities: adaptAndScaleCr(r.totalLiabilities),
-    fixedAssets:      adaptAndScaleCr(r.fixedAssets),
-    investments:      adaptAndScaleCr(r.investments),
-  }));
+    equityCapital:    scaleCr(r.equityCapital),
+    reserves:         scaleCr(r.reserves),
+    totalEquity:      scaleCr(r.totalEquity),
+    totalDebt:        scaleCr(r.totalDebt),
+    totalAssets:      scaleCr(r.totalAssets),
+    totalLiabilities: scaleCr(r.totalLiabilities),
+    fixedAssets:      scaleCr(r.fixedAssets),
+    investments:      scaleCr(r.investments),
+    cash:             unavailable(),  // Screener doesn't separate cash in balance sheet
+  }))
 
-  // 3. Map Cash Flow History
   const cf = (raw.cashflowHistory || []).map(r => ({
     year:         r.year,
-    operatingCF:  adaptAndScaleCr(r.operatingCF),
-    investingCF:  adaptAndScaleCr(r.investingCF),
-    financingCF:  adaptAndScaleCr(r.financingCF),
-    freeCashFlow: adaptAndScaleCr(r.freeCashFlow),
-  }));
+    operatingCF:  scaleCr(r.operatingCF),
+    investingCF:  scaleCr(r.investingCF),
+    financingCF:  scaleCr(r.financingCF),
+    freeCashFlow: scaleCr(r.freeCashFlow),
+  }))
 
-  // 4. Handle Key Live Stats (Market Cap & Current Price)
-  const ks = raw.keyStats || {};
-  
-  // Safely find pricing keys from your keyStats parser
-  const rawPrice = ks['currentprice']?.value ?? ks['stockprice']?.value ?? null;
-  const rawMcap  = ks['marketcap']?.value ?? null;
+  // Price & market cap from key stats (reference)
+  const ks       = raw.keyStats || {}
+  const price    = ks['currentprice']?.value  ?? ks['price']?.value ?? null
+  const mcapCr   = ks['marketcap']?.value     ?? null
+  const marketCap = mcapCr != null ? mcapCr * CR : null
 
-  const price     = rawPrice != null ? Number(rawPrice) : null;
-  const marketCap = rawMcap != null ? Number(rawMcap) * CR : null;
-
-  // Extract the latest year's records to formulate the baseline TTM object
-  const latestInc = inc[inc.length - 1] || {};
-  const latestBal = bal[bal.length - 1] || {};
-  const latestCF  = cf[cf.length - 1]  || {};
+  // Build minimal TTM from most recent income row
+  const latestInc = inc[inc.length - 1] || {}
+  const latestBal = bal[bal.length - 1] || {}
+  const latestCF  = cf[cf.length - 1]  || {}
 
   return {
-    ticker: raw.ticker || '',
-    name: raw.name || raw.ticker || '',
-    source: 'screener',
+    ticker:   raw.ticker,
+    name:     raw.name || raw.ticker,
+    source:   'screener',
     currency: 'INR',
     price,
     marketCap,
-    shares: marketCap && price ? (marketCap / price) : null,
+    shares:   null,
     priceHistory: [],
-    incomeHistory: inc,
+    incomeHistory:  inc,
     balanceHistory: bal,
     cashflowHistory: cf,
     ttm: {
-      revenue:       latestInc.revenue         || { value: null, status: 'unavailable', formula: null },
-      netProfit:     latestInc.netProfit       || { value: null, status: 'unavailable', formula: null },
-      ebitda:        latestInc.ebitda          || { value: null, status: 'unavailable', formula: null },
-      operatingCF:   latestCF.operatingCF      || { value: null, status: 'unavailable', formula: null },
-      freeCashFlow:  latestCF.freeCashFlow     || { value: null, status: 'unavailable', formula: null },
-      totalDebt:     latestBal.totalDebt       || { value: null, status: 'unavailable', formula: null },
-      cash:          latestBal.cash            || { value: null, status: 'unavailable', formula: null },
-      grossMargins:  { value: null, status: 'unavailable', formula: null },
-      profitMargins: { value: null, status: 'unavailable', formula: null },
-      ebitdaMargins: { value: null, status: 'unavailable', formula: null }
+      revenue:       latestInc.revenue,
+      netProfit:     latestInc.netProfit,
+      ebitda:        latestInc.ebitda,
+      operatingCF:   latestCF.operatingCF,
+      freeCashFlow:  latestCF.freeCashFlow,
+      totalDebt:     latestBal.totalDebt,
+      grossMargins:  unavailable(),
+      profitMargins: unavailable(),
+      ebitdaMargins: unavailable(),
     },
     meta: {
-      sector: null,
-      industry: null,
-      exchange: 'NSE/BSE',
-      pe:       ks['stockpe']?.value       ?? null,
-      pb:       ks['pricetobook']?.value   ?? null,
+      sector: null, industry: null, website: null, exchange: 'NSE/BSE',
+      pe:      ks['stockpe']?.value   ?? null,
+      pb:      null,
       divYield: ks['dividendyield']?.value ?? null,
     },
-    sourceStats: ks,
-    parserStatus: raw.parserStatus || { degraded: false, missingCore: [] }
-  };
+    keyStats: raw.keyStats,
+    sourceStats: raw.keyStats || {},
+    parserStatus: raw.parserStatus
+  }
 }
 
-function rv(v) { return v != null && typeof v === 'object' && 'raw' in v ? v.raw : (typeof v === 'number' ? v : null) }
-function yearOf(unix) { return unix ? new Date(unix * 1000).getFullYear().toString() : null }
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function rv(v) {
+  if (v == null) return null
+  if (typeof v === 'object' && 'raw' in v) return v.raw
+  if (typeof v === 'number') return v
+  return null
+}
+
+function yearOf(unix) {
+  return unix ? new Date(unix * 1000).getFullYear().toString() : null
+}

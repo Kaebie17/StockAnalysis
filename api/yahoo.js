@@ -1,13 +1,6 @@
 /**
- * /api/yahoo.js — Vercel serverless proxy for Yahoo Finance
- *
- * Three endpoints:
- *  - chart:  v8/finance/chart — OHLCV price history. No auth needed.
- *  - quote:  v7/finance/quote — real-time price, PE, marketCap, 52w range.
- *            More reliable than quoteSummary.price for Indian stocks.
- *  - fundamentals: v10/finance/quoteSummary — income/balance/cashflow statements.
- *            Needs crumb + cookie.
- *  - search: v1/finance/search — ticker resolution. No auth needed.
+ * api/yahoo.js — Vercel serverless (CommonJS)
+ * MUST use module.exports — Vercel /api/ functions are CommonJS by default
  */
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
@@ -23,7 +16,10 @@ async function getSessionCookieAndCrumb() {
   const cookieStr = rawCookies.map(c => c.split(';')[0].trim()).filter(Boolean).join('; ')
 
   const crumbRes = await fetch('https://query1.finance.yahoo.com/v1/finance/getCrumb', {
-    headers: { 'User-Agent': UA, 'Cookie': cookieStr, 'Accept': 'text/plain, */*', 'Referer': 'https://finance.yahoo.com/' }
+    headers: {
+      'User-Agent': UA, 'Cookie': cookieStr,
+      'Accept': 'text/plain, */*', 'Referer': 'https://finance.yahoo.com/'
+    }
   })
   if (!crumbRes.ok) throw new Error(`Crumb fetch failed: ${crumbRes.status}`)
   const crumb = (await crumbRes.text()).trim()
@@ -31,7 +27,7 @@ async function getSessionCookieAndCrumb() {
   return { cookieStr, crumb }
 }
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
   if (req.method === 'OPTIONS') return res.status(200).end()
@@ -40,7 +36,7 @@ export default async function handler(req, res) {
   if (!endpoint) return res.status(400).json({ error: 'Missing endpoint' })
 
   try {
-    // ── SEARCH — no auth ──────────────────────────────────────────────────────
+    // SEARCH — no auth needed
     if (endpoint === 'search') {
       const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=10&newsCount=0`
       const r = await fetch(url, { headers: { 'User-Agent': UA } })
@@ -49,7 +45,7 @@ export default async function handler(req, res) {
 
     if (!ticker) return res.status(400).json({ error: 'Missing ticker' })
 
-    // ── CHART — no auth, 2 years of daily OHLCV ──────────────────────────────
+    // CHART — no auth needed
     if (endpoint === 'chart') {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=2y&interval=1d&includePrePost=false&events=div%2Csplit`
       const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } })
@@ -58,33 +54,29 @@ export default async function handler(req, res) {
       return res.status(200).json(await r.json())
     }
 
-    // ── QUOTE — v7, no crumb needed, real-time price + valuation ratios ───────
-    // This is the most reliable source for price, PE, marketCap for Indian stocks
+    // QUOTE (v7) — no auth needed, returns live price + ratios
     if (endpoint === 'quote') {
-      const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(ticker)}&fields=regularMarketPrice,regularMarketVolume,regularMarketChangePercent,marketCap,trailingPE,forwardPE,priceToBook,trailingAnnualDividendYield,fiftyTwoWeekHigh,fiftyTwoWeekLow,averageDailyVolume3Month,sharesOutstanding,beta,currency,shortName,longName,exchange`
+      const fields = 'regularMarketPrice,regularMarketVolume,regularMarketChangePercent,marketCap,trailingPE,forwardPE,priceToBook,trailingAnnualDividendYield,fiftyTwoWeekHigh,fiftyTwoWeekLow,averageDailyVolume3Month,sharesOutstanding,beta,currency,shortName,longName,exchange'
+      const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(ticker)}&fields=${fields}`
       const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } })
       if (!r.ok) return res.status(r.status).json({ error: `Quote failed: ${r.status}` })
-      res.setHeader('Cache-Control', 's-maxage=300') // 5 min for live price
+      res.setHeader('Cache-Control', 's-maxage=300')
       return res.status(200).json(await r.json())
     }
 
-    // ── FUNDAMENTALS — v10 quoteSummary, needs crumb ──────────────────────────
+    // FUNDAMENTALS — needs crumb + cookie
     if (endpoint === 'fundamentals') {
       const { cookieStr, crumb } = await getSessionCookieAndCrumb()
       const modules = [
-        'financialData',
-        'defaultKeyStatistics',
-        'summaryDetail',
-        'assetProfile',
-        'incomeStatementHistory',
-        'balanceSheetHistory',
-        'cashflowStatementHistory',
-        'earnings'
+        'financialData', 'defaultKeyStatistics', 'summaryDetail', 'assetProfile',
+        'incomeStatementHistory', 'balanceSheetHistory', 'cashflowStatementHistory', 'earnings'
       ].join('%2C')
-
       const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=${modules}&crumb=${encodeURIComponent(crumb)}`
       const r = await fetch(url, {
-        headers: { 'User-Agent': UA, 'Cookie': cookieStr, 'Accept': 'application/json', 'Referer': 'https://finance.yahoo.com/' }
+        headers: {
+          'User-Agent': UA, 'Cookie': cookieStr,
+          'Accept': 'application/json', 'Referer': 'https://finance.yahoo.com/'
+        }
       })
       if (!r.ok) {
         const txt = await r.text()
