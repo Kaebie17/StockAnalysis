@@ -11,7 +11,7 @@
 const YahooFinance = require('yahoo-finance2').default
 
 const yf = new YahooFinance({
-  suppressNotices: ['yahooSurvey'],
+  suppressNotices: ['yahooSurvey', 'ripHistorical'],
   validation: { logErrors: false }
 })
 
@@ -98,9 +98,13 @@ module.exports = async function handler(req, res) {
           modules: ['financialData', 'defaultKeyStatistics', 'summaryDetail', 'assetProfile', 'earnings']
         }, yfOpts),
 
-        // Historical — 2 years of daily OHLCV for technicals
-        yf.historical(ticker, {
+        // Daily OHLCV for technicals (2yr).
+        // NOTE: historical() is deprecated AND currently fails Yahoo's own
+        // options validation (period2 schema) because Yahoo removed its backend.
+        // chart() is the supported replacement and returns { quotes: [...] }.
+        yf.chart(ticker, {
           period1: new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000),
+          period2: new Date(),
           interval: '1d'
         }, yfOpts),
 
@@ -129,6 +133,21 @@ module.exports = async function handler(req, res) {
       const summary = recover(summaryResult)
       let   history = recover(historyResult)
       const fts     = recover(ftsResult)
+
+      // chart() returns { quotes: [{date,open,high,low,close,volume,adjclose}] }.
+      // Flatten to the {date,open,high,low,close,adjClose,volume} shape normalize
+      // expects (note adjclose -> adjClose).
+      if (history && Array.isArray(history.quotes)) {
+        history = history.quotes.map(q => ({
+          date:     q.date,
+          open:     q.open,
+          high:     q.high,
+          low:      q.low,
+          close:    q.close,
+          adjClose: q.adjclose ?? q.close,
+          volume:   q.volume
+        })).filter(d => d.close != null)
+      }
 
       // Fallback: if yahoo-finance2 historical() failed, use Yahoo v8/finance/chart directly
       // This endpoint needs no crumb and reliably returns 2yr OHLCV for all tickers
