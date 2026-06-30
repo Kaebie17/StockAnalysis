@@ -138,6 +138,34 @@ module.exports = async function handler(req, res) {
         return res.status(404).json({ error: `No data for "${ticker}"` })
       }
 
+      // ── TEMPORARY DIAGNOSTIC — remove after debugging Net Profit / Interest gaps ──
+      // Logs to Vercel function logs only. Safe, read-only, no behavior change.
+      try {
+        const fin = summary?.financialData || {}
+        const incHist = summary?.incomeStatementHistory?.incomeStatementHistory || []
+        const balHist = summary?.balanceSheetHistory?.balanceSheetStatements || []
+        const latestInc = incHist[incHist.length - 1] || {}
+        const latestBal = balHist[balHist.length - 1] || {}
+
+        console.log(`[DIAGNOSTIC] ${ticker}`, JSON.stringify({
+          incomeStatementHistory_length: incHist.length,
+          balanceSheetHistory_length: balHist.length,
+          latestIncomeStatement_endDate: latestInc.endDate,
+          latestIncomeStatement_totalRevenue: latestInc.totalRevenue,
+          latestIncomeStatement_operatingIncome: latestInc.operatingIncome,
+          latestIncomeStatement_netIncome: latestInc.netIncome,        // ← Net Profit source
+          latestIncomeStatement_interestExpense: latestInc.interestExpense, // ← Interest source
+          latestBalanceSheet_totalAssets: latestBal.totalAssets,       // ← Total Assets source
+          latestBalanceSheet_totalStockholderEquity: latestBal.totalStockholderEquity,
+          financialData_netIncomeToCommon: fin.netIncomeToCommon,      // ← Net Profit TTM fallback source
+          financialData_totalRevenue: fin.totalRevenue,
+          financialData_keys_present: Object.keys(fin),
+        }, null, 2))
+      } catch (e) {
+        console.warn('[DIAGNOSTIC] logging failed:', e.message)
+      }
+      // ── END TEMPORARY DIAGNOSTIC ──────────────────────────────────────────────
+
       res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate')
       return res.status(200).json({ ticker, quote, summary, history })
     }
