@@ -60,19 +60,28 @@ module.exports = async function handler(req, res) {
       const yfOpts = { validateResult: false }
 
       const FTS_TYPES = [
-        'annualTotalRevenue', 'annualOperatingRevenue',
-        'annualOperatingIncome', 'annualEBIT',
-        'annualDepreciationAndAmortization', 'annualReconciledDepreciation',
+        // Income Statement
+        'annualTotalRevenue', 
+        'annualOperatingRevenue',
+        'annualOperatingIncome', 
+        'annualEBIT',
+        'annualDepreciationAndAmortization', 
         'annualDepreciationAmortizationDepletion',
-        'annualInterestExpense', 'annualNetNonOperatingInterestIncomeExpense',
-        'annualNetIncome', 'annualNetIncomeCommonStockholders',
-        'annualStockholdersEquity', 'annualTotalEquityGrossMinorityInterest',
-        'annualCommonStockEquity',
-        'annualTotalDebt', 'annualLongTermDebt',
+        'annualInterestExpense', 
+        'annualNetIncome', 
+        'annualNetIncomeCommonStockholders',
+        'annualDilutedEPS', 
+        'annualBasicEPS',
+
+        // Balance Sheet
         'annualTotalAssets',
-        'annualOperatingCashFlow', 'annualCashFlowFromContinuingOperatingActivities',
-        'annualFreeCashFlow',
-        'annualDilutedEPS', 'annualBasicEPS',
+        'annualStockholdersEquity', 
+        'annualCommonStockEquity',
+        'annualTotalDebt',
+
+        // Cash Flow
+        'annualOperatingCashFlow', 
+        'annualFreeCashFlow'
       ]
 
       const sixYearsAgo = new Date()
