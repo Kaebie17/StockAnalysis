@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 
 const TABLES = [
@@ -7,24 +7,41 @@ const TABLES = [
   { key: 'cashflow', label: 'Cash Flow',      icon: '💵', hint: 'Operating Cash Flow, Free Cash Flow' },
 ]
 
+// Labels for the verification preview, per table.
+const FIELD_LABELS = {
+  income:   { revenue: 'Revenue', operatingProfit: 'Operating Profit', depreciation: 'Depreciation', interest: 'Interest', netProfit: 'Net Profit', eps: 'EPS' },
+  balance:  { equityCapital: 'Equity Capital', reserves: 'Reserves', totalEquity: 'Total Equity', totalDebt: 'Total Debt', totalAssets: 'Total Assets' },
+  cashflow: { operatingCF: 'Operating Cash Flow', freeCashFlow: 'Free Cash Flow' },
+}
+
+const screenerUrl = (ticker) =>
+  ticker
+    ? `https://www.screener.in/company/${ticker.replace(/\.(NS|BO)$/i, '').toUpperCase()}/consolidated/`
+    : null
+
+// Screener reports financials in ₹ Crore; scale for Indian tickers to match Yahoo.
+const pasteScale = (ticker) => (/\.(NS|BO)$/i.test(ticker || '') ? 1e7 : 1)
+
 /**
  * General "I want more history/breadth" entry point — distinct from
  * GapFillModal (which only appears when specific metrics are missing).
- * This is always available, single screen, all 3 tables pasted at once
- * rather than a step-by-step wizard — for when Yahoo's data is technically
- * complete but the user wants deeper history or a more recent fiscal year
- * than what's currently loaded.
+ * Single screen, all 3 tables pasted at once.
  */
 export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
   const [pasteText, setPasteText] = useState({ income: '', balance: '', cashflow: '' })
-  const [results, setResults]     = useState(null) // { income: {rows,...}, balance: {...}, cashflow: {...} }
+  const [results, setResults]     = useState(null)
   const [applied, setApplied]     = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setPasteText({ income: '', balance: '', cashflow: '' })
+    setResults(null)
+    setApplied(false)
+  }, [open])
 
   if (!open) return null
 
-  const openScreener = () => {
-    if (ticker) window.open(`https://www.screener.in/company/${ticker.replace(/\.(NS|BO)$/i, '')}/consolidated/`, '_blank')
-  }
+  const url = screenerUrl(ticker)
 
   const handleParseAll = () => {
     const out = {}
@@ -40,7 +57,7 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
     if (!results) return
     for (const [tableType, result] of Object.entries(results)) {
       if (result.matchedCount > 0) {
-        const tagged = tagPastedRows(result.rows, tableType)
+        const tagged = tagPastedRows(result.rows, tableType, { scale: pasteScale(ticker) })
         onApplyAll(tableType, tagged)
       }
     }
@@ -75,9 +92,14 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
 
         {!applied ? (
           <>
-            <button onClick={openScreener} className="btn-ghost text-sm w-full">
-              Open Screener for {ticker} →
-            </button>
+            {url ? (
+              <a href={url} target="_blank" rel="noopener noreferrer"
+                 className="btn-ghost text-sm w-full inline-flex items-center justify-center">
+                Open Screener for {ticker} →
+              </a>
+            ) : (
+              <p className="text-xs text-bear">No ticker available to open Screener.</p>
+            )}
             <p className="text-xs text-slate-500">
               Copy whichever tables you want to add, paste each into its matching box below.
               You only need to fill in the ones you have.
@@ -125,15 +147,60 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
 
             {results && (
               <>
-                {results && Object.values(results).some(r => r.warnings?.length > 0) && (
+                {Object.values(results).some(r => r.warnings?.length > 0) && (
                   <div className="bg-bear/10 border border-bear/30 rounded-lg p-2 text-xs text-bear space-y-0.5">
                     {Object.entries(results).flatMap(([k, r]) =>
                       (r.warnings || []).map((w, i) => <p key={k + i}>{TABLES.find(t => t.key === k)?.label}: {w}</p>)
                     )}
                   </div>
                 )}
+
+                {/* Verification preview — show exactly what was parsed, per table */}
+                {Object.entries(results).map(([k, r]) => {
+                  if (!r.rows?.length || r.matchedCount === 0) return null
+                  const labels = FIELD_LABELS[k] || {}
+                  const presentFields = Object.keys(labels).filter(
+                    f => r.rows.some(row => row[f] != null)
+                  )
+                  if (presentFields.length === 0) return null
+                  return (
+                    <div key={k} className="space-y-1">
+                      <div className="text-xs font-medium text-slate-300">
+                        {TABLES.find(t => t.key === k)?.label} — parsed values
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-navy-700">
+                              <th className="text-left py-1 text-slate-500">Field</th>
+                              {r.years.map(y => (
+                                <th key={y} className="text-right py-1 text-slate-500 px-2">{y}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {presentFields.map(f => (
+                              <tr key={f} className="border-b border-navy-800/50">
+                                <td className="py-1 text-slate-300">{labels[f]}</td>
+                                {r.rows.map((row, i) => (
+                                  <td key={i} className="text-right py-1 px-2 font-mono">
+                                    {row[f] != null
+                                      ? <span className="text-white">{row[f].toLocaleString()}</span>
+                                      : <span className="text-slate-600">—</span>}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )
+                })}
+
                 <p className="text-xs text-slate-500">
-                  Total fields recognized: {totalMatched}. Check this looks right against your Screener tab before confirming.
+                  Total fields recognized: {totalMatched}. Values shown as pasted (₹ Crore for Screener).
+                  Check this against your Screener tab before confirming.
                 </p>
                 <div className="flex gap-2">
                   <button onClick={() => setResults(null)} className="btn-ghost text-sm flex-1">↺ Try again</button>

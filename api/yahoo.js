@@ -59,30 +59,21 @@ module.exports = async function handler(req, res) {
     if (endpoint === 'all') {
       const yfOpts = { validateResult: false }
 
-      const FTS_TYPES = [
-        // Income Statement
-        'annualTotalRevenue', 
-        'annualOperatingRevenue',
-        'annualOperatingIncome', 
-        'annualEBIT',
-        'annualDepreciationAndAmortization', 
-        'annualDepreciationAmortizationDepletion',
-        'annualInterestExpense', 
-        'annualNetIncome', 
-        'annualNetIncomeCommonStockholders',
-        'annualDilutedEPS', 
-        'annualBasicEPS',
-
-        // Balance Sheet
-        'annualTotalAssets',
-        'annualStockholdersEquity', 
-        'annualCommonStockEquity',
-        'annualTotalDebt',
-
-        // Cash Flow
-        'annualOperatingCashFlow', 
-        'annualFreeCashFlow'
-      ]
+      // NOTE on fundamentalsTimeSeries() usage (corrected):
+      //   - `type` is the PERIOD ('annual' | 'quarterly' | 'trailing'), NOT a
+      //     list of concept names. Passing an array of 'annualXxx' strings (as
+      //     this code originally did) fails the library's type-enum check, so
+      //     the whole call rejected and `fts` came back null — which silently
+      //     forced normalize.js onto its TTM-synthesis fallback. That was the
+      //     real reason real companies (e.g. RELIANCE.NS) showed base metrics
+      //     as "unavailable".
+      //   - The concept list is selected automatically by `module: 'all'`
+      //     (income + balance sheet + cash flow). We don't (and can't) pass it.
+      //   - In the response, yahoo-finance2 STRIPS the period prefix from every
+      //     key (annualTotalRevenue -> totalRevenue, annualReconciledDepreciation
+      //     -> reconciledDepreciation, etc). normalize.js reads those de-prefixed
+      //     names. Verified against the library source (v3.x) + a replayed
+      //     transform of its processResponse().
 
       const sixYearsAgo = new Date()
       sixYearsAgo.setFullYear(sixYearsAgo.getFullYear() - 6)
@@ -117,7 +108,7 @@ module.exports = async function handler(req, res) {
         yf.fundamentalsTimeSeries(ticker, {
           period1: sixYearsAgo,
           period2: new Date(),
-          type: FTS_TYPES,
+          type: 'annual',   // PERIOD, not a concept list (see note above)
           module: 'all'
         }, yfOpts)
       ])

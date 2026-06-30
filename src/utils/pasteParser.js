@@ -146,14 +146,24 @@ export function parsePastedTable(text, tableType) {
   return { years, rows, warnings, matchedCount }
 }
 
-/** Convert parsed rows into the tagged shape used elsewhere (status: 'pasted') */
-export function tagPastedRows(rows, tableType) {
+/**
+ * Convert parsed rows into the tagged shape used elsewhere (status: 'pasted').
+ *
+ * opts.scale multiplies every monetary field (Screener reports in ₹ Crore, but
+ * the rest of the app stores absolute currency, so callers pass scale=1e7 for
+ * .NS/.BO tickers). Per-share fields in SKIP_SCALE are never scaled.
+ */
+const SKIP_SCALE = new Set(['eps'])
+
+export function tagPastedRows(rows, tableType, opts = {}) {
+  const scale = opts.scale ?? 1
   return rows.map(row => {
     const tagged = { year: row.year }
     for (const [key, value] of Object.entries(row)) {
       if (key === 'year') continue
-      tagged[key] = value != null
-        ? { value, status: 'pasted', formula: null }
+      const scaled = value != null && !SKIP_SCALE.has(key) ? value * scale : value
+      tagged[key] = scaled != null
+        ? { value: scaled, status: 'pasted', formula: null }
         : { value: null, status: 'unavailable', formula: null }
     }
     return tagged

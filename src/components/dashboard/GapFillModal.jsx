@@ -1,52 +1,80 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { findMissingBaseMetrics, TABLE_INFO } from '../../engine/dataGaps.js'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 
 const STEP_ICON = { income: '📊', balance: '⚖️', cashflow: '💵' }
 
+const screenerUrl = (ticker) =>
+  ticker
+    ? `https://www.screener.in/company/${ticker.replace(/\.(NS|BO)$/i, '').toUpperCase()}/consolidated/`
+    : null
+
+// Screener reports financials in ₹ Crore; the app stores absolute currency.
+// Scale pasted numbers for Indian tickers so they line up with Yahoo data.
+const pasteScale = (ticker) => (/\.(NS|BO)$/i.test(ticker || '') ? 1e7 : 1)
+
 export default function GapFillModal({ open, onClose, ratioResult, ticker, onApply }) {
-  const { byTable } = useMemo(() => findMissingBaseMetrics(ratioResult), [ratioResult])
-  const tables = Object.keys(byTable) // e.g. ['income', 'cashflow']
-
-  const [stepIdx, setStepIdx] = useState(0)
+  // Stable plan captured when the modal opens. We must NOT drive the wizard off
+  // the live ratioResult — it shrinks as gaps get filled, which previously made
+  // the step indexing and the "all done" check break mid-flow.
+  const [plan, setPlan] = useState({ tables: [], byTable: {} })
+  const [stepIdx, setStepIdx]     = useState(0)
   const [pasteText, setPasteText] = useState('')
-  const [preview, setPreview] = useState(null)
+  const [preview, setPreview]     = useState(null)
   const [completed, setCompleted] = useState({})
+  const [finished, setFinished]   = useState(false)
 
-  if (!open || tables.length === 0) return null
+  // (Re)initialise every time the modal is opened.
+  useEffect(() => {
+    if (!open) return
+    const { byTable } = findMissingBaseMetrics(ratioResult)
+    const tables = Object.keys(byTable)
+    setPlan({ tables, byTable })
+    setStepIdx(0)
+    setPasteText('')
+    setPreview(null)
+    setCompleted({})
+    setFinished(tables.length === 0)
+  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const currentTable = tables[stepIdx]
-  const currentMissing = byTable[currentTable]
-  const tableInfo = TABLE_INFO[currentTable]
-  const isLastStep = stepIdx === tables.length - 1
-  const isDone = Object.keys(completed).length === tables.length
+  // Live view of what is still missing — used only to relabel a step, never to
+  // resize the wizard.
+  const liveByTable = useMemo(
+    () => findMissingBaseMetrics(ratioResult).byTable,
+    [ratioResult]
+  )
 
-  const openScreener = () => {
-    if (ticker) window.open(`https://www.screener.in/company/${ticker.replace(/\.(NS|BO)$/i, '')}/consolidated/`, '_blank')
-  }
+  if (!open) return null
+
+  const { tables } = plan
+  const currentTable  = tables[stepIdx]
+  const tableInfo     = currentTable ? TABLE_INFO[currentTable] : null
+  // Prefer the live missing-list for this table (fields a prior step may have
+  // already resolved drop off), falling back to the snapshot.
+  const currentMissing = (liveByTable[currentTable] || plan.byTable[currentTable] || [])
+  const isLastStep    = stepIdx >= tables.length - 1
+  const url           = screenerUrl(ticker)
 
   const handleParse = () => {
-    const result = parsePastedTable(pasteText, currentTable)
-    setPreview(result)
+    setPreview(parsePastedTable(pasteText, currentTable))
+  }
+
+  const advance = () => {
+    setPasteText('')
+    setPreview(null)
+    if (isLastStep) setFinished(true)
+    else setStepIdx(i => i + 1)
   }
 
   const handleConfirmStep = () => {
     if (!preview) return
-    const tagged = tagPastedRows(preview.rows, currentTable)
+    const tagged = tagPastedRows(preview.rows, currentTable, { scale: pasteScale(ticker) })
     onApply(currentTable, tagged)
     setCompleted(prev => ({ ...prev, [currentTable]: true }))
-    setPasteText('')
-    setPreview(null)
-    if (!isLastStep) {
-      setStepIdx(stepIdx + 1)
-    }
+    advance()
   }
 
-  const handleSkipStep = () => {
-    setPasteText('')
-    setPreview(null)
-    if (!isLastStep) setStepIdx(stepIdx + 1)
-  }
+  const handleSkipStep = () => advance()
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
@@ -55,22 +83,26 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-semibold text-white">Fill missing data</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Step {stepIdx + 1} of {tables.length}</p>
+            {!finished && (
+              <p className="text-xs text-slate-500 mt-0.5">Step {stepIdx + 1} of {tables.length}</p>
+            )}
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">✕</button>
         </div>
 
         {/* Step progress dots */}
-        <div className="flex gap-1.5">
-          {tables.map((t, i) => (
-            <div key={t}
-              className={`h-1.5 flex-1 rounded-full ${
-                completed[t] ? 'bg-bull' : i === stepIdx ? 'bg-accent' : 'bg-navy-800'
-              }`} />
-          ))}
-        </div>
+        {!finished && (
+          <div className="flex gap-1.5">
+            {tables.map((t, i) => (
+              <div key={t}
+                className={`h-1.5 flex-1 rounded-full ${
+                  completed[t] ? 'bg-bull' : i === stepIdx ? 'bg-accent' : 'bg-navy-800'
+                }`} />
+            ))}
+          </div>
+        )}
 
-        {!isDone ? (
+        {!finished && currentTable ? (
           <>
             {/* What's needed this step */}
             <div className="bg-navy-800/50 rounded-lg p-3 space-y-1">
@@ -89,9 +121,14 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
                 1. Open Screener, find the <strong className="text-slate-300">{tableInfo.screenerSection}</strong> table,
                 select it and copy (the whole table, including the year headers)
               </p>
-              <button onClick={openScreener} className="btn-ghost text-sm w-full">
-                Open Screener for {ticker} →
-              </button>
+              {url ? (
+                <a href={url} target="_blank" rel="noopener noreferrer"
+                   className="btn-ghost text-sm w-full inline-flex items-center justify-center">
+                  Open Screener for {ticker} →
+                </a>
+              ) : (
+                <p className="text-xs text-bear">No ticker available to open Screener.</p>
+              )}
             </div>
 
             {/* Step 2: paste */}
@@ -153,7 +190,7 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
                     </table>
                   </div>
                 )}
-                <p className="text-xs text-slate-500">Check this against your Screener tab before confirming.</p>
+                <p className="text-xs text-slate-500">Values shown as pasted (₹ Crore for Screener). Check against your Screener tab before confirming.</p>
                 <div className="flex gap-2">
                   <button onClick={() => setPreview(null)} className="btn-ghost text-sm flex-1">
                     ↺ Try again

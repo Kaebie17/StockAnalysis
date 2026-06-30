@@ -94,29 +94,31 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
 
   const incomeHistory = ftsYears.map(year => {
     const row = ftsRows.find(r => yearOf(dateOf(r)) === year) || {}
-    
-    const rev = pick(row, 'annualTotalRevenue', 'annualOperatingRevenue')
-    const opI = pick(row, 'annualOperatingIncome', 'annualEBIT')
-    const dep = pick(row, 'annualDepreciationAndAmortization', 'annualDepreciationAmortizationDepletion', 'annualReconciledDepreciation')
-    const int = pick(row, 'annualInterestExpense', 'annualNetNonOperatingInterestIncomeExpense')
-    const ni  = pick(row, 'annualNetIncome', 'annualNetIncomeCommonStockholders')
-    const epsVal = pick(row, 'annualDilutedEPS', 'annualBasicEPS')
-
+    // yahoo-finance2 returns concept keys with the period prefix STRIPPED
+    // (annualTotalRevenue -> totalRevenue, etc). These are those real keys.
+    const rev = pick(row, 'totalRevenue', 'operatingRevenue')
+    const opI = pick(row, 'operatingIncome', 'totalOperatingIncomeAsReported', 'EBIT')
+    const dep = pick(row, 'reconciledDepreciation', 'depreciationAndAmortizationInIncomeStatement',
+                          'depreciationAmortizationDepletionIncomeStatement', 'depreciationIncomeStatement')
+    const int = pick(row, 'interestExpense', 'interestExpenseNonOperating', 'netNonOperatingInterestIncomeExpense')
+    const ni  = pick(row, 'netIncome', 'netIncomeCommonStockholders')
+    const epsVal = pick(row, 'dilutedEPS', 'basicEPS')
+    const ebd = pick(row, 'EBITDA', 'normalizedEBITDA')
     return {
       year,
-      revenue: rev != null ? src(rev) : unavailable(),
-      expenses: unavailable(),
-      grossProfit: unavailable(),
+      revenue:         rev != null ? src(rev) : unavailable(),
+      expenses:        unavailable(),
+      grossProfit:     unavailable(),
       operatingProfit: opI != null ? src(opI) : unavailable(),
-      ebitda: unavailable(), // derived later in ratios.js from opI + dep
-      depreciation: dep != null ? src(dep) : unavailable(),
-      interest: int != null ? src(int) : unavailable(),
-      otherIncome: unavailable(),
-      netProfit: ni != null ? src(ni) : unavailable(),
-      eps: epsVal != null ? src(epsVal) : unavailable(),
+      ebitda:          ebd != null ? src(ebd) : unavailable(), // else derived later in ratios.js
+      depreciation:    dep != null ? src(dep) : unavailable(),
+      interest:        int != null ? src(int) : unavailable(),
+      otherIncome:     unavailable(),
+      netProfit:       ni  != null ? src(ni)  : unavailable(),
+      eps:             epsVal != null ? src(epsVal) : unavailable(),
     }
   }).filter(r => r.year && r.revenue.value != null)
-  .sort((a, b) => a.year.localeCompare(b.year))
+    .sort((a, b) => a.year.localeCompare(b.year))
 
   // EPS fallback from earnings module (annual) if fundamentalsTimeSeries didn't have it
   for (const e of (summary?.earnings?.financialsChart?.yearly || [])) {
@@ -126,9 +128,9 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
 
   const balanceHistory = ftsYears.map(year => {
     const row = ftsRows.find(r => yearOf(dateOf(r)) === year) || {}
-    const ta  = pick(row, 'annualTotalAssets')
-    const eq  = pick(row, 'annualStockholdersEquity', 'annualTotalEquityGrossMinorityInterest', 'annualCommonStockEquity')
-    const ltd = pick(row, 'annualTotalDebt', 'annualLongTermDebt')
+    const ta  = pick(row, 'totalAssets')
+    const eq  = pick(row, 'stockholdersEquity', 'totalEquityGrossMinorityInterest', 'commonStockEquity')
+    const ltd = pick(row, 'totalDebt', 'longTermDebt', 'longTermDebtAndCapitalLeaseObligation')
     return {
       year,
       equityCapital:    unavailable(),
@@ -146,8 +148,8 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
 
   const cashflowHistory = ftsYears.map(year => {
     const row = ftsRows.find(r => yearOf(dateOf(r)) === year) || {}
-    const opCF = pick(row, 'annualOperatingCashFlow', 'annualCashFlowFromContinuingOperatingActivities')
-    const fcf  = pick(row, 'annualFreeCashFlow')
+    const opCF = pick(row, 'operatingCashFlow', 'cashFlowFromContinuingOperatingActivities')
+    const fcf  = pick(row, 'freeCashFlow')
     return {
       year,
       operatingCF:  opCF != null ? src(opCF) : unavailable(),
@@ -202,6 +204,7 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
     const yr = new Date().getFullYear().toString()
     incomeHistory.push({
       year:            yr,
+      synthetic:       true,   // TTM-only stub — must never shadow real/pasted rows
       revenue:         ttmRev  != null ? src(ttmRev)  : unavailable(),
       expenses:        unavailable(),
       grossProfit:     ttmData.grossProfit.value != null ? src(ttmData.grossProfit.value) : unavailable(),
@@ -223,6 +226,7 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
     const yr        = new Date().getFullYear().toString()
     balanceHistory.push({
       year:             yr,
+      synthetic:        true,   // TTM-only stub — must never shadow real/pasted rows
       equityCapital:    unavailable(),
       reserves:         unavailable(),
       totalEquity:      equity  != null ? derived(equity, deRatio ? 'Debt ÷ D/E (TTM)' : 'Net Profit ÷ ROE (TTM)') : unavailable(),
@@ -239,6 +243,7 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
     const yr = new Date().getFullYear().toString()
     cashflowHistory.push({
       year:         yr,
+      synthetic:    true,   // TTM-only stub — must never shadow real/pasted rows
       operatingCF:  ttmOpCF != null ? src(ttmOpCF) : unavailable(),
       investingCF:  unavailable(),
       financingCF:  unavailable(),

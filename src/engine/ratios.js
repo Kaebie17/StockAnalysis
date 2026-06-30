@@ -18,13 +18,43 @@ export function calcRatios(data) {
   const { price, marketCap, shares: sharesRaw, incomeHistory,
           balanceHistory, cashflowHistory, ttm, meta } = data
 
+  // ── Latest-year snapshot (synthetic-aware, gap-filled) ──────────────────────
+  // Real fiscal-year rows always take precedence over the synthetic current-year
+  // TTM stub that normalize.js may append (flagged `synthetic:true`). The snapshot
+  // is anchored on the most recent REAL row; any field still missing there is
+  // back-filled from older real rows, then finally from the TTM stub. This is what
+  // lets pasted/merged Screener rows actually drive the dashboard instead of being
+  // shadowed by a fabricated current-year row that only carried a few TTM fields.
+  const realRows = arr => {
+    const real = (arr || []).filter(r => !r.synthetic)
+    return real.length ? real : (arr || [])
+  }
+  const coalesceLatest = (arr) => {
+    const rows = arr || []
+    if (rows.length === 0) return {}
+    const real = realRows(rows)
+    const base = { ...real[real.length - 1] }                 // most recent real row
+    const fill = (row) => {
+      for (const k in row) {
+        if (k === 'year' || k === 'synthetic') continue
+        if (base[k]?.value == null && row[k]?.value != null) base[k] = row[k]
+      }
+    }
+    for (let i = real.length - 2; i >= 0; i--) fill(real[i])   // back-fill from older real rows
+    for (const r of rows) if (r.synthetic) fill(r)             // last resort: TTM stub
+    return base
+  }
+
+  const incomeReal  = realRows(incomeHistory)
+  const balanceReal = realRows(balanceHistory)
+
   // Unwrap tagged values from latest year
-  const latestI  = incomeHistory[incomeHistory.length - 1]   || {}
-  const prevI    = incomeHistory[incomeHistory.length - 2]   || {}
-  const oldestI  = incomeHistory[0]                          || {}
-  const latestB  = balanceHistory[balanceHistory.length - 1]  || {}
-  const latestCF = cashflowHistory[cashflowHistory.length - 1] || {}
-  const n        = incomeHistory.length - 1
+  const latestI  = coalesceLatest(incomeHistory)
+  const prevI    = incomeReal[incomeReal.length - 2]   || {}
+  const oldestI  = incomeReal[0]                        || {}
+  const latestB  = coalesceLatest(balanceHistory)
+  const latestCF = coalesceLatest(cashflowHistory)
+  const n        = incomeReal.length - 1
 
   // Helper: unwrap .value from tagged field
   const val = f => f?.value ?? null
@@ -100,7 +130,7 @@ export function calcRatios(data) {
 
   // ── Returns ────────────────────────────────────────────────────────────────
   // ROE = Net Profit / Average Equity × 100
-  const prevEquity = val(balanceHistory[balanceHistory.length - 2]?.totalEquity)
+  const prevEquity = val(balanceReal[balanceReal.length - 2]?.totalEquity)
   const avgEquity  = totalEquity != null && prevEquity != null
     ? (totalEquity + prevEquity) / 2 : totalEquity
   const roe  = pct(netProfit, avgEquity) ?? pct100(val(ttm?.roe))
