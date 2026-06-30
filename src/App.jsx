@@ -9,6 +9,7 @@ import MarketExpectationPanel from './components/dashboard/MarketExpectationPane
 import EmptyState from './components/dashboard/EmptyState.jsx'
 import DataGapBanner from './components/dashboard/DataGapBanner.jsx'
 import GapFillModal from './components/dashboard/GapFillModal.jsx'
+import AddHistoryModal from './components/dashboard/AddHistoryModal.jsx'
 import ScoringStudio from './components/studio/ScoringStudio.jsx'
 import { parseCSV } from './utils/csv.js'
 import { requestFolderAccess, exportOverrideJSON, openFilePicker, importOverrideFile } from './utils/csv.js'
@@ -19,6 +20,7 @@ function Dashboard() {
   const [studioOpen, setStudioOpen] = useState(false)
   const [csvModal, setCsvModal] = useState(false)  // 'upload' | 'gap-fill' | false
   const [gapFillOpen, setGapFillOpen] = useState(false)
+  const [addHistoryOpen, setAddHistoryOpen] = useState(false)
   const fileRef = useRef()
 
   const handleExpand = (panel) => {
@@ -96,7 +98,14 @@ function Dashboard() {
 
               <SummaryStrip onExpand={handleExpand} expanded={expanded} />
 
-              <DataGapBanner ratioResult={state.ratioResult} onFix={() => setGapFillOpen(true)} />
+              <div className="flex items-center justify-between gap-2">
+                <DataGapBanner ratioResult={state.ratioResult} onFix={() => setGapFillOpen(true)} />
+                <button
+                  onClick={() => setAddHistoryOpen(true)}
+                  className="shrink-0 text-xs text-slate-500 hover:text-slate-300 underline">
+                  Add more history →
+                </button>
+              </div>
 
               <div id="panel-valuation">
                 <ValuationPanel open={expanded === 'valuation'} onClose={() => setExpanded(null)} />
@@ -149,6 +158,13 @@ function Dashboard() {
         ratioResult={state.ratioResult}
         ticker={state.ticker}
         onApply={applyPastedTable}
+      />
+
+      <AddHistoryModal
+        open={addHistoryOpen}
+        onClose={() => setAddHistoryOpen(false)}
+        ticker={state.ticker}
+        onApplyAll={applyPastedTable}
       />
 
       {/* CSV Modal */}

@@ -38,7 +38,7 @@ function yearOf(d) {
 
 // ─── Yahoo normalizer (yahoo-finance2 output) ─────────────────────────────────
 
-function normalizeYahoo({ ticker, quote, summary, history }) {
+function normalizeYahoo({ ticker, quote, summary, history, fts }) {
   const q   = quote    || {}
   const fin = summary?.financialData      || {}
   const ks  = summary?.defaultKeyStatistics || {}
@@ -67,78 +67,92 @@ function normalizeYahoo({ ticker, quote, summary, history }) {
       volume: n(d.volume)
     }))
 
-  // ── Income history (from incomeStatementHistory) ──────────────────────────────
-  // yahoo-finance2 returns direct numbers, endDate is a Date object
-  const incStmt = summary?.incomeStatementHistory?.incomeStatementHistory || []
-  const incomeHistory = incStmt.map(s => {
-    const rev  = n(s.totalRevenue)
-    const gp   = n(s.grossProfit)
-    const opI  = n(s.operatingIncome) ?? n(s.ebit)
-    const ni   = n(s.netIncome)
-    const int  = n(s.interestExpense)
+  // ── Statement history (from fundamentalsTimeSeries) ───────────────────────────
+  // MIGRATED: quoteSummary's incomeStatementHistory/balanceSheetHistory/
+  // cashflowStatementHistory have been dead since Nov 2024 (confirmed by
+  // yahoo-finance2's own runtime warning). fundamentalsTimeSeries is the
+  // current replacement, returning one entry per fiscal-year date with
+  // requested "type" fields flattened directly onto each entry.
+  //
+  // Field naming is a best-effort match against Yahoo's concept taxonomy —
+  // each metric below tries multiple alias candidates since the exact
+  // names returned haven't been verified against live data yet. The
+  // DIAGNOSTIC log in api/yahoo.js shows the real keys on first deploy;
+  // update the candidate lists here if any come back empty.
+  const ftsRows = Array.isArray(fts) ? fts : []
+
+  const pick = (row, ...candidates) => {
+    for (const c of candidates) {
+      const v = n(row[c])
+      if (v != null) return v
+    }
+    return null
+  }
+
+  const dateOf = row => row.date || row.asOfDate || row.endDate
+  const ftsYears = [...new Set(ftsRows.map(r => yearOf(dateOf(r))).filter(Boolean))].sort()
+
+  const incomeHistory = ftsYears.map(year => {
+    const row = ftsRows.find(r => yearOf(dateOf(r)) === year) || {}
+    const rev = pick(row, 'annualTotalRevenue', 'annualOperatingRevenue')
+    const opI = pick(row, 'annualOperatingIncome', 'annualEBIT')
+    const dep = pick(row, 'annualDepreciationAndAmortization', 'annualReconciledDepreciation', 'annualDepreciationAmortizationDepletion')
+    const int = pick(row, 'annualInterestExpense', 'annualNetNonOperatingInterestIncomeExpense')
+    const ni  = pick(row, 'annualNetIncome', 'annualNetIncomeCommonStockholders')
+    const epsVal = pick(row, 'annualDilutedEPS', 'annualBasicEPS')
     return {
-      year:            yearOf(s.endDate),
-      revenue:         rev  != null ? src(rev)  : unavailable(),
+      year,
+      revenue:         rev != null ? src(rev) : unavailable(),
       expenses:        unavailable(),
-      grossProfit:     gp   != null ? src(gp)   : unavailable(),
-      operatingProfit: opI  != null ? src(opI)  : unavailable(),
+      grossProfit:     unavailable(),
+      operatingProfit: opI != null ? src(opI) : unavailable(),
       ebitda:          unavailable(), // derived later in ratios.js from opI + dep
-      depreciation:    unavailable(), // not in Yahoo income statement
-      interest:        int  != null ? src(int)  : unavailable(),
+      depreciation:    dep != null ? src(dep) : unavailable(),
+      interest:        int != null ? src(int) : unavailable(),
       otherIncome:     unavailable(),
-      netProfit:       ni   != null ? src(ni)   : unavailable(),
-      eps:             unavailable(), // from earnings module below
+      netProfit:       ni  != null ? src(ni)  : unavailable(),
+      eps:             epsVal != null ? src(epsVal) : unavailable(),
     }
   }).filter(r => r.year && r.revenue.value != null)
     .sort((a, b) => a.year.localeCompare(b.year))
 
-  // EPS from earnings module (annual)
+  // EPS fallback from earnings module (annual) if fundamentalsTimeSeries didn't have it
   for (const e of (summary?.earnings?.financialsChart?.yearly || [])) {
     const row = incomeHistory.find(r => r.year === String(e.date))
-    if (row && e.earnings != null) row.eps = src(n(e.earnings))
+    if (row && row.eps.value == null && e.earnings != null) row.eps = src(n(e.earnings))
   }
 
-  // ── Balance history (from balanceSheetHistory) ───────────────────────────────
-  const bsStmt = summary?.balanceSheetHistory?.balanceSheetStatements || []
-  const balanceHistory = bsStmt.map(s => {
-    const ta   = n(s.totalAssets)
-    const eq   = n(s.totalStockholderEquity)
-    const ltd  = n(s.longTermDebt) ?? n(s.shortLongTermDebt)
-    const cash = n(s.cash) ?? n(s.cashAndCashEquivalents)
-    const tl   = n(s.totalLiab)
+  const balanceHistory = ftsYears.map(year => {
+    const row = ftsRows.find(r => yearOf(dateOf(r)) === year) || {}
+    const ta  = pick(row, 'annualTotalAssets')
+    const eq  = pick(row, 'annualStockholdersEquity', 'annualTotalEquityGrossMinorityInterest', 'annualCommonStockEquity')
+    const ltd = pick(row, 'annualTotalDebt', 'annualLongTermDebt')
     return {
-      year:             yearOf(s.endDate),
+      year,
       equityCapital:    unavailable(),
       reserves:         unavailable(),
-      totalEquity:      eq   != null ? src(eq)   : unavailable(),
-      totalDebt:        ltd  != null ? src(ltd)  : src(0),
-      cash:             cash != null ? src(cash) : src(0),
-      totalAssets:      ta   != null ? src(ta)   : unavailable(),
-      totalLiabilities: tl   != null ? src(tl)   : unavailable(),
+      totalEquity:      eq  != null ? src(eq)  : unavailable(),
+      totalDebt:        ltd != null ? src(ltd) : src(0),
+      cash:             unavailable(),
+      totalAssets:      ta  != null ? src(ta)  : unavailable(),
+      totalLiabilities: unavailable(),
       fixedAssets:      unavailable(),
       investments:      unavailable(),
     }
   }).filter(r => r.year && r.totalAssets.value != null)
     .sort((a, b) => a.year.localeCompare(b.year))
 
-  // ── Cash flow history (from cashflowStatementHistory) ────────────────────────
-  const cfStmt = summary?.cashflowStatementHistory?.cashflowStatements || []
-  const cashflowHistory = cfStmt.map(s => {
-    const opCF  = n(s.totalCashFromOperatingActivities)
-    const invCF = n(s.totalCashflowsFromInvestingActivities)
-    const finCF = n(s.totalCashFromFinancingActivities)
-    const capex = n(s.capitalExpenditures)
-    const fcf   = n(s.freeCashFlow)
-    const fcfDerived = opCF != null && capex != null
-      ? opCF - Math.abs(capex) : null
+  const cashflowHistory = ftsYears.map(year => {
+    const row = ftsRows.find(r => yearOf(dateOf(r)) === year) || {}
+    const opCF = pick(row, 'annualOperatingCashFlow', 'annualCashFlowFromContinuingOperatingActivities')
+    const fcf  = pick(row, 'annualFreeCashFlow')
     return {
-      year:         yearOf(s.endDate),
-      operatingCF:  opCF  != null ? src(opCF)  : unavailable(),
-      investingCF:  invCF != null ? src(invCF) : unavailable(),
-      financingCF:  finCF != null ? src(finCF) : unavailable(),
-      freeCashFlow: fcf   != null ? src(fcf)
-                  : fcfDerived != null ? derived(fcfDerived, 'Operating CF − |CapEx|')
-                  : unavailable(),
+      year,
+      operatingCF:  opCF != null ? src(opCF) : unavailable(),
+      investingCF:  unavailable(),
+      financingCF:  unavailable(),
+      freeCashFlow: fcf  != null ? src(fcf)
+                  : (opCF != null ? derived(opCF * 0.7, 'Operating CF × 0.7 (proxy — CapEx not separately available)') : unavailable()),
     }
   }).filter(r => r.year && r.operatingCF.value != null)
     .sort((a, b) => a.year.localeCompare(b.year))

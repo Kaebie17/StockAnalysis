@@ -39,18 +39,46 @@ module.exports = async function handler(req, res) {
 
     // ── ALL DATA — single endpoint returns everything ──────────────────────
     // Client calls /api/yahoo?endpoint=all&ticker=TCS.NS
-    // We run quote + quoteSummary + historical in parallel
+    //
+    // MIGRATION NOTE: quoteSummary's incomeStatementHistory / balanceSheetHistory
+    // / cashflowStatementHistory submodules have provided almost no data since
+    // Nov 2024 (confirmed by yahoo-finance2's own runtime warning — verified
+    // against RELIANCE.NS returning a frozen 2023 snapshot). Replaced with
+    // fundamentalsTimeSeries, Yahoo's current data pipeline.
+    //
+    // Type-string naming below is a best-effort match against Yahoo's documented
+    // concept taxonomy — multiple alias candidates per metric are requested so a
+    // naming mismatch on one doesn't lose the field. The DIAGNOSTIC block further
+    // down logs the raw response so any wrong guesses can be corrected from real
+    // data after first deploy.
     //
     // validateResult: false — yahoo-finance2 throws FailedYahooValidationError
-    // and REJECTS THE ENTIRE CALL if any field doesn't match its strict schema.
-    // This happens for companies with volatile/non-standard financials (loss-making,
-    // recently listed, negative PE etc — e.g. Zomato). Setting validateResult:false
-    // returns the data as-is without throwing, so we always get whatever Yahoo
-    // actually has instead of an all-or-nothing failure.
+    // and rejects the entire call if any field doesn't match its strict schema
+    // (happens for loss-making/volatile companies — e.g. Zomato). This returns
+    // the data as-is without throwing.
     if (endpoint === 'all') {
       const yfOpts = { validateResult: false }
 
-      const [quoteResult, summaryResult, historyResult] = await Promise.allSettled([
+      const FTS_TYPES = [
+        'annualTotalRevenue', 'annualOperatingRevenue',
+        'annualOperatingIncome', 'annualEBIT',
+        'annualDepreciationAndAmortization', 'annualReconciledDepreciation',
+        'annualDepreciationAmortizationDepletion',
+        'annualInterestExpense', 'annualNetNonOperatingInterestIncomeExpense',
+        'annualNetIncome', 'annualNetIncomeCommonStockholders',
+        'annualStockholdersEquity', 'annualTotalEquityGrossMinorityInterest',
+        'annualCommonStockEquity',
+        'annualTotalDebt', 'annualLongTermDebt',
+        'annualTotalAssets',
+        'annualOperatingCashFlow', 'annualCashFlowFromContinuingOperatingActivities',
+        'annualFreeCashFlow',
+        'annualDilutedEPS', 'annualBasicEPS',
+      ]
+
+      const sixYearsAgo = new Date()
+      sixYearsAgo.setFullYear(sixYearsAgo.getFullYear() - 6)
+
+      const [quoteResult, summaryResult, historyResult, ftsResult] = await Promise.allSettled([
 
         // Quote — live price, market data
         yf.quote(ticker, {
@@ -65,24 +93,23 @@ module.exports = async function handler(req, res) {
           ]
         }, yfOpts),
 
-        // QuoteSummary — financial statements + TTM data
+        // QuoteSummary — TTM data + metadata only now (statement submodules dead since Nov 2024)
         yf.quoteSummary(ticker, {
-          modules: [
-            'financialData',           // TTM: revenue, ebitda, margins, roe, d/e, fcf
-            'defaultKeyStatistics',    // shares, trailing eps, book value
-            'summaryDetail',           // pe, pb, dividend
-            'assetProfile',            // sector, industry
-            'incomeStatementHistory',  // 4yr annual income statements
-            'balanceSheetHistory',     // 4yr annual balance sheets
-            'cashflowStatementHistory',// 4yr annual cash flows
-            'earnings'                 // quarterly + annual EPS history
-          ]
+          modules: ['financialData', 'defaultKeyStatistics', 'summaryDetail', 'assetProfile', 'earnings']
         }, yfOpts),
 
         // Historical — 2 years of daily OHLCV for technicals
         yf.historical(ticker, {
           period1: new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000),
           interval: '1d'
+        }, yfOpts),
+
+        // Fundamentals time series — current replacement for the dead statement submodules
+        yf.fundamentalsTimeSeries(ticker, {
+          period1: sixYearsAgo,
+          period2: new Date(),
+          type: FTS_TYPES,
+          module: 'all'
         }, yfOpts)
       ])
 
@@ -101,6 +128,7 @@ module.exports = async function handler(req, res) {
       const quote   = recover(quoteResult)
       const summary = recover(summaryResult)
       let   history = recover(historyResult)
+      const fts     = recover(ftsResult)
 
       // Fallback: if yahoo-finance2 historical() failed, use Yahoo v8/finance/chart directly
       // This endpoint needs no crumb and reliably returns 2yr OHLCV for all tickers
@@ -138,36 +166,25 @@ module.exports = async function handler(req, res) {
         return res.status(404).json({ error: `No data for "${ticker}"` })
       }
 
-      // ── TEMPORARY DIAGNOSTIC — remove after debugging Net Profit / Interest gaps ──
-      // Logs to Vercel function logs only. Safe, read-only, no behavior change.
+      // ── TEMPORARY DIAGNOSTIC — remove once fundamentalsTimeSeries field
+      // names below are confirmed against real data. Logs to Vercel function
+      // logs only. Safe, read-only, no behavior change.
       try {
-        const fin = summary?.financialData || {}
-        const incHist = summary?.incomeStatementHistory?.incomeStatementHistory || []
-        const balHist = summary?.balanceSheetHistory?.balanceSheetStatements || []
-        const latestInc = incHist[incHist.length - 1] || {}
-        const latestBal = balHist[balHist.length - 1] || {}
-
-        console.log(`[DIAGNOSTIC] ${ticker}`, JSON.stringify({
-          incomeStatementHistory_length: incHist.length,
-          balanceSheetHistory_length: balHist.length,
-          latestIncomeStatement_endDate: latestInc.endDate,
-          latestIncomeStatement_totalRevenue: latestInc.totalRevenue,
-          latestIncomeStatement_operatingIncome: latestInc.operatingIncome,
-          latestIncomeStatement_netIncome: latestInc.netIncome,        // ← Net Profit source
-          latestIncomeStatement_interestExpense: latestInc.interestExpense, // ← Interest source
-          latestBalanceSheet_totalAssets: latestBal.totalAssets,       // ← Total Assets source
-          latestBalanceSheet_totalStockholderEquity: latestBal.totalStockholderEquity,
-          financialData_netIncomeToCommon: fin.netIncomeToCommon,      // ← Net Profit TTM fallback source
-          financialData_totalRevenue: fin.totalRevenue,
-          financialData_keys_present: Object.keys(fin),
+        const ftsArr = Array.isArray(fts) ? fts : (fts ? [fts] : [])
+        const sample = ftsArr[ftsArr.length - 1] || ftsArr[0] || {}
+        console.log(`[DIAGNOSTIC-FTS] ${ticker}`, JSON.stringify({
+          fts_entries_count: ftsArr.length,
+          fts_all_dates: ftsArr.map(e => e?.date || e?.asOfDate).slice(0, 10),
+          latest_entry_raw_keys: Object.keys(sample),
+          latest_entry_sample: sample,
         }, null, 2))
       } catch (e) {
-        console.warn('[DIAGNOSTIC] logging failed:', e.message)
+        console.warn('[DIAGNOSTIC-FTS] logging failed:', e.message)
       }
       // ── END TEMPORARY DIAGNOSTIC ──────────────────────────────────────────────
 
       res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate')
-      return res.status(200).json({ ticker, quote, summary, history })
+      return res.status(200).json({ ticker, quote, summary, history, fts })
     }
 
     return res.status(400).json({ error: `Unknown endpoint: ${endpoint}` })

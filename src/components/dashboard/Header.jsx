@@ -119,11 +119,7 @@ function IdentityBar() {
         )}
         {mcapStr && <span className="text-xs text-slate-400">Mkt Cap: {mcapStr}</span>}
         {data.meta?.sector && <span className="text-xs text-slate-500">Sector: {data.meta.sector}</span>}
-        <span className="text-xs text-slate-600 capitalize">
-          {data.source === 'merged'
-            ? `📡 Yahoo + Screener (${(data.historyYears || 0) + 4}yr history)`
-            : '📡 Yahoo (4yr history)'}
-        </span>
+        <DataVintageBadge data={data} />
         {validation && !validation.passed && validation.failedMetrics?.length > 0 && (
           <span className="text-xs text-neutral" title={validation.message}>
             ⚠️ History limited
@@ -146,5 +142,42 @@ function IdentityBar() {
         </select>
       </div>
     </div>
+  )
+}
+
+/**
+ * Shows exactly which fiscal year the annual figures actually come from,
+ * and how many years of history are available — computed from the real
+ * data, not assumed. Indian companies report annual results within ~60
+ * days of fiscal year end (March 31), so if the latest available year is
+ * more than ~15 months old, that's a genuine data-lag worth flagging —
+ * the company has almost certainly reported a newer year that data
+ * providers (including Yahoo) simply haven't ingested yet.
+ */
+function DataVintageBadge({ data }) {
+  const years = (data.incomeHistory || []).map(r => r.year).filter(Boolean).sort()
+  if (years.length === 0) {
+    return <span className="text-xs text-slate-600">📡 No annual data available</span>
+  }
+
+  const latestYear  = years[years.length - 1]
+  const yearCount   = years.length
+  const sourceLabel = data.source === 'merged' ? 'Yahoo + Screener' : 'Yahoo'
+
+  // Indian fiscal year ends March 31 — results typically filed by ~May 31
+  // If we're more than 14 months past that fiscal year-end, the data is stale
+  const fyEnd       = new Date(`${latestYear}-03-31`)
+  const monthsStale = (Date.now() - fyEnd.getTime()) / (1000 * 60 * 60 * 24 * 30.44)
+  const isStale     = monthsStale > 14
+
+  return (
+    <span
+      className={`text-xs flex items-center gap-1 ${isStale ? 'text-neutral' : 'text-slate-600'}`}
+      title={isStale
+        ? `Latest annual data is FY${latestYear} — the company has likely reported a newer fiscal year that hasn't been ingested by the data source yet.`
+        : `${yearCount} years of annual data, through FY${latestYear}`}>
+      📡 {sourceLabel} · {yearCount}yr · through FY{latestYear}
+      {isStale && <span>⚠️</span>}
+    </span>
   )
 }
