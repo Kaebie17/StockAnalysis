@@ -7,15 +7,18 @@ import FundamentalsPanel from './components/dashboard/FundamentalsPanel.jsx'
 import TechnicalsPanel from './components/dashboard/TechnicalsPanel.jsx'
 import MarketExpectationPanel from './components/dashboard/MarketExpectationPanel.jsx'
 import EmptyState from './components/dashboard/EmptyState.jsx'
+import DataGapBanner from './components/dashboard/DataGapBanner.jsx'
+import GapFillModal from './components/dashboard/GapFillModal.jsx'
 import ScoringStudio from './components/studio/ScoringStudio.jsx'
 import { parseCSV } from './utils/csv.js'
 import { requestFolderAccess, exportOverrideJSON, openFilePicker, importOverrideFile } from './utils/csv.js'
 
 function Dashboard() {
-  const { state, applyCSV, setFolderHandle } = useApp()
+  const { state, applyCSV, setFolderHandle, applyPastedTable } = useApp()
   const [expanded, setExpanded] = useState(null)
   const [studioOpen, setStudioOpen] = useState(false)
   const [csvModal, setCsvModal] = useState(false)  // 'upload' | 'gap-fill' | false
+  const [gapFillOpen, setGapFillOpen] = useState(false)
   const fileRef = useRef()
 
   const handleExpand = (panel) => {
@@ -33,7 +36,7 @@ function Dashboard() {
       let handle = state.folderHandle
       if (!handle && window.showDirectoryPicker) {
         const granted = window.confirm(
-          'Allow StockVal to save this data in a "StockVal Data" folder?\n\n' +
+          'Allow StockAnalyzr to save this data in a "StockAnalyzr Data" folder?\n\n' +
           'This lets the app auto-load your data next time without re-uploading.'
         )
         if (granted) {
@@ -93,6 +96,8 @@ function Dashboard() {
 
               <SummaryStrip onExpand={handleExpand} expanded={expanded} />
 
+              <DataGapBanner ratioResult={state.ratioResult} onFix={() => setGapFillOpen(true)} />
+
               <div id="panel-valuation">
                 <ValuationPanel open={expanded === 'valuation'} onClose={() => setExpanded(null)} />
               </div>
@@ -138,6 +143,14 @@ function Dashboard() {
 
       <ScoringStudio open={studioOpen} onClose={() => setStudioOpen(false)} />
 
+      <GapFillModal
+        open={gapFillOpen}
+        onClose={() => setGapFillOpen(false)}
+        ratioResult={state.ratioResult}
+        ticker={state.ticker}
+        onApply={applyPastedTable}
+      />
+
       {/* CSV Modal */}
       {csvModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
@@ -182,7 +195,7 @@ function Dashboard() {
                   <button
                     onClick={() => openFilePicker(handleJSONImport)}
                     className="btn-ghost text-sm w-full">
-                    📂 Load saved StockVal file (.json)
+                    📂 Load saved StockAnalyzr file (.json)
                   </button>
                 </div>
               </>

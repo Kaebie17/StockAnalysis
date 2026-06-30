@@ -8,7 +8,7 @@
  * Never evict: profiles, swapStates (user-generated)
  */
 
-const DB_NAME    = 'stockval'
+const DB_NAME    = 'stockanalyzr'
 const DB_VERSION = 2
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
@@ -168,13 +168,13 @@ export async function clearSwapState(ticker) {
 
 export async function saveFolderHandle(handle) {
   try {
-    await txPut('fsHandles', { id: 'stockvalFolder', handle })
+    await txPut('fsHandles', { id: 'stockanalyzrFolder', handle })
   } catch { /* IndexedDB can't always store FileSystemDirectoryHandle */ }
 }
 
 export async function loadFolderHandle() {
   try {
-    const rec = await txGet('fsHandles', 'stockvalFolder')
+    const rec = await txGet('fsHandles', 'stockanalyzrFolder')
     if (!rec?.handle) return null
     // Verify permission is still granted
     const perm = await rec.handle.queryPermission({ mode: 'readwrite' })

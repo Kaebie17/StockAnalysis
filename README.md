@@ -1,4 +1,4 @@
-# StockVal PWA
+# StockAnalyzr PWA
 
 Stock valuation PWA with Yahoo Finance + Screener.in fallback.
 

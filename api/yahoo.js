@@ -40,7 +40,16 @@ module.exports = async function handler(req, res) {
     // ── ALL DATA — single endpoint returns everything ──────────────────────
     // Client calls /api/yahoo?endpoint=all&ticker=TCS.NS
     // We run quote + quoteSummary + historical in parallel
+    //
+    // validateResult: false — yahoo-finance2 throws FailedYahooValidationError
+    // and REJECTS THE ENTIRE CALL if any field doesn't match its strict schema.
+    // This happens for companies with volatile/non-standard financials (loss-making,
+    // recently listed, negative PE etc — e.g. Zomato). Setting validateResult:false
+    // returns the data as-is without throwing, so we always get whatever Yahoo
+    // actually has instead of an all-or-nothing failure.
     if (endpoint === 'all') {
+      const yfOpts = { validateResult: false }
+
       const [quoteResult, summaryResult, historyResult] = await Promise.allSettled([
 
         // Quote — live price, market data
@@ -54,7 +63,7 @@ module.exports = async function handler(req, res) {
             'averageDailyVolume3Month', 'beta',
             'currency', 'shortName', 'longName', 'exchange', 'symbol'
           ]
-        }),
+        }, yfOpts),
 
         // QuoteSummary — financial statements + TTM data
         yf.quoteSummary(ticker, {
@@ -68,22 +77,30 @@ module.exports = async function handler(req, res) {
             'cashflowStatementHistory',// 4yr annual cash flows
             'earnings'                 // quarterly + annual EPS history
           ]
-        }),
+        }, yfOpts),
 
         // Historical — 2 years of daily OHLCV for technicals
         yf.historical(ticker, {
           period1: new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000),
           interval: '1d'
-        })
+        }, yfOpts)
       ])
 
-      const quote   = quoteResult.status   === 'fulfilled' ? quoteResult.value   : null
-      const summary = summaryResult.status === 'fulfilled' ? summaryResult.value : null
-      let   history = historyResult.status === 'fulfilled' ? historyResult.value : null
+      // Even on 'rejected', yahoo-finance2's FailedYahooValidationError carries
+      // a partial result on error.result — recover it instead of losing all data
+      const recover = (r) => {
+        if (r.status === 'fulfilled') return r.value
+        if (r.reason?.result) {
+          console.warn(`[yf2] using partial result after validation error: ${r.reason.message}`)
+          return r.reason.result
+        }
+        console.warn('[yf2] no data, full failure:', r.reason?.message)
+        return null
+      }
 
-      if (quoteResult.status   === 'rejected') console.warn('[yf2] quote failed:',   quoteResult.reason?.message)
-      if (summaryResult.status === 'rejected') console.warn('[yf2] summary failed:', summaryResult.reason?.message)
-      if (historyResult.status === 'rejected') console.warn('[yf2] history failed:', historyResult.reason?.message)
+      const quote   = recover(quoteResult)
+      const summary = recover(summaryResult)
+      let   history = recover(historyResult)
 
       // Fallback: if yahoo-finance2 historical() failed, use Yahoo v8/finance/chart directly
       // This endpoint needs no crumb and reliably returns 2yr OHLCV for all tickers

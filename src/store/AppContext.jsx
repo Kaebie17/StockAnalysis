@@ -46,6 +46,7 @@ function reducer(s, a) {
     case 'SET_FOLDER':    return { ...s, folderHandle: a.handle }
     case 'CSV_APPLIED':   return { ...s, ...a.payload }
     case 'SWAP_FIELD':    return { ...s, ...a.payload }
+    case 'RESET':          return { ...initial, folderHandle: s.folderHandle }  // keep CSV folder connection
     default:              return s
   }
 }
@@ -169,9 +170,40 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SWAP_FIELD', payload: { data: updated, ...computed, swapState: newSwaps } })
   }, [state])
 
+  // Merge a single pasted table (income/balance/cashflow) into current data.
+  // Pasted years that overlap Yahoo's years get added as cross-source fill
+  // for any field Yahoo was missing; new years extend history.
+  const applyPastedTable = useCallback((tableType, taggedRows) => {
+    if (!state.data) return
+    const histKey = tableType + 'History'
+    const existing = state.data[histKey] || []
+
+    const merged = { ...Object.fromEntries(existing.map(r => [r.year, { ...r }])) }
+    for (const row of taggedRows) {
+      if (!row.year) continue
+      if (!merged[row.year]) merged[row.year] = { year: row.year }
+      for (const [field, tagged] of Object.entries(row)) {
+        if (field === 'year') continue
+        // Only fill if existing value is missing — never override a real source value
+        if (tagged?.value != null && merged[row.year][field]?.value == null) {
+          merged[row.year][field] = tagged
+        }
+      }
+    }
+
+    const newHistory = Object.values(merged).sort((a, b) => a.year.localeCompare(b.year))
+    const updatedData = { ...state.data, [histKey]: newHistory, source: 'merged' }
+    const computed = computeAll(updatedData, state.assumptions, state.meAssumptions, state.scoreWeights)
+    dispatch({ type: 'CSV_APPLIED', payload: { data: updatedData, ...computed } })
+  }, [state])
+
   const setFolderHandle = useCallback(async (handle) => {
     await saveFolderHandle(handle)
     dispatch({ type: 'SET_FOLDER', handle })
+  }, [])
+
+  const reset = useCallback(() => {
+    dispatch({ type: 'RESET' })
   }, [])
 
   const loadFromCSV = useCallback((normalizedData) => {
@@ -185,7 +217,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV
+      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, applyPastedTable
     }}>
       {children}
     </AppContext.Provider>

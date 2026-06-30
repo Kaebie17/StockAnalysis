@@ -9,8 +9,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico'],
       manifest: {
-        name: 'StockVal',
-        short_name: 'StockVal',
+        name: 'StockAnalyzr',
+        short_name: 'StockAnalyzr',
         description: 'Stock Valuation PWA',
         theme_color: '#0f172a',
         background_color: '#0f172a',

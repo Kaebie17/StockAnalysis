@@ -47,6 +47,19 @@ const NULLABLE_IF_ZERO = new Set(['depreciation', 'interest', 'equityCapital'])
 const toCrore   = val => Math.round(val / 1e7)
 const toEPS     = val => Math.round(val * 10)  // compare at 1 decimal
 
+// Round to 3 significant figures — this is what "match to 2 decimal places"
+// generalizes to: same relative precision regardless of company size.
+// Reliance (10,56,000 Cr) and NMDC (8,600 Cr) both get the same proportional
+// rounding tolerance, so display rounding passes but genuine parse errors
+// (wrong row matched, wrong year) are still caught at any company size.
+function roundSigFig(value, sig = 3) {
+  if (value === 0) return 0
+  const d = Math.ceil(Math.log10(Math.abs(value)))
+  const power = sig - d
+  const magnitude = Math.pow(10, power)
+  return Math.round(value * magnitude) / magnitude
+}
+
 function getVal(historyArray, year, field) {
   const row = historyArray?.find(r => r.year === year)
   if (!row) return undefined  // year not present in this source
@@ -122,24 +135,22 @@ export function validateScreenerHistory(yahooData, screenerData) {
         continue
       }
 
-      // Compare with 0.5% relative tolerance
-      // Handles: Screener display rounding (shows nearest 100Cr for large values)
-      // Strict enough to catch: wrong row parsed, wrong year, unit errors
-      const yRounded = toCrore(yVal)
-      const sRounded = toCrore(sVal)
-      const maxVal   = Math.max(Math.abs(yRounded), Math.abs(sRounded))
-      const relDiff  = maxVal > 0 ? Math.abs(yRounded - sRounded) / maxVal : 0
+      // Compare at 3 significant figures — handles Screener's display
+      // rounding (it shows nearest 100Cr for large values) while still
+      // catching genuine parse errors at any company size.
+      const yCr = toCrore(yVal)
+      const sCr = toCrore(sVal)
+      const ySig = roundSigFig(yCr, 3)
+      const sSig = roundSigFig(sCr, 3)
 
-      if (relDiff > 0.005) {  // > 0.5% = genuine mismatch
+      if (ySig !== sSig) {
         result.failedMetrics.push({
           year, metric,
           yahooVal:    yVal,
           screenerVal: sVal,
-          yahooCr:     yRounded,
-          screenerCr:  sRounded,
-          diffCr:      Math.abs(yRounded - sRounded),
-          relDiffPct:  +(relDiff * 100).toFixed(3),
-          message:     `${metric} mismatch in ${year}: Yahoo ₹${yRounded}Cr vs Screener ₹${sRounded}Cr (${(relDiff*100).toFixed(2)}% diff)`
+          yahooCr:     yCr,
+          screenerCr:  sCr,
+          message:     `${metric} mismatch in ${year}: Yahoo ₹${yCr}Cr vs Screener ₹${sCr}Cr`
         })
         allPassed = false
       }

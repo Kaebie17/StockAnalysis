@@ -14,8 +14,8 @@
 
 import Papa from 'papaparse'
 
-const FOLDER_NAME = 'StockVal Data'
-const FILE_PREFIX = 'stockval_'
+const FOLDER_NAME = 'StockAnalyzr Data'
+const FILE_PREFIX = 'stockanalyzr_'
 
 // Fields that CSV can provide (raw foundational only — not calculated)
 export const CSV_RAW_FIELDS = [
@@ -329,7 +329,7 @@ export async function requestFolderAccess() {
 
   try {
     const handle = await window.showDirectoryPicker({
-      id: 'stockval-data',
+      id: 'stockanalyzr-data',
       mode: 'readwrite',
       startIn: 'documents'
     })

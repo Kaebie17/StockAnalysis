@@ -5,7 +5,7 @@ import { STAGES } from '../../engine/stage.js'
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
 
 export default function Header() {
-  const { state, load } = useApp()
+  const { state, load, reset } = useApp()
   const [input, setInput] = useState('')
 
   const submit = (e) => {
@@ -19,7 +19,12 @@ export default function Header() {
       <div className="max-w-5xl mx-auto px-4 py-3 space-y-2">
         {/* Search row */}
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm shrink-0">SV</div>
+          <button
+            onClick={() => { reset(); setInput('') }}
+            title="Back to home"
+            className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm shrink-0 hover:bg-accent-dark active:scale-95 transition-all">
+            SA
+          </button>
           <form onSubmit={submit} className="flex-1 flex gap-2">
             <div className="relative flex-1">
               <input

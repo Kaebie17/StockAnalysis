@@ -200,6 +200,8 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
   const historicalRevGrowth = r?.ratios?.revCagr?.value
   const historicalNPGrowth  = r?.ratios?.npGrowthYoY?.value
 
+const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
+
   const variants = {}
 
   // ── Sales-based ─────────────────────────────────────────────────────────────
@@ -212,7 +214,9 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
     variants.sales = {
       applicable: true,
       label: 'Sales-based',
-      note: 'Best for growth/pre-profit companies. Uses revenue as base.',
+      note: isFinancial
+        ? 'For banks/insurers, Sales = Net Interest Income / Premium Income — used here as the cross-check method since Net Profit or FCF analysis may be unavailable or structurally negative for this sector.'
+        : 'Best for growth/pre-profit companies. Uses revenue as base.',
       base: revenue,
       baseLabel: 'Current Sales',
       terminalMultiple: terminalSalesMultiple,
@@ -243,7 +247,9 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
     variants.earnings = {
       applicable: true,
       label: 'Earnings-based',
-      note: 'Best for mature profitable companies. Uses Net Profit as base.',
+      note: isFinancial
+        ? 'Recommended primary method for banks/insurers — Net Profit is the most reliable base metric for this sector.'
+        : 'Best for mature profitable companies. Uses Net Profit as base.',
       base: netProfit,
       baseLabel: 'Current Net Profit',
       terminalMultiple: terminalPeMultiple,
@@ -301,7 +307,9 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
     variants.fcf = {
       applicable: false,
       reason: (fcf != null && fcf <= 0) || (r?.opCF != null && r.opCF <= 0)
-        ? 'FCF and Operating CF are negative — FCF-based method not applicable'
+        ? (isFinancial
+            ? 'Operating CF is negative — this is structurally normal for banks/insurers (loan disbursements count as operating outflow) and does not indicate financial distress. Use Earnings-based instead.'
+            : 'FCF and Operating CF are negative — FCF-based method not applicable')
         : 'Cash flow data not available'
     }
   }

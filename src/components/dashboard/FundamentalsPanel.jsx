@@ -130,7 +130,7 @@ export default function FundamentalsPanel({ open, onClose }) {
 
       {/* Resolution legend */}
       <div className="flex flex-wrap gap-3 text-xs text-slate-500">
-        <span><span className="text-accent/70">⚙</span> Calculated by StockVal</span>
+        <span><span className="text-accent/70">⚙</span> Calculated by StockAnalyzr</span>
         <span><span className="text-neutral/70">T</span> TTM from source</span>
         <span><span className="text-neutral/70">~</span> Proxy value</span>
         <span><span className="text-accent/70">↔</span> Cross-source fill</span>

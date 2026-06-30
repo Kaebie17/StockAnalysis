@@ -101,8 +101,8 @@ export default function ValuationPanel({ open, onClose }) {
                     {isNA
                       ? <span className="line-through text-slate-600">{meta.name}</span>
                       : isCaution
-                      ? <span>{meta.name} <span className="text-neutral text-xs">⚠</span></span>
-                      : meta.name}
+                      ? <span>{key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name} <span className="text-neutral text-xs">⚠</span></span>
+                      : (key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name)}
                   </td>
                   <td className="py-2 text-right font-mono text-white text-xs">
                     {fv != null ? cur + fv.toFixed(0) : isNA ? 'N/A' : '—'}
@@ -127,14 +127,31 @@ export default function ValuationPanel({ open, onClose }) {
       {/* Consensus row */}
       <div className="flex items-center justify-between py-2 px-3 bg-navy-800/50 rounded-lg">
         <div>
-          <span className="text-xs text-slate-400">Consensus: </span>
-          <span className="font-mono font-bold text-white text-sm">
-            {rangeLow && rangeHigh
+          <div className="flex items-center text-xs text-slate-400">
+            Range: {rangeLow && rangeHigh
               ? (rangeLow === rangeHigh
-                  ? `${cur}${rangeLow.toFixed(0)}`
-                  : `${cur}${rangeLow.toFixed(0)} – ${cur}${rangeHigh.toFixed(0)}`)
-              : '—'}
-          </span>
+                  ? <span className="font-mono text-slate-300 ml-1">{cur}{rangeLow.toFixed(0)}</span>
+                  : <span className="font-mono text-slate-300 ml-1">{cur}{rangeLow.toFixed(0)} – {cur}{rangeHigh.toFixed(0)}</span>)
+              : <span className="ml-1">—</span>}
+            <span className="text-slate-600 ml-1">(lowest to highest model)</span>
+          </div>
+          <div className="flex items-center text-xs text-slate-400 mt-1">
+            <span>Fair Value: </span>
+            <span className="font-mono font-bold text-white ml-1">
+              {fairValue != null ? `${cur}${fairValue.toFixed(0)}` : '—'}
+            </span>
+            <span className="relative group ml-1 cursor-help">
+              <span className="w-3.5 h-3.5 rounded-full bg-navy-700 text-slate-400 text-[10px] flex items-center justify-center hover:bg-navy-600 hover:text-white">ⓘ</span>
+              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1.5 rounded bg-navy-700
+                               text-xs text-slate-200 whitespace-normal z-50 invisible group-hover:visible
+                               border border-navy-600 shadow-lg w-64 text-left">
+                Fair Value is the <strong>weighted average</strong> of all applicable models —
+                not the midpoint of the range. DCF and EV/EBITDA carry more weight (3× and 2×)
+                than P/B or Graham (1-1.5×) since they're more reliable for established companies.
+                The upside% below is calculated from this weighted value, not from the range.
+              </span>
+            </span>
+          </div>
         </div>
         <div className="text-right">
           <span className={`font-bold text-sm ${signalColor}`}>
