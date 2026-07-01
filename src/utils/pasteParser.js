@@ -100,24 +100,25 @@ export function parsePastedTable(text, tableType) {
   // sits. Stray columns never carry real data, so row values (numbers only,
   // below) skip them automatically.
   let headerIdx = -1
-  let colKinds = []   // per column: '2015'… | 'YTD' | 'TTM' | null
+  let colKinds = []   // per cell: '2015'… | 'TTM' | null
   for (let i = 0; i < Math.min(3, lines.length); i++) {
     const cells = splitRow(lines[i])
-    const cand = cells.slice(1).map(c => {
+    // Classify EVERY cell (do not assume a leading empty "corner" cell). An empty
+    // corner, a title, or a row-label header all classify as null and drop out,
+    // so a real first year (e.g. "Mar 2015") is never sliced off by mistake.
+    const cand = cells.map(c => {
       // Match a 4-digit year even when letters or a symbol are glued to it
       // ("FY2026", "2026+", "Mar 2024*"), but not when it's part of a longer
       // number ("20250"). Non-digit neighbours are fine; digit neighbours aren't.
       const m = c.match(/(?:^|[^0-9])((?:19|20)\d{2})(?![0-9])/)
       if (m) return m[1]
       // TTM and YTD are both partial/overlapping periods — drop for now.
-      // (YTD could later be extrapolated to a full year or down-weighted; that's
-      // a larger change deferred until the core flow is solid.)
       if (/\bttm\b/i.test(c)) return 'TTM'
       if (/\bytd\b/i.test(c)) return 'TTM'
       return null
     })
-    const keepers = cand.filter(k => k && k !== 'TTM')   // years + YTD
-    if (keepers.length >= Math.max(1, cand.length - 2)) { // mostly real periods → header
+    const keepers = cand.filter(k => k && k !== 'TTM')   // real years
+    if (keepers.length >= 2) {                            // a real year header row
       headerIdx = i
       colKinds = cand
       break
@@ -128,10 +129,10 @@ export function parsePastedTable(text, tableType) {
   if (headerIdx === -1) {
     warnings.push('Could not detect year headers in the pasted text. Years may be misaligned — please verify in the preview below.')
     const firstRowCells = splitRow(lines[0])
-    colKinds = firstRowCells.slice(1).map((_, i) => `Year ${i + 1}`)
+    colKinds = firstRowCells.map((_, i) => `Year ${i + 1}`)
     years = colKinds.slice()
   } else {
-    years = colKinds.filter(k => k && k !== 'TTM')   // real years + YTD, in order
+    years = colKinds.filter(k => k && k !== 'TTM')   // real years, in order
   }
 
   // Parse data rows
