@@ -132,10 +132,14 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
   }).filter(r => r.year && r.revenue.value != null)
     .sort((a, b) => a.year.localeCompare(b.year))
 
-  // EPS fallback from earnings module (annual) if fundamentalsTimeSeries didn't have it
+  // Backfill from Yahoo's earnings module (annual). IMPORTANT: in
+  // financialsChart.yearly, `earnings` is NET INCOME (absolute currency), NOT
+  // EPS. Assigning it to eps produced garbage EPS/P/E/Graham/fair-value. Use it
+  // only to fill a missing Net Profit; real EPS is derived (Net Profit ÷ Shares)
+  // in ratios.js.
   for (const e of (summary?.earnings?.financialsChart?.yearly || [])) {
     const row = incomeHistory.find(r => r.year === String(e.date))
-    if (row && row.eps.value == null && e.earnings != null) row.eps = src(n(e.earnings))
+    if (row && row.netProfit.value == null && e.earnings != null) row.netProfit = src(n(e.earnings))
   }
 
   const balanceHistory = ftsYears.map(year => {

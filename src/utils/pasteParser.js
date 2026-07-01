@@ -92,24 +92,46 @@ export function parsePastedTable(text, tableType) {
   const aliasMap = ALIASES[tableType]
   const warnings = []
 
-  // Find header row (years) — usually first row, but scan first 2 in case of stray text
-  let headerIdx = 0
-  let years = []
-  for (let i = 0; i < Math.min(2, lines.length); i++) {
+  // Classify each header column (after the label cell) as a real year, YTD,
+  // TTM, or a stray column. A 4-digit year is taken even if a mark is glued to
+  // it ("Mar 2015", "2015*", "FY2015"). Keepers = real years + YTD (current
+  // FY-to-date, a genuine latest period). Dropped = TTM (a trailing-12-month
+  // window that overlaps the last FY) and any stray/blank column, wherever it
+  // sits. Stray columns never carry real data, so row values (numbers only,
+  // below) skip them automatically.
+  let headerIdx = -1
+  let colKinds = []   // per column: '2015'… | 'YTD' | 'TTM' | null
+  for (let i = 0; i < Math.min(3, lines.length); i++) {
     const cells = splitRow(lines[i])
-    if (looksLikeYearHeader(cells.slice(1))) {
+    const cand = cells.slice(1).map(c => {
+      // Match a 4-digit year even when letters or a symbol are glued to it
+      // ("FY2026", "2026+", "Mar 2024*"), but not when it's part of a longer
+      // number ("20250"). Non-digit neighbours are fine; digit neighbours aren't.
+      const m = c.match(/(?:^|[^0-9])((?:19|20)\d{2})(?![0-9])/)
+      if (m) return m[1]
+      // TTM and YTD are both partial/overlapping periods — drop for now.
+      // (YTD could later be extrapolated to a full year or down-weighted; that's
+      // a larger change deferred until the core flow is solid.)
+      if (/\bttm\b/i.test(c)) return 'TTM'
+      if (/\bytd\b/i.test(c)) return 'TTM'
+      return null
+    })
+    const keepers = cand.filter(k => k && k !== 'TTM')   // years + YTD
+    if (keepers.length >= Math.max(1, cand.length - 2)) { // mostly real periods → header
       headerIdx = i
-      years = cells.slice(1).map(extractYear)
+      colKinds = cand
       break
     }
   }
 
-  if (years.length === 0) {
+  let years
+  if (headerIdx === -1) {
     warnings.push('Could not detect year headers in the pasted text. Years may be misaligned — please verify in the preview below.')
-    // Fallback: assume first row IS data, generate placeholder years
     const firstRowCells = splitRow(lines[0])
-    years = firstRowCells.slice(1).map((_, i) => `Year ${i + 1}`)
-    headerIdx = -1 // no header row to skip
+    colKinds = firstRowCells.slice(1).map((_, i) => `Year ${i + 1}`)
+    years = colKinds.slice()
+  } else {
+    years = colKinds.filter(k => k && k !== 'TTM')   // real years + YTD, in order
   }
 
   // Parse data rows
@@ -123,7 +145,21 @@ export function parsePastedTable(text, tableType) {
 
     const rawLabel = cells[0]
     const norm = normalizeLabel(rawLabel)
-    const values = cells.slice(1, years.length + 1).map(parseNum)
+
+    // Values = the numeric cells only. Whatever follows the label — a "+" /
+    // expander, an "*"/footnote, an arrow, a "Note" tag, a blank — is non-numeric
+    // and simply isn't picked up, so alignment doesn't depend on how many marker
+    // cells a row has. (An inline mark stuck to a number like "10,572*" still
+    // parses to the number.)
+    const numeric = cells.map(parseNum).filter(v => v != null)
+
+    // Drop trailing non-kept columns (TTM / stray) from the right edge; YTD is a
+    // keeper so it stops this. Then right-align so the most recent period is last.
+    let trailingExtra = 0
+    for (let k = colKinds.length - 1; k >= 0 && (!colKinds[k] || colKinds[k] === 'TTM'); k--) trailingExtra++
+    const usable  = trailingExtra > 0 ? numeric.slice(0, Math.max(0, numeric.length - trailingExtra)) : numeric
+    const aligned = usable.slice(Math.max(0, usable.length - years.length))
+    const padded  = Array(Math.max(0, years.length - aligned.length)).fill(null).concat(aligned)
 
     let matchedField = null
     for (const [field, aliases] of Object.entries(aliasMap)) {
@@ -135,7 +171,7 @@ export function parsePastedTable(text, tableType) {
 
     if (matchedField) {
       matchedCount++
-      values.forEach((v, yi) => {
+      padded.forEach((v, yi) => {
         if (yi < fieldsByYear.length) fieldsByYear[yi][matchedField] = v
       })
     }
