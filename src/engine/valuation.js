@@ -51,29 +51,26 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     projYears  = 10,
     sectorPe   = sectorPeDefault,
     sectorEvEb = sectorEvEbDefault,
-    growthRate = estimateGrowth(r)
+    growthRate = estimateGrowth(r),
+    // Optional near-term (guidance) window: grow at nearTermGrowth for
+    // nearTermYears, then fade toward terminal. Drives the FORWARD DCF only;
+    // the reverse-DCF (market-implied) stays independent so the comparison holds.
+    nearTermGrowth = null,
+    nearTermYears  = 0
   } = assumptions
+  const ntG = nearTermGrowth != null ? nearTermGrowth : null
+  const ntY = ntG != null ? (nearTermYears || 5) : 0
 
   const results = {}
 
   // ── DCF ──────────────────────────────────────────────────────────────────────
   // Use FCF if positive. Fall back to operatingCF×0.7 (conservative haircut).
-  if (isApplicable('dcf', modelMeta) && r.shares) {
-    const cfBase = (r.fcf != null && r.fcf > 0) ? r.fcf
-                 : (r.opCF != null && r.opCF > 0) ? r.opCF * 0.7 : null
-    if (cfBase) {
-      let pv = 0, cf = cfBase
-      for (let i = 1; i <= projYears; i++) {
-        cf *= (1 + Math.max(growthRate * Math.pow(0.85, i - 1), termGrowth))
-        pv += cf / Math.pow(1 + wacc, i)
-      }
-      const tv   = (cf * (1 + termGrowth)) / (wacc - termGrowth)
-      const pvTv = tv / Math.pow(1 + wacc, projYears)
-      const eq   = pv + pvTv + (r.cash || 0) - (r.totalDebt || 0)
-      const perShare = eq / r.shares
-      if (perShare > 0) {
-        results.dcf = { value: perShare, note: r.fcf > 0 ? 'FCF-based' : 'Operating CF proxy (×0.7)' }
-      }
+  const cfBaseDcf = (r.fcf != null && r.fcf > 0) ? r.fcf
+                  : (r.opCF != null && r.opCF > 0) ? r.opCF * 0.7 : null
+  if (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf) {
+    const perShare = dcfPerShare(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntG, ntY)
+    if (perShare != null) {
+      results.dcf = { value: perShare, note: r.fcf > 0 ? 'FCF-based' : 'Operating CF proxy (×0.7)' }
     }
   }
 
@@ -137,6 +134,39 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const rangeLow    = modelValues.length > 1 ? Math.min(...modelValues) : fairValue
   const rangeHigh   = modelValues.length > 1 ? Math.max(...modelValues) : fairValue
 
+  // ── Sensitivity + scenarios (DCF is the growth/WACC-sensitive model) ──────────
+  const sensitivity = (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf)
+    ? dcfSensitivity(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntY)
+    : null
+
+  // Re-blend the weighted consensus with a replacement DCF value (other models
+  // don't depend on growth/WACC, so only DCF moves across scenarios).
+  const consensusWith = (dcfPs) => {
+    const merged = { ...results, ...(dcfPs != null ? { dcf: { value: dcfPs } } : {}) }
+    const vks = modelMeta.applicable.filter(m => merged[m]?.value > 0)
+    const tw  = vks.reduce((s, m) => s + (weights[m] || 1), 0)
+    return tw > 0 ? vks.reduce((s, m) => s + merged[m].value * (weights[m] || 1), 0) / tw : null
+  }
+
+  let scenarios = null
+  if (cfBaseDcf && r.shares) {
+    // Anchor scenarios on the professional DEFAULTS (not the possibly-overridden
+    // current assumptions) so Bear/Base/Bull are stable and don't compound when
+    // a scenario is applied via the sliders.
+    const scenBase = { growthRate: estimateGrowth(r), wacc: 0.10, termGrowth: 0.03, projYears }
+    scenarios = {}
+    for (const key of ['bear', 'base', 'bull']) {
+      const sa    = scenarioAssumptions(key, scenBase)
+      const dcfPs = dcfPerShare(cfBaseDcf, sa.growthRate, sa.wacc, sa.termGrowth, sa.projYears, r.cash, r.totalDebt, r.shares)
+      scenarios[key] = {
+        label: SCENARIO_PRESETS[key].label,
+        assumptions: sa,
+        dcf: dcfPs,
+        fairValue: consensusWith(dcfPs),
+      }
+    }
+  }
+
   const upside = fairValue != null && r.price > 0
     ? ((fairValue - r.price) / r.price) * 100 : null
 
@@ -162,6 +192,8 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     upside,
     signal,
     impliedGrowth,
+    sensitivity,
+    scenarios,
     assumptions: { wacc, termGrowth, projYears, growthRate, sectorPe, sectorEvEb },
     // Store defaults so UI can show them and reset to them
     defaults: { wacc: 0.10, termGrowth: 0.03, projYears: 10, growthRate: estimateGrowth(r), sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault }
@@ -170,11 +202,102 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
 
 function isApplicable(m, meta) { return meta.applicable.includes(m) || meta.caution.includes(m) }
 
+// Build the "market implies X% vs your view Y%" insight for the combined verdict.
+// Prefers the real reverse-DCF (valuation.impliedGrowth). If that can't resolve
+// (e.g. no positive cash flow), falls back to the stage-appropriate Market
+// Expectation variant (earnings-based, else sales-based) and LABELS the basis.
+// "Your view" = user guidance if given, else the growth the DCF is currently
+// using (scenario/model). Returns null when nothing resolves → caller hides it.
+export function expectationInsight(valuation, marketExpectation, guidedGrowthPct = null) {
+  if (!valuation) return null
+
+  let implied = valuation.impliedGrowth
+  let basis   = 'reverse-DCF'
+  let isFallback = false
+
+  if (implied == null && marketExpectation?.variants) {
+    const v = marketExpectation.variants
+    const pick = (v.earnings?.applicable && v.earnings.impliedGrowth != null)
+      ? { g: v.earnings.impliedGrowth, b: 'earnings-based' }
+      : (v.sales?.applicable && v.sales.impliedGrowth != null)
+      ? { g: v.sales.impliedGrowth, b: 'sales-based' }
+      : null
+    if (pick) { implied = pick.g; basis = pick.b; isFallback = true }
+  }
+  if (implied == null) return null
+
+  const yourView = guidedGrowthPct != null
+    ? guidedGrowthPct
+    : (valuation.assumptions?.growthRate != null ? valuation.assumptions.growthRate * 100 : null)
+  if (yourView == null) return { implied, basis, isFallback, yourView: null, gap: null, text: null }
+
+  const gap = yourView - implied
+  const read = Math.abs(gap) < 1
+    ? 'roughly what the market is already pricing in'
+    : gap > 0
+      ? `more optimistic than the market by ${gap.toFixed(1)} pts — upside if the company delivers`
+      : `below what the market is pricing by ${Math.abs(gap).toFixed(1)} pts — the price already assumes more`
+  const basisLabel = isFallback ? ` (${basis})` : ''
+  const text = `Market is pricing ~${implied.toFixed(1)}% growth${basisLabel}; your view is ~${yourView.toFixed(1)}% — you're ${read}.`
+  return { implied, basis, isFallback, yourView, gap, text }
+}
+
 function estimateGrowth(r) {
-  const g = r.ratios?.revCagr?.value != null      ? r.ratios.revCagr.value / 100
-    : r.ratios?.revGrowthYoY?.value != null ? r.ratios.revGrowthYoY.value / 100
-    : 0.08
-  return Math.max(Math.min(g, 0.35), 0.02)
+  // Professional practice: anchor the explicit-stage growth on RECENT sustainable
+  // growth, not a full-history CAGR (which swings with how many years are loaded).
+  // Prefer the median of the last ~5 annual growth rates (robust to one freak
+  // year), then a bounded 10-year CAGR, then last YoY, then a neutral default.
+  // The DCF loop fades this toward the terminal rate, so we cap the explicit rate
+  // at a sane ceiling — no mature company sustains >~20% for a decade.
+  const recent  = r.ratios?.revGrowthRecent?.value
+  const longRun = r.ratios?.revGrowthLongRun?.value
+  const yoy     = r.ratios?.revGrowthYoY?.value
+  const cagr    = r.ratios?.revCagr?.value
+  const g = (recent ?? longRun ?? yoy ?? cagr ?? 8) / 100
+  return clamp(g, 0.02, 0.20)
+}
+
+// Enterprise PV → equity value per share, with a growth fade toward terminal.
+function dcfPerShare(cfBase, g, wacc, tg, yrs, cash, debt, shares, ntGrowth = null, ntYears = 0) {
+  if (!(cfBase > 0) || !(shares > 0) || wacc <= tg) return null
+  const ev = dcfEV(cfBase, g, wacc, tg, yrs, ntGrowth, ntYears)
+  const ps = (ev + (cash || 0) - (debt || 0)) / shares
+  return ps > 0 ? ps : null
+}
+
+// DCF fair value across a growth × WACC grid (the two inputs a DCF is sensitive
+// to). When a near-term (guidance) window is set, the growth axis sweeps that
+// near-term rate so the centre cell matches the applied DCF.
+function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYears = 0) {
+  if (!(cfBase > 0) || !(shares > 0)) return null
+  const growthAxis = [-0.04, -0.02, 0, 0.02, 0.04].map(d => clamp(gBase + d, 0, 0.30))
+  const waccAxis   = [-0.02, -0.01, 0, 0.01, 0.02].map(d => clamp(wBase + d, tg + 0.01, 0.30))
+  const grid = growthAxis.map(g =>
+    waccAxis.map(w => ntYears > 0
+      ? dcfPerShare(cfBase, g, w, tg, yrs, cash, debt, shares, g, ntYears)
+      : dcfPerShare(cfBase, g, w, tg, yrs, cash, debt, shares)))
+  return { growthAxis, waccAxis, grid }
+}
+
+// Scenario presets shift the SAME growth / WACC / terminal the sliders drive —
+// no parallel model. Bear = lower growth + higher discount; Bull = the opposite.
+export const SCENARIO_PRESETS = {
+  base: { label: 'Base', growthMul: 1.00, waccAdd:  0.000, termAdd:  0.000 },
+  bear: { label: 'Bear', growthMul: 0.50, waccAdd:  0.020, termAdd: -0.005 },
+  bull: { label: 'Bull', growthMul: 1.40, waccAdd: -0.015, termAdd:  0.005 },
+}
+
+// Given a base assumptions set, return the assumptions for a named scenario.
+// The UI applies this via the existing recalc(assumptions) path.
+export function scenarioAssumptions(preset, base) {
+  const p = SCENARIO_PRESETS[preset] || SCENARIO_PRESETS.base
+  const termGrowth = clamp((base.termGrowth ?? 0.03) + p.termAdd, 0.0, 0.06)
+  return {
+    growthRate: clamp((base.growthRate ?? 0.08) * p.growthMul, 0.02, 0.30),
+    wacc:       clamp((base.wacc ?? 0.10) + p.waccAdd, termGrowth + 0.01, 0.30),
+    termGrowth,
+    projYears:  base.projYears ?? 10,
+  }
 }
 
 function clamp(v, min, max) { return v == null ? null : Math.max(min, Math.min(max, v)) }
@@ -190,11 +313,21 @@ function solveGrowth(fcf0, tEV, wacc, tg, yrs) {
   return ((lo + hi) / 2) * 100
 }
 
-function dcfEV(f, g, w, tg, yrs) {
+function dcfEV(f, g, w, tg, yrs, ntGrowth = null, ntYears = 0) {
   let pv = 0, cf = f
   for (let i = 1; i <= yrs; i++) {
-    cf *= (1 + Math.max(g * Math.pow(0.85, i - 1), tg))
+    let gi
+    if (ntYears > 0 && i <= ntYears) {
+      gi = ntGrowth                                   // explicit near-term (guidance) window
+    } else {
+      const fadeStart = ntYears > 0 ? ntGrowth : g    // fade from the near-term rate, else base
+      const step      = ntYears > 0 ? (i - ntYears) : (i - 1)
+      gi = Math.max(fadeStart * Math.pow(0.85, step), tg)
+    }
+    cf *= (1 + gi)
     pv += cf / Math.pow(1 + w, i)
   }
   return pv + (cf * (1 + tg)) / (w - tg) / Math.pow(1 + w, yrs)
 }
+
+

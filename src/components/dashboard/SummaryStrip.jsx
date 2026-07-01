@@ -1,6 +1,8 @@
 import React from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { signalColor, signalBadgeClass } from '../../utils/format.js'
+import DCFScenarioPanel from './DCFScenarioPanel.jsx'
+import { expectationInsight } from '../../engine/valuation.js'
 
 // 27-combination verdict matrix
 const VERDICTS = {
@@ -184,9 +186,15 @@ export default function SummaryStrip({ onExpand, expanded }) {
           <div>
             <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Combined Verdict</div>
             <p className="text-sm text-slate-200 leading-relaxed">{verdict}</p>
+            {expectationInsight(valuation, marketExpectation)?.text && (
+              <p className="text-sm text-slate-300 leading-relaxed mt-1.5">
+                📊 {expectationInsight(valuation, marketExpectation).text}
+              </p>
+            )}
           </div>
         </div>
       </div>
+      <DCFScenarioPanel compact />
     </div>
   )
 }

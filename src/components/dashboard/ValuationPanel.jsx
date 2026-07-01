@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { fmtPct, fmtPctPlain } from '../../utils/format.js'
+import DCFScenarioPanel from './DCFScenarioPanel.jsx'
 
 // Dot bar: 5 dots, filled based on upside magnitude
 // Green dots = upside, red dots = downside
@@ -120,6 +121,7 @@ export default function ValuationPanel({ open, onClose }) {
                 </tr>
               )
             })}
+            <DCFScenarioPanel />
           </tbody>
         </table>
       </div>
@@ -210,6 +212,41 @@ export default function ValuationPanel({ open, onClose }) {
               </div>
             )
           })}
+          {(() => {
+            const ntg = localAssumptions.nearTermGrowth ?? assumptions.nearTermGrowth ?? null
+            const nty = localAssumptions.nearTermYears  ?? assumptions.nearTermYears  ?? 5
+            return (
+              <div className="sm:col-span-2 border-t border-navy-800 pt-3 mt-1 space-y-2">
+                <label className="flex items-center gap-2 text-xs text-slate-300">
+                  <input type="checkbox" checked={ntg != null}
+                    onChange={e => {
+                      updateAssumption('nearTermGrowth', e.target.checked ? (assumptions.growthRate ?? 0.08) : null)
+                      if (e.target.checked) updateAssumption('nearTermYears', nty)
+                    }} />
+                  Use company guidance (near-term growth)
+                </label>
+                {ntg != null && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="flex justify-between text-xs text-slate-400 mb-1">
+                        <span>Near-term growth</span><span>{(ntg * 100).toFixed(0)}%</span>
+                      </div>
+                      <input type="range" min={0} max={40} step={1} value={ntg * 100}
+                        onChange={e => updateAssumption('nearTermGrowth', +e.target.value / 100)} className="w-full" />
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-xs text-slate-400 mb-1">
+                        <span>For</span><span>{nty} yrs</span>
+                      </div>
+                      <input type="range" min={1} max={7} step={1} value={nty}
+                        onChange={e => updateAssumption('nearTermYears', +e.target.value)} className="w-full" />
+                    </div>
+                  </div>
+                )}
+                <p className="text-[10px] text-slate-600">Grows at this rate for the chosen years, then fades to terminal. Affects the DCF only — not P/E, EV/EBITDA or ratios.</p>
+              </div>
+            )
+          })()}
         </div>
       )}
     </div>
