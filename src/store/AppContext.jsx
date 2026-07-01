@@ -45,6 +45,27 @@ function reducer(s, a) {
     case 'RECALC':        return { ...s, ...a.payload }
     case 'SET_FOLDER':    return { ...s, folderHandle: a.handle }
     case 'CSV_APPLIED':   return { ...s, ...a.payload }
+    case 'MERGE_PASTED': {
+      if (!s.data) return s
+      const histKey  = a.tableType + 'History'
+      const existing = s.data[histKey] || []
+      const merged   = { ...Object.fromEntries(existing.map(r => [r.year, { ...r }])) }
+      for (const row of a.taggedRows) {
+        if (!row.year) continue
+        if (!merged[row.year]) merged[row.year] = { year: row.year }
+        for (const [field, tagged] of Object.entries(row)) {
+          if (field === 'year') continue
+          if (tagged?.value != null && merged[row.year][field]?.value == null) {
+            merged[row.year][field] = tagged
+          }
+          if (tagged?.value != null) delete merged[row.year].synthetic
+        }
+      }
+      const newHistory = Object.values(merged).sort((x, y) => x.year.localeCompare(y.year))
+      const data = { ...s.data, [histKey]: newHistory, source: 'merged' }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights)
+      return { ...s, data, ...computed }
+    }
     case 'SWAP_FIELD':    return { ...s, ...a.payload }
     case 'RESET':          return { ...initial, folderHandle: s.folderHandle }  // keep CSV folder connection
     default:              return s
@@ -174,30 +195,8 @@ export function AppProvider({ children }) {
   // Pasted years that overlap Yahoo's years get added as cross-source fill
   // for any field Yahoo was missing; new years extend history.
   const applyPastedTable = useCallback((tableType, taggedRows) => {
-    if (!state.data) return
-    const histKey = tableType + 'History'
-    const existing = state.data[histKey] || []
-
-    const merged = { ...Object.fromEntries(existing.map(r => [r.year, { ...r }])) }
-    for (const row of taggedRows) {
-      if (!row.year) continue
-      if (!merged[row.year]) merged[row.year] = { year: row.year }
-      for (const [field, tagged] of Object.entries(row)) {
-        if (field === 'year') continue
-        // Only fill if existing value is missing — never override a real source value
-        if (tagged?.value != null && merged[row.year][field]?.value == null) {
-          merged[row.year][field] = tagged
-          // This year now has real (pasted) data — drop the synthetic flag so
-          // ratios.js coalesceLatest() treats it as the latest real row.delete merged[row.year].synthetic
-        }
-      }
-    }
-
-    const newHistory = Object.values(merged).sort((a, b) => a.year.localeCompare(b.year))
-    const updatedData = { ...state.data, [histKey]: newHistory, source: 'merged' }
-    const computed = computeAll(updatedData, state.assumptions, state.meAssumptions, state.scoreWeights)
-    dispatch({ type: 'CSV_APPLIED', payload: { data: updatedData, ...computed } })
-  }, [state])
+    dispatch({ type: 'MERGE_PASTED', tableType, taggedRows })
+    }, [])
 
   const setFolderHandle = useCallback(async (handle) => {
     await saveFolderHandle(handle)
