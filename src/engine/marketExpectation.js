@@ -216,7 +216,8 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       label: 'Sales-based',
       note: isFinancial
         ? 'For banks/insurers, Sales = Net Interest Income / Premium Income — used here as the cross-check method since Net Profit or FCF analysis may be unavailable or structurally negative for this sector.'
-        : 'Best for growth/pre-profit companies. Uses revenue as base.',
+        : (stage === 'GROWTH' || stage === 'PRE_REVENUE') ? 'Best for growth/pre-profit companies. Uses revenue as base.' : 'Shown only as a cross-check. For an established, profitable company '
+          + 'the Earnings-based method is the right lens — sales-based ignores ' + 'margins and is primary only for growth/pre-profit names.',
       base: revenue,
       baseLabel: 'Current Sales',
       terminalMultiple: terminalSalesMultiple,

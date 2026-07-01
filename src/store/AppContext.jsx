@@ -187,6 +187,8 @@ export function AppProvider({ children }) {
         // Only fill if existing value is missing — never override a real source value
         if (tagged?.value != null && merged[row.year][field]?.value == null) {
           merged[row.year][field] = tagged
+          // This year now has real (pasted) data — drop the synthetic flag so
+          // ratios.js coalesceLatest() treats it as the latest real row.delete merged[row.year].synthetic
         }
       }
     }

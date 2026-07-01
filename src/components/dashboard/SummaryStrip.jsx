@@ -55,8 +55,8 @@ export default function SummaryStrip({ onExpand, expanded }) {
   // Primary variant for summary card
   const meVariants = marketExpectation?.variants
   const mePrimary = meVariants?.earnings?.applicable ? meVariants.earnings
-    : meVariants?.sales?.applicable   ? meVariants.sales
     : meVariants?.fcf?.applicable     ? meVariants.fcf
+    : meVariants?.sales?.applicable   ? meVariants.sales
     : null
   const me = { primary: mePrimary }
   const ratios = ratioResult?.ratios

@@ -234,8 +234,8 @@ export default function MarketExpectationPanel({ open, onClose }) {
 
   // Summary: pick the most applicable variant for the strip
   const primary = variants.earnings?.applicable ? variants.earnings
-    : variants.sales?.applicable   ? variants.sales
     : variants.fcf?.applicable     ? variants.fcf
+    : variants.sales?.applicable   ? variants.sales
     : null
 
   return (

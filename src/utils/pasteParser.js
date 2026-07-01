@@ -27,8 +27,12 @@ const ALIASES = {
   balance: {
     equityCapital: ['equitycapital', 'sharecapital', 'paidupcapital'],
     reserves:      ['reserves', 'reservesandsurplus', 'retainedearnings'],
+    totalEquity:   ['totalequity', 'networth', 'shareholdersfunds', 'shareholdersfund', 'totalshareholdersfunds'],
     totalDebt:     ['borrowings', 'totaldebt', 'longtermborrowing', 'debt', 'loans'],
-    totalAssets:   ['totalassets'],
+    // Screener labels the balance-sheet total simply "Total" (it appears twice —
+    // once for liabilities+equity, once for assets — and both equal total assets
+    // because the sheet balances). Match it so a Screener BS paste populates it.
+    totalAssets:   ['totalassets', 'total', 'totalequityandliabilities', 'totalliabilities', 'totalliabilitiesandequity'],
   },
   cashflow: {
     operatingCF:  ['cashfromoperatingactivity', 'netcashfromoperatingactivities', 'operatingactivities'],
@@ -139,6 +143,17 @@ export function parsePastedTable(text, tableType) {
 
   if (matchedCount === 0) {
     warnings.push(`No recognizable ${tableType === 'income' ? 'Profit & Loss' : tableType === 'balance' ? 'Balance Sheet' : 'Cash Flow'} line items found. Make sure you copied the right table.`)
+  }
+
+  // Screener's balance sheet has no "Total Equity" row — it splits it into
+  // "Equity Capital" + "Reserves". Derive it so equity-based metrics (ROE, D/E,
+  // ROA context) and the gap alert resolve after a balance-sheet import.
+  if (tableType === 'balance') {
+    for (const f of fieldsByYear) {
+      if (f.totalEquity == null && f.equityCapital != null && f.reserves != null) {
+        f.totalEquity = f.equityCapital + f.reserves
+      }
+    }
   }
 
   const rows = years.map((year, i) => ({ year, ...fieldsByYear[i] }))

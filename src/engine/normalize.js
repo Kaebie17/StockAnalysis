@@ -126,6 +126,13 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
     if (row && row.eps.value == null && e.earnings != null) row.eps = src(n(e.earnings))
   }
 
+  console.log('[DIAG-HIST]', {
+  ftsRows: ftsRows.length,
+  ftsYears,
+  incomeRows: incomeHistory.length,
+  firstRow: incomeHistory[0],
+  })
+  
   const balanceHistory = ftsYears.map(year => {
     const row = ftsRows.find(r => yearOf(dateOf(r)) === year) || {}
     const ta  = pick(row, 'totalAssets')
