@@ -204,7 +204,7 @@ export default function FundamentalsPanel({ open, onClose }) {
             <RatioCard label="Op. Margin"      tagged={ratios.operatingMargin} fmt={v => fmtPctPlain(v)} />
             <RatioCard label="EBITDA Margin"   tagged={ratios.ebitdaMargin} fmt={v => fmtPctPlain(v)} />
             <RatioCard label="Net Margin"      tagged={ratios.netMargin}    fmt={v => fmtPctPlain(v)} />
-            <RatioCard label="Rev CAGR"        tagged={ratios.revCagr}      fmt={v => fmtPctPlain(v)} />
+            <RatioCard label="Rev CAGR (5Y)"   tagged={ratios.revCagr5y}    fmt={v => fmtPctPlain(v)} />
             <RatioCard label="Debt / Equity"   tagged={ratios.de}           fmt={v => fmtMultiple(v)} />
             <RatioCard label="Interest Cover"  tagged={ratios.icr}          fmt={v => fmtMultiple(v)} />
             <RatioCard label="FCF Conversion"  tagged={ratios.fcfConversion} fmt={v => fmtPctPlain(v)} />

@@ -7,9 +7,9 @@ export function scoreQuality(data, ratioResult, weights = {}) {
 
   const predictors = [
     { key: 'revenueGrowth', label: 'Revenue Growth (5yr CAGR)',
-      value: ratios.revCagr?.value, threshold: 10,
-      pass: ratios.revCagr?.value != null ? ratios.revCagr.value >= 10 : null,
-      weight: weights.revenueGrowth ?? 1.5, tagged: ratios.revCagr },
+      value: ratios.revCagr5y?.value, threshold: 10,
+      pass: ratios.revCagr5y?.value != null ? ratios.revCagr5y.value >= 10 : null,
+      weight: weights.revenueGrowth ?? 1.5, tagged: ratios.revCagr5y },
 
     { key: 'ebitdaMargin', label: 'EBITDA / Operating Margin',
       value: ratios.ebitdaMargin?.value ?? ratios.operatingMargin?.value,

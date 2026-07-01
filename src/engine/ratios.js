@@ -111,6 +111,42 @@ export function calcRatios(data) {
   const revCagr   = n > 0 && revOldest > 0 && revLatest > 0
     ? (Math.pow(revLatest / revOldest, 1 / n) - 1) * 100 : null
 
+  // ── Growth for valuation (professional practice) ────────────────────────────
+  // Full-span CAGR swings with how many years are loaded, so it's a poor DCF
+  // input. Instead expose:
+  //   revGrowthRecent  – MEDIAN of the last ~5 annual YoY growth rates (robust to
+  //                      one freak year; reflects the company as it is now)
+  //   revGrowthLongRun – CAGR over the last min(10, n) years (a bounded window,
+  //                      not the entire uploaded history)
+  const revSeries = incomeReal.map(r => val(r.revenue)).filter(v => v != null && v > 0)
+  const yoySeries = []
+  for (let i = 1; i < revSeries.length; i++) {
+    yoySeries.push((revSeries[i] / revSeries[i - 1] - 1) * 100)
+  }
+  const median = arr => {
+    if (!arr.length) return null
+    const s = [...arr].sort((a, b) => a - b)
+    const m = Math.floor(s.length / 2)
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+  }
+  const revGrowthRecent = median(yoySeries.slice(-5))
+  let revGrowthLongRun = null
+  if (revSeries.length >= 2) {
+    const win = Math.min(10, revSeries.length - 1)      // last 10-year window at most
+    const start = revSeries[revSeries.length - 1 - win]
+    const end   = revSeries[revSeries.length - 1]
+    if (start > 0 && end > 0) revGrowthLongRun = (Math.pow(end / start, 1 / win) - 1) * 100
+  }
+  // 5-year endpoint CAGR — the headline growth figure shown on the dashboard
+  // (comparable to the other current-window metrics, unlike the full-span CAGR).
+  let revCagr5y = null
+  if (revSeries.length >= 2) {
+    const win = Math.min(5, revSeries.length - 1)
+    const start = revSeries[revSeries.length - 1 - win]
+    const end   = revSeries[revSeries.length - 1]
+    if (start > 0 && end > 0) revCagr5y = (Math.pow(end / start, 1 / win) - 1) * 100
+  }
+
   // ── EV ─────────────────────────────────────────────────────────────────────
   const ev = marketCap != null ? marketCap + totalDebt - cash : null
 
@@ -138,8 +174,14 @@ export function calcRatios(data) {
   // ROCE = EBIT / Capital Employed × 100
   // Capital Employed = Total Assets - Current Liabilities
   // We approximate: Capital Employed = Total Equity + Total Debt (= long-term capital)
+  // ROCE = EBIT / Capital Employed × 100  (EBIT = operating profit, i.e. after
+  // depreciation — NOT EBITDA, which overstates the return). Prefer reported
+  // operating income; else derive EBIT = EBITDA − Depreciation.
   const capitalEmployed = totalEquity != null ? totalEquity + totalDebt : null
-  const roce = pct(ebitda, capitalEmployed)  // EBIT ≈ EBITDA here; flag if no dep
+  const ebit = opProfit != null ? opProfit
+    : (ebitda != null && depreciation != null) ? ebitda - depreciation
+    : ebitda
+  const roce = pct(ebit, capitalEmployed)
 
   // ROA = Net Profit / Total Assets × 100
   const roa  = pct(netProfit, totalAssets)
@@ -203,6 +245,9 @@ export function calcRatios(data) {
       grahamNumber:    tag(grahamNumber,    'calculated', '√(22.5 × EPS × Book Value per Share)'),
       // Growth
       revCagr:         tag(revCagr,         'calculated', `Revenue CAGR over ${n} years`),
+      revCagr5y:       tag(revCagr5y,       'calculated', 'Revenue CAGR over the last 5 years'),
+      revGrowthRecent: tag(revGrowthRecent, 'calculated', 'Median of last 5 annual revenue growth rates'),
+      revGrowthLongRun:tag(revGrowthLongRun,'calculated', 'Revenue CAGR over the last 10 years (bounded window)'),
       revGrowthYoY:    tag(revGrowthYoY,    'calculated', 'Revenue YoY growth'),
       npGrowthYoY:     tag(npGrowthYoY,     'calculated', 'Net Profit YoY growth'),
       // FCF

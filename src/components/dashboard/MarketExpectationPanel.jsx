@@ -233,10 +233,9 @@ export default function MarketExpectationPanel({ open, onClose }) {
   const { variants, marketCap } = marketExpectation
 
   // Summary: pick the most applicable variant for the strip
-  const primary = variants.earnings?.applicable ? variants.earnings
-    : variants.fcf?.applicable     ? variants.fcf
-    : variants.sales?.applicable   ? variants.sales
-    : null
+  const _isGrowth = state.stage === 'GROWTH' || state.stage === 'PRE_REVENUE'
+  const _order = _isGrowth ? ['sales', 'fcf', 'earnings'] : ['earnings', 'fcf', 'sales']
+  const primary = _order.map(k => variants[k]).find(v => v?.applicable) || null
 
   return (
     <div className="card space-y-5">
@@ -261,6 +260,12 @@ export default function MarketExpectationPanel({ open, onClose }) {
         {/* Applicable variants first */}
         {['sales', 'earnings', 'fcf']
           .filter(k => variants[k]?.applicable)
+          .filter(k => {
+            const isGrowth = state.stage === 'GROWTH' || state.stage === 'PRE_REVENUE'
+            if (k === 'sales' && !isGrowth) return false      // hide Sales for established
+            if (k === 'earnings' && isGrowth) return false     // hide Earnings for growth/pre-profit
+            return true
+          })
           .map(k => (
             <VariantBlock
               key={k}

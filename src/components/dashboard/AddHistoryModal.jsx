@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
+import { useApp } from '../../store/AppContext.jsx'
 
 const TABLES = [
   { key: 'income',   label: 'Profit & Loss',  icon: '📊', hint: 'Revenue, Operating Profit, Net Profit, EPS, Interest, Depreciation' },
@@ -20,7 +21,11 @@ const screenerUrl = (ticker) =>
     : null
 
 // Screener reports financials in ₹ Crore; scale for Indian tickers to match Yahoo.
-const pasteScale = (ticker) => (/\.(NS|BO)$/i.test(ticker || '') ? 1e7 : 1)
+// Screener reports in ₹ Crore; the app stores absolute currency. Scale pasted
+// numbers when the loaded stock is INR (Indian). Uses currency (reliable) with
+// the exchange suffix as a fallback — the raw ticker often lacks .NS/.BO.
+const pasteScale = (currency, ticker) =>
+  (currency === 'INR' || /.(NS|BO)$/i.test(ticker || '')) ? 1e7 : 1
 
 /**
  * General "I want more history/breadth" entry point — distinct from
@@ -28,6 +33,8 @@ const pasteScale = (ticker) => (/\.(NS|BO)$/i.test(ticker || '') ? 1e7 : 1)
  * Single screen, all 3 tables pasted at once.
  */
 export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
+  const { state: appState } = useApp()
+  const currency = appState?.data?.currency
   const [pasteText, setPasteText] = useState({ income: '', balance: '', cashflow: '' })
   const [results, setResults]     = useState(null)
   const [applied, setApplied]     = useState(false)
@@ -57,7 +64,7 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
     if (!results) return
     for (const [tableType, result] of Object.entries(results)) {
       if (result.matchedCount > 0) {
-        const tagged = tagPastedRows(result.rows, tableType, { scale: pasteScale(ticker) })
+        const tagged = tagPastedRows(result.rows, tableType, { scale: pasteScale(currency, ticker) })
         onApplyAll(tableType, tagged)
       }
     }

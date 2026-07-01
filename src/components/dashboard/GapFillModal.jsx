@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { findMissingBaseMetrics, TABLE_INFO } from '../../engine/dataGaps.js'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
+import { useApp } from '../../store/AppContext.jsx'
 
 const STEP_ICON = { income: '📊', balance: '⚖️', cashflow: '💵' }
 
@@ -11,9 +12,15 @@ const screenerUrl = (ticker) =>
 
 // Screener reports financials in ₹ Crore; the app stores absolute currency.
 // Scale pasted numbers for Indian tickers so they line up with Yahoo data.
-const pasteScale = (ticker) => (/\.(NS|BO)$/i.test(ticker || '') ? 1e7 : 1)
+// Screener reports in ₹ Crore; the app stores absolute currency. Scale pasted
+// numbers when the loaded stock is INR (Indian). Uses currency (reliable) with
+// the exchange suffix as a fallback — the raw ticker often lacks .NS/.BO.
+const pasteScale = (currency, ticker) =>
+  (currency === 'INR' || /.(NS|BO)$/i.test(ticker || '')) ? 1e7 : 1
 
 export default function GapFillModal({ open, onClose, ratioResult, ticker, onApply }) {
+  const { state: appState } = useApp()
+  const currency = appState?.data?.currency
   // Stable plan captured when the modal opens. We must NOT drive the wizard off
   // the live ratioResult — it shrinks as gaps get filled, which previously made
   // the step indexing and the "all done" check break mid-flow.
@@ -68,7 +75,7 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
 
   const handleConfirmStep = () => {
     if (!preview) return
-    const tagged = tagPastedRows(preview.rows, currentTable, { scale: pasteScale(ticker) })
+    const tagged = tagPastedRows(preview.rows, currentTable, { scale: pasteScale(currency, ticker) })
     onApply(currentTable, tagged)
     setCompleted(prev => ({ ...prev, [currentTable]: true }))
     advance()
