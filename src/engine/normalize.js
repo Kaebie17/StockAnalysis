@@ -31,8 +31,20 @@ function scaleCr(tagged) {
 function n(v) { return typeof v === 'number' && isFinite(v) ? v : null }
 function yearOf(d) {
   if (!d) return null
-  if (d instanceof Date) return d.getFullYear().toString()
+  if (d instanceof Date) return isNaN(d) ? null : d.getFullYear().toString()
   if (typeof d === 'number') return new Date(d * 1000).getFullYear().toString()
+  // Over the wire the API sends JSON, so Date values arrive as ISO STRINGS
+  // ("2026-03-31T00:00:00.000Z"). Without this branch every FTS row's year
+  // resolved to null, ftsYears came out empty, and normalize fell back to the
+  // synthetic single-year row — the root cause of "1yr" + missing metrics.
+  if (typeof d === 'string') {
+    const m = d.match(/^(\d{4})-\d{2}-\d{2}/)          // ISO date
+    if (m) return m[1]
+    const m2 = d.match(/\b(19|20)\d{2}\b/)             // any 4-digit year fallback
+    if (m2) return m2[0]
+    const parsed = new Date(d)
+    return isNaN(parsed) ? null : parsed.getFullYear().toString()
+  }
   return null
 }
 
@@ -126,13 +138,6 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
     if (row && row.eps.value == null && e.earnings != null) row.eps = src(n(e.earnings))
   }
 
-  console.log('[DIAG-HIST]', {
-  ftsRows: ftsRows.length,
-  ftsYears,
-  incomeRows: incomeHistory.length,
-  firstRow: incomeHistory[0],
-  })
-  
   const balanceHistory = ftsYears.map(year => {
     const row = ftsRows.find(r => yearOf(dateOf(r)) === year) || {}
     const ta  = pick(row, 'totalAssets')
