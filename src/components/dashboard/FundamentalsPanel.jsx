@@ -73,13 +73,32 @@ function PredictorRow({ predictor }) {
   )
 }
 
+// Scoring weights — moved here from the old Scoring Studio gear. Fundamentals
+// scoring is a fundamentals concern, so it lives in the fundamentals block.
+const FUNDAMENTAL_WEIGHTS = [
+  { key: 'revenueGrowth',    label: 'Revenue Growth (5yr CAGR)', defaultW: 1.5 },
+  { key: 'grossMargin',      label: 'Gross Margin',              defaultW: 1 },
+  { key: 'ebitdaMargin',     label: 'EBITDA Margin',             defaultW: 1 },
+  { key: 'netMargin',        label: 'Net Margin',                defaultW: 1 },
+  { key: 'fcfConversion',    label: 'FCF Conversion',            defaultW: 1.5 },
+  { key: 'debtTrend',        label: 'Debt Management',           defaultW: 1 },
+  { key: 'roe',              label: 'Return on Equity',          defaultW: 1.5 },
+  { key: 'interestCoverage', label: 'Interest Coverage',         defaultW: 1 },
+  { key: 'consistency',      label: 'Earnings Consistency',      defaultW: 1 },
+]
+
 export default function FundamentalsPanel({ open, onClose }) {
-  const { state } = useApp()
+  const { state, recalc } = useApp()
   const { data, quality } = state
   const ratios = state.ratioResult?.ratios  // tagged ratios
   const r      = state.ratioResult          // scalar values
+  const weights = state.scoreWeights || {}
+  const [showWeights, setShowWeights] = useState(false)
 
   if (!open || !data) return null
+
+  const updateWeight = (key, value) => recalc({}, { [key]: parseFloat(value) })
+  const resetWeights = () => recalc({}, Object.fromEntries(FUNDAMENTAL_WEIGHTS.map(w => [w.key, w.defaultW])))
 
   const cur     = data.currency === 'INR' ? '₹' : '$'
   const div     = data.currency === 'INR' ? 1e7 : 1e6
@@ -110,7 +129,6 @@ export default function FundamentalsPanel({ open, onClose }) {
     labelStyle: { color: '#94a3b8' }
   }
 
-  // Parser status warning
   const ps = data.parserStatus || state.data?.parserStatus
   const showParserWarning = ps?.degraded
 
@@ -121,14 +139,12 @@ export default function FundamentalsPanel({ open, onClose }) {
         <button onClick={onClose} className="text-slate-500 hover:text-white text-lg">✕</button>
       </div>
 
-      {/* Parser warning */}
       {showParserWarning && (
         <div className="card-sm border-neutral/30 bg-neutral/5 text-xs text-neutral">
           ⚠️ {ps.message}
         </div>
       )}
 
-      {/* Resolution legend */}
       <div className="flex flex-wrap gap-3 text-xs text-slate-500">
         <span><span className="text-accent/70">⚙</span> Calculated by StockAnalyzr</span>
         <span><span className="text-neutral/70">T</span> TTM from source</span>
@@ -152,6 +168,34 @@ export default function FundamentalsPanel({ open, onClose }) {
               <PredictorRow key={p.key} predictor={p} />
             ))}
           </div>
+
+          {/* Scoring weights — how much each predictor counts toward the score */}
+          <div className="mt-2 flex items-center gap-3">
+            <button onClick={() => setShowWeights(!showWeights)}
+              className="text-xs text-accent hover:text-accent-light">
+              {showWeights ? '▲ Hide scoring weights' : '▼ Adjust scoring weights ✎'}
+            </button>
+            {showWeights && (
+              <button onClick={resetWeights} className="text-xs text-slate-500 hover:text-slate-300">↺ Reset</button>
+            )}
+          </div>
+          {showWeights && (
+            <div className="mt-2 space-y-2 bg-navy-800/40 rounded-lg p-3">
+              <p className="text-[10px] text-slate-500">How much each predictor contributes to the quality score (0–3).</p>
+              {FUNDAMENTAL_WEIGHTS.map(({ key, label, defaultW }) => (
+                <div key={key} className="flex items-center gap-3">
+                  <span className="text-xs text-slate-300 flex-1">{label}</span>
+                  <input type="range" min={0} max={3} step={0.5}
+                    value={weights[key] ?? defaultW}
+                    onChange={e => updateWeight(key, e.target.value)}
+                    className="w-24 accent-accent" />
+                  <span className="text-xs text-white font-mono w-6 text-right">
+                    {(weights[key] ?? defaultW).toFixed(1)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

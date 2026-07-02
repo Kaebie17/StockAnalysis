@@ -1,187 +1,193 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { saveProfile, loadProfile, listProfiles, deleteProfile } from '../../utils/db.js'
 
+/**
+ * Guidance input (formerly Scoring Studio).
+ * Management guidance is a forward VIEW, so it lives here — a single global input
+ * that feeds the DCF near-term window AND the expectations comparison (guidance vs
+ * market-implied vs recent). Session-only: nothing is persisted to disk.
+ *
+ * Only revenue guidance maps cleanly to the maths (growth drives the DCF and the
+ * comparison), so that's the structured field. Everything else management says —
+ * margins, capex, new ventures, order book — is captured as a free-text NOTE you
+ * read and fold in yourself, rather than a number the app applies silently.
+ */
 export default function ScoringStudio({ open, onClose }) {
   const { state, recalc } = useApp()
-  const [activeTab, setActiveTab] = useState('fundamental')
-  const [profileName, setProfileName] = useState('')
-  const [profiles, setProfiles] = useState([])
-  const [profilesLoaded, setProfilesLoaded] = useState(false)
+  const r = state.ratioResult
 
-  const weights = state.scoreWeights || {}
-  const assumptions = state.assumptions || {}
+  const [mode, setMode]       = useState('growth')      // 'growth' | 'target'
+  const [growthPct, setGrowthPct] = useState('')        // e.g. "20"
+  const [targetRev, setTargetRev] = useState('')        // absolute target in display unit (Cr / M)
+  const [horizon, setHorizon] = useState('multi')       // 'next' | 'multi' | 'unspecified'
+  const [years, setYears]     = useState(3)
+  const [notes, setNotes]     = useState('')
 
   if (!open) return null
 
-  const loadProfiles = async () => {
-    if (!profilesLoaded) {
-      const p = await listProfiles()
-      setProfiles(p)
-      setProfilesLoaded(true)
+  const cur  = state.data?.currency === 'INR' ? '₹' : '$'
+  const div  = state.data?.currency === 'INR' ? 1e7 : 1e6
+  const unit = state.data?.currency === 'INR' ? 'Cr' : 'M'
+
+  // Effective explicit-window length. Unspecified → 3 yrs (flagged as assumed).
+  const effYears = horizon === 'next' ? 1 : (horizon === 'unspecified' ? 3 : Math.max(1, +years || 3))
+
+  // Resolve guidance to a single growth rate (decimal).
+  const currentRev = r?.revenue
+  let guidedGrowth = null
+  if (mode === 'growth' && growthPct !== '' && !isNaN(+growthPct)) {
+    guidedGrowth = +growthPct / 100
+  } else if (mode === 'target' && targetRev !== '' && !isNaN(+targetRev) && currentRev > 0) {
+    const targetAbs = +targetRev * div
+    if (targetAbs > 0) guidedGrowth = Math.pow(targetAbs / currentRev, 1 / effYears) - 1
+  }
+
+  // Push guidance into the engine (merges — leaves other assumptions untouched).
+  const commit = (g, yrs) => {
+    if (!state.data) return
+    recalc({ nearTermGrowth: g, nearTermYears: g != null ? yrs : 0 }, {})
+  }
+  const apply = (over = {}) => {
+    const m  = over.mode      ?? mode
+    const gp = over.growthPct ?? growthPct
+    const tr = over.targetRev ?? targetRev
+    const h  = over.horizon   ?? horizon
+    const y  = over.years     ?? years
+    const yy = h === 'next' ? 1 : (h === 'unspecified' ? 3 : Math.max(1, +y || 3))
+    let g = null
+    if (m === 'growth' && gp !== '' && !isNaN(+gp)) g = +gp / 100
+    else if (m === 'target' && tr !== '' && !isNaN(+tr) && currentRev > 0) {
+      const ta = +tr * div; if (ta > 0) g = Math.pow(ta / currentRev, 1 / yy) - 1
     }
+    commit(g, yy)
+  }
+  const clearGuidance = () => {
+    setGrowthPct(''); setTargetRev('')
+    commit(null, 0)
   }
 
-  const updateWeight = (key, value) => {
-    recalc({}, { [key]: parseFloat(value) })
-  }
+  // Reference: what the market is pricing, for context while typing.
+  const marketImplied = state.valuation?.impliedGrowth
+    ?? state.marketExpectation?.variants?.sales?.impliedGrowth
+    ?? state.marketExpectation?.variants?.earnings?.impliedGrowth
+  const recentGrowth = r?.ratios?.revGrowthRecent?.value
 
-  const updateAssumption = (key, value) => {
-    recalc({ [key]: parseFloat(value) }, {})
-  }
-
-  const save = async () => {
-    if (!profileName.trim()) return
-    await saveProfile(profileName.trim(), { weights, assumptions })
-    const p = await listProfiles()
-    setProfiles(p)
-    setProfileName('')
-  }
-
-  const applyProfile = async (name) => {
-    const config = await loadProfile(name)
-    if (config) recalc(config.assumptions || {}, config.weights || {})
-  }
-
-  const FUNDAMENTAL_WEIGHTS = [
-    { key: 'revenueGrowth', label: 'Revenue Growth (5yr CAGR)', defaultW: 1.5 },
-    { key: 'grossMargin',   label: 'Gross Margin',              defaultW: 1 },
-    { key: 'ebitdaMargin',  label: 'EBITDA Margin',             defaultW: 1 },
-    { key: 'netMargin',     label: 'Net Margin',                defaultW: 1 },
-    { key: 'fcfConversion', label: 'FCF Conversion',            defaultW: 1.5 },
-    { key: 'debtTrend',     label: 'Debt Management',           defaultW: 1 },
-    { key: 'roe',           label: 'Return on Equity',          defaultW: 1.5 },
-    { key: 'interestCoverage', label: 'Interest Coverage',      defaultW: 1 },
-    { key: 'consistency',   label: 'Earnings Consistency',      defaultW: 1 }
-  ]
-
-  const VALUATION_INPUTS = [
-    { key: 'wacc',       label: 'WACC',                  min: 0.05, max: 0.20, step: 0.005, pct: true },
-    { key: 'termGrowth', label: 'Terminal Growth Rate',  min: 0.01, max: 0.06, step: 0.005, pct: true },
-    { key: 'growthRate', label: 'FCF Growth Rate',       min: 0,    max: 0.40, step: 0.01,  pct: true },
-    { key: 'sectorPe',   label: 'Sector P/E Target',     min: 5,    max: 60,   step: 1,     pct: false },
-    { key: 'sectorEvEb', label: 'Sector EV/EBITDA Target',min: 4,   max: 30,   step: 0.5,   pct: false }
-  ]
-
-  const tabs = ['fundamental', 'valuation', 'profiles']
+  const effPct = guidedGrowth != null ? (guidedGrowth * 100) : null
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
          onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="w-full max-w-lg bg-navy-900 border border-navy-700 rounded-2xl overflow-hidden shadow-2xl">
-        {/* Title */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-navy-700">
-          <h2 className="font-semibold text-white">Scoring Studio</h2>
+          <h2 className="font-semibold text-white">🧭 Guidance</h2>
           <button onClick={onClose} className="text-slate-400 hover:text-white text-lg">✕</button>
         </div>
 
-        {/* Tabs */}
-        <div className="flex border-b border-navy-700">
-          {tabs.map(t => (
-            <button
-              key={t}
-              onClick={() => { setActiveTab(t); if (t === 'profiles') loadProfiles() }}
-              className={`flex-1 py-2.5 text-xs font-medium transition-colors capitalize ${
-                activeTab === t ? 'text-accent border-b-2 border-accent' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
+        <div className="p-5 max-h-[70vh] overflow-y-auto space-y-4">
+          <p className="text-xs text-slate-400">
+            Enter management's forward guidance. Revenue guidance drives the DCF near-term
+            window and is compared against what the market is pricing. Session only.
+          </p>
 
-        {/* Content */}
-        <div className="p-5 max-h-96 overflow-y-auto space-y-4">
-          {activeTab === 'fundamental' && (
-            <>
-              <p className="text-xs text-slate-400">Adjust how much each predictor contributes to the quality score.</p>
-              {FUNDAMENTAL_WEIGHTS.map(({ key, label, defaultW }) => (
-                <div key={key} className="flex items-center gap-3">
-                  <span className="text-sm text-slate-300 flex-1">{label}</span>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <input
-                      type="range" min={0} max={3} step={0.5}
-                      value={weights[key] ?? defaultW}
-                      onChange={e => updateWeight(key, e.target.value)}
-                      className="w-20 accent-accent"
-                    />
-                    <span className="text-xs text-white font-mono w-6 text-right">
-                      {(weights[key] ?? defaultW).toFixed(1)}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </>
+          {/* Reference line */}
+          {(marketImplied != null || recentGrowth != null) && (
+            <div className="text-xs bg-navy-800/50 rounded-lg px-3 py-2 text-slate-400 space-x-3">
+              {marketImplied != null && <span>Market pricing ≈ <span className="text-accent font-mono">{marketImplied.toFixed(0)}%</span></span>}
+              {recentGrowth != null && <span>Recent ≈ <span className="text-slate-300 font-mono">{recentGrowth.toFixed(0)}%</span></span>}
+            </div>
           )}
 
-          {activeTab === 'valuation' && (
-            <>
-              <p className="text-xs text-slate-400">Tune DCF assumptions — changes recalculate fair value immediately.</p>
-              {VALUATION_INPUTS.map(({ key, label, min, max, step, pct }) => {
-                const raw = assumptions[key]
-                const val = raw ?? (pct ? (key === 'wacc' ? 0.10 : key === 'termGrowth' ? 0.03 : 0.10) : (key === 'sectorPe' ? 20 : 12))
-                const display = pct ? (val * 100).toFixed(1) + '%' : val.toFixed(1) + '×'
-                return (
-                  <div key={key}>
-                    <div className="flex justify-between text-xs text-slate-400 mb-1">
-                      <span>{label}</span>
-                      <span className="text-white font-mono">{display}</span>
-                    </div>
-                    <input
-                      type="range" min={min} max={max} step={step} value={val}
-                      onChange={e => updateAssumption(key, e.target.value)}
-                      className="w-full accent-accent"
-                    />
-                  </div>
-                )
-              })}
-            </>
-          )}
+          {/* Mode toggle */}
+          <div className="flex gap-2">
+            {[['growth', 'Growth %'], ['target', `Revenue target (${unit})`]].map(([m, lbl]) => (
+              <button key={m}
+                onClick={() => { setMode(m); apply({ mode: m }) }}
+                className={`flex-1 py-1.5 rounded-lg text-xs border ${mode === m ? 'border-accent bg-navy-800 text-white' : 'border-navy-700 text-slate-400'}`}>
+                {lbl}
+              </button>
+            ))}
+          </div>
 
-          {activeTab === 'profiles' && (
-            <>
-              <p className="text-xs text-slate-400">Save and load named scoring configurations.</p>
-
-              {/* Save */}
-              <div className="flex gap-2">
-                <input
-                  className="input-field text-sm"
-                  placeholder="Profile name…"
-                  value={profileName}
-                  onChange={e => setProfileName(e.target.value)}
-                />
-                <button className="btn-primary shrink-0 text-sm" onClick={save}>Save</button>
+          {/* Value input */}
+          {mode === 'growth' ? (
+            <div>
+              <label className="text-xs text-slate-400">Guided annual revenue growth</label>
+              <div className="flex items-center gap-2 mt-1">
+                <input type="number" inputMode="decimal" placeholder="e.g. 20"
+                  value={growthPct}
+                  onChange={e => { setGrowthPct(e.target.value); apply({ growthPct: e.target.value }) }}
+                  className="input-field text-sm w-28" />
+                <span className="text-slate-400 text-sm">% / yr</span>
               </div>
-
-              {/* Saved profiles */}
-              {profiles.length === 0 ? (
-                <p className="text-xs text-slate-500 text-center py-4">No saved profiles yet</p>
-              ) : (
-                <div className="space-y-2">
-                  {profiles.map(p => (
-                    <div key={p.name} className="flex items-center gap-2 card-sm">
-                      <span className="flex-1 text-sm text-slate-300">{p.name}</span>
-                      <button
-                        onClick={() => applyProfile(p.name)}
-                        className="text-xs text-accent hover:text-accent-light"
-                      >
-                        Apply
-                      </button>
-                      <button
-                        onClick={async () => {
-                          await deleteProfile(p.name)
-                          setProfiles(prev => prev.filter(pr => pr.name !== p.name))
-                        }}
-                        className="text-xs text-slate-500 hover:text-bear"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ))}
-                </div>
+            </div>
+          ) : (
+            <div>
+              <label className="text-xs text-slate-400">Revenue target ({cur}, in {unit})</label>
+              <div className="flex items-center gap-2 mt-1">
+                <input type="number" inputMode="decimal" placeholder={`e.g. 50000`}
+                  value={targetRev}
+                  onChange={e => { setTargetRev(e.target.value); apply({ targetRev: e.target.value }) }}
+                  className="input-field text-sm w-36" />
+                <span className="text-slate-500 text-xs">{unit}</span>
+              </div>
+              {currentRev > 0 && (
+                <p className="text-[10px] text-slate-600 mt-1">
+                  Current revenue {cur}{Math.round(currentRev / div).toLocaleString('en-IN')} {unit} — target converts to an implied growth over the horizon.
+                </p>
               )}
-            </>
+            </div>
           )}
+
+          {/* Horizon */}
+          <div>
+            <label className="text-xs text-slate-400">Horizon</label>
+            <div className="flex gap-2 mt-1">
+              {[['next', 'Next year'], ['multi', 'Over N years'], ['unspecified', 'Unspecified']].map(([h, lbl]) => (
+                <button key={h}
+                  onClick={() => { setHorizon(h); apply({ horizon: h }) }}
+                  className={`flex-1 py-1.5 rounded-lg text-xs border ${horizon === h ? 'border-accent bg-navy-800 text-white' : 'border-navy-700 text-slate-400'}`}>
+                  {lbl}
+                </button>
+              ))}
+            </div>
+            {horizon === 'multi' && (
+              <div className="flex items-center gap-2 mt-2">
+                <input type="range" min={1} max={7} step={1} value={years}
+                  onChange={e => { setYears(+e.target.value); apply({ years: +e.target.value }) }}
+                  className="flex-1 accent-accent" />
+                <span className="text-xs text-white font-mono w-10 text-right">{years} yr</span>
+              </div>
+            )}
+            {horizon === 'unspecified' && (
+              <p className="text-[10px] text-neutral mt-1">⚠ No period given — assuming a 3-year window (fades to terminal after).</p>
+            )}
+          </div>
+
+          {/* Resolved effect */}
+          {effPct != null && (
+            <div className="text-xs bg-navy-800/50 rounded-lg px-3 py-2 text-slate-300">
+              Applying <span className="text-accent font-mono">{effPct.toFixed(1)}%</span> growth for{' '}
+              <span className="font-mono">{effYears}</span> yr{effYears > 1 ? 's' : ''}, then fading to terminal.
+              {marketImplied != null && (
+                <span className="text-slate-500">
+                  {' '}({(effPct - marketImplied) >= 0 ? '+' : ''}{(effPct - marketImplied).toFixed(0)} pts vs market)
+                </span>
+              )}
+            </div>
+          )}
+
+          <button onClick={clearGuidance} className="text-xs text-slate-500 hover:text-slate-300">↺ Clear guidance</button>
+
+          {/* Other guidance — captured, not auto-applied */}
+          <div className="border-t border-navy-800 pt-3">
+            <label className="text-xs text-slate-400">Other guidance (margins, capex, ventures, order book…)</label>
+            <textarea rows={3} value={notes} onChange={e => setNotes(e.target.value)}
+              placeholder="Paste or note anything else management said. For your reference — not auto-applied to the maths."
+              className="input-field text-xs w-full mt-1 resize-y" />
+            <p className="text-[10px] text-slate-600 mt-1">
+              Only revenue growth/target flows into the model. Margin, capex and cash-flow guidance can be wired in later.
+            </p>
+          </div>
         </div>
       </div>
     </div>

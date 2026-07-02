@@ -188,22 +188,20 @@ export default function SummaryStrip({ onExpand, expanded }) {
           <div>
             <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Combined Verdict</div>
             <p className="text-sm text-slate-200 leading-relaxed">{verdict}</p>
-            {expectationInsight(valuation, marketExpectation, ratioResult)?.text && (
-              <p className="text-sm text-slate-300 leading-relaxed mt-1.5">
-                📊 {(() => {
-                  const _ins = expectationInsight(valuation, marketExpectation, ratioResult, state.stage)
-                  if (!_ins?.text) return null
-                  return (
-                    <div className="mt-2 space-y-1.5">
-                      <p className="text-sm text-slate-200 leading-relaxed">📊 {_ins.text}</p>
-                      {_ins.bases && <p className="text-xs text-slate-400 leading-relaxed">{_ins.bases}</p>}
-                      {_ins.valn  && <p className="text-xs text-slate-400 leading-relaxed">{_ins.valn}</p>}
-                      {_ins.scen  && <p className="text-xs text-slate-500 leading-relaxed">{_ins.scen}</p>}
-                    </div>
-                  )
-                })()}
-              </p>
-            )}
+            {(() => {
+              const _guided = valuation?.assumptions?.nearTermGrowth != null
+                ? valuation.assumptions.nearTermGrowth * 100 : null
+              const _ins = expectationInsight(valuation, marketExpectation, ratioResult, state.stage, _guided)
+              if (!_ins?.text) return null
+              return (
+                <div className="mt-2 space-y-1.5">
+                  <p className="text-sm text-slate-200 leading-relaxed">📊 {_ins.text}</p>
+                  {_ins.bases && <p className="text-xs text-slate-400 leading-relaxed">{_ins.bases}</p>}
+                  {_ins.valn  && <p className="text-xs text-slate-400 leading-relaxed">{_ins.valn}</p>}
+                  {_ins.scen  && <p className="text-xs text-slate-500 leading-relaxed">{_ins.scen}</p>}
+                </div>
+              )
+            })()}
           </div>
         </div>
       </div>
