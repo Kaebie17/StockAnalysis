@@ -197,7 +197,10 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
   const fcf       = r?.fcf > 0 ? r.fcf : null
   const opCF      = r?.opCF > 0 ? r.opCF * 0.7 : null  // haircut as FCF proxy
 
-  const historicalRevGrowth = r?.ratios?.revCagr?.value
+  const historicalRevGrowth = r?.ratios?.revCagr5y?.value ?? r?.ratios?.revCagr?.value
+  // EV target for the EV/Sales variant (equity market cap ignores net debt, which
+  // overstates sales-implied growth for levered firms). Earnings uses P/E → equity.
+  const evTarget = marketCap != null ? marketCap + (r?.netDebt || 0) : null
   const historicalNPGrowth  = r?.ratios?.npGrowthYoY?.value
 
 const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
@@ -206,9 +209,9 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
 
   // ── Sales-based ─────────────────────────────────────────────────────────────
   if (revenue != null && revenue > 0 && marketCap) {
-    const impliedG = solveImpliedGrowth(revenue, marketCap, terminalSalesMultiple, discountRate, horizon)
+    const impliedG = solveImpliedGrowth(revenue, evTarget, terminalSalesMultiple, discountRate, horizon)
     const sanity   = impliedG != null
-      ? buildSanityTable(revenue, marketCap, terminalSalesMultiple, discountRate, horizon, impliedG)
+      ? buildSanityTable(revenue, evTarget, terminalSalesMultiple, discountRate, horizon, impliedG)
       : null
 
     variants.sales = {
@@ -216,8 +219,7 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       label: 'Sales-based',
       note: isFinancial
         ? 'For banks/insurers, Sales = Net Interest Income / Premium Income — used here as the cross-check method since Net Profit or FCF analysis may be unavailable or structurally negative for this sector.'
-        : (stage === 'GROWTH' || stage === 'PRE_REVENUE') ? 'Best for growth/pre-profit companies. Uses revenue as base.' : 'Shown only as a cross-check. For an established, profitable company '
-          + 'the Earnings-based method is the right lens — sales-based ignores ' + 'margins and is primary only for growth/pre-profit names.',
+        : 'Best for growth/pre-profit companies. Uses revenue as base.',
       base: revenue,
       baseLabel: 'Current Sales',
       terminalMultiple: terminalSalesMultiple,
@@ -317,3 +319,5 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
 
   return { variants, assumptions, marketCap, price }
 }
+
+

@@ -188,9 +188,9 @@ export default function SummaryStrip({ onExpand, expanded }) {
           <div>
             <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Combined Verdict</div>
             <p className="text-sm text-slate-200 leading-relaxed">{verdict}</p>
-            {expectationInsight(valuation, marketExpectation)?.text && (
+            {expectationInsight(valuation, marketExpectation, ratioResult)?.text && (
               <p className="text-sm text-slate-300 leading-relaxed mt-1.5">
-                📊 {expectationInsight(valuation, marketExpectation).text}
+                📊 {expectationInsight(valuation, marketExpectation, ratioResult).text}
               </p>
             )}
           </div>

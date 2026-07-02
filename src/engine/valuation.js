@@ -208,7 +208,7 @@ function isApplicable(m, meta) { return meta.applicable.includes(m) || meta.caut
 // Expectation variant (earnings-based, else sales-based) and LABELS the basis.
 // "Your view" = user guidance if given, else the growth the DCF is currently
 // using (scenario/model). Returns null when nothing resolves → caller hides it.
-export function expectationInsight(valuation, marketExpectation, guidedGrowthPct = null) {
+export function expectationInsight(valuation, marketExpectation, ratioResult = null, guidedGrowthPct = null) {
   if (!valuation) return null
 
   let implied = valuation.impliedGrowth
@@ -226,20 +226,37 @@ export function expectationInsight(valuation, marketExpectation, guidedGrowthPct
   }
   if (implied == null) return null
 
-  const yourView = guidedGrowthPct != null
-    ? guidedGrowthPct
-    : (valuation.assumptions?.growthRate != null ? valuation.assumptions.growthRate * 100 : null)
+  // "Your view": explicit guidance wins. Otherwise anchor LIKE-FOR-LIKE with the
+  // market side — comparing a sales-implied market rate against a DCF growth guess
+  // (which doesn't even apply to a no-FCF company) is meaningless. So:
+  //   reverse-DCF basis → the DCF growth assumption (same engine, consistent)
+  //   sales-based       → the company's actual recent REVENUE growth
+  //   earnings-based    → the company's actual recent EARNINGS growth
+  const g = ratioResult?.ratios || {}
+  let yourView, viewLabel = 'your view'
+  if (guidedGrowthPct != null) {
+    yourView = guidedGrowthPct
+  } else if (basis === 'sales-based') {
+    yourView = g.revGrowthRecent?.value ?? g.revCagr5y?.value ?? null
+    viewLabel = 'recent sales growth'
+  } else if (basis === 'earnings-based') {
+    yourView = g.npGrowthYoY?.value ?? null
+    viewLabel = 'recent earnings growth'
+  } else {
+    yourView = valuation.assumptions?.growthRate != null ? valuation.assumptions.growthRate * 100 : null
+  }
   if (yourView == null) return { implied, basis, isFallback, yourView: null, gap: null, text: null }
 
   const gap = yourView - implied
+  const subject = viewLabel === 'your view' ? "you're" : 'that is'
   const read = Math.abs(gap) < 1
     ? 'roughly what the market is already pricing in'
     : gap > 0
-      ? `more optimistic than the market by ${gap.toFixed(1)} pts — upside if the company delivers`
-      : `below what the market is pricing by ${Math.abs(gap).toFixed(1)} pts — the price already assumes more`
+      ? `${Math.abs(gap).toFixed(1)} pts above what the market is pricing — room to beat expectations`
+      : `${Math.abs(gap).toFixed(1)} pts below what the market is pricing — the price already assumes more`
   const basisLabel = isFallback ? ` (${basis})` : ''
-  const text = `Market is pricing ~${implied.toFixed(1)}% growth${basisLabel}; your view is ~${yourView.toFixed(1)}% — you're ${read}.`
-  return { implied, basis, isFallback, yourView, gap, text }
+  const text = `Market is pricing ~${implied.toFixed(1)}% growth${basisLabel}; ${viewLabel} is ~${yourView.toFixed(1)}% — ${subject} ${read}.`
+  return { implied, basis, isFallback, yourView, viewLabel, gap, text }
 }
 
 function estimateGrowth(r) {
