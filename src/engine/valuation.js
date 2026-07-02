@@ -45,8 +45,11 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const actualEvEb = r.ratios?.evEbitda?.value
   const sectorEvEbDefault = actualEvEb != null ? clamp(actualEvEb, 5, 20) : 12
 
+  // WACC default is computed per company (CAPM), not a flat rate — see computeWacc.
+  const waccDefault = computeWacc(r)
+
   const {
-    wacc       = 0.10,
+    wacc       = waccDefault,
     termGrowth = 0.03,
     projYears  = 10,
     sectorPe   = sectorPeDefault,
@@ -153,7 +156,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     // Anchor scenarios on the professional DEFAULTS (not the possibly-overridden
     // current assumptions) so Bear/Base/Bull are stable and don't compound when
     // a scenario is applied via the sliders.
-    const scenBase = { growthRate: estimateGrowth(r), wacc: 0.10, termGrowth: 0.03, projYears }
+    const scenBase = { growthRate: estimateGrowth(r), wacc: waccDefault, termGrowth: 0.03, projYears }
     scenarios = {}
     for (const key of ['bear', 'base', 'bull']) {
       const sa    = scenarioAssumptions(key, scenBase)
@@ -196,11 +199,33 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     scenarios,
     assumptions: { wacc, termGrowth, projYears, growthRate, sectorPe, sectorEvEb },
     // Store defaults so UI can show them and reset to them
-    defaults: { wacc: 0.10, termGrowth: 0.03, projYears: 10, growthRate: estimateGrowth(r), sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault }
+    defaults: { wacc: waccDefault, termGrowth: 0.03, projYears: 10, growthRate: estimateGrowth(r), sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault }
   }
 }
 
 function isApplicable(m, meta) { return meta.applicable.includes(m) || meta.caution.includes(m) }
+
+// Company-specific WACC via CAPM, the professional standard (vs a flat rate):
+//   Cost of equity  Ke = riskFree + beta × equityRiskPremium
+//   Cost of debt    Kd = interest / totalDebt  (after-tax: × (1 − taxRate))
+//   WACC = E/(E+D)·Ke + D/(E+D)·Kd·(1−tax)      with E = market cap, D = total debt
+// riskFree and ERP are the only convention inputs — defaults are India's ~10-yr
+// G-sec (7%) and a Damodaran-style India ERP (5.5%); pass overrides to retune.
+// Result is clamped to a sane 8–16% band so a freak beta can't produce nonsense.
+function computeWacc(r, { riskFree = 0.07, erp = 0.055, taxRate = 0.25 } = {}) {
+  const beta = (r?.ratios?.beta?.value != null && r.ratios.beta.value > 0) ? r.ratios.beta.value : 1.0
+  const E = r?.marketCap > 0 ? r.marketCap : null
+  const D = r?.totalDebt > 0 ? r.totalDebt : 0
+  const ke = riskFree + beta * erp
+  // Cost of debt: interest / debt if both present, else a sensible India default.
+  let kd = 0.09
+  if (r?.interest > 0 && D > 0) kd = clamp(r.interest / D, 0.04, 0.18)
+  if (E == null) return clamp(ke, 0.08, 0.16)          // no market cap → all-equity proxy
+  const V = E + D
+  const wacc = (E / V) * ke + (D / V) * kd * (1 - taxRate)
+  return clamp(wacc, 0.08, 0.16)
+}
+
 
 // Build the "market implies X% vs your view Y%" insight for the combined verdict.
 // Prefers the real reverse-DCF (valuation.impliedGrowth). If that can't resolve
@@ -208,55 +233,104 @@ function isApplicable(m, meta) { return meta.applicable.includes(m) || meta.caut
 // Expectation variant (earnings-based, else sales-based) and LABELS the basis.
 // "Your view" = user guidance if given, else the growth the DCF is currently
 // using (scenario/model). Returns null when nothing resolves → caller hides it.
-export function expectationInsight(valuation, marketExpectation, ratioResult = null, guidedGrowthPct = null) {
+export function expectationInsight(valuation, marketExpectation, ratioResult = null, stage = null, guidedGrowthPct = null) {
   if (!valuation) return null
+  const V      = marketExpectation?.variants || {}
+  const rdcf   = valuation.impliedGrowth
+  const salesG = (V.sales?.applicable && V.sales.impliedGrowth != null) ? V.sales.impliedGrowth : null
+  const earnG  = (V.earnings?.applicable && V.earnings.impliedGrowth != null) ? V.earnings.impliedGrowth : null
+  const isGrowth = stage === 'GROWTH' || stage === 'PRE_REVENUE'
+  const price  = ratioResult?.price
+  const g      = ratioResult?.ratios || {}
+  const rup    = v => Math.round(v).toLocaleString('en-IN')
 
-  let implied = valuation.impliedGrowth
-  let basis   = 'reverse-DCF'
-  let isFallback = false
-
-  if (implied == null && marketExpectation?.variants) {
-    const v = marketExpectation.variants
-    const pick = (v.earnings?.applicable && v.earnings.impliedGrowth != null)
-      ? { g: v.earnings.impliedGrowth, b: 'earnings-based' }
-      : (v.sales?.applicable && v.sales.impliedGrowth != null)
-      ? { g: v.sales.impliedGrowth, b: 'sales-based' }
-      : null
-    if (pick) { implied = pick.g; basis = pick.b; isFallback = true }
-  }
+  // ── Headline: which market-implied rate to lead with, vs "your view" ──────────
+  // Reverse-DCF is the real method with meaningful, stable FCF; on a thin base it
+  // returns an implausible number, so growth-stage / >35% cases lead with sales.
+  const rdcfUnreliable = rdcf == null || isGrowth || rdcf > 35
+  let implied = null, basis = null, isFallback = false
+  if (!rdcfUnreliable)                                     { implied = rdcf;   basis = 'reverse-DCF' }
+  else if (salesG != null && (isGrowth || earnG == null)) { implied = salesG; basis = 'sales-based';    isFallback = true }
+  else if (earnG != null)                                 { implied = earnG;  basis = 'earnings-based'; isFallback = true }
+  else if (salesG != null)                                { implied = salesG; basis = 'sales-based';    isFallback = true }
+  else if (rdcf != null)                                  { implied = rdcf;   basis = 'reverse-DCF' }
   if (implied == null) return null
 
-  // "Your view": explicit guidance wins. Otherwise anchor LIKE-FOR-LIKE with the
-  // market side — comparing a sales-implied market rate against a DCF growth guess
-  // (which doesn't even apply to a no-FCF company) is meaningless. So:
-  //   reverse-DCF basis → the DCF growth assumption (same engine, consistent)
-  //   sales-based       → the company's actual recent REVENUE growth
-  //   earnings-based    → the company's actual recent EARNINGS growth
-  const g = ratioResult?.ratios || {}
-  let yourView, viewLabel = 'your view'
-  if (guidedGrowthPct != null) {
-    yourView = guidedGrowthPct
-  } else if (basis === 'sales-based') {
-    yourView = g.revGrowthRecent?.value ?? g.revCagr5y?.value ?? null
-    viewLabel = 'recent sales growth'
-  } else if (basis === 'earnings-based') {
-    yourView = g.npGrowthYoY?.value ?? null
-    viewLabel = 'recent earnings growth'
-  } else {
-    yourView = valuation.assumptions?.growthRate != null ? valuation.assumptions.growthRate * 100 : null
-  }
-  if (yourView == null) return { implied, basis, isFallback, yourView: null, gap: null, text: null }
+  // ── Headline: market-implied growth vs what the company is ACTUALLY doing, with
+  // the interpretation spelled out — the same depth for every stock. Recent actual
+  // growth is the honest yardstick; guidance (if set) overlays "your view". ───────
+  const recent = (basis === 'earnings-based') ? g.npGrowthYoY?.value
+                                              : (g.revGrowthRecent?.value ?? g.revCagr5y?.value)
+  const recentLabel = (basis === 'earnings-based') ? 'earnings' : 'sales'
+  const basisLabel  = isFallback ? ` (${basis})` : ' (reverse-DCF)'
 
-  const gap = yourView - implied
-  const subject = viewLabel === 'your view' ? "you're" : 'that is'
-  const read = Math.abs(gap) < 1
-    ? 'roughly what the market is already pricing in'
-    : gap > 0
-      ? `${Math.abs(gap).toFixed(1)} pts above what the market is pricing — room to beat expectations`
-      : `${Math.abs(gap).toFixed(1)} pts below what the market is pricing — the price already assumes more`
-  const basisLabel = isFallback ? ` (${basis})` : ''
-  const text = `Market is pricing ~${implied.toFixed(1)}% growth${basisLabel}; ${viewLabel} is ~${yourView.toFixed(1)}% — ${subject} ${read}.`
-  return { implied, basis, isFallback, yourView, viewLabel, gap, text }
+  let story = ''
+  if (recent != null) {
+    const d = implied - recent
+    story = d >= 3
+      ? ` — well above the company's recent ~${recent.toFixed(0)}% ${recentLabel} growth, so the price bakes in a clear acceleration; it looks expensive unless growth re-rates upward`
+      : d <= -3
+      ? ` — below the company's recent ~${recent.toFixed(0)}% ${recentLabel} growth, so the market is priced for a slowdown; if the pace holds there's room to beat`
+      : ` — roughly in line with its recent ~${recent.toFixed(0)}% ${recentLabel} growth, so growth expectations look fairly priced`
+  }
+  let text = `The market is pricing in ~${implied.toFixed(1)}% growth${basisLabel}${story}.`
+
+  const gap = (guidedGrowthPct != null ? guidedGrowthPct : recent) != null
+    ? (guidedGrowthPct != null ? guidedGrowthPct : recent) - implied : null
+  if (guidedGrowthPct != null) {
+    const gd = guidedGrowthPct - implied
+    const rel = Math.abs(gd) < 1 ? 'in line with' : gd > 0 ? `${gd.toFixed(0)} pts above` : `${Math.abs(gd).toFixed(0)} pts below`
+    text += ` Your guided view of ~${guidedGrowthPct.toFixed(0)}% is ${rel} that.`
+  }
+  const yourView = guidedGrowthPct != null ? guidedGrowthPct : recent
+  const viewLabel = guidedGrowthPct != null ? 'your view' : `recent ${recentLabel} growth`
+
+  // ── Layer 2: BOTH market-implied views + what their difference means ──────────
+  const multG = salesG ?? earnG
+  const multLabel = salesG != null ? 'sales' : 'earnings'
+  let bases = null
+  if (rdcf != null && multG != null) {
+    bases = Math.abs(rdcf - multG) >= 15
+      ? `The two market lenses diverge — ~${rdcf.toFixed(0)}% on cash flow vs ~${multG.toFixed(0)}% on ${multLabel}. The cash-flow figure is inflated by thin current free cash flow, so the ${multLabel} view is the grounded one: the price is a bet on future scale, not today's cash generation.`
+      : `Cash-flow and ${multLabel} lenses broadly agree (~${rdcf.toFixed(0)}% vs ~${multG.toFixed(0)}%) — a consistent expectation.`
+  }
+
+  // ── Layer 3: tie to the backward-looking fair value / margin of safety ────────
+  let valn = null
+  if (valuation.fairValue != null && price > 0) {
+    const up = ((valuation.fairValue - price) / price) * 100
+    const dir = up >= 0
+      ? `${up.toFixed(0)}% below it (a margin of safety)`
+      : `${Math.abs(up).toFixed(0)}% above it (a premium)`
+    const caveat = isGrowth
+      ? ' — but that blend is backward-looking and under-weights future growth, so weigh it against the forward expectations above'
+      : ' — a backward-looking blend of current fundamentals and multiples'
+    valn = `Blended fair value ≈ ₹${rup(valuation.fairValue)}; the price sits ${dir}${caveat}.`
+  }
+
+  // ── Layer 4: analyse the CURRENTLY-SELECTED scenario (re-reads on switch) ──────
+  let scen = null
+  const S = valuation.scenarios
+  if (S && valuation.fairValue != null && price > 0) {
+    const gNow = valuation.assumptions?.growthRate
+    let activeKey = null
+    if (gNow != null) for (const k of ['bear', 'base', 'bull']) {
+      if (S[k]?.assumptions?.growthRate != null && Math.abs(S[k].assumptions.growthRate - gNow) < 0.005) { activeKey = k; break }
+    }
+    const name = activeKey ? S[activeKey].label : 'Custom'
+    const gp = gNow != null ? (gNow * 100).toFixed(0) : '—'
+    const wp = valuation.assumptions?.wacc != null ? (valuation.assumptions.wacc * 100).toFixed(0) : '—'
+    const up = ((valuation.fairValue - price) / price) * 100
+    const stance = up >= 15 ? `~${up.toFixed(0)}% below fair value — upside on these assumptions`
+      : up <= -15 ? `~${Math.abs(up).toFixed(0)}% above fair value — expensive on these assumptions`
+      : 'about fairly priced on these assumptions'
+    let reading = ''
+    if (activeKey === 'bull' && up < 0) reading = '; even this optimistic case doesn’t justify the price'
+    else if (activeKey === 'bear' && up > 0) reading = '; even this conservative case leaves room'
+    scen = `${name} scenario — growth ~${gp}%, WACC ${wp}% → fair value ≈ ₹${rup(valuation.fairValue)}; the price is ${stance}${reading}. Switch scenarios or set guidance to test another view.`
+  }
+
+  return { implied, basis, isFallback, yourView, viewLabel, gap, text, bases, valn, scen }
 }
 
 function estimateGrowth(r) {

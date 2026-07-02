@@ -137,6 +137,36 @@ export default function TechnicalsPanel({ open, onClose }) {
         </div>
       )}
 
+      {technicals.levels && (
+        <div className="space-y-2">
+          <h3 className="text-sm font-semibold text-slate-300">Support &amp; Resistance</h3>
+          <div className="grid grid-cols-2 gap-4 text-xs">
+            <div className="space-y-1">
+              <div className="text-slate-500 uppercase tracking-wide">Resistance (above)</div>
+              {technicals.levels.nearestResistance && (
+                <div className="text-red-400">Nearest ₹{technicals.levels.nearestResistance.price}
+                  <span className="text-slate-500"> (+{technicals.levels.nearestResistance.distancePct}%, {technicals.levels.nearestResistance.touches}×)</span></div>
+              )}
+              {technicals.levels.strongestResistance && (
+                <div className="text-red-400/80">Strongest ₹{technicals.levels.strongestResistance.price}
+                  <span className="text-slate-500"> (+{technicals.levels.strongestResistance.distancePct}%, {technicals.levels.strongestResistance.touches}×)</span></div>
+              )}
+            </div>
+            <div className="space-y-1">
+              <div className="text-slate-500 uppercase tracking-wide">Support (below)</div>
+              {technicals.levels.nearestSupport && (
+                <div className="text-emerald-400">Nearest ₹{technicals.levels.nearestSupport.price}
+                  <span className="text-slate-500"> ({technicals.levels.nearestSupport.distancePct}%, {technicals.levels.nearestSupport.touches}×)</span></div>
+              )}
+              {technicals.levels.strongestSupport && (
+                <div className="text-emerald-400/80">Strongest ₹{technicals.levels.strongestSupport.price}
+                  <span className="text-slate-500"> ({technicals.levels.strongestSupport.distancePct}%, {technicals.levels.strongestSupport.touches}×)</span></div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* Edit Settings link */}
       <div className="text-xs text-slate-500">
         Adjust indicator weights in <span className="text-accent cursor-pointer">⚙ Scoring Studio</span>

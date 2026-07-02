@@ -92,6 +92,9 @@ export function runTechnicals(priceHistory) {
 
   const label = techScore >= 6.5 ? 'BULLISH' : techScore <= 3.5 ? 'BEARISH' : 'NEUTRAL'
 
+  // ── Support / Resistance (swing-pivot clustering) ────────────────────────────
+  const levels = computeLevels(priceHistory, last)
+
   return {
     available: true,
     score: +techScore.toFixed(1),
@@ -109,6 +112,7 @@ export function runTechnicals(priceHistory) {
       rsiOverbought, rsiOversold, rsiBullDiv, rsiBearDiv,
       macdBullCross, macdBearCross, macdAboveZero
     },
+    levels,
     patterns,
     series: {
       // Subset for charting (last 100 points)
@@ -127,6 +131,79 @@ export function runTechnicals(priceHistory) {
 }
 
 // ─── Indicator functions ───────────────────────────────────────────────────────
+
+// Support / resistance from swing pivots.
+//  1. Find swing highs/lows (a bar that is the extreme within a ±k window).
+//  2. Cluster pivots that sit within `tol` of each other into a single level.
+//  3. Score each level by touches (recency-weighted) + volume at those pivots.
+//  4. Split by current price → resistance (above) / support (below); report the
+//     nearest of each and the strongest of each.
+function computeLevels(priceHistory, last, { k = 5, tol = 0.02 } = {}) {
+  const n = priceHistory.length
+  if (n < 2 * k + 5 || !(last > 0)) return null
+  const highs = priceHistory.map(d => d.high ?? d.close)
+  const lows  = priceHistory.map(d => d.low  ?? d.close)
+  const vols  = priceHistory.map(d => d.volume || 0)
+
+  const pivots = []   // { price, idx, vol }
+  for (let i = k; i < n - k; i++) {
+    let isHigh = true, isLow = true
+    for (let j = i - k; j <= i + k; j++) {
+      if (highs[j] > highs[i]) isHigh = false
+      if (lows[j]  < lows[i])  isLow  = false
+    }
+    if (isHigh) pivots.push({ price: highs[i], idx: i, vol: vols[i] })
+    if (isLow)  pivots.push({ price: lows[i],  idx: i, vol: vols[i] })
+  }
+  if (!pivots.length) return null
+
+  // Cluster pivots within `tol` (relative) into levels.
+  pivots.sort((a, b) => a.price - b.price)
+  const clusters = []
+  for (const p of pivots) {
+    const c = clusters[clusters.length - 1]
+    if (c && Math.abs(p.price - c.price) / c.price <= tol) {
+      c.members.push(p)
+      c.price = c.members.reduce((s, m) => s + m.price, 0) / c.members.length
+    } else {
+      clusters.push({ price: p.price, members: [p] })
+    }
+  }
+
+  // Score: touches, weighted so recent touches count more (last bar = weight ~1,
+  // oldest ~0.4), plus a small bump for volume at the pivots.
+  const totalVol = vols.reduce((s, v) => s + v, 0) || 1
+  const levels = clusters.map(c => {
+    const touches = c.members.length
+    const recencyW = c.members.reduce((s, m) => s + (0.4 + 0.6 * (m.idx / n)), 0)
+    const volW = c.members.reduce((s, m) => s + m.vol, 0) / totalVol
+    return {
+      price: +c.price.toFixed(2),
+      touches,
+      lastTouch: Math.max(...c.members.map(m => m.idx)),
+      strength: +(recencyW + volW * 3).toFixed(2),   // composite score
+    }
+  })
+
+  const near = arr => arr.length ? arr.reduce((a, b) => Math.abs(b.price - last) < Math.abs(a.price - last) ? b : a) : null
+  const strong = arr => arr.length ? arr.reduce((a, b) => b.strength > a.strength ? b : a) : null
+  const withDist = lvl => lvl && { ...lvl, distancePct: +(((lvl.price - last) / last) * 100).toFixed(1) }
+
+  // A level within ~0.5% of price is effectively "at" price; treat by side of the cluster mid.
+  const resistance = levels.filter(l => l.price > last * 1.001)
+  const support    = levels.filter(l => l.price < last * 0.999)
+
+  return {
+    price: last,
+    nearestResistance: withDist(near(resistance)),
+    strongestResistance: withDist(strong(resistance)),
+    nearestSupport: withDist(near(support)),
+    strongestSupport: withDist(strong(support)),
+    all: levels
+      .map(l => ({ ...l, distancePct: +(((l.price - last) / last) * 100).toFixed(1), side: l.price >= last ? 'resistance' : 'support' }))
+      .sort((a, b) => a.price - b.price),
+  }
+}
 
 function sma(data, period) {
   return data.map((_, i) => {
@@ -254,3 +331,5 @@ function avg(arr) {
   const valid = arr.filter(v => v != null)
   return valid.length ? valid.reduce((s, v) => s + v, 0) / valid.length : null
 }
+
+
