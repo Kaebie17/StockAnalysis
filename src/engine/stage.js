@@ -56,17 +56,31 @@ export function detectStage(data, ratioResult) {
 
   if (!rev || rev <= 0) return 'PRE_REVENUE'
 
-  const cagr = ratioResult?.ratios?.revCagr?.value
+  // Use the recent 5-yr CAGR (stable), not the full-span one.
+  const cagr = ratioResult?.ratios?.revCagr5y?.value ?? ratioResult?.ratios?.revCagr?.value
   const netMargin = ratioResult?.ratios?.netMargin?.value
-  const fcf = ratioResult?.fcf
+  const roe = ratioResult?.ratios?.roe?.value
 
-  // High growth: >25% CAGR and not yet consistently profitable
-  if (cagr > 25 && (netMargin == null || netMargin < 5)) return 'GROWTH'
+  // Is the company CONSISTENTLY profitable? A thin margin alone must NOT be read
+  // as "not yet profitable" — a low-margin business (e.g. EMS/retail) can be very
+  // profitable on capital (high ROE) and have a long record of positive profit.
+  const npYears = inc.map(y => y?.netProfit?.value).filter(v => v != null)
+  const recent  = npYears.slice(-4)
+  const positiveCount = recent.filter(v => v > 0).length
+  const consistentlyProfitable =
+    (recent.length >= 3 && positiveCount >= recent.length - 1 && (recent[recent.length - 1] ?? 0) > 0) ||
+    (netMargin != null && netMargin > 0 && roe != null && roe >= 12)
 
-  // Transition: growing fast but approaching profitability
-  if (cagr > 15 && netMargin != null && netMargin < 10) return 'TRANSITION'
+  // GROWTH = fast growth AND not yet consistently profitable (a genuine early-stage
+  // scale-up burning toward profit). Multiples-on-revenue lens, no P/E.
+  if (cagr != null && cagr > 25 && !consistentlyProfitable) return 'GROWTH'
 
-  // Established: stable mature business
+  // TRANSITION = still growing quickly but PROFITABLE, just not at mature margins.
+  // (Dixon-type: ~40% growth, thin ~3% margin, strong ROE, steady profits.) P/E
+  // becomes usable again here, alongside revenue multiples.
+  if (cagr != null && cagr > 12 && (netMargin == null || netMargin < 12)) return 'TRANSITION'
+
+  // ESTABLISHED = mature, stable, healthy-margin business.
   return 'ESTABLISHED'
 }
 
@@ -125,3 +139,5 @@ export function getApplicableModels(stage, sectorType) {
       }
   }
 }
+
+

@@ -140,64 +140,21 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, assum
       <div className="space-y-2 pt-1 border-t border-navy-800/50">
         <div className="text-xs text-slate-500 font-medium">Assumptions</div>
 
-        {/* Terminal multiple */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center text-xs text-slate-400">
-            Terminal Multiple
-            <InfoTip text={variant.assumptions.terminalMultiple.rationale} />
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="range"
-              min={name === 'fcf' ? 8 : name === 'sales' ? 1 : 8}
-              max={name === 'fcf' ? 35 : name === 'sales' ? 10 : 40}
-              step={0.5}
-              value={localAssumptions.terminalMultiple ?? variant.assumptions.terminalMultiple.value}
-              onChange={e => update('terminalMultiple', parseFloat(e.target.value))}
-              className="w-20 accent-accent"
-            />
-            <span className="text-xs font-mono text-white w-10 text-right">
-              {(localAssumptions.terminalMultiple ?? variant.assumptions.terminalMultiple.value).toFixed(1)}×
-            </span>
-          </div>
+        {/* Assumptions — derived from stage/sector, shown read-only */}
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <div className="flex items-center text-slate-400">Terminal Multiple
+            <InfoTip text={variant.assumptions.terminalMultiple.rationale} /></div>
+          <span className="font-mono text-slate-300">{variant.assumptions.terminalMultiple.value.toFixed(1)}×</span>
         </div>
-
-        {/* Discount rate */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center text-xs text-slate-400">
-            Discount Rate
-            <InfoTip text={variant.assumptions.discountRate.rationale} />
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="range" min={8} max={25} step={0.5}
-              value={(localAssumptions.discountRate ?? variant.assumptions.discountRate.value) * 100}
-              onChange={e => update('discountRate', parseFloat(e.target.value) / 100)}
-              className="w-20 accent-accent"
-            />
-            <span className="text-xs font-mono text-white w-10 text-right">
-              {((localAssumptions.discountRate ?? variant.assumptions.discountRate.value) * 100).toFixed(0)}%
-            </span>
-          </div>
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <div className="flex items-center text-slate-400">Discount Rate
+            <InfoTip text={variant.assumptions.discountRate.rationale} /></div>
+          <span className="font-mono text-slate-300">{(variant.assumptions.discountRate.value * 100).toFixed(0)}%</span>
         </div>
-
-        {/* Horizon */}
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center text-xs text-slate-400">
-            Horizon
-            <InfoTip text={variant.assumptions.horizon.rationale} />
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="range" min={5} max={15} step={1}
-              value={localAssumptions.horizon ?? variant.assumptions.horizon.value}
-              onChange={e => update('horizon', parseInt(e.target.value))}
-              className="w-20 accent-accent"
-            />
-            <span className="text-xs font-mono text-white w-10 text-right">
-              {localAssumptions.horizon ?? variant.assumptions.horizon.value}yr
-            </span>
-          </div>
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <div className="flex items-center text-slate-400">Horizon
+            <InfoTip text={variant.assumptions.horizon.rationale} /></div>
+          <span className="font-mono text-slate-300">{variant.assumptions.horizon.value}yr</span>
         </div>
       </div>
 
