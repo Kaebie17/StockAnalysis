@@ -49,7 +49,7 @@ export default function ValuationPanel({ open, onClose }) {
 
   const restoreDefaults = () => {
     setLocalAssumptions({})
-    recalc(DEFAULT_ASSUMPTIONS, {})
+    recalc({}, {})   // empty → engine recomputes per-company derived defaults (CAPM WACC etc.)
   }
 
   const signalColor = signal === 'UNDERVALUED' ? 'text-bull'
@@ -196,9 +196,10 @@ export default function ValuationPanel({ open, onClose }) {
             { key: 'sectorPe',   label: 'Sector P/E',       min: 5,  max: 60, step: 1,   pct: false, def: DEFAULT_ASSUMPTIONS.sectorPe },
             { key: 'sectorEvEb', label: 'Sector EV/EBITDA', min: 4,  max: 30, step: 0.5, pct: false, def: DEFAULT_ASSUMPTIONS.sectorEvEb },
           ].map(s => {
+            const seed = assumptions[s.key] ?? valuation.defaults?.[s.key]
             const curVal = s.pct
-              ? ((localAssumptions[s.key] ?? (assumptions[s.key] ?? s.def / 100)) * 100)
-              : (localAssumptions[s.key] ?? assumptions[s.key] ?? s.def)
+              ? ((localAssumptions[s.key] ?? seed ?? s.def / 100) * 100)
+              : (localAssumptions[s.key] ?? seed ?? s.def)
             const display = s.pct ? curVal.toFixed(1) + '%' : curVal.toFixed(s.key === 'sectorEvEb' ? 1 : 0) + '×'
             return (
               <div key={s.key}>

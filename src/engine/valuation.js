@@ -244,16 +244,20 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
   const g      = ratioResult?.ratios || {}
   const rup    = v => Math.round(v).toLocaleString('en-IN')
 
-  // ── Headline: which market-implied rate to lead with, vs "your view" ──────────
-  // Reverse-DCF is the real method with meaningful, stable FCF; on a thin base it
-  // returns an implausible number, so growth-stage / >35% cases lead with sales.
-  const rdcfUnreliable = rdcf == null || isGrowth || rdcf > 35
+  // ── Headline basis: pick the first RELIABLE lens. A lens is unreliable when its
+  // implied growth is implausibly high (>35%/yr for a decade) or its base is thin —
+  // reverse-DCF on near-zero FCF, or earnings on near-zero/negative profit. Sales
+  // (revenue is always positive and stable) is the honest fallback. ──────────────
+  const recentEarn = g.npGrowthYoY?.value
+  const rdcfOk  = rdcf   != null && !isGrowth && rdcf <= 35
+  const earnOk  = earnG  != null && earnG <= 35 && recentEarn != null && recentEarn > 0
+  const salesOk = salesG != null
   let implied = null, basis = null, isFallback = false
-  if (!rdcfUnreliable)                                     { implied = rdcf;   basis = 'reverse-DCF' }
-  else if (salesG != null && (isGrowth || earnG == null)) { implied = salesG; basis = 'sales-based';    isFallback = true }
-  else if (earnG != null)                                 { implied = earnG;  basis = 'earnings-based'; isFallback = true }
-  else if (salesG != null)                                { implied = salesG; basis = 'sales-based';    isFallback = true }
-  else if (rdcf != null)                                  { implied = rdcf;   basis = 'reverse-DCF' }
+  if (rdcfOk)             { implied = rdcf;   basis = 'reverse-DCF' }
+  else if (earnOk)        { implied = earnG;  basis = 'earnings-based'; isFallback = true }
+  else if (salesOk)       { implied = salesG; basis = 'sales-based';    isFallback = true }
+  else if (earnG != null) { implied = earnG;  basis = 'earnings-based'; isFallback = true }
+  else if (rdcf != null)  { implied = rdcf;   basis = 'reverse-DCF' }
   if (implied == null) return null
 
   // ── Headline: market-implied growth vs what the company is ACTUALLY doing, with
@@ -420,5 +424,3 @@ function dcfEV(f, g, w, tg, yrs, ntGrowth = null, ntYears = 0) {
   }
   return pv + (cf * (1 + tg)) / (w - tg) / Math.pow(1 + w, yrs)
 }
-
-
