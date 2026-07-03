@@ -84,19 +84,22 @@ export default function SummaryStrip({ onExpand, expanded }) {
           badge={valuation.signal}
           onExpand={() => onExpand('valuation')}
           isExpanded={expanded === 'valuation'}>
-          {valuation.fairValue && price ? (
+          {valuation.fvRangeLow != null && price ? (
             <div className="space-y-1">
               <div className={`text-xl font-bold font-mono ${signalColor(valuation.signal)}`}>
                 {valuation.signal.replace('_', ' ')}
               </div>
               <div className="text-xs text-slate-400">
-                Fair value: <span className="text-white font-mono">{cur}{valuation.fairValue.toFixed(0)}</span>
+                Fair value: <span className="text-white font-mono">
+                  {cur}{Math.round(valuation.fvRangeLow).toLocaleString('en-IN')}
+                  {valuation.fvRangeHigh !== valuation.fvRangeLow
+                    ? ` – ${cur}${Math.round(valuation.fvRangeHigh).toLocaleString('en-IN')}` : ''}
+                </span>
               </div>
-              {valuation.upside != null && (
-                <div className={`text-sm font-semibold ${valuation.upside >= 0 ? 'text-bull' : 'text-bear'}`}>
-                  {valuation.upside >= 0 ? '+' : ''}{valuation.upside.toFixed(1)}% margin of safety
-                </div>
+              {valuation.topModels?.length > 0 && (
+                <div className="text-xs text-slate-500">via {valuation.topModels.map(t => t.name).join(' & ')}</div>
               )}
+              <div className="text-xs text-slate-500">CMP: {cur}{Math.round(price).toLocaleString('en-IN')}</div>
               {ratios?.pe?.value != null && <div className="text-xs text-slate-500">P/E: {ratios.pe.value.toFixed(1)}×</div>}
               {ratios?.evEbitda?.value != null && <div className="text-xs text-slate-500">EV/EBITDA: {ratios.evEbitda.value.toFixed(1)}×</div>}
             </div>

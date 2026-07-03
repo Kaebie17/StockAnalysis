@@ -76,7 +76,7 @@ function SanityTable({ rows, marketCap, cur }) {
                 {row.growthRate}% {row.isCurrentImplied ? '← current' : ''}
               </td>
               <td className="py-1.5 text-right font-mono text-slate-300">
-                {cur}{fmtNum(row.impliedPV, 0)}
+                {cur}{fmtNum(row.impliedPV, 0, cur === '₹' ? 'INR' : null)}
               </td>
               <td className={`py-1.5 text-right font-mono ${
                 row.ratio > 1.1 ? 'text-bull' : row.ratio < 0.9 ? 'text-bear' : 'text-neutral'
@@ -130,7 +130,7 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, assum
       {/* Base metric */}
       <div className="flex items-center justify-between text-xs">
         <span className="text-slate-400">{variant.baseLabel}</span>
-        <span className="font-mono text-white">{cur}{fmtNum(variant.base, 0)}</span>
+        <span className="font-mono text-white">{cur}{fmtNum(variant.base, 0, cur === '₹' ? 'INR' : null)}</span>
       </div>
 
       {/* Implied growth bar */}
@@ -208,7 +208,7 @@ export default function MarketExpectationPanel({ open, onClose }) {
 
       {/* Current market cap context */}
       <div className="flex items-center gap-4 text-xs text-slate-400 bg-navy-800/40 px-3 py-2 rounded-lg">
-        <span>Current Market Cap: <span className="text-white font-mono">{cur}{fmtNum(marketCap, 0)}</span></span>
+        <span>Current Market Cap: <span className="text-white font-mono">{cur}{fmtNum(marketCap, 0, cur === '₹' ? 'INR' : null)}</span></span>
         <span>Price: <span className="text-white font-mono">{cur}{ratioResult?.price?.toFixed(2)}</span></span>
       </div>
 

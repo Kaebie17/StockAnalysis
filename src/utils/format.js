@@ -2,8 +2,16 @@
  * src/utils/format.js — formatters + resolution badge helpers
  */
 
-export function fmtNum(v, dec = 1) {
+export function fmtNum(v, dec = 1, currency = null) {
   if (v == null || isNaN(v)) return '—'
+  // Indian numbering: use Crore / Lakh for INR so it matches the rest of the app
+  // (never Billions/Trillions).
+  if (currency === 'INR') {
+    if (Math.abs(v) >= 1e7) return (v/1e7).toFixed(dec)+'Cr'
+    if (Math.abs(v) >= 1e5) return (v/1e5).toFixed(dec)+'L'
+    if (Math.abs(v) >= 1e3) return (v/1e3).toFixed(dec)+'K'
+    return v.toFixed(dec)
+  }
   if (Math.abs(v) >= 1e12) return (v/1e12).toFixed(dec)+'T'
   if (Math.abs(v) >= 1e9)  return (v/1e9).toFixed(dec)+'B'
   if (Math.abs(v) >= 1e7)  return (v/1e7).toFixed(dec)+'Cr'
@@ -15,7 +23,7 @@ export function fmtNum(v, dec = 1) {
 export function fmtCurrency(v, currency = 'USD', dec = 1) {
   if (v == null || isNaN(v)) return '—'
   const sym = currency === 'INR' ? '₹' : currency === 'GBP' ? '£' : '$'
-  return sym + fmtNum(v, dec)
+  return sym + fmtNum(v, dec, currency)
 }
 
 export function fmtPct(v, dec = 1) {
@@ -89,3 +97,5 @@ export function fmtTagged(tagged, formatter) {
   if (!tagged || tagged.value == null) return '—'
   return formatter(tagged.value)
 }
+
+

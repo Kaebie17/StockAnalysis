@@ -137,6 +137,18 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const rangeLow    = modelValues.length > 1 ? Math.min(...modelValues) : fairValue
   const rangeHigh   = modelValues.length > 1 ? Math.max(...modelValues) : fairValue
 
+  // ── Fair-value RANGE from the two most relevant models for this stage/sector ──
+  // modelMeta.applicable is ordered by relevance, so the first two with values are
+  // the "best two". We present their range (low–high) rather than a blended mean.
+  const MODEL_NAMES = {
+    dcf: 'DCF', pe: 'P/E', evEbitda: 'EV/EBITDA', pb: 'P/B',
+    ps: 'P/S', graham: 'Graham', evGrossProfit: 'EV/Gross Profit',
+  }
+  const topKeys = validKeys.slice(0, 2)
+  const topModels = topKeys.map(m => ({ key: m, name: MODEL_NAMES[m] || m, value: results[m].value }))
+  const fvRangeLow  = topModels.length ? Math.min(...topModels.map(t => t.value)) : null
+  const fvRangeHigh = topModels.length ? Math.max(...topModels.map(t => t.value)) : null
+
   // ── Sensitivity + scenarios (DCF is the growth/WACC-sensitive model) ──────────
   const sensitivity = (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf)
     ? dcfSensitivity(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntY)
@@ -170,12 +182,15 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     }
   }
 
-  const upside = fairValue != null && r.price > 0
-    ? ((fairValue - r.price) / r.price) * 100 : null
+  // Fair value + signal now derive from the RANGE of the two best models, not the
+  // weighted-average blend. Signal reflects where CMP sits vs the range: below the
+  // low → undervalued, above the high → overvalued, inside → fairly valued.
+  const fvMid = (fvRangeLow != null && fvRangeHigh != null) ? (fvRangeLow + fvRangeHigh) / 2 : fairValue
+  const upside = fvMid != null && r.price > 0 ? ((fvMid - r.price) / r.price) * 100 : null
 
-  const signal = upside == null ? 'UNKNOWN'
-    : upside > 15  ? 'UNDERVALUED'
-    : upside < -15 ? 'OVERVALUED'
+  const signal = (fvRangeLow == null || r.price <= 0) ? 'UNKNOWN'
+    : r.price < fvRangeLow * 0.98 ? 'UNDERVALUED'
+    : r.price > fvRangeHigh * 1.02 ? 'OVERVALUED'
     : 'FAIRLY_VALUED'
 
   // ── Reverse DCF ───────────────────────────────────────────────────────────────
@@ -189,8 +204,12 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   return {
     models: results,
     modelMeta,
-    fairValue,
+    fairValue: fvMid,
+    blendedFairValue: fairValue,
     rangeLow,
+    topModels,
+    fvRangeLow,
+    fvRangeHigh,
     rangeHigh,
     upside,
     signal,
@@ -250,14 +269,15 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
   // (revenue is always positive and stable) is the honest fallback. ──────────────
   const recentEarn = g.npGrowthYoY?.value
   const rdcfOk  = rdcf   != null && !isGrowth && rdcf <= 35
-  const earnOk  = earnG  != null && earnG <= 35 && recentEarn != null && recentEarn > 0
+  const earnOk  = earnG  != null && earnG <= 35 && recentEarn != null && recentEarn > 0 && !isGrowth
   const salesOk = salesG != null
   let implied = null, basis = null, isFallback = false
-  if (rdcfOk)             { implied = rdcf;   basis = 'reverse-DCF' }
-  else if (earnOk)        { implied = earnG;  basis = 'earnings-based'; isFallback = true }
-  else if (salesOk)       { implied = salesG; basis = 'sales-based';    isFallback = true }
-  else if (earnG != null) { implied = earnG;  basis = 'earnings-based'; isFallback = true }
-  else if (rdcf != null)  { implied = rdcf;   basis = 'reverse-DCF' }
+  if (rdcfOk)                     { implied = rdcf;   basis = 'reverse-DCF' }
+  else if (isGrowth && salesOk)   { implied = salesG; basis = 'sales-based';    isFallback = true }  // growth → sales (matches pillar)
+  else if (earnOk)                { implied = earnG;  basis = 'earnings-based'; isFallback = true }
+  else if (salesOk)               { implied = salesG; basis = 'sales-based';    isFallback = true }
+  else if (earnG != null)         { implied = earnG;  basis = 'earnings-based'; isFallback = true }
+  else if (rdcf != null)          { implied = rdcf;   basis = 'reverse-DCF' }
   if (implied == null) return null
 
   // ── Headline: market-implied growth vs what the company is ACTUALLY doing, with
@@ -299,42 +319,7 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
       : `Cash-flow and ${multLabel} lenses broadly agree (~${rdcf.toFixed(0)}% vs ~${multG.toFixed(0)}%) — a consistent expectation.`
   }
 
-  // ── Layer 3: tie to the backward-looking fair value / margin of safety ────────
-  let valn = null
-  if (valuation.fairValue != null && price > 0) {
-    const up = ((valuation.fairValue - price) / price) * 100
-    const dir = up >= 0
-      ? `${up.toFixed(0)}% below it (a margin of safety)`
-      : `${Math.abs(up).toFixed(0)}% above it (a premium)`
-    const caveat = isGrowth
-      ? ' — but that blend is backward-looking and under-weights future growth, so weigh it against the forward expectations above'
-      : ' — a backward-looking blend of current fundamentals and multiples'
-    valn = `Blended fair value ≈ ₹${rup(valuation.fairValue)}; the price sits ${dir}${caveat}.`
-  }
-
-  // ── Layer 4: analyse the CURRENTLY-SELECTED scenario (re-reads on switch) ──────
-  let scen = null
-  const S = valuation.scenarios
-  if (S && valuation.fairValue != null && price > 0) {
-    const gNow = valuation.assumptions?.growthRate
-    let activeKey = null
-    if (gNow != null) for (const k of ['bear', 'base', 'bull']) {
-      if (S[k]?.assumptions?.growthRate != null && Math.abs(S[k].assumptions.growthRate - gNow) < 0.005) { activeKey = k; break }
-    }
-    const name = activeKey ? S[activeKey].label : 'Custom'
-    const gp = gNow != null ? (gNow * 100).toFixed(0) : '—'
-    const wp = valuation.assumptions?.wacc != null ? (valuation.assumptions.wacc * 100).toFixed(0) : '—'
-    const up = ((valuation.fairValue - price) / price) * 100
-    const stance = up >= 15 ? `~${up.toFixed(0)}% below fair value — upside on these assumptions`
-      : up <= -15 ? `~${Math.abs(up).toFixed(0)}% above fair value — expensive on these assumptions`
-      : 'about fairly priced on these assumptions'
-    let reading = ''
-    if (activeKey === 'bull' && up < 0) reading = '; even this optimistic case doesn’t justify the price'
-    else if (activeKey === 'bear' && up > 0) reading = '; even this conservative case leaves room'
-    scen = `${name} scenario — growth ~${gp}%, WACC ${wp}% → fair value ≈ ₹${rup(valuation.fairValue)}; the price is ${stance}${reading}. Switch scenarios or set guidance to test another view.`
-  }
-
-  return { implied, basis, isFallback, yourView, viewLabel, gap, text, bases, valn, scen }
+  return { implied, basis, isFallback, yourView, viewLabel, gap, text, bases }
 }
 
 function estimateGrowth(r) {
@@ -424,3 +409,5 @@ function dcfEV(f, g, w, tg, yrs, ntGrowth = null, ntYears = 0) {
   }
   return pv + (cf * (1 + tg)) / (w - tg) / Math.pow(1 + w, yrs)
 }
+
+
