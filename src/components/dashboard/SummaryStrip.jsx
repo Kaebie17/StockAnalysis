@@ -2,7 +2,7 @@ import React from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { signalColor, signalBadgeClass } from '../../utils/format.js'
 import DCFScenarioPanel from './DCFScenarioPanel.jsx'
-import { expectationInsight } from '../../engine/valuation.js'
+import { expectationInsight, primaryExpectation } from '../../engine/valuation.js'
 
 // 27-combination verdict matrix
 const VERDICTS = {
@@ -55,13 +55,8 @@ export default function SummaryStrip({ onExpand, expanded }) {
   const { valuation, quality, technicals, ratioResult, marketExpectation } = state
   
   // Primary variant for summary card
-  const meVariants = marketExpectation?.variants
-  const _meOrder = (state.stage === 'GROWTH' || state.stage === 'PRE_REVENUE')
-    ? ['sales', 'fcf', 'earnings']
-    : ['earnings', 'fcf', 'sales']
-  const mePrimary = meVariants
-    ? (_meOrder.map(k => meVariants[k]).find(v => v?.applicable) || null)
-    : null
+  // Same shared selector the insight uses, so pillar & verdict never disagree.
+  const mePrimary = primaryExpectation(marketExpectation, state.stage)
   const me = { primary: mePrimary }
   const ratios = ratioResult?.ratios
 

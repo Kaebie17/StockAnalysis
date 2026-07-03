@@ -252,49 +252,47 @@ function computeWacc(r, { riskFree = 0.07, erp = 0.055, taxRate = 0.25 } = {}) {
 // Expectation variant (earnings-based, else sales-based) and LABELS the basis.
 // "Your view" = user guidance if given, else the growth the DCF is currently
 // using (scenario/model). Returns null when nothing resolves → caller hides it.
+// Shared "which market-expectation variant is primary" — used by BOTH the pillar
+// and the boilerplate insight so they always show the SAME number. Stage-ordered:
+// growth/pre-revenue → sales first; else earnings first.
+export function primaryExpectation(marketExpectation, stage) {
+  const V = marketExpectation?.variants
+  if (!V) return null
+  const order = (stage === 'GROWTH' || stage === 'PRE_REVENUE')
+    ? ['sales', 'fcf', 'earnings'] : ['earnings', 'fcf', 'sales']
+  const key = order.find(k => V[k]?.applicable && V[k].impliedGrowth != null)
+  return key ? { key, ...V[key] } : null
+}
+
 export function expectationInsight(valuation, marketExpectation, ratioResult = null, stage = null, guidedGrowthPct = null) {
   if (!valuation) return null
-  const V      = marketExpectation?.variants || {}
   const rdcf   = valuation.impliedGrowth
-  const salesG = (V.sales?.applicable && V.sales.impliedGrowth != null) ? V.sales.impliedGrowth : null
-  const earnG  = (V.earnings?.applicable && V.earnings.impliedGrowth != null) ? V.earnings.impliedGrowth : null
-  const isGrowth = stage === 'GROWTH' || stage === 'PRE_REVENUE'
   const price  = ratioResult?.price
   const g      = ratioResult?.ratios || {}
-  const rup    = v => Math.round(v).toLocaleString('en-IN')
 
-  // ── Headline basis: pick the first RELIABLE lens. A lens is unreliable when its
-  // implied growth is implausibly high (>35%/yr for a decade) or its base is thin —
-  // reverse-DCF on near-zero FCF, or earnings on near-zero/negative profit. Sales
-  // (revenue is always positive and stable) is the honest fallback. ──────────────
-  const recentEarn = g.npGrowthYoY?.value
-  const rdcfOk  = rdcf   != null && !isGrowth && rdcf <= 35
-  const earnOk  = earnG  != null && earnG <= 35 && recentEarn != null && recentEarn > 0 && !isGrowth
-  const salesOk = salesG != null
-  let implied = null, basis = null, isFallback = false
-  if (rdcfOk)                     { implied = rdcf;   basis = 'reverse-DCF' }
-  else if (isGrowth && salesOk)   { implied = salesG; basis = 'sales-based';    isFallback = true }  // growth → sales (matches pillar)
-  else if (earnOk)                { implied = earnG;  basis = 'earnings-based'; isFallback = true }
-  else if (salesOk)               { implied = salesG; basis = 'sales-based';    isFallback = true }
-  else if (earnG != null)         { implied = earnG;  basis = 'earnings-based'; isFallback = true }
-  else if (rdcf != null)          { implied = rdcf;   basis = 'reverse-DCF' }
+  // Headline number = the SAME variant the Market Expectation pillar shows.
+  const prim = primaryExpectation(marketExpectation, stage)
+  let implied = null, basis = null
+  if (prim) { implied = prim.impliedGrowth; basis = prim.key }        // 'sales' | 'earnings' | 'fcf'
+  else if (rdcf != null) { implied = rdcf; basis = 'reverse-DCF' }
   if (implied == null) return null
 
-  // ── Headline: market-implied growth vs what the company is ACTUALLY doing, with
-  // the interpretation spelled out — the same depth for every stock. Recent actual
-  // growth is the honest yardstick; guidance (if set) overlays "your view". ───────
-  const recent = (basis === 'earnings-based') ? g.npGrowthYoY?.value
-                                              : (g.revGrowthRecent?.value ?? g.revCagr5y?.value)
-  const recentLabel = (basis === 'earnings-based') ? 'earnings' : 'sales'
-  const basisLabel  = isFallback ? ` (${basis})` : ' (reverse-DCF)'
+  // Recent actual growth to compare against (basis-appropriate).
+  const recent = (basis === 'earnings') ? g.npGrowthYoY?.value
+                                        : (g.revGrowthRecent?.value ?? g.revCagr5y?.value)
+  const recentLabel = (basis === 'earnings') ? 'earnings' : 'sales'
+  const basisLabel  = basis === 'reverse-DCF' ? ' (reverse-DCF)' : ` (${basis}-based)`
 
   let story = ''
-  if (recent != null) {
+  if (implied < 0) {
+    story = ` — the price implies the business will shrink about ${Math.abs(implied).toFixed(0)}% a year, so the market is pricing in decline`
+      + (recent != null ? `, far more pessimistic than its recent ~${recent.toFixed(0)}% ${recentLabel} growth` : '')
+  } else if (recent != null) {
     const d = implied - recent
     story = d >= 3
-      ? ` — well above the company's recent ~${recent.toFixed(0)}% ${recentLabel} growth, so the price bakes in a clear acceleration; it looks expensive unless growth re-rates upward`
+      ? ` — well above the company's recent ~${recent.toFixed(0)}% ${recentLabel} growth, so the market expects growth to accelerate`
       : d <= -3
-      ? ` — below the company's recent ~${recent.toFixed(0)}% ${recentLabel} growth, so the market is priced for a slowdown; if the pace holds there's room to beat`
+      ? ` — below the company's recent ~${recent.toFixed(0)}% ${recentLabel} growth, so the market expects growth to slow from the recent pace`
       : ` — roughly in line with its recent ~${recent.toFixed(0)}% ${recentLabel} growth, so growth expectations look fairly priced`
   }
   let text = `The market is pricing in ~${implied.toFixed(1)}% growth${basisLabel}${story}.`
@@ -309,17 +307,14 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
   const yourView = guidedGrowthPct != null ? guidedGrowthPct : recent
   const viewLabel = guidedGrowthPct != null ? 'your view' : `recent ${recentLabel} growth`
 
-  // ── Layer 2: BOTH market-implied views + what their difference means ──────────
-  const multG = salesG ?? earnG
-  const multLabel = salesG != null ? 'sales' : 'earnings'
+  // Secondary: note the cash-flow (reverse-DCF) reading when it differs and is
+  // available — neutral, no interpretation. Omitted if it didn't resolve.
   let bases = null
-  if (rdcf != null && multG != null) {
-    bases = Math.abs(rdcf - multG) >= 15
-      ? `The two market lenses diverge — ~${rdcf.toFixed(0)}% on cash flow vs ~${multG.toFixed(0)}% on ${multLabel}. The cash-flow figure is inflated by thin current free cash flow, so the ${multLabel} view is the grounded one: the price is a bet on future scale, not today's cash generation.`
-      : `Cash-flow and ${multLabel} lenses broadly agree (~${rdcf.toFixed(0)}% vs ~${multG.toFixed(0)}%) — a consistent expectation.`
+  if (basis !== 'reverse-DCF' && rdcf != null && Math.abs(rdcf - implied) >= 10) {
+    bases = `On a cash-flow (reverse-DCF) basis the implied figure is ~${rdcf.toFixed(0)}%, versus ~${implied.toFixed(0)}% on ${basis === 'earnings' ? 'earnings' : 'sales'} — the two methods differ.`
   }
 
-  return { implied, basis, isFallback, yourView, viewLabel, gap, text, bases }
+  return { implied, basis, yourView, viewLabel, gap, text, bases }
 }
 
 function estimateGrowth(r) {
@@ -383,14 +378,20 @@ export function scenarioAssumptions(preset, base) {
 function clamp(v, min, max) { return v == null ? null : Math.max(min, Math.min(max, v)) }
 
 function solveGrowth(fcf0, tEV, wacc, tg, yrs) {
-  let lo = -0.2, hi = 0.6
-  for (let i = 0; i < 60; i++) {
+  const LO = -0.9, HI = 3.0        // wide bounds: let the maths return the real rate
+  let lo = LO, hi = HI
+  for (let i = 0; i < 80; i++) {
     const mid = (lo + hi) / 2
     const ev  = dcfEV(fcf0, mid, wacc, tg, yrs)
     if (Math.abs(ev - tEV) < 1e5) break
     ev > tEV ? (hi = mid) : (lo = mid)
   }
-  return ((lo + hi) / 2) * 100
+  const g = (lo + hi) / 2
+  // If it pins to a bound it didn't really converge — inputs are degenerate
+  // (e.g. FCF too thin to justify the price at any sane rate). Return null so the
+  // packager simply omits it rather than reporting a floored/absurd number.
+  if (g <= LO + 0.01 || g >= HI - 0.01) return null
+  return g * 100
 }
 
 function dcfEV(f, g, w, tg, yrs, ntGrowth = null, ntYears = 0) {
