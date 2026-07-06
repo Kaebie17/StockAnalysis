@@ -7,7 +7,7 @@ import { runTechnicals } from '../engine/technicals.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
-import { getCached, setCached, loadFolderHandle, saveFolderHandle,
+import { getCached, setCached, deleteCached, clearAllCached, loadFolderHandle, saveFolderHandle,
          loadSwapState, saveSwapState } from '../utils/db.js'
 import { applyCSVOverrides, swapField, autoLoadOverride } from '../utils/csv.js'
 
@@ -66,6 +66,12 @@ function reducer(s, a) {
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights)
       return { ...s, data, ...computed }
     }
+    case 'PRICE_UPDATE': {
+      if (!s.data || a.price == null) return s
+      const data = { ...s.data, price: a.price, marketCap: a.marketCap ?? s.data.marketCap }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights)
+      return { ...s, data, ...computed }
+    }
     case 'SWAP_FIELD':    return { ...s, ...a.payload }
     case 'RESET':          return { ...initial, folderHandle: s.folderHandle }  // keep CSV folder connection
     default:              return s
@@ -85,6 +91,37 @@ function computeAll(data, assumptions, meAssumptions, weights) {
 
 export function AppProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, initial)
+
+  // Persist the current (possibly Screener-merged) data whenever it changes, so a
+  // pasted-history merge — not just the initial fetch — survives a reload.
+  useEffect(() => {
+    if (state.status !== 'success' || !state.ticker || !state.data || state.csvActive) return
+    try { setCached(state.ticker, { data: state.data, ...computeAll(state.data, {}, {}, {}) }) } catch {}
+  }, [state.data])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Live price poller: refresh just the quote every 60s while the user is active.
+  // Stops re-fetching after 15 min of inactivity and resumes automatically on the
+  // next activity. Only the price/market-cap update — the heavy data stays put.
+  useEffect(() => {
+    if (state.status !== 'success' || !state.ticker) return
+    const POLL_MS = 60 * 1000
+    const IDLE_MS = 15 * 60 * 1000
+    let lastActivity = Date.now()
+    const bump = () => { lastActivity = Date.now() }
+    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart']
+    events.forEach(e => window.addEventListener(e, bump, { passive: true }))
+
+    const tick = async () => {
+      if (Date.now() - lastActivity > IDLE_MS) return   // idle → skip the fetch
+      try {
+        const r = await fetch(`/api/quote?ticker=${encodeURIComponent(state.ticker)}`)
+        const q = await r.json()
+        if (q?.price != null) dispatch({ type: 'PRICE_UPDATE', price: q.price, marketCap: q.marketCap })
+      } catch { /* ignore transient errors */ }
+    }
+    const id = setInterval(tick, POLL_MS)
+    return () => { clearInterval(id); events.forEach(e => window.removeEventListener(e, bump)) }
+  }, [state.ticker, state.status])
 
   // Load folder handle on mount
   useEffect(() => {
@@ -207,6 +244,18 @@ export function AppProvider({ children }) {
     dispatch({ type: 'RESET' })
   }, [])
 
+  // Reset one ticker: drop its cached data so the next analyse re-fetches fresh.
+  const resetTicker = useCallback(async (ticker) => {
+    if (ticker) await deleteCached(ticker)
+    dispatch({ type: 'RESET' })
+  }, [])
+
+  // Reset the whole app: wipe all cached financials.
+  const clearAllData = useCallback(async () => {
+    await clearAllCached()
+    dispatch({ type: 'RESET' })
+  }, [])
+
   const loadFromCSV = useCallback((normalizedData) => {
     try {
       const computed = computeAll(normalizedData, {}, {}, {})
@@ -218,7 +267,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, applyPastedTable
+      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable
     }}>
       {children}
     </AppContext.Provider>

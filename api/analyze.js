@@ -15,7 +15,9 @@ Return only the verdict text (3–5 sentences). No buy/sell/hold advice, no ques
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') { res.status(405).json({ text: null }); return }
-  const key = process.env.GEMINI_API_KEY
+  // BYOK: prefer the user's own key (sent per request); fall back to a server key
+  // only if one is configured. Never logged.
+  const key = req.body?.userKey || process.env.GEMINI_API_KEY
   const summary = req.body?.summary
   if (!key || !summary) { res.status(200).json({ text: null }); return }
 

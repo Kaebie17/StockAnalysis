@@ -3,6 +3,7 @@ import { useApp } from '../../store/AppContext.jsx'
 import { signalColor, signalBadgeClass } from '../../utils/format.js'
 import DCFScenarioPanel from './DCFScenarioPanel.jsx'
 import { expectationInsight, primaryExpectation } from '../../engine/valuation.js'
+import AIVerdict from './AIVerdict.jsx'
 
 // 27-combination verdict matrix
 const VERDICTS = {
@@ -186,20 +187,7 @@ export default function SummaryStrip({ onExpand, expanded }) {
           <div>
             <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Combined Verdict</div>
             <p className="text-sm text-slate-200 leading-relaxed">{verdict}</p>
-            {(() => {
-              const _guided = valuation?.assumptions?.nearTermGrowth != null
-                ? valuation.assumptions.nearTermGrowth * 100 : null
-              const _ins = expectationInsight(valuation, marketExpectation, ratioResult, state.stage, _guided)
-              if (!_ins?.text) return null
-              return (
-                <div className="mt-2 space-y-1.5">
-                  <p className="text-sm text-slate-200 leading-relaxed">📊 {_ins.text}</p>
-                  {_ins.bases && <p className="text-xs text-slate-400 leading-relaxed">{_ins.bases}</p>}
-                  {_ins.valn  && <p className="text-xs text-slate-400 leading-relaxed">{_ins.valn}</p>}
-                  {_ins.scen  && <p className="text-xs text-slate-500 leading-relaxed">{_ins.scen}</p>}
-                </div>
-              )
-            })()}
+            <AIVerdict />
           </div>
         </div>
       </div>

@@ -84,11 +84,9 @@ export async function getCached(ticker) {
   try {
     const rec = await txGet('financials', ticker.toUpperCase())
     if (!rec) return null
-    if (Date.now() - rec.timestamp > TTL) {
-      await txDelete('financials', ticker.toUpperCase())
-      return null
-    }
-    // Update last accessed for eviction ordering
+    // No time-based expiry: cached data persists until it's overwritten (new
+    // upload / re-analyse) or deleted (reset). Live price is refreshed separately
+    // by the price poller, not by expiring the whole snapshot.
     await txPut('financials', { ...rec, lastAccessed: Date.now() })
     return rec.data
   } catch { return null }
@@ -109,6 +107,23 @@ export async function setCached(ticker, data) {
 
     // Run eviction check asynchronously — don't block the caller
     evictIfNeeded().catch(() => {})
+  } catch { /* non-critical */ }
+}
+
+// Remove one ticker's cached data (used by "reset ticker").
+export async function deleteCached(ticker) {
+  try { await txDelete('financials', ticker.toUpperCase()) } catch { /* non-critical */ }
+}
+
+// Wipe ALL cached financials (used by "reset whole app").
+export async function clearAllCached() {
+  try {
+    const d = await openDB()
+    await new Promise((resolve, reject) => {
+      const req = d.transaction('financials', 'readwrite').objectStore('financials').clear()
+      req.onsuccess = () => resolve()
+      req.onerror   = () => reject(req.error)
+    })
   } catch { /* non-critical */ }
 }
 
@@ -184,3 +199,5 @@ export async function loadFolderHandle() {
     return req === 'granted' ? rec.handle : null
   } catch { return null }
 }
+
+

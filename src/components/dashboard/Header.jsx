@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
+import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
@@ -20,8 +21,11 @@ export default function Header() {
         {/* Search row */}
         <div className="flex items-center gap-3">
           <button
-            onClick={() => { reset(); setInput('') }}
-            title="Back to home"
+            onClick={async () => {
+              if (state.ticker) { await deleteCached(state.ticker); load(state.ticker) }  // wipe saved copy, re-fetch fresh
+              else { reset(); setInput('') }
+            }}
+            title={state.ticker ? 'Reset: clear saved data & re-fetch' : 'Home'}
             className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm shrink-0 hover:bg-accent-dark active:scale-95 transition-all">
             SA
           </button>
@@ -181,3 +185,5 @@ function DataVintageBadge({ data }) {
     </span>
   )
 }
+
+
