@@ -41,7 +41,7 @@ export default function Header() {
             </div>
             <button type="submit" className="btn-primary text-sm shrink-0"
               disabled={state.status === 'loading' || !input.trim()}>
-              Analyse
+              Analyze
             </button>
           </form>
           {state.ticker && state.status === 'success' && (
