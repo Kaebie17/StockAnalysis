@@ -75,12 +75,14 @@ export function detectStage(data, ratioResult) {
   // scale-up burning toward profit). Multiples-on-revenue lens, no P/E.
   if (cagr != null && cagr > 25 && !consistentlyProfitable) return 'GROWTH'
 
-  // TRANSITION = still growing quickly but PROFITABLE, just not at mature margins.
-  // (Dixon-type: ~40% growth, thin ~3% margin, strong ROE, steady profits.) P/E
-  // becomes usable again here, alongside revenue multiples.
-  if (cagr != null && cagr > 12 && (netMargin == null || netMargin < 12)) return 'TRANSITION'
+  // TRANSITION = still growing FAST but PROFITABLE, just not at mature margins.
+  // Requires genuinely high growth (Dixon ~40%), not merely above-average — a
+  // mature low-margin business (Reliance ~12% growth, ~8% margin) is NOT
+  // transitioning, it's established, so it must not trip this.
+  if (cagr != null && cagr > 22 && consistentlyProfitable && (netMargin == null || netMargin < 10)) return 'TRANSITION'
 
-  // ESTABLISHED = mature, stable, healthy-margin business.
+  // ESTABLISHED = mature, stable business (default for profitable, non-hypergrowth
+  // names regardless of margin level).
   return 'ESTABLISHED'
 }
 

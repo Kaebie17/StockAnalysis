@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { deleteCached } from '../../utils/db.js'
+import { deleteCached, deleteAiVerdict } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
@@ -21,11 +21,8 @@ export default function Header() {
         {/* Search row */}
         <div className="flex items-center gap-3">
           <button
-            onClick={async () => {
-              if (state.ticker) { await deleteCached(state.ticker); load(state.ticker) }  // wipe saved copy, re-fetch fresh
-              else { reset(); setInput('') }
-            }}
-            title={state.ticker ? 'Reset: clear saved data & re-fetch' : 'Home'}
+            onClick={() => { reset(); setInput('') }}
+            title="Home"
             className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm shrink-0 hover:bg-accent-dark active:scale-95 transition-all">
             SA
           </button>
@@ -47,6 +44,19 @@ export default function Header() {
               Analyse
             </button>
           </form>
+          {state.ticker && state.status === 'success' && (
+            <button
+              onClick={async () => {
+                if (!window.confirm(`Delete saved data for ${state.ticker} (including pasted Screener history) and re-fetch fresh?`)) return
+                await deleteCached(state.ticker)
+                await deleteAiVerdict(state.ticker)   // drop stale AI verdict too
+                load(state.ticker)
+              }}
+              title="Delete this stock's saved & pasted data, then re-fetch"
+              className="text-xs px-3 py-2 rounded-lg border border-navy-600 text-slate-400 hover:text-bear hover:border-bear/50 shrink-0 transition-colors">
+              🗑 Reset data
+            </button>
+          )}
         </div>
 
         {/* Progress */}

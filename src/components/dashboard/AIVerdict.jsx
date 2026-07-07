@@ -3,9 +3,11 @@ import { useApp } from '../../store/AppContext.jsx'
 import { buildBlockSummary } from '../../engine/buildBlockSummary.js'
 import { expectationInsight } from '../../engine/valuation.js'
 import { getAiKey, setAiKey, clearAiKey } from '../../utils/aiKey.js'
+import { getAiVerdict, setAiVerdict } from '../../utils/db.js'
 
 // Session cache so we don't re-call the API every render / re-open.
 const _cache = new Map()
+function hashStr(str) { let h = 0; for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) | 0 } return h.toString(36) }
 
 export default function AIVerdict() {
   const { state } = useApp()
@@ -17,30 +19,39 @@ export default function AIVerdict() {
   const [editKey, setEditKey] = useState(false)
   const [keyInput, setKeyInput] = useState('')
 
-  const key = state?.ticker && valuation
-    ? `${state.ticker}|${valuation?.assumptions?.nearTermGrowth ?? ''}|${valuation?.assumptions?.wacc ?? ''}`
-    : null
+  const summary = valuation ? buildBlockSummary(state) : null
+  // Fingerprint the summary so ANY change (data breadth, valuation, expectation,
+  // guidance) produces a new key and re-runs the analysis.
+  const fp = summary ? hashStr(JSON.stringify(summary)) : ''
+  const key = state?.ticker && summary ? `${state.ticker}|${fp}` : null
 
   useEffect(() => {
-    if (!key || !valuation || !hasKey) return
+    if (!key || !valuation || !hasKey || !summary) return
     if (_cache.has(key)) { setText(_cache.get(key)); return }
-    const summary = buildBlockSummary(state)
-    if (!summary) return
     let cancelled = false
-    setLoad(true); setText(null); setFailed(false)
-    fetch('/api/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ summary, userKey: getAiKey() }),
-    })
-      .then(r => r.json())
-      .then(d => {
+    ;(async () => {
+      // 1) Persistent cache: same ticker + same data → reuse, no API call
+      //    (survives refresh and sessions; only regenerates when data changes).
+      const saved = await getAiVerdict(state.ticker, fp)
+      if (cancelled) return
+      if (saved) { _cache.set(key, saved); setText(saved); return }
+      // 2) Miss → generate once, then persist under this ticker+fingerprint.
+      setLoad(true); setText(null); setFailed(false)
+      try {
+        const r = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ summary, userKey: getAiKey() }),
+        })
+        const d = await r.json()
         if (cancelled) return
-        if (d?.text) { _cache.set(key, d.text); setText(d.text) }
-        else setFailed(true)
-      })
-      .catch(() => { if (!cancelled) setFailed(true) })
-      .finally(() => { if (!cancelled) setLoad(false) })
+        if (d?.text) {
+          _cache.set(key, d.text); setText(d.text)
+          setAiVerdict(state.ticker, fp, d.text)   // persist latest-per-ticker
+        } else setFailed(true)
+      } catch { if (!cancelled) setFailed(true) }
+      finally { if (!cancelled) setLoad(false) }
+    })()
     return () => { cancelled = true }
   }, [key, hasKey])   // eslint-disable-line react-hooks/exhaustive-deps
 

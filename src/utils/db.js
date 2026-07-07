@@ -9,7 +9,7 @@
  */
 
 const DB_NAME    = 'stockanalyzr'
-const DB_VERSION = 2
+const DB_VERSION = 3
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
@@ -33,6 +33,10 @@ function openDB() {
       // folderHandle store for File System Access API
       if (!d.objectStoreNames.contains('fsHandles')) {
         d.createObjectStore('fsHandles', { keyPath: 'id' })
+      }
+      // AI verdict cache — one (latest) verdict per ticker, keyed by ticker
+      if (!d.objectStoreNames.contains('aiVerdicts')) {
+        d.createObjectStore('aiVerdicts', { keyPath: 'ticker' })
       }
     }
     req.onsuccess = e => { db = e.target.result; resolve(db) }
@@ -113,6 +117,22 @@ export async function setCached(ticker, data) {
 // Remove one ticker's cached data (used by "reset ticker").
 export async function deleteCached(ticker) {
   try { await txDelete('financials', ticker.toUpperCase()) } catch { /* non-critical */ }
+}
+
+// ── AI verdict cache ─────────────────────────────────────────────────────────
+// Keyed by ticker (latest only). `fp` is a fingerprint of the data/summary — a
+// cache hit requires the SAME fp, so changed data misses and regenerates.
+export async function getAiVerdict(ticker, fp) {
+  try {
+    const rec = await txGet('aiVerdicts', ticker.toUpperCase())
+    return (rec && rec.fp === fp) ? rec.text : null
+  } catch { return null }
+}
+export async function setAiVerdict(ticker, fp, text) {
+  try { await txPut('aiVerdicts', { ticker: ticker.toUpperCase(), fp, text, savedAt: Date.now() }) } catch {}
+}
+export async function deleteAiVerdict(ticker) {
+  try { await txDelete('aiVerdicts', ticker.toUpperCase()) } catch {}
 }
 
 // Wipe ALL cached financials (used by "reset whole app").
