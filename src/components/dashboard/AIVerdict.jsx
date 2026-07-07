@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { buildBlockSummary } from '../../engine/buildBlockSummary.js'
 import { expectationInsight } from '../../engine/valuation.js'
-import { getAiKey, setAiKey, clearAiKey } from '../../utils/aiKey.js'
+import { getAiKey, setAiKey, clearAiKey, isKeyRemembered } from '../../utils/aiKey.js'
 import { getAiVerdict, setAiVerdict } from '../../utils/db.js'
 
 // Session cache so we don't re-call the API every render / re-open.
@@ -18,6 +18,7 @@ export default function AIVerdict() {
   const [hasKey, setHasKey] = useState(!!getAiKey())
   const [editKey, setEditKey] = useState(false)
   const [keyInput, setKeyInput] = useState('')
+  const [remember, setRemember] = useState(true)
 
   const summary = valuation ? buildBlockSummary(state) : null
   // Fingerprint the summary so ANY change (data breadth, valuation, expectation,
@@ -26,7 +27,7 @@ export default function AIVerdict() {
   const key = state?.ticker && summary ? `${state.ticker}|${fp}` : null
 
   useEffect(() => {
-    if (!key || !valuation || !hasKey || !summary) return
+    if (!key || !valuation || !summary) return
     if (_cache.has(key)) { setText(_cache.get(key)); return }
     let cancelled = false
     ;(async () => {
@@ -35,7 +36,8 @@ export default function AIVerdict() {
       const saved = await getAiVerdict(state.ticker, fp)
       if (cancelled) return
       if (saved) { _cache.set(key, saved); setText(saved); return }
-      // 2) Miss → generate once, then persist under this ticker+fingerprint.
+      // 2) Miss → need a key to generate. No key → render shows the key prompt.
+      if (!hasKey) return
       setLoad(true); setText(null); setFailed(false)
       try {
         const r = await fetch('/api/analyze', {
@@ -58,7 +60,7 @@ export default function AIVerdict() {
   if (!valuation) return null
 
   const saveKey = () => {
-    setAiKey(keyInput)
+    setAiKey(keyInput, remember)
     setHasKey(!!keyInput.trim())
     setEditKey(false); setKeyInput('')
     _cache.clear()
@@ -75,9 +77,15 @@ export default function AIVerdict() {
         <button onClick={saveKey} className="btn-primary text-xs shrink-0">Save</button>
         {hasKey && <button onClick={() => setEditKey(false)} className="text-slate-500 text-xs">Cancel</button>}
       </div>
+      <label className="flex items-center gap-2 text-[11px] text-slate-400">
+        <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
+        Remember on this device (stay signed in after closing the browser)
+      </label>
       <p className="text-[10px] text-slate-600">
-        Stored in this browser tab only (cleared when you close it). Get a free key at Google AI Studio,
-        and set a usage limit on it. Sent only to Google via our server; never stored on our side.
+        {remember
+          ? 'Saved on this device until you clear it.'
+          : 'Kept only for this session (cleared when you close the browser).'}
+        {' '}Get a free key at Google AI Studio and set a usage limit on it. Sent only to Google via our server; never stored on our side.
       </p>
     </div>
   )
@@ -94,8 +102,8 @@ export default function AIVerdict() {
   ) : null
 
   if (editKey) return KeyBox
-  if (!hasKey) return <>{Boilerplate}{KeyBox}</>
   if (loading) return <p className="text-sm text-slate-500 leading-relaxed mt-2 animate-pulse">Generating AI analysis…</p>
+  // A cached/generated verdict shows regardless of whether a key is present now.
   if (text) return (
     <div className="mt-2">
       <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-line">🤖 {text}</p>
@@ -106,7 +114,9 @@ export default function AIVerdict() {
       </div>
     </div>
   )
-  // key present but call failed → boilerplate + retry affordance
+  // No cached verdict and no key → show boilerplate + key prompt.
+  if (!hasKey) return <>{Boilerplate}{KeyBox}</>
+  // Key present but call failed → boilerplate + retry affordance.
   return (
     <div>
       {Boilerplate}
