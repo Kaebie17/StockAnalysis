@@ -3,7 +3,7 @@
 // Vercel project env. Returns { text: null } on any failure so the client falls back
 // to the built-in boilerplate.
 
-const MODEL = 'gemini-2.0-flash'   // swap to any current Gemini model string
+const MODEL = 'gemini-2.5-flash'   // current stable; swap to any available Gemini model
 
 const SYSTEM = `As a professional equity analyst, based strictly on the figures and scores provided in this prompt, write a brief verdict in plain language on valuation and market expectation.
 
@@ -22,19 +22,35 @@ export default async function handler(req, res) {
   if (!key || !summary) { res.status(200).json({ text: null }); return }
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`
     const r = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: SYSTEM }] },
         contents: [{ role: 'user', parts: [{ text: JSON.stringify(summary) }] }],
         generationConfig: { temperature: 0.4, maxOutputTokens: 400 },
       }),
     })
-    if (!r.ok) { res.status(200).json({ text: null, error: `gemini ${r.status}` }); return }
     const data = await r.json()
-    const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim() || null
+    if (!r.ok) { res.status(200).json({ text: null, error: `gemini ${r.status}`, raw: data }); return }
+    // Extract text defensively across possible shapes.
+    const cand = data?.candidates?.[0]
+    const parts = cand?.content?.parts
+    let text = Array.isArray(parts)
+      ? parts.map(p => (typeof p?.text === 'string' ? p.text : '')).join('').trim()
+      : null
+    if (!text) text = null
+    // If empty, surface WHY (finishReason / promptFeedback / raw) so we can diagnose.
+    if (!text) {
+      res.status(200).json({
+        text: null,
+        finishReason: cand?.finishReason ?? null,
+        blockReason: data?.promptFeedback?.blockReason ?? null,
+        raw: data,
+      })
+      return
+    }
     res.status(200).json({ text })
   } catch (e) {
     res.status(200).json({ text: null, error: String(e?.message || e) })
