@@ -10,7 +10,7 @@ export default function EmptyState({ onUpload }) {
   return (
     <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
       <img src="/logo.png" alt="StockAnalyzr"
-           className="w-60 max-w-[78%] h-auto mb-6 select-none" draggable="false" />
+           className="w-60 max-w-[78%] h-auto select-none" draggable="false" />
       <h2 className="text-xl font-semibold text-white mb-2">
         Enter any stock ticker to begin
       </h2>
