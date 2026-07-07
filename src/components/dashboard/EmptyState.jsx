@@ -8,7 +8,7 @@ export default function EmptyState({ onUpload }) {
   if (state.status === 'error')   return <ErrorState onUpload={onUpload} />
 
   return (
-    <div className="flex flex-col items-center justify-center py-20 px-4 text-center">
+    <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
       <img src="/logo.png" alt="StockAnalyzr"
            className="w-60 max-w-[78%] h-auto mb-6 select-none" draggable="false" />
       <h2 className="text-xl font-semibold text-white mb-2">
