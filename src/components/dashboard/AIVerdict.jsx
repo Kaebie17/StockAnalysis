@@ -15,7 +15,8 @@ export default function AIVerdict() {
   const [text, setText]   = useState(null)
   const [loading, setLoad] = useState(false)
   const [failed, setFailed] = useState(false)
-  const [hasKey, setHasKey] = useState(!!getAiKey())
+  const [keyVal, setKeyVal] = useState(() => getAiKey())
+  const hasKey = !!keyVal
   const [editKey, setEditKey] = useState(false)
   const [keyInput, setKeyInput] = useState('')
   const [remember, setRemember] = useState(true)
@@ -43,7 +44,7 @@ export default function AIVerdict() {
         const r = await fetch('/api/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ summary, userKey: getAiKey() }),
+          body: JSON.stringify({ summary, userKey: keyVal }),
         })
         const d = await r.json()
         if (cancelled) return
@@ -55,17 +56,18 @@ export default function AIVerdict() {
       finally { if (!cancelled) setLoad(false) }
     })()
     return () => { cancelled = true }
-  }, [key, hasKey])   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, keyVal])   // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!valuation) return null
 
   const saveKey = () => {
-    setAiKey(keyInput, remember)
-    setHasKey(!!keyInput.trim())
+    const cleaned = keyInput.trim()
+    setKeyVal(cleaned)              // in-memory: used for requests this session
+    setAiKey(cleaned, remember)     // best-effort persistence (may fail in private/in-app browsers)
     setEditKey(false); setKeyInput('')
     _cache.clear()
   }
-  const removeKey = () => { clearAiKey(); setHasKey(false); setText(null); _cache.clear() }
+  const removeKey = () => { clearAiKey(); setKeyVal(''); setText(null); _cache.clear() }
 
   // Key entry UI (shown when no key, or when editing).
   const KeyBox = (
@@ -73,7 +75,8 @@ export default function AIVerdict() {
       <div className="text-slate-300">Enable AI analysis with your own Gemini API key</div>
       <div className="flex gap-2">
         <input type="password" value={keyInput} onChange={e => setKeyInput(e.target.value)}
-          placeholder="Paste Gemini API key…" className="input-field text-xs flex-1" />
+          autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off"
+          inputMode="text" placeholder="Paste Gemini API key…" className="input-field text-xs flex-1" />
         <button onClick={saveKey} className="btn-primary text-xs shrink-0">Save</button>
         {hasKey && <button onClick={() => setEditKey(false)} className="text-slate-500 text-xs">Cancel</button>}
       </div>
