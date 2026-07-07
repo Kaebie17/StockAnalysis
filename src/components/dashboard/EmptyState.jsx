@@ -8,10 +8,9 @@ export default function EmptyState({ onUpload }) {
   if (state.status === 'error')   return <ErrorState onUpload={onUpload} />
 
   return (
-    <div className="flex flex-col items-center justify-center py-24 px-4 text-center">
-      <div className="w-16 h-16 rounded-2xl bg-accent/10 flex items-center justify-center mb-4 text-3xl">
-        📈
-      </div>
+    <div className="flex flex-col items-center justify-center py-20 px-4 text-center">
+      <img src="/logo.png" alt="StockAnalyzr"
+           className="w-60 max-w-[78%] h-auto mb-6 select-none" draggable="false" />
       <h2 className="text-xl font-semibold text-white mb-2">
         Enter any stock ticker to begin
       </h2>
@@ -86,3 +85,5 @@ function ErrorState({ onUpload }) {
     </div>
   )
 }
+
+

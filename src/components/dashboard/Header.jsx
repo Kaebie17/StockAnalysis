@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { deleteCached, deleteAiVerdict } from '../../utils/db.js'
+import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
@@ -23,8 +23,8 @@ export default function Header() {
           <button
             onClick={() => { reset(); setInput('') }}
             title="Home"
-            className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center text-white font-bold text-sm shrink-0 hover:bg-accent-dark active:scale-95 transition-all">
-            SA
+            className="shrink-0 active:scale-95 transition-transform">
+            <img src="/bull.png" alt="StockAnalyzr" className="h-9 w-9 object-contain" draggable="false" />
           </button>
           <form onSubmit={submit} className="flex-1 flex gap-2">
             <div className="relative flex-1">
@@ -49,7 +49,6 @@ export default function Header() {
               onClick={async () => {
                 if (!window.confirm(`Delete saved data for ${state.ticker} (including pasted Screener history) and re-fetch fresh?`)) return
                 await deleteCached(state.ticker)
-                await deleteAiVerdict(state.ticker)   // drop stale AI verdict too
                 load(state.ticker)
               }}
               title="Delete this stock's saved & pasted data, then re-fetch"
