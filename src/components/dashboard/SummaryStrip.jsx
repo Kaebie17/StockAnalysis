@@ -51,7 +51,7 @@ function getVerdict(valSignal, techLabel, qualLabel) {
   return VERDICTS[key] || VERDICTS.DEFAULT
 }
 
-export default function SummaryStrip({ onExpand, expanded }) {
+export default function SummaryStrip({ onExpand, expanded, detail }) {
   const { state } = useApp()
   const { valuation, quality, technicals, ratioResult, marketExpectation } = state
   
@@ -70,9 +70,17 @@ export default function SummaryStrip({ onExpand, expanded }) {
   const verdict   = getVerdict(valuation.signal, techLabel, qualLabel)
 
   return (
-    <div className="space-y-3">
-      {/* 3 Pillars */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+    <div className="flex flex-col gap-3 lg:gap-4">
+      {/* ── SCENARIOS ── mobile: first · desktop: third ── */}
+      <div className="order-1 lg:order-3">
+        <DCFScenarioPanel compact />
+      </div>
+
+      {/* ── TILES ── mobile: swipeable carousel · desktop: 4-col grid ── */}
+      <div className="order-2 lg:order-1">
+      <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-1 -mx-4 px-4
+                      sm:grid sm:grid-cols-2 sm:overflow-visible sm:mx-0 sm:px-0 sm:pb-0
+                      lg:grid-cols-4">
 
         {/* ── VALUATION ──────────────────────────────────────────────────────── */}
         <PillarCard
@@ -179,19 +187,24 @@ export default function SummaryStrip({ onExpand, expanded }) {
           )}
         </PillarCard>
       </div>
+      </div>
 
-      {/* Combined verdict */}
-      <div className="card border-navy-700 bg-navy-900/60 py-3 px-4">
-        <div className="flex items-start gap-3">
-          <span className="text-xl mt-0.5">💡</span>
-          <div>
-            <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Combined Verdict</div>
-            <p className="text-sm text-slate-200 leading-relaxed">{verdict}</p>
-            <AIVerdict />
+      {/* ── DETAIL (expanded panel + banner) ── mobile: below tiles · desktop: last ── */}
+      {detail && <div className="order-3 lg:order-4">{detail}</div>}
+
+      {/* ── VERDICT ── mobile: last · desktop: second ── */}
+      <div className="order-4 lg:order-2">
+        <div className="card border-navy-700 bg-navy-900/60 py-3 px-4">
+          <div className="flex items-start gap-3">
+            <span className="text-xl mt-0.5">💡</span>
+            <div>
+              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Combined Verdict</div>
+              <p className="text-sm text-slate-200 leading-relaxed">{verdict}</p>
+              <AIVerdict />
+            </div>
           </div>
         </div>
       </div>
-      <DCFScenarioPanel compact />
     </div>
   )
 }
@@ -201,6 +214,7 @@ function PillarCard({ title, badge, children, onExpand, isExpanded }) {
     <div
       onClick={onExpand}
       className={`card flex flex-col gap-2 cursor-pointer transition-all
+        snap-start shrink-0 w-[80%] sm:w-auto sm:shrink
         ${isExpanded ? 'border-accent/50 bg-accent/5' : 'hover:border-navy-600'}`}>
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold text-slate-300">{title}</span>

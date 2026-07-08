@@ -80,8 +80,8 @@ export default function ValuationPanel({ open, onClose }) {
               <th className="text-left py-2 font-medium">Model</th>
               <th className="text-right py-2 font-medium">Fair Value</th>
               <th className="text-right py-2 font-medium">vs CMP</th>
-              <th className="py-2 pl-2 font-medium"></th>
-              <th className="text-right py-2 font-medium">Wt</th>
+              <th className="py-2 pl-2 font-medium hidden sm:table-cell"></th>
+              <th className="text-right py-2 font-medium hidden sm:table-cell">Wt</th>
             </tr>
           </thead>
           <tbody>
@@ -112,10 +112,10 @@ export default function ValuationPanel({ open, onClose }) {
                     ${up == null ? 'text-slate-500' : up >= 0 ? 'text-bull' : 'text-bear'}`}>
                     {up != null ? fmtPct(up) : '—'}
                   </td>
-                  <td className="py-2 pl-2">
+                  <td className="py-2 pl-2 hidden sm:table-cell">
                     <DotBar upside={up} />
                   </td>
-                  <td className="py-2 text-right text-slate-600 text-xs font-mono">
+                  <td className="py-2 text-right text-slate-600 text-xs font-mono hidden sm:table-cell">
                     {meta.weight}
                   </td>
                 </tr>
