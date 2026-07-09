@@ -4,6 +4,8 @@ import { signalColor, signalBadgeClass } from '../../utils/format.js'
 import DCFScenarioPanel from './DCFScenarioPanel.jsx'
 import { expectationInsight, primaryExpectation } from '../../engine/valuation.js'
 import AIVerdict from './AIVerdict.jsx'
+import React, { useState } from 'react'
+import NewsModal from './NewsModal.jsx'
 
 // 27-combination verdict matrix
 const VERDICTS = {
@@ -54,7 +56,8 @@ function getVerdict(valSignal, techLabel, qualLabel) {
 export default function SummaryStrip({ onExpand, expanded, detail }) {
   const { state } = useApp()
   const { valuation, quality, technicals, ratioResult, marketExpectation } = state
-  
+  const [newsOpen, setNewsOpen] = useState(false)
+  const newsQuery = (state.query || '').trim() || state.data?.name || state.ticker
   // Primary variant for summary card
   // Same shared selector the insight uses, so pillar & verdict never disagree.
   const mePrimary = primaryExpectation(marketExpectation, state.stage)
@@ -201,10 +204,18 @@ export default function SummaryStrip({ onExpand, expanded, detail }) {
               <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Combined Verdict</div>
               <p className="text-sm text-slate-200 leading-relaxed">{verdict}</p>
               <AIVerdict />
+              {state.ticker && (
+                <button
+                  onClick={() => setNewsOpen(true)}
+                  className="mt-2 text-xs text-accent hover:text-accent-light inline-flex items-center gap-1">
+                  📰 Company news →
+                </button>
+              )}
             </div>
           </div>
         </div>
       </div>
+      <NewsModal open={newsOpen} onClose={() => setNewsOpen(false)} query={newsQuery} ticker={state.ticker} />
     </div>
   )
 }

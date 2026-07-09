@@ -27,6 +27,7 @@ const initial = {
   folderHandle: null, // File System Access API folder handle
   // Swap state: { income:{year:{field:true}}, balance:{...}, cashflow:{...} }
   swapState: {},
+  status: 'idle', progress: null, error: null, ticker: '', query: '', validation: null,
 }
 
 function reducer(s, a) {
@@ -74,6 +75,10 @@ function reducer(s, a) {
     }
     case 'SWAP_FIELD':    return { ...s, ...a.payload }
     case 'RESET':          return { ...initial, folderHandle: s.folderHandle }  // keep CSV folder connection
+    case 'FETCH_START':
+      return { ...s, status: 'loading', error: null, progress: null,
+               uploadRequired: false, ticker: a.ticker, query: a.query,
+               csvData: null, csvActive: false, swapState: {} }
     default:              return s
   }
 }
@@ -133,7 +138,7 @@ export function AppProvider({ children }) {
   const load = useCallback(async (rawTicker) => {
     if (!rawTicker?.trim()) return
     const ticker = rawTicker.trim().toUpperCase()
-    dispatch({ type: 'FETCH_START', ticker })
+    dispatch({ type: 'FETCH_START', ticker, query: rawTicker.trim() })
 
     try {
       // Check cache
