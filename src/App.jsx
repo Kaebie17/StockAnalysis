@@ -74,7 +74,7 @@ function Dashboard() {
   const showDashboard = state.status === 'success'
 
   return (
-    <div className="min-h-screen bg-navy-950">
+    <div className="min-h-screen bg-navy-950 overflow-x-hidden">
       <Header />
 
       <main className="max-w-5xl mx-auto px-4 py-5 space-y-4">

@@ -74,12 +74,12 @@ export default function ValuationPanel({ open, onClose }) {
 
       {/* Model table — matches the spec exactly */}
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-auto sm:w-full text-sm">
           <thead>
             <tr className="border-b border-navy-700 text-xs text-slate-400">
               <th className="text-left py-2 font-medium">Model</th>
-              <th className="text-right py-2 font-medium">Fair Value</th>
-              <th className="text-right py-2 font-medium">vs CMP</th>
+              <th className="text-left sm:text-right py-2 font-medium">Fair Value</th>
+              <th className="text-left sm:text-right py-2 font-medium">vs CMP</th>
               <th className="py-2 pl-2 font-medium hidden sm:table-cell"></th>
               <th className="text-right py-2 font-medium hidden sm:table-cell">Wt</th>
             </tr>
@@ -105,10 +105,10 @@ export default function ValuationPanel({ open, onClose }) {
                       ? <span>{key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name} <span className="text-neutral text-xs">⚠</span></span>
                       : (key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name)}
                   </td>
-                  <td className="py-2 text-right font-mono text-white text-xs">
+                  <td className="py-2 text-left sm:text-right font-mono text-white text-xs">
                     {fv != null ? cur + fv.toFixed(0) : isNA ? 'N/A' : '—'}
                   </td>
-                  <td className={`py-2 text-right font-mono text-xs font-semibold
+                  <td className={`py-2 text-left sm:text-right font-mono text-xs font-semibold
                     ${up == null ? 'text-slate-500' : up >= 0 ? 'text-bull' : 'text-bear'}`}>
                     {up != null ? fmtPct(up) : '—'}
                   </td>
@@ -127,7 +127,7 @@ export default function ValuationPanel({ open, onClose }) {
       </div>
 
       {/* Consensus row */}
-      <div className="flex items-center justify-between py-2 px-3 bg-navy-800/50 rounded-lg">
+      <div className="flex flex-wrap items-center justify-between gap-2 py-2 px-3 bg-navy-800/50 rounded-lg">
         <div>
           <div className="flex items-center text-xs text-slate-400">
             Range: {rangeLow && rangeHigh

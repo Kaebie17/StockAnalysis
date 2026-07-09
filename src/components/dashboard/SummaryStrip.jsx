@@ -78,8 +78,8 @@ export default function SummaryStrip({ onExpand, expanded, detail }) {
 
       {/* ── TILES ── mobile: swipeable carousel · desktop: 4-col grid ── */}
       <div className="order-2 lg:order-1">
-      <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-1 -mx-4 px-4
-                      sm:grid sm:grid-cols-2 sm:overflow-visible sm:mx-0 sm:px-0 sm:pb-0
+      <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-1
+                      sm:grid sm:grid-cols-2 sm:overflow-visible sm:pb-0
                       lg:grid-cols-4">
 
         {/* ── VALUATION ──────────────────────────────────────────────────────── */}
