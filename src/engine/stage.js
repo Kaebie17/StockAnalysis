@@ -119,14 +119,14 @@ export function getApplicableModels(stage, sectorType) {
       }
     case 'GROWTH':
       return {
-        applicable:    ['ps', 'evGrossProfit', 'evEbitda'],
+        applicable:    ['ps', 'evGrossProfit', 'evEbitda', 'peg'],
         caution:       ['dcf'],
         notApplicable: ['pe', 'graham', 'pb'],
         note: 'Growth stage: revenue-based multiples most relevant. P/E not meaningful yet.'
       }
     case 'TRANSITION':
       return {
-        applicable:    ['evEbitda', 'ps', 'pe', 'dcf'],
+        applicable:    ['evEbitda', 'ps', 'pe', 'dcf', 'peg'],
         caution:       ['graham'],
         notApplicable: ['evGrossProfit'],
         note: 'Transitioning to profitability: blend of revenue and earnings-based models.'

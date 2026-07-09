@@ -36,12 +36,30 @@ function relTime(ms) {
 
 const idOf = (it) => it.url || it.title
 
-export default function NewsModal({ open, onClose, query, ticker }) {
+function NewsRow({ it }) {
+  return (
+    <li className="py-3">
+      <a href={it.url} target="_blank" rel="noopener noreferrer" className="block group">
+        <p className="text-sm text-slate-100 leading-snug group-hover:text-accent-light transition-colors">
+          {it.title}
+        </p>
+        <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500">
+          <span className="truncate max-w-[55%]">{it.source}</span>
+          {it.date > 0 && (<><span>·</span><span className="shrink-0">{relTime(it.date)}</span></>)}
+          <span className="ml-auto shrink-0 text-slate-600 group-hover:text-accent-light">↗</span>
+        </div>
+      </a>
+    </li>
+  )
+}
+
+export default function NewsModal({ open, onClose, query, ticker, company }) {
   const [items, setItems] = useState([])
   const [visible, setVisible] = useState(BATCH)
   const [status, setStatus] = useState('loading')   // loading | ready | empty | error
   const [updatedAt, setUpdated] = useState(null)
   const [buffer, setBuffer] = useState([])           // new items waiting behind the pill
+  const [sectorOpen, setSectorOpen] = useState(false) // collapsed "sector reports" group
   const [, forceTick] = useState(0)                  // re-render for "updated Xs ago"
 
   const abortRef = useRef(null)
@@ -64,7 +82,7 @@ export default function NewsModal({ open, onClose, query, ticker }) {
     abortRef.current = ctrl
 
     try {
-      const { items: fresh, error } = await fetchNews(query, ticker, ctrl.signal)
+      const { items: fresh, error } = await fetchNews(query, ticker, company, ctrl.signal)
       if (ctrl.signal.aborted) return
 
       if (error === 'fetch_failed') {
@@ -95,9 +113,11 @@ export default function NewsModal({ open, onClose, query, ticker }) {
       const atTop = !el || el.scrollTop <= NEAR_TOP_PX
       if (atTop) {
         // Seamless: prepend into the list and grow the revealed count so nothing
-        // already visible drops off.
+        // already visible drops off (count primary-tier items only — the sector
+        // group isn't part of the scroll window).
+        const addedPrimary = added.filter(it => it.tier !== 'sector').length
         setItems(list => [...added, ...list])
-        setVisible(v => v + added.length)
+        setVisible(v => v + addedPrimary)
       } else {
         // Scrolled down: hold new items behind the "N new" pill — no jump.
         setBuffer(buf => [...added, ...buf])
@@ -107,7 +127,7 @@ export default function NewsModal({ open, onClose, query, ticker }) {
     } finally {
       inFlight.current = false
     }
-  }, [query, ticker])
+  }, [query, ticker, company])
 
   // Open lifecycle: first fetch + interval (paused when hidden) + cleanup.
   useEffect(() => {
@@ -153,19 +173,26 @@ export default function NewsModal({ open, onClose, query, ticker }) {
     const el = bodyRef.current
     if (!el) return
     if (el.scrollHeight - el.scrollTop - el.clientHeight < 240) {
-      setVisible(v => Math.min(v + BATCH, items.length))
+      const primaryLen = itemsRef.current.filter(it => it.tier !== 'sector').length
+      setVisible(v => Math.min(v + BATCH, primaryLen))
     }
   }
 
   const flushBuffer = () => {
     if (buffer.length === 0) return
+    const addedPrimary = buffer.filter(it => it.tier !== 'sector').length
     setItems(list => [...buffer, ...list])
-    setVisible(v => v + buffer.length)
+    setVisible(v => v + addedPrimary)
     setBuffer([])
     if (bodyRef.current) bodyRef.current.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   if (!open) return null
+
+  // Relevance tiers: company-relevant headlines scroll normally; generic market
+  // reports with no company mention collapse into a separate group at the bottom.
+  const primary = items.filter(it => it.tier !== 'sector')
+  const sector = items.filter(it => it.tier === 'sector')
 
   return (
     <div className="fixed inset-0 z-[60] bg-navy-950 flex flex-col">
@@ -233,31 +260,39 @@ export default function NewsModal({ open, onClose, query, ticker }) {
           )}
 
           {status === 'ready' && (
-            <ul className="divide-y divide-navy-800">
-              {items.slice(0, visible).map((it, i) => (
-                <li key={idOf(it) + i} className="py-3">
-                  <a href={it.url} target="_blank" rel="noopener noreferrer" className="block group">
-                    <p className="text-sm text-slate-100 leading-snug group-hover:text-accent-light transition-colors">
-                      {it.title}
-                    </p>
-                    <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-500">
-                      <span className="truncate max-w-[55%]">{it.source}</span>
-                      {it.date > 0 && (<><span>·</span><span className="shrink-0">{relTime(it.date)}</span></>)}
-                      <span className="ml-auto shrink-0 text-slate-600 group-hover:text-accent-light">↗</span>
-                    </div>
-                  </a>
-                </li>
-              ))}
+            <>
+              <ul className="divide-y divide-navy-800">
+                {primary.slice(0, visible).map((it, i) => <NewsRow key={idOf(it) + i} it={it} />)}
+              </ul>
 
-              {visible < items.length && (
-                <li className="py-4 text-center text-xs text-slate-600">Scroll for more…</li>
+              {visible < primary.length && (
+                <p className="py-4 text-center text-xs text-slate-600">Scroll for more…</p>
               )}
-              {visible >= items.length && items.length > 0 && (
-                <li className="py-5 text-center text-[11px] text-slate-700">
-                  End of headlines · {items.length} stories
-                </li>
+
+              {visible >= primary.length && (
+                <>
+                  {sector.length > 0 && (
+                    <div className="mt-4 border-t border-navy-800 pt-3">
+                      <button
+                        onClick={() => setSectorOpen(o => !o)}
+                        className="w-full flex items-center justify-between text-left text-xs font-semibold text-slate-400 hover:text-slate-200 uppercase tracking-wider py-1">
+                        <span>Broader market &amp; sector reports · {sector.length}</span>
+                        <span className="text-slate-500">{sectorOpen ? '▲' : '▼'}</span>
+                      </button>
+                      {sectorOpen && (
+                        <ul className="divide-y divide-navy-800 mt-1">
+                          {sector.map((it, i) => <NewsRow key={idOf(it) + i} it={it} />)}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+
+                  <p className="py-5 text-center text-[11px] text-slate-700">
+                    End of headlines · {primary.length}{sector.length ? ` + ${sector.length} sector` : ''} stories
+                  </p>
+                </>
               )}
-            </ul>
+            </>
           )}
         </div>
       </div>

@@ -9,6 +9,7 @@
  * 3. DCF uses opCF×0.7 as fallback when FCF null/negative
  */
 import { getApplicableModels } from './stage.js'
+import { computePeg } from './peg.js'
 
 // Sector median P/E multiples — target for PE-based valuation
 const SECTOR_PE_MAP = {
@@ -125,6 +126,17 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     if (perShare > 0) results.evGrossProfit = { value: perShare, note: 'Op.Profit × 8×' }
   }
 
+  // ── PEG (growth-stage only; gated by stage.js applicable list) ──────────────
+  if (isApplicable('peg', modelMeta) && r.eps > 0) {
+    const peg = computePeg(r, {
+      forwardGrowthPct: assumptions.forwardGrowthPct ?? null,
+      mode: assumptions.pegMode || 'blend',
+    })
+    if (peg.applicable && peg.fairValue > 0) {
+      results.peg = { value: peg.fairValue, note: peg.note, meta: peg }
+    }
+  }
+
   // ── Weighted consensus ────────────────────────────────────────────────────────
   const weights   = { dcf: 3, pe: 2, evEbitda: 2, pb: 1.5, ps: 1, graham: 1, evGrossProfit: 1 }
   const validKeys = modelMeta.applicable.filter(m => results[m]?.value > 0)
@@ -142,7 +154,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // the "best two". We present their range (low–high) rather than a blended mean.
   const MODEL_NAMES = {
     dcf: 'DCF', pe: 'P/E', evEbitda: 'EV/EBITDA', pb: 'P/B',
-    ps: 'P/S', graham: 'Graham', evGrossProfit: 'EV/Gross Profit',
+    ps: 'P/S', graham: 'Graham', evGrossProfit: 'EV/Gross Profit', peg: 1.5,
   }
   const topKeys = validKeys.slice(0, 2)
   const topModels = topKeys.map(m => ({ key: m, name: MODEL_NAMES[m] || m, value: results[m].value }))

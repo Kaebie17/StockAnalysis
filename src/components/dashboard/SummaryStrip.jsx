@@ -214,7 +214,7 @@ export default function SummaryStrip({ onExpand, expanded, detail }) {
           </div>
         </div>
       </div>
-      <NewsModal open={newsOpen} onClose={() => setNewsOpen(false)} query={newsQuery} ticker={state.ticker} />
+      <NewsModal open={newsOpen} onClose={() => setNewsOpen(false)} query={newsQuery} ticker={state.ticker} company={state.data?.name} />
     </div>
   )
 }
