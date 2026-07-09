@@ -1,10 +1,9 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { signalColor, signalBadgeClass } from '../../utils/format.js'
 import DCFScenarioPanel from './DCFScenarioPanel.jsx'
 import { expectationInsight, primaryExpectation } from '../../engine/valuation.js'
 import AIVerdict from './AIVerdict.jsx'
-import React, { useState } from 'react'
 import NewsModal from './NewsModal.jsx'
 
 // 27-combination verdict matrix
