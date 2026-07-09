@@ -13,6 +13,7 @@ import AddHistoryModal from './components/dashboard/AddHistoryModal.jsx'
 import ScoringStudio from './components/studio/ScoringStudio.jsx'
 import { parseCSV } from './utils/csv.js'
 import { requestFolderAccess, exportOverrideJSON, openFilePicker, importOverrideFile } from './utils/csv.js'
+import MoatQualityPanel from './components/dashboard/MoatQualityPanel.jsx'
 
 function Dashboard() {
   const { state, applyCSV, setFolderHandle, applyPastedTable } = useApp()
@@ -111,6 +112,9 @@ function Dashboard() {
                   </div>
                   <div id="panel-fundamentals">
                     <FundamentalsPanel open={expanded === 'fundamentals'} onClose={() => setExpanded(null)} />
+                  </div>
+                  <div id="panel-moat">
+                    <MoatQualityPanel />
                   </div>
                   <div id="panel-technicals">
                     <TechnicalsPanel open={expanded === 'technicals'} onClose={() => setExpanded(null)} />

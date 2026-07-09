@@ -9,7 +9,7 @@
  */
 
 const DB_NAME    = 'stockanalyzr'
-const DB_VERSION = 3
+const DB_VERSION = 4
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
@@ -37,6 +37,10 @@ function openDB() {
       // AI verdict cache — one (latest) verdict per ticker, keyed by ticker
       if (!d.objectStoreNames.contains('aiVerdicts')) {
         d.createObjectStore('aiVerdicts', { keyPath: 'ticker' })
+      }
+      // Guidance + governance inputs (holdings paste, AR data) — one per ticker
+      if (!d.objectStoreNames.contains('guidance')) {
+        d.createObjectStore('guidance', { keyPath: 'ticker' })
       }
     }
     req.onsuccess = e => { db = e.target.result; resolve(db) }
@@ -193,6 +197,19 @@ export async function saveSwapState(ticker, swaps) {
 export async function loadSwapState(ticker) {
   const rec = await txGet('swapStates', ticker.toUpperCase())
   return rec?.swaps ?? {}
+}
+
+export async function saveGuidance(ticker, payload) {
+  await txPut('guidance', { ticker: ticker.toUpperCase(), ...payload, updatedAt: Date.now() })
+}
+
+export async function loadGuidance(ticker) {
+  const rec = await txGet('guidance', ticker.toUpperCase())
+  return rec || null
+}
+
+export async function clearGuidance(ticker) {
+  await txDelete('guidance', ticker.toUpperCase())
 }
 
 export async function clearSwapState(ticker) {

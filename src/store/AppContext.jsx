@@ -8,7 +8,7 @@ import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
 import { getCached, setCached, deleteCached, clearAllCached, loadFolderHandle, saveFolderHandle,
-         loadSwapState, saveSwapState } from '../utils/db.js'
+         loadSwapState, saveSwapState, saveGuidance, loadGuidance } from '../utils/db.js'
 import { applyCSVOverrides, swapField, autoLoadOverride } from '../utils/csv.js'
 
 const AppContext = createContext(null)
@@ -28,6 +28,7 @@ const initial = {
   // Swap state: { income:{year:{field:true}}, balance:{...}, cashflow:{...} }
   swapState: {},
   status: 'idle', progress: null, error: null, ticker: '', query: '', validation: null,
+  guidance: {}, holdingsData: null, arData: null,
 }
 
 function reducer(s, a) {
@@ -35,6 +36,7 @@ function reducer(s, a) {
     case 'FETCH_START':
       return { ...s, status: 'loading', error: null, progress: null,
                uploadRequired: false, ticker: a.ticker,
+               guidance: {}, holdingsData: null, arData: null,
                csvData: null, csvActive: false, swapState: {} }
     case 'PROGRESS':      return { ...s, progress: a.payload }
     case 'FETCH_SUCCESS': return { ...s, status: 'success', error: null, ...a.payload }
@@ -44,6 +46,7 @@ function reducer(s, a) {
     case 'SET_STAGE':     return { ...s, stage: a.stage, valuation: a.valuation,
                                    marketExpectation: a.marketExpectation }
     case 'RECALC':        return { ...s, ...a.payload }
+    case 'SET_QUAL':      return { ...s, ...a.payload }
     case 'SET_FOLDER':    return { ...s, folderHandle: a.handle }
     case 'CSV_APPLIED':   return { ...s, ...a.payload }
     case 'MERGE_PASTED': {
@@ -201,6 +204,26 @@ export function AppProvider({ children }) {
     dispatch({ type: 'RECALC', payload: { valuation, quality, marketExpectation: me, assumptions, scoreWeights: weights, meAssumptions } })
   }, [state])
 
+  const setQualInputs = useCallback((patch) => {
+    const next = {
+      guidance:     patch.guidance     ?? state.guidance,
+      holdingsData: patch.holdingsData !== undefined ? patch.holdingsData : state.holdingsData,
+      arData:       patch.arData       !== undefined ? patch.arData       : state.arData,
+    }
+    dispatch({ type: 'SET_QUAL', payload: next })
+    if (state.ticker) saveGuidance(state.ticker, next)
+  }, [state.ticker, state.guidance, state.holdingsData, state.arData])
+
+  // Load saved guidance/holdings/AR when the ticker changes.
+  useEffect(() => {
+    if (!state.ticker) return
+    loadGuidance(state.ticker).then(rec => {
+      if (rec) dispatch({ type: 'SET_QUAL', payload: {
+        guidance: rec.guidance || {}, holdingsData: rec.holdingsData || null, arData: rec.arData || null,
+      } })
+    })
+  }, [state.ticker])
+
   const overrideStage = useCallback((stage) => {
     if (!state.data) return
     const valuation         = runValuation(state.data, state.ratioResult, stage, state.sectorType, state.assumptions)
@@ -272,7 +295,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable
+      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs 
     }}>
       {children}
     </AppContext.Provider>
