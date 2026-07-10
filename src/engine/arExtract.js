@@ -13,7 +13,9 @@
 export const SECTION_CONFIG = [
   { field: 'rpt', label: 'Related-party transactions', structured: true,
     keywords: [/related[\s-]?part(?:y|ies)/i] },
-  { field: 'tailwinds', label: 'Outlook / MD&A',
+  { field: 'pledge', label: 'Promoter pledge / encumbrance', structured: true,
+    keywords: [/pledg(?:e|ed|ing)/i, /encumber/i, /shares?\s+pledged/i] },
+  { field: 'outlook', label: 'Outlook / MD&A',
     keywords: [/management discussion/i, /future outlook/i, /industry outlook/i, /business outlook/i, /\boutlook\b/i] },
   { field: 'pli', label: 'PLI / government schemes',
     keywords: [/production[\s-]?linked/i, /\bPLI\b/, /incentive scheme/i, /government scheme/i, /\bsubsid(?:y|ies|ised)\b/i] },
@@ -57,7 +59,11 @@ export function extractSections(pages, config = SECTION_CONFIG) {
     const fieldBlocks = deduped
       .filter(b => b.field === cfg.field)
       .slice(0, MAX_PER_FIELD)
-      .map(b => cfg.structured ? { ...b, rpt: sniffRpt(b.snippet) } : b)
+      .map(b => {
+        if (cfg.field === 'rpt') return { ...b, rpt: sniffRpt(b.snippet) }
+        if (cfg.field === 'pledge') return { ...b, pledge: sniffPledge(b.snippet) }
+        return b
+      })
     return { field: cfg.field, label: cfg.label, structured: !!cfg.structured, blocks: fieldBlocks }
   }).filter(g => g.blocks.length > 0)
 
@@ -110,4 +116,11 @@ function sniffRpt(snippet) {
   const pctM = snippet.match(/(\d+(?:\.\d+)?)\s*%\s*(?:of\s*)?(?:total\s*)?(?:revenue|turnover|sales|income)/i)
   const pctOfRevenue = pctM ? parseFloat(pctM[1]) : null
   return { present: true, pctOfRevenue }
+}
+
+// Promoter pledge: the snippet is already windowed around a pledge/encumber hit,
+// so the first % figure in it is almost always the pledged proportion.
+function sniffPledge(snippet) {
+  const m = snippet.match(/(\d+(?:\.\d+)?)\s*%/)
+  return { pct: m ? parseFloat(m[1]) : null }
 }

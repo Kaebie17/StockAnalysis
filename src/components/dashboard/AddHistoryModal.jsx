@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 import { useApp } from '../../store/AppContext.jsx'
+import { parseHoldings } from '../../engine/parseHoldings.js'
 
 const TABLES = [
   { key: 'income',   label: 'Profit & Loss',  icon: '📊', hint: 'Revenue, Operating Profit, Net Profit, EPS, Interest, Depreciation' },
@@ -33,11 +34,13 @@ const pasteScale = (currency, ticker) =>
  * Single screen, all 3 tables pasted at once.
  */
 export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
-  const { state: appState } = useApp()
+  const { state: appState, setQualInputs } = useApp()
   const currency = appState?.data?.currency
   const [pasteText, setPasteText] = useState({ income: '', balance: '', cashflow: '' })
   const [results, setResults]     = useState(null)
   const [applied, setApplied]     = useState(false)
+  const [holdingsPaste, setHoldingsPaste] = useState('')
+  const [holdingsPreview, setHoldingsPreview] = useState(null)
 
   useEffect(() => {
     if (!open) return
@@ -143,6 +146,23 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
               ))}
             </div>
 
+            <div className="space-y-1">
+            <div className="flex items-center gap-2 text-xs">
+              <span>👥</span><span className="font-medium text-slate-300">Promoter holding (Screener)</span>
+              {holdingsPreview && <span className={holdingsPreview.ok ? 'text-bull' : 'text-bear'}>{holdingsPreview.note}</span>}
+            </div>
+            <p className="text-xs text-slate-600">Paste the Shareholding Pattern table (quarter row + Promoters row)</p>
+            <textarea value={holdingsPaste} onChange={e => { setHoldingsPaste(e.target.value); setHoldingsPreview(null) }}
+              rows={3} placeholder="Paste promoter holding table (optional)..."
+              className="w-full bg-navy-800 border border-navy-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent resize-none" />
+            {holdingsPaste.trim() && !holdingsPreview && (
+              <button onClick={() => setHoldingsPreview(parseHoldings(holdingsPaste))} className="btn-ghost text-xs">Parse holdings</button>
+            )}
+            {holdingsPreview?.ok && (
+              <button onClick={() => { setQualInputs({ holdingsData: { promoterSeries: holdingsPreview.promoterSeries, quarters: holdingsPreview.quarters, savedAt: Date.now() } }); setHoldingsPreview({ ...holdingsPreview, note: '✓ saved' }) }}
+                className="btn-primary text-xs">Save promoter holding</button>
+            )}
+          </div>    
             {!results && (
               <button
                 onClick={handleParseAll}

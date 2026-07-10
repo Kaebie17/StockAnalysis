@@ -24,6 +24,8 @@
  * overlay (or apply moatOverride) to elevate. Numbers alone never award Very Wide.
  */
 
+import { latest, hasContent } from './reconcileDocs.js'
+
 // ── tunable thresholds (surface in ScoringStudio later) ───────────────────────
 export const MQ_CONFIG = {
   roce:   { veryWide: 25, wide: 20, narrow: 12, hitPct: 80 },
@@ -39,12 +41,15 @@ export const MQ_CONFIG = {
 // ── public entry ──────────────────────────────────────────────────────────────
 export function assessMoatQuality(data, ratioResult, opts = {}) {
   const {
-    bothPresent = false,
-    holdings = null,     // { promoterSeries:[{q,pct}], pledgeSeries:[{q,pct}] }
-    rpt = null,          // { present:bool, pctOfRevenue:number|null }
+    holdings = null,     // { promoterSeries:[{q,pct}] } from Screener paste
+    arData = null,       // document intelligence (pledgeTrend, rptTrend, …)
     moatOverride = null, // { tier, reason }
     config = MQ_CONFIG,
   } = opts
+
+  // Gate: enough data to be meaningful = promoter holdings present AND at least
+  // one document has contributed intelligence.
+  const bothPresent = !!(holdings?.promoterSeries?.length && hasContent(arData))
 
   const series = buildSeries(data, ratioResult)
   const flags = []
@@ -66,14 +71,18 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
   flags.push('liquidity_unavailable')      // no current assets/liabilities in data
   flags.push('market_share_unavailable')   // not in any current source
 
-  // Gated governance signals (strict: both required)
+  // Gated governance signals (strict: promoter holdings + document intelligence).
   let pledge = null, promoterTrend = null, rptSignal = null
   if (bothPresent) {
-    pledge = pledgeSignal(holdings?.pledgeSeries)
+    const lp = latest(arData.pledgeTrend)
+    pledge = lp ? { last: round(lp.pct, 1), asOf: lp.asOf, high: lp.pct > 20, dir: pledgeDir(arData.pledgeTrend) } : null
     promoterTrend = trendSignal(holdings?.promoterSeries)
-    rptSignal = rpt?.present ? { level: rpt.pctOfRevenue, heavy: (rpt.pctOfRevenue ?? 0) > 10 } : { level: 0, heavy: false }
+    const lr = latest(arData.rptTrend)
+    rptSignal = lr
+      ? { present: true, level: lr.pctOfRevenue, asOf: lr.asOf, heavy: (lr.pctOfRevenue ?? 0) > 10 }
+      : { present: false, heavy: false }
   } else {
-    flags.push('governance_locked')        // needs Screener holdings + AR together
+    flags.push('governance_locked')        // needs Screener holdings + a document
   }
 
   // ── MOAT tier (ROCE level+consistency + margin trend; gross weighted higher) ─
@@ -184,12 +193,11 @@ function dilutionSignal(shares) {
   return { trend, pct: round(change, 1) }
 }
 
-function pledgeSignal(series) {
-  const a = (series || []).map(s => s.pct).filter(x => typeof x === 'number')
-  if (!a.length) return null
+function pledgeDir(trend) {
+  const a = (trend || []).map(r => r.pct).filter(x => typeof x === 'number')
+  if (a.length < 2) return 'stable'
   const last = a[a.length - 1], first = a[0]
-  const dir = last > first + 1 ? 'rising' : last < first - 1 ? 'falling' : 'stable'
-  return { last: round(last, 1), dir, high: last > 20 }
+  return last > first + 1 ? 'rising' : last < first - 1 ? 'falling' : 'stable'
 }
 
 function trendSignal(series) {
@@ -273,12 +281,15 @@ function deriveQuality({ roe, fcfConv, de, icr, incRoce, dilution, pledge, rptSi
   if (bothPresent) {
     if (pledge) {
       const ok = !pledge.high && pledge.dir !== 'rising'
-      ev.push({ ok, text: `Promoter pledge ${pledge.last}% (${pledge.dir})` })
+      ev.push({ ok, text: `Promoter pledge ${pledge.last}% (${pledge.dir})${pledge.asOf ? ` · as of ${pledge.asOf}` : ''}` })
       pledge.high || pledge.dir === 'rising' ? (bad++, pledge.high && critical++) : good++
     }
     if (rptSignal) {
       const ok = !rptSignal.heavy
-      ev.push({ ok, text: rptSignal.present === false ? 'No material related-party transactions' : `Related-party ${rptSignal.level != null ? rptSignal.level + '% of revenue' : 'disclosed'}` })
+      const rptText = rptSignal.present === false
+        ? 'No material related-party transactions'
+        : `Related-party ${rptSignal.level != null ? rptSignal.level + '% of revenue' : 'disclosed'}${rptSignal.asOf ? ` · as of ${rptSignal.asOf}` : ''}`
+      ev.push({ ok, text: rptText })
       rptSignal.heavy ? (bad++, critical++) : null
     }
   } else {

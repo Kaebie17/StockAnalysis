@@ -28,7 +28,7 @@ const initial = {
   // Swap state: { income:{year:{field:true}}, balance:{...}, cashflow:{...} }
   swapState: {},
   status: 'idle', progress: null, error: null, ticker: '', query: '', validation: null,
-  guidance: {}, holdingsData: null, arData: null,
+  holdingsData: null, arData: null,
 }
 
 function reducer(s, a) {
@@ -36,7 +36,7 @@ function reducer(s, a) {
     case 'FETCH_START':
       return { ...s, status: 'loading', error: null, progress: null,
                uploadRequired: false, ticker: a.ticker,
-               guidance: {}, holdingsData: null, arData: null,
+               holdingsData: null, arData: null,
                csvData: null, csvActive: false, swapState: {} }
     case 'PROGRESS':      return { ...s, progress: a.payload }
     case 'FETCH_SUCCESS': return { ...s, status: 'success', error: null, ...a.payload }
@@ -206,20 +206,19 @@ export function AppProvider({ children }) {
 
   const setQualInputs = useCallback((patch) => {
     const next = {
-      guidance:     patch.guidance     ?? state.guidance,
       holdingsData: patch.holdingsData !== undefined ? patch.holdingsData : state.holdingsData,
       arData:       patch.arData       !== undefined ? patch.arData       : state.arData,
     }
     dispatch({ type: 'SET_QUAL', payload: next })
     if (state.ticker) saveGuidance(state.ticker, next)
-  }, [state.ticker, state.guidance, state.holdingsData, state.arData])
+  }, [state.ticker, state.holdingsData, state.arData])
 
   // Load saved guidance/holdings/AR when the ticker changes.
   useEffect(() => {
     if (!state.ticker) return
     loadGuidance(state.ticker).then(rec => {
       if (rec) dispatch({ type: 'SET_QUAL', payload: {
-        guidance: rec.guidance || {}, holdingsData: rec.holdingsData || null, arData: rec.arData || null,
+        holdingsData: rec.holdingsData || null, arData: rec.arData || null,
       } })
     })
   }, [state.ticker])

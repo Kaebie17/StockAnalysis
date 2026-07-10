@@ -23,23 +23,19 @@ export default function MoatQualityPanel() {
   const [showEvidence, setShowEvidence] = useState(false)
   const [editing, setEditing] = useState(false)
 
-  // Strict gate: both Screener holdings AND annual report present.
-  const holdingsData = state.holdingsData || null
-  const arData = state.arData || null
-  const bothPresent = !!(holdingsData && arData)
-
+  // Strict gate is derived inside the engine (promoter holdings + document data).
   const result = useMemo(() => {
     if (!ratioResult) return null
     return assessMoatQuality(data, ratioResult, {
-      bothPresent,
-      holdings: holdingsData,
-      rpt: arData?.rpt || null,
+      holdings: state.holdingsData || null,
+      arData: state.arData || null,
       moatOverride: override,
     })
-  }, [data, ratioResult, bothPresent, holdingsData, arData, override])
+  }, [data, ratioResult, state.holdingsData, state.arData, override])
 
   if (!result) return null
   const { moat, quality, implication, metrics, dataFlags } = result
+  const bothPresent = result.gated
 
   return (
     <div className="card space-y-4">

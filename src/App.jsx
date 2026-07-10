@@ -124,6 +124,9 @@ function Dashboard() {
                       open={expanded === 'market-expectation'}
                       onClose={() => setExpanded(null)} />
                   </div>
+                  <div id="panel-moat">
+                    <MoatQualityPanel />
+                  </div>
                 </div>
               } />
             </>
