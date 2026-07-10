@@ -14,7 +14,7 @@ import { applyCSVOverrides, swapField, autoLoadOverride } from '../utils/csv.js'
 const AppContext = createContext(null)
 
 const initial = {
-  status: 'idle', progress: null, error: null, ticker: '', validation: null,
+  status: 'idle', progress: null, error: null, ticker: '', query: '', validation: null,
   data: null, ratioResult: null,
   valuation: null, technicals: null, quality: null,
   marketExpectation: null,
@@ -27,7 +27,7 @@ const initial = {
   folderHandle: null, // File System Access API folder handle
   // Swap state: { income:{year:{field:true}}, balance:{...}, cashflow:{...} }
   swapState: {},
-  status: 'idle', progress: null, error: null, ticker: '', query: '', validation: null,
+  // Qualitative / governance inputs (Block 5)
   holdingsData: null, arData: null,
 }
 
