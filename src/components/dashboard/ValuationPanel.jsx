@@ -2,7 +2,6 @@ import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { fmtPct, fmtPctPlain } from '../../utils/format.js'
 import DCFScenarioPanel from './DCFScenarioPanel.jsx'
-import AnalystTargets from './AnalystTargets.jsx'
 
 // Dot bar: 5 dots, filled based on upside magnitude
 // Green dots = upside, red dots = downside
@@ -217,13 +216,6 @@ export default function ValuationPanel({ open, onClose }) {
           })}
         </div>
       )}
-      <AnalystTargets
-        ticker={state.ticker}
-        cmp={price}
-        fairLow={valuation.fvRangeLow}
-        fairHigh={valuation.fvRangeHigh}
-        currency={data?.currency}
-      />
     </div>
   )
 }

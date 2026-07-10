@@ -5,6 +5,7 @@ import DCFScenarioPanel from './DCFScenarioPanel.jsx'
 import { expectationInsight, primaryExpectation } from '../../engine/valuation.js'
 import AIVerdict from './AIVerdict.jsx'
 import NewsModal from './NewsModal.jsx'
+import AnalystTargetLine from './AnalystTargetLine.jsx'
 
 // 27-combination verdict matrix
 const VERDICTS = {
@@ -101,6 +102,9 @@ export default function SummaryStrip({ onExpand, expanded, detail }) {
                   {valuation.fvRangeHigh !== valuation.fvRangeLow
                     ? ` – ${cur}${Math.round(valuation.fvRangeHigh).toLocaleString('en-IN')}` : ''}
                 </span>
+              </div>
+              <div className="text-xs text-slate-400">
+                <AnalystTargetLine ticker={state.ticker} currency={data?.currency} />
               </div>
               {valuation.topModels?.length > 0 && (
                 <div className="text-xs text-slate-500">via {valuation.topModels.map(t => t.name).join(' & ')}</div>
