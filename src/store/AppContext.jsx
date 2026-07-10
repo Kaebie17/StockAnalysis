@@ -35,7 +35,7 @@ function reducer(s, a) {
   switch (a.type) {
     case 'FETCH_START':
       return { ...s, status: 'loading', error: null, progress: null,
-               uploadRequired: false, ticker: a.ticker,
+               uploadRequired: false, ticker: a.ticker, query: a.query,
                holdingsData: null, arData: null,
                csvData: null, csvActive: false, swapState: {} }
     case 'PROGRESS':      return { ...s, progress: a.payload }
@@ -78,10 +78,6 @@ function reducer(s, a) {
     }
     case 'SWAP_FIELD':    return { ...s, ...a.payload }
     case 'RESET':          return { ...initial, folderHandle: s.folderHandle }  // keep CSV folder connection
-    case 'FETCH_START':
-      return { ...s, status: 'loading', error: null, progress: null,
-               uploadRequired: false, ticker: a.ticker, query: a.query,
-               csvData: null, csvActive: false, swapState: {} }
     default:              return s
   }
 }
