@@ -47,6 +47,11 @@ export default function AIVerdict() {
           body: JSON.stringify({ summary, userKey: keyVal }),
         })
         const d = await r.json()
+        if (d?.debug) {
+          console.log('%c[AI] system prompt →', 'color:#7dd3fc;font-weight:bold', d.debug.system)
+          console.log('%c[AI] user content sent →', 'color:#7dd3fc;font-weight:bold', d.debug.userContent)
+          console.log('%c[AI] verdict returned →', 'color:#86efac;font-weight:bold', d.text)
+        }
         if (cancelled) return
         if (d?.text) {
           _cache.set(key, d.text); setText(d.text)

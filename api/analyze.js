@@ -21,6 +21,9 @@ export default async function handler(req, res) {
   const summary = req.body?.summary
   if (!key || !summary) { res.status(200).json({ text: null }); return }
 
+  // DEBUG (temporary): echo the exact prompt pieces so the client can log them.
+  const debug = { model: MODEL, system: SYSTEM, userContent: JSON.stringify(summary, null, 2) }
+
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`
     const r = await fetch(url, {
@@ -51,7 +54,7 @@ export default async function handler(req, res) {
       })
       return
     }
-    res.status(200).json({ text })
+    res.status(200).json({ text, debug })
   } catch (e) {
     res.status(200).json({ text: null, error: String(e?.message || e) })
   }
