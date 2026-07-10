@@ -104,7 +104,7 @@ export default function SummaryStrip({ onExpand, expanded, detail }) {
                 </span>
               </div>
               <div className="text-xs text-slate-400">
-                <AnalystTargetLine ticker={state.ticker} currency={data?.currency} />
+                <AnalystTargetLine ticker={state.ticker} currency={state.data?.currency} />
               </div>
               {valuation.topModels?.length > 0 && (
                 <div className="text-xs text-slate-500">via {valuation.topModels.map(t => t.name).join(' & ')}</div>
