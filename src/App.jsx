@@ -14,6 +14,7 @@ import ScoringStudio from './components/studio/ScoringStudio.jsx'
 import { parseCSV } from './utils/csv.js'
 import { requestFolderAccess, exportOverrideJSON, openFilePicker, importOverrideFile } from './utils/csv.js'
 import MoatQualityPanel from './components/dashboard/MoatQualityPanel.jsx'
+import GuidancePanel from './components/dashboard/GuidancePanel.jsx'
 
 function Dashboard() {
   const { state, applyCSV, setFolderHandle, applyPastedTable } = useApp()
