@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { assessMoatQuality } from '../../engine/moatQuality.js'
+import GuidanceModal from './GuidanceModal.jsx'
 
 /**
  * MoatQualityPanel — Block 5 (Quality & Moat overlay).
@@ -22,6 +23,7 @@ export default function MoatQualityPanel() {
   const [override, setOverride] = useState(null)     // { tier, reason }
   const [showEvidence, setShowEvidence] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [guidanceOpen, setGuidanceOpen] = useState(false)
 
   // Strict gate is derived inside the engine (promoter holdings + document data).
   const result = useMemo(() => {
@@ -41,10 +43,17 @@ export default function MoatQualityPanel() {
     <div className="card space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="font-semibold text-white">🏰 Quality &amp; Moat</h2>
-        <span className="text-[11px] text-slate-500">
-          {bothPresent ? 'Full (Screener + AR)' : 'Ratios-only'}
-        </span>
+        <div className="flex items-center gap-3">
+          <button onClick={() => setGuidanceOpen(true)} className="text-xs text-accent hover:text-accent-light">
+            ✎ Guidance &amp; documents →
+          </button>
+          <span className="text-[11px] text-slate-500">
+            {bothPresent ? 'Full (Screener + AR)' : 'Ratios-only'}
+          </span>
+        </div>
       </div>
+
+      <GuidanceModal open={guidanceOpen} onClose={() => setGuidanceOpen(false)} />
 
       {/* Three highlight rows */}
       <div className="space-y-2">
