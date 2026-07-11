@@ -36,7 +36,6 @@ function reducer(s, a) {
     case 'FETCH_START':
       return { ...s, status: 'loading', error: null, progress: null,
                uploadRequired: false, ticker: a.ticker, query: a.query,
-               holdingsData: null, arData: null,
                csvData: null, csvActive: false, swapState: {} }
     case 'PROGRESS':      return { ...s, progress: a.payload }
     case 'FETCH_SUCCESS': return { ...s, status: 'success', error: null, ...a.payload }
@@ -209,14 +208,21 @@ export function AppProvider({ children }) {
     if (state.ticker) saveGuidance(state.ticker, next)
   }, [state.ticker, state.holdingsData, state.arData])
 
-  // Load saved guidance/holdings/AR when the ticker changes.
+  // Load saved guidance/holdings/AR when the ticker changes. We clear first (so a
+  // new ticker never shows the previous ticker's inputs) then load this ticker's
+  // saved record — done here rather than in FETCH_START so the async fetch cycle
+  // can't clobber a just-loaded record.
   useEffect(() => {
     if (!state.ticker) return
+    let cancelled = false
+    dispatch({ type: 'SET_QUAL', payload: { holdingsData: null, arData: null } })
     loadGuidance(state.ticker).then(rec => {
-      if (rec) dispatch({ type: 'SET_QUAL', payload: {
+      if (cancelled || !rec) return
+      dispatch({ type: 'SET_QUAL', payload: {
         holdingsData: rec.holdingsData || null, arData: rec.arData || null,
       } })
     })
+    return () => { cancelled = true }
   }, [state.ticker])
 
   const overrideStage = useCallback((stage) => {

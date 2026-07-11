@@ -19,7 +19,7 @@ export const TREND_SLOTS = { pledge: 'pledgeTrend', rpt: 'rptTrend' }
 
 export function emptyArData() {
   return { outlook: null, pli: null, initiatives: null, runway: null,
-           pledgeTrend: [], rptTrend: [], lastDoc: null }
+           pledgeTrend: [], rptTrend: [], derivedInputs: {}, lastDoc: null }
 }
 
 /**
@@ -52,6 +52,13 @@ export function reconcile(existing, incoming) {
   }
   if (slots.rpt && slots.rpt.present) {
     out.rptTrend = upsertRow(out.rptTrend, { asOf, pctOfRevenue: slots.rpt.pctOfRevenue ?? null, present: true, source })
+  }
+
+  // Derivation inputs (numbers the user confirmed) — upsert by period into their
+  // own trend so a metric like gross margin can be derived per year.
+  if (slots.materialCost && slots.materialCost.value != null) {
+    out.derivedInputs = { ...(out.derivedInputs || {}) }
+    out.derivedInputs.materialCost = upsertRow(out.derivedInputs.materialCost, { asOf, value: slots.materialCost.value, source })
   }
 
   out.lastDoc = { docType: incoming.docType || null, docDate: incoming.docDate || null,
@@ -110,7 +117,8 @@ export function latest(trend) {
 export function hasContent(arData) {
   if (!arData) return false
   return SINGLE_SLOTS.some(k => arData[k]?.text) ||
-         (arData.pledgeTrend?.length > 0) || (arData.rptTrend?.length > 0)
+         (arData.pledgeTrend?.length > 0) || (arData.rptTrend?.length > 0) ||
+         Object.values(arData.derivedInputs || {}).some(v => v?.length > 0)
 }
 
 /**

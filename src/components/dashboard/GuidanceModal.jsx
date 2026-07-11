@@ -30,7 +30,7 @@ export default function GuidanceModal({ open, onClose }) {
       seed[f.key] = { text: slot?.text || '', asOf: slot?.manual ? (slot?.asOf || '') : '' }
     }
     setDraft(seed)
-  }, [open, state.ticker]) // eslint-disable-line
+  }, [open, state.ticker, arData.lastDoc?.at]) // eslint-disable-line
 
   const save = (key) => {
     const d = draft[key] || { text: '', asOf: '' }

@@ -16,13 +16,21 @@ export const SECTION_CONFIG = [
   { field: 'pledge', label: 'Promoter pledge / encumbrance', structured: true,
     keywords: [/pledg(?:e|ed|ing)/i, /encumber/i, /shares?\s+pledged/i] },
   { field: 'outlook', label: 'Outlook / MD&A',
-    keywords: [/management discussion/i, /future outlook/i, /industry outlook/i, /business outlook/i, /\boutlook\b/i] },
+    keywords: [/management discussion/i, /\boutlook\b/i, /\bguidance\b/i, /going forward/i,
+               /way forward/i, /medium[\s-]?term/i, /growth (?:trajectory|momentum|drivers?|prospects?)/i,
+               /strategic priorit/i, /demand environment/i, /order book/i] },
   { field: 'pli', label: 'PLI / government schemes',
     keywords: [/production[\s-]?linked/i, /\bPLI\b/, /incentive scheme/i, /government scheme/i, /\bsubsid(?:y|ies|ised)\b/i] },
   { field: 'initiatives', label: 'Capex / capacity / new initiatives',
-    keywords: [/\bcapex\b/i, /capital expenditure/i, /capacity expansion/i, /green ?field/i, /brown ?field/i, /new (?:plant|facility|segment|product)/i, /diversif/i, /joint venture/i, /acquisition of/i] },
-  { field: 'runway', label: 'Market opportunity / TAM',
-    keywords: [/addressable market/i, /market opportunity/i, /\bTAM\b/, /market potential/i] },
+    keywords: [/\bcapex\b/i, /capital expenditure/i, /capacity expansion/i, /green ?field/i, /brown ?field/i, /new (?:plant|facility|segment|product)/i, /diversif/i, /joint venture/i, /acquisition of/i, /commissioned/i, /expansion (?:of|plan)/i] },
+  { field: 'runway', label: 'Market opportunity / growth runway',
+    keywords: [/addressable market/i, /market opportunity/i, /\bTAM\b/, /market potential/i,
+               /\bopportunity\b/i, /penetrat/i, /per capita/i, /under[\s-]?penetrat/i, /head ?room/i,
+               /large(?:st)? market/i, /growing market/i, /demand potential/i, /market size/i] },
+  // Derivation inputs — captured as NUMBERS (user confirms via keep/discard), then
+  // used to fill/derive a missing metric (e.g. gross margin from material cost).
+  { field: 'materialCost', label: 'Cost of materials (→ derives gross margin)', input: 'number',
+    keywords: [/cost of materials? consumed/i, /raw materials? consumed/i, /cost of goods sold/i, /\bCOGS\b/i, /material cost/i] },
 ]
 
 const WIN_BEFORE = 120
@@ -62,6 +70,7 @@ export function extractSections(pages, config = SECTION_CONFIG) {
       .map(b => {
         if (cfg.field === 'rpt') return { ...b, rpt: sniffRpt(b.snippet) }
         if (cfg.field === 'pledge') return { ...b, pledge: sniffPledge(b.snippet) }
+        if (cfg.input === 'number') return { ...b, amount: sniffAmount(b.snippet) }
         return b
       })
     return { field: cfg.field, label: cfg.label, structured: !!cfg.structured, blocks: fieldBlocks }
@@ -123,4 +132,16 @@ function sniffRpt(snippet) {
 function sniffPledge(snippet) {
   const m = snippet.match(/(\d+(?:\.\d+)?)\s*%/)
   return { pct: m ? parseFloat(m[1]) : null }
+}
+
+// Numeric amount near an input keyword (e.g. cost of materials consumed). Handles
+// Indian/international comma grouping; takes the first figure (current year in a
+// "current (PY prior)" line). Unit (crore vs absolute) is resolved at derive time.
+function sniffAmount(snippet) {
+  // skip a leading number that is part of a note reference like "Note 21"
+  const cleaned = snippet.replace(/note\s*\d+/ig, ' ')
+  const m = cleaned.match(/(\d{1,3}(?:[,\s]\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)/)
+  if (!m) return { value: null }
+  const value = parseFloat(m[1].replace(/[,\s]/g, ''))
+  return { value: isFinite(value) ? value : null }
 }

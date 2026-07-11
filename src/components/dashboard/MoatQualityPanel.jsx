@@ -97,7 +97,10 @@ export default function MoatQualityPanel() {
       {/* Metric strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
         <Metric label="ROCE (median)" val={pctTxt(metrics.roce.median)} sub={metrics.roce.hitRate != null ? `${metrics.roce.hitRate}% yrs ≥ thr` : null} />
-        <Metric label="Gross margin" val={metrics.grossMargin.trend || '—'} sub={pctTxt(metrics.grossMargin.median)} />
+        <Metric label={metrics.grossMargin.median != null ? (metrics.grossMargin.derived ? 'Gross margin (docs)' : 'Gross margin') : 'Op. margin'}
+          val={metrics.grossMargin.median != null ? (metrics.grossMargin.trend || '—') : (metrics.opMargin.trend || '—')}
+          sub={metrics.grossMargin.median != null ? pctTxt(metrics.grossMargin.median)
+            : (metrics.opMargin.median != null ? `${pctTxt(metrics.opMargin.median)} · gross n/a` : 'gross n/a')} />
         <Metric label="ROE (median)" val={pctTxt(metrics.roe.median)} sub={metrics.roe.hitRate != null ? `${metrics.roe.hitRate}% yrs` : null} />
         <Metric label="FCF conversion" val={pctTxt(metrics.fcfConv, 0)} />
         <Metric label="Leverage (D/E)" val={numTxt(metrics.de, 2)} />
@@ -105,6 +108,20 @@ export default function MoatQualityPanel() {
         <Metric label="Incremental ROCE" val={metrics.incRoce.quality || '—'} />
         <Metric label="Dilution" val={metrics.dilution.trend || '—'} sub={metrics.dilution.pct != null ? `${metrics.dilution.pct > 0 ? '+' : ''}${metrics.dilution.pct}%` : null} />
       </div>
+
+      {/* Captured qualitative context from documents / notes (context only — does
+          not move the tiers; pledge/RPT below do, once the gate is unlocked). */}
+      <QualitativeContext arData={state.arData} />
+
+      {/* Missing metrics — what couldn't be computed, and how to fill it */}
+      {dataFlags.filter(f => f !== 'governance_locked').length > 0 && (
+        <div className="text-[10px] text-slate-600 space-y-0.5">
+          <p>Not available: {dataFlags.filter(f => f !== 'governance_locked').map(prettyFlag).join(' · ')}.</p>
+          {dataFlags.includes('gross_margin_unavailable') && (
+            <p className="text-slate-500">→ Add a document and keep the “cost of materials consumed” figure to derive gross margin.</p>
+          )}
+        </div>
+      )}
 
       {/* Locked governance strip (strict: both required) */}
       {!bothPresent && (
@@ -138,6 +155,44 @@ export default function MoatQualityPanel() {
 }
 
 // ── bits ──────────────────────────────────────────────────────────────────────
+function QualitativeContext({ arData }) {
+  if (!arData) return null
+  const NARR = [
+    ['outlook', 'Outlook'], ['pli', 'PLI / schemes'],
+    ['initiatives', 'Initiatives'], ['runway', 'Growth runway'],
+  ]
+  const notes = NARR.filter(([k]) => arData[k]?.text)
+  const pledge = arData.pledgeTrend || []
+  const rpt = arData.rptTrend || []
+  if (notes.length === 0 && pledge.length === 0 && rpt.length === 0) return null
+
+  return (
+    <div className="bg-navy-800/30 rounded-lg px-3 py-2 space-y-2">
+      <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Qualitative context</div>
+      {notes.map(([k, label]) => (
+        <div key={k} className="text-xs">
+          <span className="text-slate-500">{label}{arData[k].asOf ? ` (${arData[k].asOf})` : ''}: </span>
+          <span className="text-slate-300">{truncate(arData[k].text, 160)}</span>
+        </div>
+      ))}
+      {pledge.length > 0 && (
+        <div className="text-xs">
+          <span className="text-slate-500">Pledge trend: </span>
+          <span className="text-slate-300">{pledge.map(r => `${r.asOf}: ${r.pct}%`).join(' → ')}</span>
+        </div>
+      )}
+      {rpt.length > 0 && (
+        <div className="text-xs">
+          <span className="text-slate-500">Related-party trend: </span>
+          <span className="text-slate-300">{rpt.map(r => `${r.asOf}: ${r.pctOfRevenue != null ? r.pctOfRevenue + '%' : 'disclosed'}`).join(' → ')}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const truncate = (s, n) => (s && s.length > n ? s.slice(0, n).trim() + '…' : s)
+
 function HighlightRow({ label, value, badge, extra }) {
   return (
     <div className="flex items-center justify-between py-1.5 border-t border-navy-800 first:border-t-0">
@@ -187,4 +242,5 @@ const prettyFlag = f => ({
   liquidity_unavailable: 'liquidity (current/quick ratios)',
   market_share_unavailable: 'market share trend',
   roce_series_unavailable: 'ROCE history',
+  gross_margin_unavailable: 'gross margin (no COGS line in Indian P&L)',
 }[f] || f)

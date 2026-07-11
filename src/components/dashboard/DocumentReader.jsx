@@ -33,6 +33,7 @@ export default function DocumentReader({ open, onClose }) {
   const [fileName, setFileName] = useState('')
   const [docType, setDocType] = useState(DOC_TYPES[0])
   const [docDate, setDocDate] = useState('')
+  const [diag, setDiag] = useState(null)
   const fileRef = useRef(null)
 
   if (!open) return null
@@ -43,6 +44,8 @@ export default function DocumentReader({ open, onClose }) {
     setFileName(file.name); setStatus('extracting'); setProgress(0)
     try {
       const pages = await extractPdfText(file, setProgress)
+      const chars = pages.reduce((s, p) => s + (p.text?.length || 0), 0)
+      setDiag({ pages: pages.length, chars, perPage: pages.length ? Math.round(chars / pages.length) : 0 })
       if (detectScanned(pages)) { setStatus('scanned'); return }
       const { groups } = extractSections(pages)
       const seed = {}
@@ -76,6 +79,8 @@ export default function DocumentReader({ open, onClose }) {
         if (b.pledge?.pct != null) slots.pledge = { pct: b.pledge.pct }
       } else if (b.field === 'rpt') {
         slots.rpt = { present: true, pctOfRevenue: b.rpt?.pctOfRevenue ?? null }
+      } else if (b.field === 'materialCost') {
+        if (b.amount?.value != null) slots.materialCost = { value: b.amount.value }
       } else if (SINGLE.has(b.field) && text) {
         textByField[b.field] = textByField[b.field] ? `${textByField[b.field]} ${text}` : text
       }
@@ -151,6 +156,12 @@ export default function DocumentReader({ open, onClose }) {
                 <input type="text" value={docDate} onChange={e => setDocDate(e.target.value)}
                   placeholder="Period, e.g. FY24 or Q2 FY25 (needed for pledge/RPT trend & recency)"
                   className="input-field w-full text-xs" />
+                {diag && (
+                  <p className="text-[10px] text-slate-500">
+                    Read {diag.pages} pages · ~{diag.chars.toLocaleString()} characters ({diag.perPage}/page).
+                    {diag.perPage < 300 && ' Low text density — this PDF may be image-heavy, so keyword matches will be sparse.'}
+                  </p>
+                )}
                 {keptTrendWithoutDate && (
                   <p className="text-[11px] text-bear">Add a period so the pledge/related-party figures can be placed on their trend tables.</p>
                 )}
@@ -171,7 +182,8 @@ export default function DocumentReader({ open, onClose }) {
                           if (dec.status === 'removed') return null
                           const isKept = dec.status === 'kept'
                           const fig = b.rpt?.pctOfRevenue != null ? ` · ~${b.rpt.pctOfRevenue}% of revenue`
-                            : b.pledge?.pct != null ? ` · ${b.pledge.pct}% pledged` : ''
+                            : b.pledge?.pct != null ? ` · ${b.pledge.pct}% pledged`
+                            : b.amount?.value != null ? ` · ₹${b.amount.value.toLocaleString()}` : ''
                           return (
                             <div key={id} className={`rounded-lg border p-3 ${isKept ? 'border-bull/40 bg-bull/5' : 'border-navy-700 bg-navy-900/50'}`}>
                               <div className="flex items-center justify-between mb-1.5">

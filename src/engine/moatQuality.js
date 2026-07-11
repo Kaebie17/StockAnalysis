@@ -25,6 +25,7 @@
  */
 
 import { latest, hasContent } from './reconcileDocs.js'
+import { deriveMetrics } from './derivable.js'
 
 // ── tunable thresholds (surface in ScoringStudio later) ───────────────────────
 export const MQ_CONFIG = {
@@ -56,18 +57,30 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
 
   // ── metric summaries ────────────────────────────────────────────────────────
   const roce  = summarize(series.roce, config.roce.narrow)
-  const gm    = summarize(series.grossMargin)
+  let gm      = summarize(series.grossMargin)
   const om    = summarize(series.opMargin)
   const nm    = summarize(series.netMargin)
   const roe   = summarize(series.roe, config.roe.ok)
   const incRoce = incrementalRoce(series)
   const dilution = dilutionSignal(series.impliedShares)
 
+  // Gross margin missing from source data? Try deriving it from a user-confirmed
+  // document input (cost of materials consumed) paired with that year's revenue.
+  let gmDerived = false
+  if (gm.median == null) {
+    const derived = deriveMetrics(arData, revenueByYear(data))
+    if (derived.grossMargin?.length) {
+      gm = summarize(derived.grossMargin.map(r => r.pct))
+      gmDerived = true
+    }
+  }
+
   const de  = ratioResult?.ratios?.de?.value ?? null
   const icr = ratioResult?.ratios?.icr?.value ?? null
   const fcfConv = ratioResult?.ratios?.fcfConversion?.value ?? null
 
   if (!series.roce.length) flags.push('roce_series_unavailable')
+  if (gm.median == null) flags.push('gross_margin_unavailable')
   flags.push('liquidity_unavailable')      // no current assets/liabilities in data
   flags.push('market_share_unavailable')   // not in any current source
 
@@ -107,7 +120,7 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
     quality,
     implication,
     metrics: {
-      roce, grossMargin: gm, opMargin: om, netMargin: nm, roe,
+      roce, grossMargin: { ...gm, derived: gmDerived }, opMargin: om, netMargin: nm, roe,
       incRoce, dilution, de, icr, fcfConv,
       pledge, promoterTrend, rpt: rptSignal,
     },
@@ -144,6 +157,16 @@ function buildSeries(data, r) {
 
 const index = rows => Object.fromEntries((rows || []).map(r => [r.year, r]))
 const pct = (a, b) => (b ? (a / b) * 100 : null)
+
+function revenueByYear(data) {
+  const out = {}
+  for (const row of (data?.incomeHistory || [])) {
+    if (row.synthetic) continue
+    const rev = row.revenue?.value
+    if (rev != null && row.year != null) out[row.year] = rev
+  }
+  return out
+}
 
 // ── stats ─────────────────────────────────────────────────────────────────────
 function summarize(arr, hitThreshold = null) {
