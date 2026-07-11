@@ -139,8 +139,16 @@ export function AppProvider({ children }) {
     dispatch({ type: 'FETCH_START', ticker, query: rawTicker.trim() })
 
     try {
-      // Check cache
-      const cached = await getCached(ticker)
+      // Check cache. A READ FAILURE must never fall through to the fetch path —
+      // that would overwrite good (Screener-merged / holdings / AR) data with a
+      // fresh Yahoo-only record. Only a confirmed-absent record (null) may fetch.
+      let cached
+      try {
+        cached = await getCached(ticker)
+      } catch (readErr) {
+        dispatch({ type: 'FETCH_ERROR', error: 'Could not read saved data — not overwriting. Please retry.' })
+        return
+      }
       if (cached) {
         // Try auto-load CSV override (Chrome/Android)
         if (state.folderHandle) {

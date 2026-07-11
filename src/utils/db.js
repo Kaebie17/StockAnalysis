@@ -13,10 +13,12 @@ const DB_VERSION = 4
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
+let openPromise = null
 
 function openDB() {
   if (db) return Promise.resolve(db)
-  return new Promise((resolve, reject) => {
+  if (openPromise) return openPromise            // dedupe concurrent opens
+  openPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
     req.onupgradeneeded = e => {
       const d = e.target.result
@@ -43,9 +45,10 @@ function openDB() {
         d.createObjectStore('guidance', { keyPath: 'ticker' })
       }
     }
-    req.onsuccess = e => { db = e.target.result; resolve(db) }
-    req.onerror   = () => reject(req.error)
+    req.onsuccess = e => { db = e.target.result; openPromise = null; resolve(db) }
+    req.onerror   = () => { openPromise = null; reject(req.error) }
   })
+  return openPromise
 }
 
 async function txGet(store, key) {
@@ -89,15 +92,14 @@ async function txGetAll(store) {
 const TTL = 3600 * 1000  // 1 hour
 
 export async function getCached(ticker) {
-  try {
-    const rec = await txGet('financials', ticker.toUpperCase())
-    if (!rec) return null
-    // No time-based expiry: cached data persists until it's overwritten (new
-    // upload / re-analyse) or deleted (reset). Live price is refreshed separately
-    // by the price poller, not by expiring the whole snapshot.
-    await txPut('financials', { ...rec, lastAccessed: Date.now() })
-    return rec.data
-  } catch { return null }
+  // IMPORTANT: return null ONLY when the record genuinely doesn't exist. A read
+  // FAILURE must throw — otherwise the caller can't tell "no cache" from "read
+  // broke" and would re-fetch + overwrite good (e.g. Screener-merged) data.
+  const rec = await txGet('financials', ticker.toUpperCase())   // throws on tx error
+  if (!rec) return null
+  // Touch lastAccessed (best-effort; a failure here must NOT lose the read).
+  try { await txPut('financials', { ...rec, lastAccessed: Date.now() }) } catch {}
+  return rec.data
 }
 
 export async function setCached(ticker, data) {
