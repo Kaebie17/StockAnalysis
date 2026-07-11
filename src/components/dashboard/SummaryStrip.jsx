@@ -204,7 +204,15 @@ export default function SummaryStrip({ onExpand, expanded, detail }) {
           <div className="flex items-start gap-3">
             <span className="text-xl mt-0.5">💡</span>
             <div>
-              <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Combined Verdict</div>
+               <div className="flex items-center justify-between mb-1">
+                <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Combined Verdict</div>
+                {onAddHistory && (
+                  <button onClick={onAddHistory}
+                    className="text-xs text-accent hover:text-accent-light shrink-0">
+                    Add more history →
+                  </button>
+                )}
+              </div>
               <p className="text-sm text-slate-200 leading-relaxed">{verdict}</p>
               <AIVerdict />
               {state.ticker && (

@@ -97,15 +97,10 @@ function Dashboard() {
                 </div>
               )}
 
-              <SummaryStrip onExpand={handleExpand} expanded={expanded} detail={
+              <SummaryStrip onExpand={handleExpand} expanded={expanded} onAddHistory={() => setAddHistoryOpen(true)} detail={
                 <div className="space-y-4">
                   <div className="flex items-center justify-between gap-2">
                     <DataGapBanner ratioResult={state.ratioResult} onFix={() => setGapFillOpen(true)} />
-                    <button
-                      onClick={() => setAddHistoryOpen(true)}
-                      className="shrink-0 text-xs text-slate-500 hover:text-slate-300 underline">
-                      Add more history →
-                    </button>
                   </div>
                   <div id="panel-valuation">
                     <ValuationPanel open={expanded === 'valuation'} onClose={() => setExpanded(null)} />
