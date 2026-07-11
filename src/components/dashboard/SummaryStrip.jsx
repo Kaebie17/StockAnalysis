@@ -53,7 +53,7 @@ function getVerdict(valSignal, techLabel, qualLabel) {
   return VERDICTS[key] || VERDICTS.DEFAULT
 }
 
-export default function SummaryStrip({ onExpand, expanded, detail }) {
+export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory }) {
   const { state } = useApp()
   const { valuation, quality, technicals, ratioResult, marketExpectation } = state
   const [newsOpen, setNewsOpen] = useState(false)
