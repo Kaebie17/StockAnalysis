@@ -3,7 +3,9 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
-  plugins: [
+  
+  define: { __APP_BUILD__: JSON.stringify(new Date().toISOString().slice(0,16).replace('T',' ')) },
+plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',

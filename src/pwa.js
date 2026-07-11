@@ -1,9 +1,16 @@
 /**
- * src/pwa.js — service-worker registration with an "update available" toast that
- * auto-reloads to the new build. Combined with skipWaiting/clientsClaim in
- * vite.config, a fresh deploy takes effect promptly on the stable domain.
+ * src/pwa.js — service worker + "app updated" notice.
+ *
+ * Update strategy: new builds are picked up on reload (SW native + skipWaiting/
+ * clientsClaim). To tell the user, we compare the build stamp baked in at build
+ * time against the one saved last visit; if it changed, the app just loaded a new
+ * version, so we show "Updated". This fires on every load of a newer build
+ * (reload, reopen, new window) with zero polling.
  */
 import { registerSW } from 'virtual:pwa-register'
+
+const BUILD = typeof __APP_BUILD__ !== 'undefined' ? __APP_BUILD__ : 'dev'
+const KEY = 'sa_build_seen'
 
 function toast(msg) {
   const el = document.createElement('div')
@@ -15,19 +22,19 @@ function toast(msg) {
     'z-index:2147483647', 'border:1px solid #334155',
   ].join(';')
   document.body.appendChild(el)
-  return el
+  setTimeout(() => { el.style.transition = 'opacity .4s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 400) }, 4000)
+}
+
+function notifyIfUpdated() {
+  try {
+    const seen = localStorage.getItem(KEY)
+    if (seen && seen !== BUILD) toast(`Updated to the latest version (${BUILD})`)
+    localStorage.setItem(KEY, BUILD)
+  } catch {}
 }
 
 export function setupPWA() {
-  const updateSW = registerSW({
-    onNeedRefresh() {
-      toast('New version available — updating…')
-      // Activate the new service worker and reload to the latest build.
-      setTimeout(() => updateSW(true), 1200)
-    },
-    onOfflineReady() {
-      const el = toast('Ready to work offline')
-      setTimeout(() => el.remove(), 2500)
-    },
-  })
+  registerSW({ immediate: true })
+  // Defer so the toast mounts after the app renders.
+  if (typeof window !== 'undefined') setTimeout(notifyIfUpdated, 800)
 }
