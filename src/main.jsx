@@ -10,10 +10,8 @@ setupPWA()
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <SyncProvider>
-      <DisclaimerGate>
-        <App />
-      </DisclaimerGate>
-    </SyncProvider>
+    <DisclaimerGate>
+      <App />
+    </DisclaimerGate>
   </React.StrictMode>
 )
