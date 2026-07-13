@@ -51,6 +51,12 @@ export default function GuidanceModal({ open, onClose }) {
             <p className="text-xs text-slate-500 mt-0.5">Qualitative context for the Quality &amp; Moat read</p>
           </div>
           <div className="flex items-center gap-3">
+            <a
+              href={`https://www.google.com/search?q=${encodeURIComponent((state.data?.name || state.ticker || '') + ' investor relations')}`}
+              target="_blank" rel="noopener noreferrer"
+              className="text-xs text-accent hover:text-accent-light">
+              IR page ↗
+            </a>
             <button onClick={() => setDocOpen(true)} className="btn-primary text-xs">📄 Documents</button>
             <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">✕</button>
           </div>

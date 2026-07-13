@@ -156,9 +156,14 @@ export function calcRatios(data) {
   const operatingMargin = pct(opProfit, revenue)
   const ebitdaMargin    = pct(ebitda, revenue)  ?? pct100(val(ttm?.ebitdaMargins))
   const netMargin       = pct(netProfit, revenue) ?? pct100(val(ttm?.profitMargins))
-  // Gross margin: use Yahoo's if available (US companies), else use operating margin
+  // Gross margin priority: (1) gross profit from history — populated from
+  // Screener's Material Cost % breakup (revenue − material cost); (2) Yahoo's TTM
+  // gross margin (US cos); (3) operating-margin proxy (Indian P&L, no COGS line).
+  const gpHist          = val(latestI.grossProfit)
   const grossMarginRaw  = val(ttm?.grossMargins)
-  const grossMargin     = grossMarginRaw != null
+  const grossMargin     = (gpHist != null && revenue)
+    ? { value: pct(gpHist, revenue), status: 'calculated', formula: 'Gross Profit ÷ Revenue × 100' }
+    : grossMarginRaw != null
     ? { value: grossMarginRaw * 100, status: 'ttm-fallback', formula: 'From Yahoo financialData' }
     : operatingMargin != null
     ? { value: operatingMargin, status: 'proxy', formula: 'Operating Margin (Indian P&L — no separate Gross Profit line)' }

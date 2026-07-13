@@ -4,6 +4,9 @@ import App from './App.jsx'
 import './index.css'
 import { DisclaimerGate } from './components/DisclaimerModal.jsx'
 import { setupPWA } from './pwa.js'
+ import { SyncProvider } from './sync/SyncProvider.jsx'
+ 
+ <SyncProvider><DisclaimerGate><App /></DisclaimerGate></SyncProvider>
 
 setupPWA()
 

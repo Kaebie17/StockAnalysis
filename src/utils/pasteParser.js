@@ -23,6 +23,7 @@ const ALIASES = {
     interest:        ['interest', 'interestexpense', 'financecosts', 'financecost'],
     netProfit:       ['netprofit', 'profitaftertax', 'pat', 'netincome', 'netearnings'],
     eps:             ['epsinrs', 'eps', 'earningspershare', 'basiceps', 'dilutedeps'],
+    materialCostPct: ['materialcost'],
   },
   balance: {
     equityCapital: ['equitycapital', 'sharecapital', 'paidupcapital'],
@@ -193,8 +194,20 @@ export function parsePastedTable(text, tableType) {
     }
   }
 
-  const rows = years.map((year, i) => ({ year, ...fieldsByYear[i] }))
+  // Screener's expense breakup gives Material Cost % (of sales). Recover the
+  // otherwise-missing gross profit = revenue × (1 − materialCost%/100) so gross
+  // margin flows through the normal ratios / Block-5 paths. Material-only =
+  // standard gross-margin convention; 0% (services co) → left null.
+  if (tableType === 'income') {
+    for (const f of fieldsByYear) {
+      if (f.grossProfit == null && f.revenue != null && f.materialCostPct != null && f.materialCostPct > 0) {
+        f.grossProfit = f.revenue * (1 - f.materialCostPct / 100)
+      }
+      delete f.materialCostPct
+    }
+  }
 
+  const rows = years.map((year, i) => ({ year, ...fieldsByYear[i] }))
   return { years, rows, warnings, matchedCount }
 }
 

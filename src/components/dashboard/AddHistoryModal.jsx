@@ -4,7 +4,7 @@ import { parseHoldings } from '../../engine/parseHoldings.js'
 import { useApp } from '../../store/AppContext.jsx'
 
 const TABLES = [
-  { key: 'income',   label: 'Profit & Loss',  icon: '📊', hint: 'Revenue, Operating Profit, Net Profit, EPS, Interest, Depreciation' },
+  { key: 'income',   label: 'Profit & Loss',  icon: '📊', hint: 'Revenue, Operating Profit, Net Profit, EPS, Interest, Depreciation. Tip: expand the Expenses row (click the +) before copying to include Material Cost % — this recovers gross margin.' },
   { key: 'balance',  label: 'Balance Sheet',  icon: '⚖️', hint: 'Total Assets, Total Equity, Total Debt' },
   { key: 'cashflow', label: 'Cash Flow',      icon: '💵', hint: 'Operating Cash Flow, Free Cash Flow' },
   { key: 'holdings', label: 'Shareholding',   icon: '👥', hint: 'Quarter row + Promoters row (promoter holding %)' },

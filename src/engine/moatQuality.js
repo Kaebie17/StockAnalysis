@@ -25,7 +25,7 @@
  */
 
 import { latest, hasContent } from './reconcileDocs.js'
-import { deriveMetrics } from './derivable.js'
+import { deriveGrossMarginSeries } from './estimation.js'
 
 // ── tunable thresholds (surface in ScoringStudio later) ───────────────────────
 export const MQ_CONFIG = {
@@ -66,12 +66,13 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
 
   // Gross margin missing from source data? Try deriving it from a user-confirmed
   // document input (cost of materials consumed) paired with that year's revenue.
-  let gmDerived = false
+  let gmDerived = false, gmEstimated = false
   if (gm.median == null) {
-    const derived = deriveMetrics(arData, revenueByYear(data))
+    const derived = deriveGrossMarginSeries(arData, revenueByYear(data))
     if (derived.grossMargin?.length) {
       gm = summarize(derived.grossMargin.map(r => r.pct))
       gmDerived = true
+      gmEstimated = derived.grossMargin.some(r => r.tier === 'estimated')
     }
   }
 
@@ -120,7 +121,7 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
     quality,
     implication,
     metrics: {
-      roce, grossMargin: { ...gm, derived: gmDerived }, opMargin: om, netMargin: nm, roe,
+      roce, grossMargin: { ...gm, derived: gmDerived, estimated: gmEstimated }, opMargin: om, netMargin: nm, roe,
       incRoce, dilution, de, icr, fcfConv,
       pledge, promoterTrend, rpt: rptSignal,
     },

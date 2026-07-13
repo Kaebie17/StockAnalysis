@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { extractSections, detectScanned } from '../../engine/arExtract.js'
+import { extractSections, detectScanned, sniffAmount, sniffPledge, sniffRpt } from '../../engine/arExtract.js'
 import { reconcile } from '../../engine/reconcileDocs.js'
 
 /**
@@ -21,6 +21,15 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
 const DOC_TYPES = ['Annual report', 'Quarterly result', 'Investor presentation', 'Concall transcript', 'Other']
+
+// Fiscal-year options: current FY back ~12 years. (Indian FY ends Mar; label by end-year.)
+function fyOptions() {
+  const now = new Date()
+  const endYear = now.getMonth() >= 3 ? now.getFullYear() + 1 : now.getFullYear()  // Apr onward → next FY end
+  const out = []
+  for (let y = endYear; y >= endYear - 12; y--) out.push(y)
+  return out
+}
 const blockId = b => `${b.field}:${b.page}:${b.idx}`
 const SINGLE = new Set(['outlook', 'pli', 'initiatives', 'runway'])
 
@@ -32,7 +41,13 @@ export default function DocumentReader({ open, onClose }) {
   const [decisions, setDecisions] = useState({})
   const [fileName, setFileName] = useState('')
   const [docType, setDocType] = useState(DOC_TYPES[0])
-  const [docDate, setDocDate] = useState('')
+  const [fy, setFy] = useState('')
+  const [quarter, setQuarter] = useState('')
+  const isQuarterly = docType === 'Quarterly result' || docType === 'Concall transcript'
+  // Canonical period string that dateKey/reconcile parse cleanly.
+  const docDate = fy
+    ? (isQuarterly && quarter ? `Q${quarter} FY${String(fy).slice(-2)}` : `FY${String(fy).slice(-2)}`)
+    : ''
   const [diag, setDiag] = useState(null)
   const fileRef = useRef(null)
 
@@ -67,7 +82,7 @@ export default function DocumentReader({ open, onClose }) {
     return out
   }
   const kept = keptBlocks()
-  const keptTrendWithoutDate = !docDate.trim() && kept.some(b => b.field === 'pledge' || b.field === 'rpt')
+  const keptTrendWithoutDate = !docDate && kept.some(b => b.field === 'pledge' || b.field === 'rpt')
 
   const apply = () => {
     const slots = {}
@@ -76,11 +91,14 @@ export default function DocumentReader({ open, onClose }) {
       const dec = decisions[blockId(b)]
       const text = (dec.text || '').trim()
       if (b.field === 'pledge') {
-        if (b.pledge?.pct != null) slots.pledge = { pct: b.pledge.pct }
+        const p = sniffPledge(text || b.snippet)
+        if (p.pct != null) slots.pledge = { pct: p.pct }
       } else if (b.field === 'rpt') {
-        slots.rpt = { present: true, pctOfRevenue: b.rpt?.pctOfRevenue ?? null }
+        const rr = sniffRpt(text || b.snippet)
+        slots.rpt = { present: true, pctOfRevenue: rr.pctOfRevenue }
       } else if (b.field === 'materialCost') {
-        if (b.amount?.value != null) slots.materialCost = { value: b.amount.value }
+        const a = sniffAmount(text || b.snippet)
+        if (a.value != null) slots.materialCost = { value: a.value }
       } else if (SINGLE.has(b.field) && text) {
         textByField[b.field] = textByField[b.field] ? `${textByField[b.field]} ${text}` : text
       }
@@ -88,7 +106,7 @@ export default function DocumentReader({ open, onClose }) {
     for (const [field, text] of Object.entries(textByField)) slots[field] = { text }
 
     const merged = reconcile(state.arData, {
-      docType, docDate: docDate.trim() || null, name: fileName, slots, at: Date.now(),
+      docType, docDate: docDate || null, name: fileName, slots, at: Date.now(),
     })
     setQualInputs({ arData: merged })
     onClose()
@@ -153,9 +171,23 @@ export default function DocumentReader({ open, onClose }) {
                       className={`badge ${docType === t ? 'bg-accent/30 text-accent-light' : 'bg-navy-700 text-slate-300'}`}>{t}</button>
                   ))}
                 </div>
-                <input type="text" value={docDate} onChange={e => setDocDate(e.target.value)}
-                  placeholder="Period, e.g. FY24 or Q2 FY25 (needed for pledge/RPT trend & recency)"
-                  className="input-field w-full text-xs" />
+                <div className="flex flex-wrap items-center gap-2">
+                  <select value={fy} onChange={e => setFy(e.target.value)}
+                    className="input-field text-xs py-1">
+                    <option value="">Fiscal year…</option>
+                    {fyOptions().map(y => (
+                      <option key={y} value={y}>{`FY${String(y).slice(-2)} (year ended Mar ${y})`}</option>
+                    ))}
+                  </select>
+                  {isQuarterly && (
+                    <select value={quarter} onChange={e => setQuarter(e.target.value)}
+                      className="input-field text-xs py-1">
+                      <option value="">Quarter…</option>
+                      {['1', '2', '3', '4'].map(q => <option key={q} value={q}>{`Q${q}`}</option>)}
+                    </select>
+                  )}
+                  {docDate && <span className="text-[11px] text-slate-400">Period: <span className="text-slate-200">{docDate}</span></span>}
+                </div>
                 {diag && (
                   <p className="text-[10px] text-slate-500">
                     Read {diag.pages} pages · ~{diag.chars.toLocaleString()} characters ({diag.perPage}/page).
@@ -184,10 +216,17 @@ export default function DocumentReader({ open, onClose }) {
                           const fig = b.rpt?.pctOfRevenue != null ? ` · ~${b.rpt.pctOfRevenue}% of revenue`
                             : b.pledge?.pct != null ? ` · ${b.pledge.pct}% pledged`
                             : b.amount?.value != null ? ` · ₹${b.amount.value.toLocaleString()}` : ''
+                          const isNumeric = b.amount != null || b.pledge != null || b.rpt != null
+                          const basisTag = b.field === 'materialCost'
+                            ? (b.basis === 'consolidated' ? '[Consolidated]' : b.basis === 'standalone' ? '[Standalone]' : '[Basis unclear]')
+                            : null
                           return (
                             <div key={id} className={`rounded-lg border p-3 ${isKept ? 'border-bull/40 bg-bull/5' : 'border-navy-700 bg-navy-900/50'}`}>
                               <div className="flex items-center justify-between mb-1.5">
-                                <span className="text-[10px] text-slate-500">p.{b.page} · matched “{b.keyword}”{fig}</span>
+                                <span className="text-[10px] text-slate-500">
+                                  p.{b.page} · matched “{b.keyword}”{fig}
+                                  {basisTag && <span className={`ml-1 ${b.basis === 'standalone' ? 'text-bear' : b.basis === 'consolidated' ? 'text-bull' : 'text-neutral'}`}>{basisTag}</span>}
+                                </span>
                                 <div className="flex gap-1">
                                   <button onClick={() => setBlock(id, { status: isKept ? 'pending' : 'kept' })}
                                     className={`badge ${isKept ? 'badge-bull' : 'bg-navy-700 text-slate-300'}`}>{isKept ? '✓ kept' : '✓ keep'}</button>
@@ -195,10 +234,9 @@ export default function DocumentReader({ open, onClose }) {
                                 </div>
                               </div>
                               <p className="text-xs text-slate-400 mb-2 leading-relaxed">{highlight(b.snippet, b.keyword)}</p>
-                              {SINGLE.has(b.field) && (
-                                <textarea value={dec.text} onChange={e => setBlock(id, { text: e.target.value })} rows={2}
-                                  className="input-field w-full text-xs resize-y" placeholder="Edit to keep only what's relevant…" />
-                              )}
+                              <textarea value={dec.text} onChange={e => setBlock(id, { text: e.target.value })} rows={2}
+                                className="input-field w-full text-xs resize-y"
+                                placeholder={isNumeric ? 'Trim to the precise figure (the number is re-read from this text)…' : 'Edit to keep only what\'s relevant…'} />
                             </div>
                           )
                         })}

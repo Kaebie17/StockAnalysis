@@ -218,6 +218,58 @@ export async function clearSwapState(ticker) {
   await txDelete('swapStates', ticker.toUpperCase())
 }
 
+// ─── Backup: export / import all user data ────────────────────────────────────
+// A backup/restore pair (not a sync mechanism). Exports every user-data store to
+// a JSON object; imports merge records back (put overwrites by key, so a restore
+// never wipes stores it doesn't mention). fsHandles is skipped (not serializable).
+
+const BACKUP_STORES = ['financials', 'guidance', 'swapStates', 'aiVerdicts', 'profiles']
+
+export async function exportAllData() {
+  const stores = {}
+  for (const name of BACKUP_STORES) {
+    try { stores[name] = await txGetAll(name) } catch { stores[name] = [] }
+  }
+  return { app: 'stockanalyzr', version: DB_VERSION, exportedAt: new Date().toISOString(), stores }
+}
+
+export async function importAllData(backup) {
+  if (!backup || backup.app !== 'stockanalyzr' || !backup.stores) {
+    throw new Error('Not a valid StockAnalyzr backup file.')
+  }
+  let restored = 0
+  for (const name of BACKUP_STORES) {
+    const records = backup.stores[name]
+    if (!Array.isArray(records)) continue
+    for (const rec of records) {
+      try { await txPut(name, rec); restored++ } catch { /* skip bad record */ }
+    }
+  }
+  return { restored }
+}
+
+// ─── Sync helpers (user-generated stores only; financials = cache, not synced) ─
+// Each syncable store maps records to a sync key "<store>:<naturalKey>".
+export const SYNC_STORES = { guidance: 'ticker', swapStates: 'ticker', profiles: 'name' }
+
+export async function exportSyncableRecords() {
+  const out = []
+  for (const [store, keyPath] of Object.entries(SYNC_STORES)) {
+    let recs = []
+    try { recs = await txGetAll(store) } catch { recs = [] }
+    for (const rec of recs) {
+      const nk = rec?.[keyPath]
+      if (nk != null) out.push({ key: `${store}:${nk}`, value: rec })
+    }
+  }
+  return out
+}
+
+export async function putSyncableRecord(store, record) {
+  if (!SYNC_STORES[store] || !record) return
+  await txPut(store, record)
+}
+
 // ─── File System folder handle (Chrome/Android persistence) ──────────────────
 
 export async function saveFolderHandle(handle) {

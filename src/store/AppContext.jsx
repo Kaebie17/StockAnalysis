@@ -10,6 +10,7 @@ import { runMarketExpectation } from '../engine/marketExpectation.js'
 import { getCached, setCached, deleteCached, clearAllCached, loadFolderHandle, saveFolderHandle,
          loadSwapState, saveSwapState, saveGuidance, loadGuidance } from '../utils/db.js'
 import { applyCSVOverrides, swapField, autoLoadOverride } from '../utils/csv.js'
+import { queuePush } from '../sync/sync.js'
 
 const AppContext = createContext(null)
 
@@ -213,7 +214,10 @@ export function AppProvider({ children }) {
       arData:       patch.arData       !== undefined ? patch.arData       : state.arData,
     }
     dispatch({ type: 'SET_QUAL', payload: next })
-    if (state.ticker) saveGuidance(state.ticker, next)
+    if (state.ticker) {
+      saveGuidance(state.ticker, next)
+      queuePush(`guidance:${state.ticker.toUpperCase()}`, { ticker: state.ticker.toUpperCase(), ...next })
+    }
   }, [state.ticker, state.holdingsData, state.arData])
 
   // Load saved guidance/holdings/AR when the ticker changes. We clear first (so a
@@ -262,6 +266,7 @@ export function AppProvider({ children }) {
     newSwaps[historyType][year][field] = !newSwaps[historyType][year][field]
 
     await saveSwapState(state.ticker, newSwaps)
+    queuePush(`swapStates:${state.ticker.toUpperCase()}`, { ticker: state.ticker.toUpperCase(), swaps: newSwaps })
     dispatch({ type: 'SWAP_FIELD', payload: { data: updated, ...computed, swapState: newSwaps } })
   }, [state])
 

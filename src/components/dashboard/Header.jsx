@@ -2,8 +2,13 @@ import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
+import BackupControls from '../BackupControls.jsx'
+import FormulasPanel from '../FormulasPanel.jsx'
+import SyncControls from '../../sync/SyncControls.jsx'
+     // place <SyncControls /> in the header row
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
+const [fxOpen, setFxOpen] = useState(false)
 
 export default function Header() {
   const { state, load, reset } = useApp()
@@ -57,7 +62,7 @@ export default function Header() {
             </button>
           )}
         </div>
-
+        <BackupControls />
         {/* Progress */}
         {state.status === 'loading' && state.progress && (
           <div className="space-y-1">
