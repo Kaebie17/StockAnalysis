@@ -53,6 +53,7 @@ export function extractSections(pages, config = SECTION_CONFIG) {
             field: cfg.field, label: cfg.label, page,
             idx: m.index, keyword: m[0],
             snippet: windowAround(text, m.index, m[0].length),
+            basis: detectBasis(text, m.index),
           })
           if (m.index === rx.lastIndex) rx.lastIndex++   // avoid zero-length loop
         }
@@ -121,7 +122,22 @@ function dedupe(blocks) {
 // Best-effort structured read for related-party: look for a "% of revenue/turnover"
 // or a rupee/amount figure near the hit. Presence is the reliable signal; the
 // amount is opportunistic and may be null.
-function sniffRpt(snippet) {
+// Nearest financial-statement basis to a hit: scan a window around the match for
+// "consolidated" / "standalone". Context only — the user decides; we never drop.
+function detectBasis(text, idx) {
+  // Look BACKWARD only — a statement's heading ("Consolidated Statement of
+  // Profit and Loss") precedes its line items; text after the hit may belong to
+  // the next statement and would mislead.
+  const around = text.slice(Math.max(0, idx - 1500), idx).toLowerCase()
+  const con = around.lastIndexOf('consolidated')
+  const alo = around.lastIndexOf('standalone')
+  if (con === -1 && alo === -1) return 'unclear'
+  if (con === -1) return 'standalone'
+  if (alo === -1) return 'consolidated'
+  return con > alo ? 'consolidated' : 'standalone'   // whichever heading is nearer
+}
+
+export function sniffRpt(snippet) {
   const pctM = snippet.match(/(\d+(?:\.\d+)?)\s*%\s*(?:of\s*)?(?:total\s*)?(?:revenue|turnover|sales|income)/i)
   const pctOfRevenue = pctM ? parseFloat(pctM[1]) : null
   return { present: true, pctOfRevenue }
@@ -129,7 +145,7 @@ function sniffRpt(snippet) {
 
 // Promoter pledge: the snippet is already windowed around a pledge/encumber hit,
 // so the first % figure in it is almost always the pledged proportion.
-function sniffPledge(snippet) {
+export function sniffPledge(snippet) {
   const m = snippet.match(/(\d+(?:\.\d+)?)\s*%/)
   return { pct: m ? parseFloat(m[1]) : null }
 }
@@ -137,7 +153,7 @@ function sniffPledge(snippet) {
 // Numeric amount near an input keyword (e.g. cost of materials consumed). Handles
 // Indian/international comma grouping; takes the first figure (current year in a
 // "current (PY prior)" line). Unit (crore vs absolute) is resolved at derive time.
-function sniffAmount(snippet) {
+export function sniffAmount(snippet) {
   // skip a leading number that is part of a note reference like "Note 21"
   const cleaned = snippet.replace(/note\s*\d+/ig, ' ')
   const m = cleaned.match(/(\d{1,3}(?:[,\s]\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)/)
