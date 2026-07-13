@@ -52,5 +52,6 @@ plugins: [
         }
       }
     }
-  }
+  },
+  build: { minify: false },
 })
