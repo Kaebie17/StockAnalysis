@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.3",
-    "mathjs": "^15.2.0",
     "papaparse": "^5.4.1",
     "pdfjs-dist": "^4.8.69",
     "react": "^18.3.1",
