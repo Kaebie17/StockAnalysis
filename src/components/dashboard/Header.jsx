@@ -4,7 +4,7 @@ import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
 import BackupControls from '../BackupControls.jsx'
 import FormulasPanel from '../FormulasPanel.jsx'
-import SyncControls from '../../sync/SyncControls.jsx'
+// import SyncControls from '../../sync/SyncControls.jsx'
      // place <SyncControls /> in the header row
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
