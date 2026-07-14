@@ -101,6 +101,12 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (state.status !== 'success' || !state.ticker || !state.data || state.csvActive) return
     try { setCached(state.ticker, { data: state.data, ...computeAll(state.data, {}, {}, {}) }) } catch {}
+    // Sync merged financials (they hold pasted Screener history the user built).
+    // Pure Yahoo data is re-fetchable, so it isn't synced.
+    if (state.data.source === 'merged') {
+      const t = state.ticker.toUpperCase()
+      queuePush(`financials:${t}`, { key: t, data: state.data, timestamp: Date.now(), lastAccessed: Date.now() })
+    }
   }, [state.data])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live price poller: refresh just the quote every 60s while the user is active.

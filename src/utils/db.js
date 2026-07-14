@@ -135,7 +135,10 @@ export async function getAiVerdict(ticker, fp) {
   } catch { return null }
 }
 export async function setAiVerdict(ticker, fp, text) {
-  try { await txPut('aiVerdicts', { ticker: ticker.toUpperCase(), fp, text, savedAt: Date.now() }) } catch {}
+  const rec = { ticker: ticker.toUpperCase(), fp, text, savedAt: Date.now() }
+  try { await txPut('aiVerdicts', rec) } catch {}
+  // Sync the verdict so the same tokens aren't re-spent on another device.
+  import('../sync/sync.js').then(m => m.queuePush(`aiVerdicts:${rec.ticker}`, rec)).catch(() => {})
 }
 export async function deleteAiVerdict(ticker) {
   try { await txDelete('aiVerdicts', ticker.toUpperCase()) } catch {}
@@ -248,9 +251,19 @@ export async function importAllData(backup) {
   return { restored }
 }
 
-// ─── Sync helpers (user-generated stores only; financials = cache, not synced) ─
-// Each syncable store maps records to a sync key "<store>:<naturalKey>".
-export const SYNC_STORES = { guidance: 'ticker', swapStates: 'ticker', profiles: 'name' }
+// ─── Sync helpers ─────────────────────────────────────────────────────────────
+// Sync EVERYTHING that cost the user effort or tokens: merged financials (holds
+// pasted Screener history), guidance/AR docs, swaps, profiles, AI verdicts. Only
+// a pure re-fetchable Yahoo pull would be safe to skip — but since `financials`
+// merges Yahoo + Screener into one record, we sync it whole (re-fetching would
+// drop the pasted data). Each record maps to a sync key "<store>:<naturalKey>".
+export const SYNC_STORES = {
+  financials: 'key',        // merged Yahoo+Screener snapshot (keyPath is 'key')
+  guidance:   'ticker',
+  swapStates: 'ticker',
+  aiVerdicts: 'ticker',
+  profiles:   'name',
+}
 
 export async function exportSyncableRecords() {
   const out = []
@@ -259,7 +272,11 @@ export async function exportSyncableRecords() {
     try { recs = await txGetAll(store) } catch { recs = [] }
     for (const rec of recs) {
       const nk = rec?.[keyPath]
-      if (nk != null) out.push({ key: `${store}:${nk}`, value: rec })
+      if (nk == null) continue
+      // financials: only sync records that hold pasted effort (merged). A pure
+      // Yahoo pull is re-fetchable, so skip it to avoid syncing free data.
+      if (store === 'financials' && rec?.data?.source !== 'merged') continue
+      out.push({ key: `${store}:${nk}`, value: rec })
     }
   }
   return out

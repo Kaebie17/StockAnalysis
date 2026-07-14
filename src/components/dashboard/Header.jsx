@@ -3,7 +3,7 @@ import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
 import FormulasPanel from '../FormulasPanel.jsx'
-// import SyncControls from '../../sync/SyncControls.jsx'   // restore when sync is re-enabled
+import SyncControls from '../../sync/SyncControls.jsx'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
 
@@ -52,6 +52,7 @@ export default function Header() {
             className="text-xs px-3 py-2 rounded-lg border border-navy-600 text-slate-400 hover:text-accent hover:border-accent/50 shrink-0 transition-colors">
             ƒ Formulas
           </button>
+          <SyncControls />
           {state.ticker && state.status === 'success' && (
             <button
               onClick={async () => {
