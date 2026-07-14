@@ -55,14 +55,14 @@ export default function SyncControls() {
       ) : (
         <div className="flex items-center gap-1.5 w-full">
           <input type="text" inputMode="numeric" autoComplete="one-time-code" value={code}
-            onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            placeholder="6-digit code" className="input-field text-xs py-1 flex-1 min-w-0 tracking-widest" />
-          <button onClick={submitCode} disabled={status === 'verifying' || code.length < 6}
+            onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 10))}
+            placeholder="Enter code from email" className="input-field text-xs py-1 flex-1 min-w-0 tracking-widest" />
+          <button onClick={submitCode} disabled={status === 'verifying' || code.length < 4}
             className="btn-primary text-xs shrink-0">{status === 'verifying' ? '…' : 'Verify'}</button>
           <button onClick={() => { setOpen(false); setCode(''); setErr('') }} className="text-slate-500 shrink-0">✕</button>
         </div>
       )}
-      {codeStage && !err && <p className="text-[11px] text-slate-500">Enter the 6-digit code sent to {email}.</p>}
+      {codeStage && !err && <p className="text-[11px] text-slate-500">Enter the code sent to {email}.</p>}
       {err && <p className="text-[11px] text-bear">{err}</p>}
     </div>
   )
