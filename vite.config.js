@@ -54,5 +54,5 @@ plugins: [
       }
     }
   },
-  build: { minify: false },
+  build: { sourcemap: true  },
 })

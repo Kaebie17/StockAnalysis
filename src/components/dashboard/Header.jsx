@@ -8,11 +8,11 @@ import FormulasPanel from '../FormulasPanel.jsx'
      // place <SyncControls /> in the header row
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
-const [fxOpen, setFxOpen] = useState(false)
 
 export default function Header() {
   const { state, load, reset } = useApp()
   const [input, setInput] = useState('')
+  const [fxOpen, setFxOpen] = useState(false)
 
   const submit = (e) => {
     e?.preventDefault()
@@ -49,6 +49,10 @@ export default function Header() {
               Analyze
             </button>
           </form>
+          <button onClick={() => setFxOpen(true)}
+            className="text-xs px-3 py-2 rounded-lg border border-navy-600 text-slate-400 hover:text-accent shrink-0">
+            ƒ Formulas
+          </button>
           {state.ticker && state.status === 'success' && (
             <button
               onClick={async () => {
@@ -90,6 +94,7 @@ export default function Header() {
           </div>
         )}
       </div>
+       <FormulasPanel open={fxOpen} onClose={() => setFxOpen(false)} />
     </header>
   )
 }
