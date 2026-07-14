@@ -2,14 +2,15 @@ import React, { useRef, useState } from 'react'
 import { exportAllData, importAllData } from '../utils/db.js'
 
 /**
- * BackupControls — download-everything / restore-from-file backup pair.
- * This is a safety net against local data loss (origin change, browser clear,
- * eviction) — NOT a sync mechanism. Cross-device sync is a separate feature.
- * Mount anywhere (settings/footer): <BackupControls />
+ * BackupControls — two round FAB icon buttons (⬇ export / ⬆ restore), styled like
+ * the ⚙/📎 FABs. Parent positions them (e.g. a fixed bottom-right column).
+ * Safety net against local data loss — not cross-device sync.
  */
 export default function BackupControls() {
   const fileRef = useRef(null)
   const [msg, setMsg] = useState('')
+
+  const flash = (t) => { setMsg(t); setTimeout(() => setMsg(''), 2500) }
 
   const doExport = async () => {
     try {
@@ -21,40 +22,35 @@ export default function BackupControls() {
       a.download = `stockanalyzr-backup-${new Date().toISOString().slice(0, 10)}.json`
       a.click()
       URL.revokeObjectURL(url)
-      setMsg('Backup downloaded.')
-    } catch (e) {
-      setMsg('Export failed: ' + (e?.message || e))
-    }
+      flash('Backup downloaded')
+    } catch (e) { flash('Export failed') }
   }
 
   const doImport = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
     try {
-      const text = await file.text()
-      const backup = JSON.parse(text)
+      const backup = JSON.parse(await file.text())
       const { restored } = await importAllData(backup)
-      setMsg(`Restored ${restored} records. Reloading…`)
-      setTimeout(() => window.location.reload(), 1200)
-    } catch (err) {
-      setMsg('Import failed: ' + (err?.message || err))
-    } finally {
-      if (fileRef.current) fileRef.current.value = ''
-    }
+      flash(`Restored ${restored} — reloading…`)
+      setTimeout(() => window.location.reload(), 1000)
+    } catch (err) { flash('Import failed') }
+    finally { if (fileRef.current) fileRef.current.value = '' }
   }
 
+  const fab = 'w-11 h-11 rounded-full bg-navy-800 border border-navy-600 text-slate-400 shadow-lg ' +
+              'hover:text-white hover:border-accent active:scale-95 transition-all flex items-center justify-center text-lg'
+
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <button onClick={doExport} className="btn-ghost text-xs">⬇ Export backup</button>
-        <button onClick={() => fileRef.current?.click()} className="btn-ghost text-xs">⬆ Restore backup</button>
-        <input ref={fileRef} type="file" accept="application/json,.json" onChange={doImport} className="hidden" />
-      </div>
-      {msg && <p className="text-[11px] text-slate-500">{msg}</p>}
-      <p className="text-[10px] text-slate-600">
-        Backup saves all tickers, guidance, documents &amp; swaps to a file. Restore merges it back
-        (safety net for this device — not cross-device sync).
-      </p>
-    </div>
+    <>
+      {msg && (
+        <div className="absolute right-14 bottom-1 whitespace-nowrap text-[11px] text-slate-300 bg-navy-800 border border-navy-700 rounded-lg px-2 py-1 shadow-lg">
+          {msg}
+        </div>
+      )}
+      <button onClick={doExport} title="Export backup (download)" className={fab}>⬇</button>
+      <button onClick={() => fileRef.current?.click()} title="Restore backup (upload)" className={fab}>⬆</button>
+      <input ref={fileRef} type="file" accept="application/json,.json" onChange={doImport} className="hidden" />
+    </>
   )
 }

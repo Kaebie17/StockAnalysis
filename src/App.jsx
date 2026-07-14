@@ -14,6 +14,7 @@ import ScoringStudio from './components/studio/ScoringStudio.jsx'
 import { parseCSV } from './utils/csv.js'
 import { requestFolderAccess, exportOverrideJSON, openFilePicker, importOverrideFile } from './utils/csv.js'
 import MoatQualityPanel from './components/dashboard/MoatQualityPanel.jsx'
+import BackupControls from './components/BackupControls.jsx'
 
 function Dashboard() {
   const { state, applyCSV, setFolderHandle, applyPastedTable } = useApp()
@@ -124,6 +125,13 @@ function Dashboard() {
             </>
         }
       </main>
+
+      {/* Backup FABs — landing page only */}
+      {!showDashboard && (
+        <div className="fixed bottom-6 right-6 flex flex-col gap-2 z-40 items-end">
+          <BackupControls />
+        </div>
+      )}
 
       {/* FAB buttons */}
       {showDashboard && (

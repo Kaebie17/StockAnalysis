@@ -2,10 +2,8 @@ import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
-import BackupControls from '../BackupControls.jsx'
 import FormulasPanel from '../FormulasPanel.jsx'
-// import SyncControls from '../../sync/SyncControls.jsx'
-     // place <SyncControls /> in the header row
+// import SyncControls from '../../sync/SyncControls.jsx'   // restore when sync is re-enabled
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
 
@@ -21,6 +19,7 @@ export default function Header() {
   }
 
   return (
+    <>
     <header className="sticky top-0 z-50 bg-navy-950/95 backdrop-blur border-b border-navy-800">
       <div className="max-w-5xl mx-auto px-4 py-3 space-y-2">
         {/* Search row */}
@@ -49,8 +48,8 @@ export default function Header() {
               Analyze
             </button>
           </form>
-          <button onClick={() => setFxOpen(true)}
-            className="text-xs px-3 py-2 rounded-lg border border-navy-600 text-slate-400 hover:text-accent shrink-0">
+          <button onClick={() => setFxOpen(true)} title="Edit metric formulas"
+            className="text-xs px-3 py-2 rounded-lg border border-navy-600 text-slate-400 hover:text-accent hover:border-accent/50 shrink-0 transition-colors">
             ƒ Formulas
           </button>
           {state.ticker && state.status === 'success' && (
@@ -66,7 +65,6 @@ export default function Header() {
             </button>
           )}
         </div>
-        <BackupControls />
         {/* Progress */}
         {state.status === 'loading' && state.progress && (
           <div className="space-y-1">
@@ -94,8 +92,9 @@ export default function Header() {
           </div>
         )}
       </div>
-       <FormulasPanel open={fxOpen} onClose={() => setFxOpen(false)} />
     </header>
+    <FormulasPanel open={fxOpen} onClose={() => setFxOpen(false)} />
+    </>
   )
 }
 

@@ -10,8 +10,8 @@ import { runMarketExpectation } from '../engine/marketExpectation.js'
 import { getCached, setCached, deleteCached, clearAllCached, loadFolderHandle, saveFolderHandle,
          loadSwapState, saveSwapState, saveGuidance, loadGuidance } from '../utils/db.js'
 import { applyCSVOverrides, swapField, autoLoadOverride } from '../utils/csv.js'
-// import { queuePush } from '../sync/sync.js'
-const queuePush = () => {}
+import { queuePush } from '../sync/sync.js'
+
 const AppContext = createContext(null)
 
 const initial = {
