@@ -6,7 +6,7 @@ import { useSync } from './SyncProvider.jsx'
  * PWA (no magic-link Safari handoff). Renders nothing if Supabase isn't set up.
  */
 export default function SyncControls() {
-  const { enabled, user, status, signIn, verifyCode, signInWithGoogle, signOut, syncNow } = useSync()
+  const { enabled, user, status, signIn, verifyCode, signOut, syncNow } = useSync()
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
   const [open, setOpen] = useState(false)
@@ -27,7 +27,6 @@ export default function SyncControls() {
     return <button onClick={() => setOpen(true)} className="text-xs text-accent hover:text-accent-light">☁ Sync across devices</button>
   }
 
-  const google = async () => { setErr(''); const { error } = await signInWithGoogle(); if (error) setErr(String(error)) }
 
   const sendCode = async () => {
     setErr('')
@@ -45,11 +44,6 @@ export default function SyncControls() {
 
   return (
     <div className="w-full space-y-1.5">
-      <button onClick={google}
-        className="w-full flex items-center justify-center gap-2 text-xs bg-white text-slate-800 rounded-lg py-1.5 font-medium hover:bg-slate-100">
-        <span style={{fontWeight:700}}>G</span> Sign in with Google
-      </button>
-      <div className="text-center text-[10px] text-slate-600">or use email code</div>
       {!codeStage ? (
         <div className="flex items-center gap-1.5 w-full">
           <input type="email" inputMode="email" value={email} onChange={e => setEmail(e.target.value)}

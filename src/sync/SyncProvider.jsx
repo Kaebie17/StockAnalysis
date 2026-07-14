@@ -55,16 +55,6 @@ export function SyncProvider({ children }) {
     return { error: error ? (error.message || String(error) || 'Verification failed') : null }
   }, [])
 
-  const signInWithGoogle = useCallback(async () => {
-    if (!syncEnabled()) return { error: 'Sync not configured.' }
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: window.location.origin },
-    })
-    if (error) console.error('[sync] google oauth error:', error)
-    return { error: error ? (error.message || String(error)) : null }
-  }, [])
-
   const signOut = useCallback(async () => {
     if (!syncEnabled()) return
     await supabase.auth.signOut()
@@ -74,7 +64,7 @@ export function SyncProvider({ children }) {
   const syncNow = useCallback(async () => { if (user) await runInitialSync() }, [user, runInitialSync])
 
   return (
-    <SyncCtx.Provider value={{ enabled: syncEnabled(), user, status, signIn, verifyCode, signInWithGoogle, signOut, syncNow }}>
+    <SyncCtx.Provider value={{ enabled: syncEnabled(), user, status, signIn, verifyCode, signOut, syncNow }}>
       {children}
     </SyncCtx.Provider>
   )
