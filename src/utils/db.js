@@ -273,9 +273,10 @@ export async function exportSyncableRecords() {
     for (const rec of recs) {
       const nk = rec?.[keyPath]
       if (nk == null) continue
-      // financials: only sync records that hold pasted effort (merged). A pure
-      // Yahoo pull is re-fetchable, so skip it to avoid syncing free data.
-      if (store === 'financials' && rec?.data?.source !== 'merged') continue
+      // financials: only sync records holding pasted effort (merged). Pure Yahoo
+      // is re-fetchable. Record shape is { key, data: { data: <normalized>, ... } },
+      // so the source flag is at rec.data.data.source.
+      if (store === 'financials' && rec?.data?.data?.source !== 'merged') continue
       out.push({ key: `${store}:${nk}`, value: rec })
     }
   }

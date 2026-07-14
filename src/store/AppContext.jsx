@@ -100,12 +100,14 @@ export function AppProvider({ children }) {
   // pasted-history merge — not just the initial fetch — survives a reload.
   useEffect(() => {
     if (state.status !== 'success' || !state.ticker || !state.data || state.csvActive) return
-    try { setCached(state.ticker, { data: state.data, ...computeAll(state.data, {}, {}, {}) }) } catch {}
+    const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}) }
+    try { setCached(state.ticker, payload) } catch {}
     // Sync merged financials (they hold pasted Screener history the user built).
-    // Pure Yahoo data is re-fetchable, so it isn't synced.
+    // Pure Yahoo data is re-fetchable, so it isn't synced. Shape must match what
+    // setCached writes: { key, data: payload, ... }.
     if (state.data.source === 'merged') {
       const t = state.ticker.toUpperCase()
-      queuePush(`financials:${t}`, { key: t, data: state.data, timestamp: Date.now(), lastAccessed: Date.now() })
+      queuePush(`financials:${t}`, { key: t, data: payload, timestamp: Date.now(), lastAccessed: Date.now() })
     }
   }, [state.data])   // eslint-disable-line react-hooks/exhaustive-deps
 
