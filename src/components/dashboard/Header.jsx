@@ -52,7 +52,6 @@ export default function Header() {
             className="text-xs px-3 py-2 rounded-lg border border-navy-600 text-slate-400 hover:text-accent hover:border-accent/50 shrink-0 transition-colors">
             ƒ Formulas
           </button>
-          <SyncControls />
           {state.ticker && state.status === 'success' && (
             <button
               onClick={async () => {
@@ -66,6 +65,10 @@ export default function Header() {
             </button>
           )}
         </div>
+
+        {/* Sync row — own line so the email box never overflows on mobile */}
+        <div className="flex"><SyncControls /></div>
+
         {/* Progress */}
         {state.status === 'loading' && state.progress && (
           <div className="space-y-1">

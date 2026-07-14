@@ -28,12 +28,12 @@ export default function SyncControls() {
       ) : status === 'link-sent' ? (
         <span className="text-bull">Check your email for a sign-in link.</span>
       ) : (
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 w-full">
           <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com"
-            className="input-field text-xs py-1 w-40" />
-          <button onClick={() => email && signIn(email)} className="btn-primary text-xs"
+            className="input-field text-xs py-1 flex-1 min-w-0" />
+          <button onClick={() => email && signIn(email)} className="btn-primary text-xs shrink-0"
             disabled={status === 'sending'}>{status === 'sending' ? '…' : 'Send link'}</button>
-          <button onClick={() => setOpen(false)} className="text-slate-500">✕</button>
+          <button onClick={() => setOpen(false)} className="text-slate-500 shrink-0">✕</button>
         </div>
       )}
     </div>
