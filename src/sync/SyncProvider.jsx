@@ -41,16 +41,28 @@ export function SyncProvider({ children }) {
     const { error } = await supabase.auth.signInWithOtp({
       email, options: { shouldCreateUser: true },
     })
+    if (error) console.error('[sync] signIn error:', error)
     setStatus(error ? 'idle' : 'code-sent')
-    return { error: error?.message || null }
+    return { error: error ? (error.message || String(error) || 'Send failed') : null }
   }, [])
 
   const verifyCode = useCallback(async (email, token) => {
     if (!syncEnabled()) return { error: 'Sync not configured.' }
     setStatus('verifying')
     const { error } = await supabase.auth.verifyOtp({ email, token, type: 'email' })
+    if (error) console.error('[sync] verifyOtp error:', error)
     setStatus(error ? 'code-sent' : 'idle')
-    return { error: error?.message || null }
+    return { error: error ? (error.message || String(error) || 'Verification failed') : null }
+  }, [])
+
+  const signInWithGoogle = useCallback(async () => {
+    if (!syncEnabled()) return { error: 'Sync not configured.' }
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin },
+    })
+    if (error) console.error('[sync] google oauth error:', error)
+    return { error: error ? (error.message || String(error)) : null }
   }, [])
 
   const signOut = useCallback(async () => {
@@ -62,7 +74,7 @@ export function SyncProvider({ children }) {
   const syncNow = useCallback(async () => { if (user) await runInitialSync() }, [user, runInitialSync])
 
   return (
-    <SyncCtx.Provider value={{ enabled: syncEnabled(), user, status, signIn, verifyCode, signOut, syncNow }}>
+    <SyncCtx.Provider value={{ enabled: syncEnabled(), user, status, signIn, verifyCode, signInWithGoogle, signOut, syncNow }}>
       {children}
     </SyncCtx.Provider>
   )
