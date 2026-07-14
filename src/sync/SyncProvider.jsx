@@ -37,10 +37,19 @@ export function SyncProvider({ children }) {
   const signIn = useCallback(async (email) => {
     if (!syncEnabled()) return { error: 'Sync not configured.' }
     setStatus('sending')
+    // OTP CODE (not a link): works inside an installed PWA, no Safari handoff.
     const { error } = await supabase.auth.signInWithOtp({
-      email, options: { emailRedirectTo: window.location.origin },
+      email, options: { shouldCreateUser: true },
     })
-    setStatus(error ? 'idle' : 'link-sent')
+    setStatus(error ? 'idle' : 'code-sent')
+    return { error: error?.message || null }
+  }, [])
+
+  const verifyCode = useCallback(async (email, token) => {
+    if (!syncEnabled()) return { error: 'Sync not configured.' }
+    setStatus('verifying')
+    const { error } = await supabase.auth.verifyOtp({ email, token, type: 'email' })
+    setStatus(error ? 'code-sent' : 'idle')
     return { error: error?.message || null }
   }, [])
 
@@ -53,7 +62,7 @@ export function SyncProvider({ children }) {
   const syncNow = useCallback(async () => { if (user) await runInitialSync() }, [user, runInitialSync])
 
   return (
-    <SyncCtx.Provider value={{ enabled: syncEnabled(), user, status, signIn, signOut, syncNow }}>
+    <SyncCtx.Provider value={{ enabled: syncEnabled(), user, status, signIn, verifyCode, signOut, syncNow }}>
       {children}
     </SyncCtx.Provider>
   )
