@@ -5,6 +5,24 @@ import { expectationInsight } from '../../engine/valuation.js'
 import { getAiKey, setAiKey, clearAiKey, isKeyRemembered } from '../../utils/aiKey.js'
 import { getAiVerdict, setAiVerdict } from '../../utils/db.js'
 
+// Map raw API/Gemini errors to something a user can act on (never fail silently).
+function friendlyAiError(err, raw) {
+  const e = String(err || '').toLowerCase()
+  const detail = String(raw?.error?.message || '').toLowerCase()
+  const both = e + ' ' + detail
+  if (both.includes('400') || both.includes('api key not valid') || both.includes('invalid'))
+    return 'Your Gemini API key looks invalid — check that you pasted it correctly.'
+  if (both.includes('401') || both.includes('403') || both.includes('permission') || both.includes('unauthor'))
+    return 'Your API key was rejected (unauthorised). It may be revoked or restricted.'
+  if (both.includes('429') || both.includes('quota') || both.includes('rate'))
+    return 'Rate limit or quota exceeded on your Gemini key — wait a bit, or check your usage limit.'
+  if (both.includes('500') || both.includes('503') || both.includes('unavailable'))
+    return "Google's AI service is temporarily unavailable. Try again shortly."
+  if (both.includes('failed to fetch') || both.includes('network'))
+    return 'Network error — check your connection.'
+  return err ? `Error: ${err}` : 'Unknown error from the AI service.'
+}
+
 // Session cache so we don't re-call the API every render / re-open.
 const _cache = new Map()
 function hashStr(str) { let h = 0; for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) | 0 } return h.toString(36) }
@@ -15,6 +33,8 @@ export default function AIVerdict() {
   const [text, setText]   = useState(null)
   const [loading, setLoad] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [errMsg, setErrMsg] = useState('')
+  const [reloadTick, setReloadTick] = useState(0)   // bump to force a fresh AI call
   const [keyVal, setKeyVal] = useState(() => getAiKey())
   const hasKey = !!keyVal
   const [editKey, setEditKey] = useState(false)
@@ -29,17 +49,20 @@ export default function AIVerdict() {
 
   useEffect(() => {
     if (!key || !valuation || !summary) return
-    if (_cache.has(key)) { setText(_cache.get(key)); return }
+    const forced = reloadTick > 0
+    if (!forced && _cache.has(key)) { setText(_cache.get(key)); return }
     let cancelled = false
     ;(async () => {
       // 1) Persistent cache: same ticker + same data → reuse, no API call
       //    (survives refresh and sessions; only regenerates when data changes).
-      const saved = await getAiVerdict(state.ticker, fp)
-      if (cancelled) return
-      if (saved) { _cache.set(key, saved); setText(saved); return }
+      if (!forced) {
+        const saved = await getAiVerdict(state.ticker, fp)
+        if (cancelled) return
+        if (saved) { _cache.set(key, saved); setText(saved); return }
+      }
       // 2) Miss → need a key to generate. No key → render shows the key prompt.
       if (!hasKey) return
-      setLoad(true); setText(null); setFailed(false)
+      setLoad(true); setText(null); setFailed(false); setErrMsg('')
       try {
         const r = await fetch('/api/analyze', {
           method: 'POST',
@@ -47,21 +70,21 @@ export default function AIVerdict() {
           body: JSON.stringify({ summary, userKey: keyVal }),
         })
         const d = await r.json()
-        if (d?.debug) {
-          console.log('%c[AI] system prompt →', 'color:#7dd3fc;font-weight:bold', d.debug.system)
-          console.log('%c[AI] user content sent →', 'color:#7dd3fc;font-weight:bold', d.debug.userContent)
-          console.log('%c[AI] verdict returned →', 'color:#86efac;font-weight:bold', d.text)
-        }
         if (cancelled) return
         if (d?.text) {
           _cache.set(key, d.text); setText(d.text)
           setAiVerdict(state.ticker, fp, d.text)   // persist latest-per-ticker
-        } else setFailed(true)
-      } catch { if (!cancelled) setFailed(true) }
+        } else {
+          setFailed(true)
+          setErrMsg(friendlyAiError(d?.error, d?.raw))
+        }
+      } catch (e) {
+        if (!cancelled) { setFailed(true); setErrMsg(friendlyAiError(String(e?.message || e))) }
+      }
       finally { if (!cancelled) setLoad(false) }
     })()
     return () => { cancelled = true }
-  }, [key, keyVal])   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, keyVal, reloadTick])   // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!valuation) return null
 
@@ -73,6 +96,9 @@ export default function AIVerdict() {
     _cache.clear()
   }
   const removeKey = () => { clearAiKey(); setKeyVal(''); setText(null); _cache.clear() }
+
+  // Manual re-run: bypasses both caches and spends tokens deliberately.
+  const refresh = () => { _cache.delete(key); setText(null); setFailed(false); setErrMsg(''); setReloadTick(t => t + 1) }
 
   // Key entry UI (shown when no key, or when editing).
   const KeyBox = (
@@ -115,7 +141,13 @@ export default function AIVerdict() {
   if (text) return (
     <div className="mt-2">
       <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-line">🤖 {text}</p>
-      <div className="flex items-center gap-3 mt-1">
+      <div className="flex items-center gap-3 mt-1 flex-wrap">
+        {hasKey && (
+          <button onClick={refresh} title="Re-run the AI analysis on the current dashboard figures (uses tokens)"
+            className="text-[10px] text-accent hover:text-accent-light inline-flex items-center gap-1">
+            ↻ Refresh analysis
+          </button>
+        )}
         <span className="text-[10px] text-slate-600">AI-generated from the dashboard figures. Analytical opinion, not investment advice.</span>
         <button onClick={() => setEditKey(true)} className="text-[10px] text-slate-500 hover:text-slate-300">change key</button>
         <button onClick={removeKey} className="text-[10px] text-slate-500 hover:text-bear">remove key</button>
@@ -128,7 +160,17 @@ export default function AIVerdict() {
   return (
     <div>
       {Boilerplate}
-      {failed && <p className="text-[10px] text-neutral mt-1">AI analysis unavailable right now — showing the built-in summary. <button onClick={() => setEditKey(true)} className="underline">check key</button></p>}
+      {failed && (
+        <div className="mt-1.5 text-[11px] rounded-lg border border-bear/40 bg-bear/10 px-2.5 py-1.5 text-bear">
+          <div className="font-semibold">AI analysis failed</div>
+          <div className="text-slate-300">{errMsg || 'Could not reach the AI service.'} Showing the built-in summary instead.</div>
+          <div className="flex gap-3 mt-1">
+            <button onClick={refresh} className="underline text-accent">Try again</button>
+            <button onClick={() => setEditKey(true)} className="underline text-slate-400">Check key</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
+

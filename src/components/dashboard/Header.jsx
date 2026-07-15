@@ -166,8 +166,59 @@ function IdentityBar() {
           <option value="TRANSITION">🔄 Transition</option>
           <option value="ESTABLISHED">🏛️ Established</option>
         </select>
+        <DividendLine data={data} ratioResult={ratioResult} cur={cur} />
       </div>
     </div>
+  )
+}
+
+/**
+ * Dividend expressed as CASH on a real investment — a percentage alone doesn't
+ * convey much ("2%" of what?). Shows the annual dividend on ₹10,000 invested.
+ *
+ * Source priority (most reliable first):
+ *   1. Payout % (Screener paste) × EPS → dividend/share → × (invest / price)
+ *   2. Yahoo's dividend yield (a FRACTION, e.g. 0.0045) × invest
+ * Screener's key-stat yield is a PERCENT, so it's scaled by source.
+ */
+function DividendLine({ data, ratioResult, cur }) {
+  const INVEST = 10000
+  const price = ratioResult?.price
+  if (!price) return null
+
+  const val = t => (t && typeof t === 'object' ? t.value : t)
+  const rows = data?.incomeHistory || []
+  const latest = rows[rows.length - 1] || {}
+  const payoutPct = val(latest.dividendPayout)
+  const eps = val(latest.eps) ?? ratioResult?.eps
+
+  let dps = null, basis = null
+  if (payoutPct != null && payoutPct > 0 && eps != null && eps > 0) {
+    dps = eps * (payoutPct / 100)
+    basis = `${payoutPct.toFixed(0)}% payout`
+  } else {
+    const y = ratioResult?.ratios?.divYield?.value
+    if (y != null && y > 0) {
+      // Yahoo → fraction; Screener key-stats → percent.
+      const frac = data?.source === 'screener' ? y / 100 : y
+      dps = frac * price
+      basis = `${(frac * 100).toFixed(2)}% yield`
+    }
+  }
+
+  if (dps == null || !(dps > 0)) {
+    return <span className="text-xs text-slate-600" title="No dividend data available">💰 No dividend data</span>
+  }
+
+  const annual = (INVEST / price) * dps       // cash per year on ₹10,000 invested
+  const yieldPct = (dps / price) * 100
+
+  return (
+    <span className="text-xs text-slate-400"
+      title={`Based on ${basis}. Approx ${cur}${annual.toFixed(0)} a year on ${cur}${INVEST.toLocaleString('en-IN')} invested at the current price (${yieldPct.toFixed(2)}% yield). Past dividends are not a promise of future ones.`}>
+      💰 <span className="text-slate-200">{cur}{annual.toFixed(0)}</span>
+      <span className="text-slate-500">/yr per {cur}{(INVEST / 1000).toFixed(0)}k</span>
+    </span>
   )
 }
 

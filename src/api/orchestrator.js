@@ -13,6 +13,7 @@
 
 import { fetchYahoo }   from './yahoo.js'
 import { fetchScreener } from './screener.js'
+import { fetchSec, isUsTicker } from './secClient.js'
 import { validateScreenerHistory } from '../engine/screenerValidation.js'
 
 export async function fetchTicker(rawTicker, onProgress) {
@@ -20,6 +21,21 @@ export async function fetchTicker(rawTicker, onProgress) {
   const bare = rawTicker.trim().toUpperCase().replace(/\.(NS|BO)$/i, '')
 
   log('Fetching financial data…', 1)
+
+  // ── US tickers: Yahoo (price/meta) + SEC EDGAR (deep annual history) ────────
+  // SEC fills Screener's slot for US stocks — automatic, no paste. Any SEC
+  // failure falls through to the Yahoo-only result, i.e. previous behaviour.
+  if (isUsTicker(rawTicker)) {
+    const [yRes, secRes] = await Promise.allSettled([fetchYahoo(rawTicker), fetchSec(rawTicker)])
+    if (yRes.status !== 'fulfilled') throw new Error('UPLOAD_REQUIRED')
+    const yahooData = yRes.value
+    if (secRes.status !== 'fulfilled' || !secRes.value) {
+      console.info('[orchestrator] SEC unavailable:', secRes.reason?.message || 'no data')
+      return { source: 'yahoo', raw: yahooData }
+    }
+    log('Merging SEC filing history…', 2)
+    return { source: 'sec-merged', raw: { yahoo: yahooData, sec: secRes.value } }
+  }
 
   // Yahoo and Screener in parallel
   const [yahooResult, screenerResult] = await Promise.allSettled([
@@ -76,3 +92,4 @@ export async function fetchTicker(rawTicker, onProgress) {
     validation
   }
 }
+

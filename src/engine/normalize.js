@@ -12,6 +12,7 @@ export function normalize(source, raw, validHistoricalYears = null) {
   if (source === 'yahoo')    return normalizeYahoo(raw)
   if (source === 'screener') return normalizeScreener(raw)
   if (source === 'merged')   return normalizeMerged(raw, validHistoricalYears)
+  if (source === 'sec-merged') return normalizeSecMerged(raw)
   if (source === 'csv')      return raw
   throw new Error(`Unknown source: ${source}`)
 }
@@ -498,4 +499,56 @@ function mergeTTM(y, s) {
     if (out[k]?.value == null && s[k]?.value != null) out[k] = s[k]
   }
   return out
+}
+
+
+// ── SEC (US tickers) ─────────────────────────────────────────────────────────
+// SEC EDGAR fills the same slot Screener fills for Indian tickers: deep annual
+// history. Yahoo still supplies price / marketCap / priceHistory / meta / ttm.
+//
+// Same merge contract as normalizeMerged: Yahoo ALWAYS wins for overlapping
+// years; SEC only contributes years Yahoo doesn't have (pre-Yahoo history). No
+// validation list is needed — SEC is the primary filing source, not a scrape.
+//
+// raw = { yahoo, sec } where sec = { incomeHistory, balanceHistory, cashflowHistory }
+// with PLAIN NUMBER fields; we tag them here to match the app's row shape.
+function normalizeSecMerged({ yahoo, sec }) {
+  const y = normalizeYahoo(yahoo)
+  if (!sec || sec.error) return y
+
+  const tagRow = (row, fields) => {
+    const out = { year: String(row.year) }
+    for (const f of fields) out[f] = row[f] != null ? src(row[f]) : unavailable()
+    return out
+  }
+
+  const INCOME_F  = ['revenue', 'expenses', 'grossProfit', 'operatingProfit', 'ebitda',
+                     'depreciation', 'interest', 'otherIncome', 'netProfit', 'eps']
+  const BALANCE_F = ['totalAssets', 'totalEquity', 'totalDebt', 'cash',
+                     'currentAssets', 'currentLiabilities']
+  const CF_F      = ['operatingCF', 'capex', 'freeCashFlow']
+
+  // Append only the years Yahoo lacks — never override a Yahoo year.
+  const fill = (yRows, secRows, fields) => {
+    const have = new Set((yRows || []).map(r => r.year))
+    const extra = (secRows || [])
+      .filter(r => r.year && !have.has(String(r.year)))
+      .map(r => tagRow(r, fields))
+    return [...extra, ...(yRows || [])].sort((a, b) => a.year.localeCompare(b.year))
+  }
+
+  const incomeHistory   = fill(y.incomeHistory,   sec.incomeHistory,   INCOME_F)
+  const balanceHistory  = fill(y.balanceHistory,  sec.balanceHistory,  BALANCE_F)
+  const cashflowHistory = fill(y.cashflowHistory, sec.cashflowHistory, CF_F)
+
+  const added = incomeHistory.length - (y.incomeHistory?.length || 0)
+
+  return {
+    ...y,
+    source:          added > 0 ? 'merged' : 'yahoo',
+    historyYears:    added,          // extra years SEC contributed
+    incomeHistory,
+    balanceHistory,
+    cashflowHistory,
+  }
 }
