@@ -18,7 +18,7 @@ import ProvenanceTag from '../ProvenanceTag.jsx'
  * elevating to Very Wide (or any manual change) rests on a qualitative overlay
  * the engine can't grade, so it's a user action, clearly marked as override.
  */
-export default function MoatQualityPanel() {
+export default function MoatQualityPanel({ open, onClose }) {
   const { state } = useApp()
   const { data, ratioResult } = state
   const [override, setOverride] = useState(null)     // { tier, reason }
@@ -36,7 +36,7 @@ export default function MoatQualityPanel() {
     })
   }, [data, ratioResult, state.holdingsData, state.arData, override])
 
-  if (!result) return null
+  if (!open || !result) return null
   const { moat, quality, implication, metrics, dataFlags } = result
   const bothPresent = result.gated
 
@@ -51,6 +51,7 @@ export default function MoatQualityPanel() {
           <span className="text-[11px] text-slate-500">
             {bothPresent ? 'Full (Screener + AR)' : 'Ratios-only'}
           </span>
+          {onClose && <button onClick={onClose} className="text-slate-500 hover:text-white text-lg leading-none">✕</button>}
         </div>
       </div>
 

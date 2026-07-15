@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { signalColor, signalBadgeClass } from '../../utils/format.js'
 import DCFScenarioPanel from './DCFScenarioPanel.jsx'
@@ -6,6 +6,7 @@ import { expectationInsight, primaryExpectation } from '../../engine/valuation.j
 import AIVerdict from './AIVerdict.jsx'
 import NewsModal from './NewsModal.jsx'
 import AnalystTargetLine from './AnalystTargetLine.jsx'
+import { assessMoatQuality } from '../../engine/moatQuality.js'
 
 // 27-combination verdict matrix
 const VERDICTS = {
@@ -64,6 +65,17 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
   const me = { primary: mePrimary }
   const ratios = ratioResult?.ratios
 
+  // Moat/Quality snapshot for the tile — same engine + inputs the detail panel uses.
+  const moatResult = useMemo(() => {
+    if (!ratioResult) return null
+    try {
+      return assessMoatQuality(state.data, ratioResult, {
+        holdings: state.holdingsData || null,
+        arData: state.arData || null,
+      })
+    } catch { return null }
+  }, [state.data, ratioResult, state.holdingsData, state.arData])
+
   if (!valuation) return null
 
   const cur      = state.data?.currency === 'INR' ? '₹' : '$'
@@ -83,7 +95,7 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
       <div className="order-2 lg:order-1">
       <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-1
                       sm:grid sm:grid-cols-2 sm:overflow-visible sm:pb-0
-                      lg:grid-cols-4">
+                      lg:grid-cols-5">
 
         {/* ── VALUATION ──────────────────────────────────────────────────────── */}
         <PillarCard
@@ -192,6 +204,35 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
             <div className="text-sm text-slate-500">Insufficient data for expectation analysis</div>
           )}
         </PillarCard>
+
+        {/* ── MOAT & QUALITY ─────────────────────────────────────────────── */}
+        <PillarCard
+          title="🏰 MOAT & QUALITY"
+          badge={moatResult?.moat?.tier}
+          onExpand={() => onExpand('moat')}
+          isExpanded={expanded === 'moat'}>
+          {moatResult ? (
+            <div className="space-y-1">
+              <div className={`text-xl font-bold ${moatColor(moatResult.moat.tier)}`}>
+                {moatResult.moat.tier}
+              </div>
+              <div className="text-xs text-slate-400">moat strength</div>
+              <div className="text-xs text-slate-500">Quality: {moatResult.quality.tier}</div>
+              {moatResult.metrics?.roce?.median != null &&
+                <div className="text-xs text-slate-500">ROCE: {moatResult.metrics.roce.median.toFixed(1)}%</div>}
+              {moatResult.metrics?.grossMargin?.median != null &&
+                <div className="text-xs text-slate-500">
+                  Gross margin: {moatResult.metrics.grossMargin.median.toFixed(1)}%
+                  {moatResult.metrics.grossMargin.estimated ? ' (est)' : ''}
+                </div>}
+              <div className="text-xs text-slate-500">
+                {moatResult.gated ? 'Full (Screener + AR)' : 'Ratios-only'}
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-slate-500">Insufficient data for moat assessment</div>
+          )}
+        </PillarCard>
       </div>
       </div>
 
@@ -231,6 +272,8 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
   )
 }
 
+const moatColor = t => (t === 'Very Wide' || t === 'Wide') ? 'text-bull' : t === 'Narrow' ? 'text-neutral' : 'text-bear'
+
 function PillarCard({ title, badge, children, onExpand, isExpanded }) {
   return (
     <div
@@ -242,8 +285,8 @@ function PillarCard({ title, badge, children, onExpand, isExpanded }) {
         <span className="text-xs font-semibold text-slate-300">{title}</span>
         {badge && (
           <span className={`badge text-xs ${
-            ['EXCELLENT','HEALTHY','BULLISH','UNDERVALUED'].includes(badge) ? 'badge-bull' :
-            ['WEAK','BEARISH','OVERVALUED'].includes(badge) ? 'badge-bear' : 'badge-neutral'
+            ['EXCELLENT','HEALTHY','BULLISH','UNDERVALUED','Very Wide','Wide'].includes(badge) ? 'badge-bull' :
+            ['WEAK','BEARISH','OVERVALUED','None'].includes(badge) ? 'badge-bear' : 'badge-neutral'
           }`}>{badge.replace(/_/g,' ')}</span>
         )}
       </div>

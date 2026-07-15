@@ -110,7 +110,7 @@ function Dashboard() {
                     <FundamentalsPanel open={expanded === 'fundamentals'} onClose={() => setExpanded(null)} />
                   </div>
                   <div id="panel-moat">
-                    <MoatQualityPanel />
+                    <MoatQualityPanel open={expanded === 'moat'} onClose={() => setExpanded(null)} />
                   </div>
                   <div id="panel-technicals">
                     <TechnicalsPanel open={expanded === 'technicals'} onClose={() => setExpanded(null)} />
