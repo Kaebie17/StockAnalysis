@@ -32,28 +32,82 @@ export function applyDocFacts(data, arData) {
   }
   const HISTORY = { income: 'incomeHistory', balance: 'balanceHistory', cashflow: 'cashflowHistory' }
 
+  // Land each figure on the year the DOCUMENT is for, not blindly on the latest
+  // row. An FY23 annual report's cash belongs on FY23. Dropping it on FY25 was a
+  // bug I introduced — silent, and exactly the class of thing this whole exercise
+  // is about. No year in the slot, or no matching row, means we don't guess.
+  const yearOf = (asOf) => {
+    const m = String(asOf || '').match(/(?:FY)?\s*'?((?:19|20)?\d{2})/)
+    if (!m) return null
+    const n = parseInt(m[1], 10)
+    return String(n < 100 ? 2000 + n : n)
+  }
+
   const out = { ...data }
   let filled = 0
   for (const [table, fields] of Object.entries(TARGETS)) {
     const key  = HISTORY[table]
     const rows = out[key]
     if (!rows?.length) continue
-    const last = { ...rows[rows.length - 1] }
+    const next = rows.map(r => ({ ...r }))
     for (const f of fields) {
-      const v = slots[f]?.value
-      if (v == null) continue
-      if (last[f]?.value != null) continue          // a real source already has it
-      last[f] = {
-        value: v * scale,
+      const slot = slots[f]
+      if (slot?.value == null) continue
+      const yr  = yearOf(slot.asOf)
+      const idx = yr ? next.findIndex(r => String(r.year) === yr) : -1
+      if (idx === -1) continue                      // unknown period -> don't guess
+      if (next[idx][f]?.value != null) continue     // a real source already has it
+      next[idx][f] = {
+        value: slot.value * scale,
         status: 'document',
-        formula: `From filing (${slots[f].asOf || 'annual report'})`,
+        formula: `From filing (${slot.asOf})`,
       }
       filled++
     }
-    out[key] = [...rows.slice(0, -1), last]
+    out[key] = next
   }
   if (filled > 0) out.docFilled = filled
   return out
+}
+
+/**
+ * Scrub fabrications out of a record saved by an older build.
+ *
+ * What gets stored is `state.data` — the PROCESSED object, not the raw paste. So
+ * every invented value the old code produced is frozen inside every saved record:
+ *
+ *   freeCashFlow  = operatingCF x 0.7   (a 30%-of-OCF capex assumption)
+ *   cash          = unavailable, then `?? 0` downstream
+ *   totalDebt     = 0, tagged 'source', when the debt line wasn't read
+ *
+ * Left alone, the new code reads that stored FCF, sees a number, and reports it
+ * as "Reported Free Cash Flow" — the fabrication survives AND gets a better
+ * label than it had. So it has to be stripped on load.
+ *
+ * Identified by the formula text the old build wrote, which is exact and safe.
+ * Once stripped, FCF re-derives properly: opCF - capex, or the labelled
+ * CapEx ~ Depreciation estimate, or nothing.
+ *
+ * NOT scrubbed: totalDebt of 0 tagged 'source'. The old build wrote that both for
+ * "no debt line found" and for "genuinely zero debt" — they're indistinguishable
+ * after the fact. Rare, and a re-paste fixes it.
+ *
+ * Call this on anything read from cache or Supabase, before calcRatios.
+ */
+export function migrateStoredData(data) {
+  if (!data?.cashflowHistory) return data
+  const STALE = /Operating CF\s*[x\u00d7*]\s*0\.7/i
+  let scrubbed = 0
+  const cashflowHistory = data.cashflowHistory.map(row => {
+    const f = row?.freeCashFlow
+    if (f?.formula && STALE.test(f.formula)) {
+      scrubbed++
+      return { ...row, freeCashFlow: unavailable() }
+    }
+    return row
+  })
+  if (!scrubbed) return data
+  return { ...data, cashflowHistory, migrated: scrubbed }
 }
 
 export function normalize(source, raw) {
@@ -407,7 +461,7 @@ function normalizeScreener(raw) {
     totalDebt:        scaleCr(r.totalDebt),
     totalAssets:      scaleCr(r.totalAssets),
     totalLiabilities: scaleCr(r.totalLiabilities),
-    fixedAssets:      scaleCr(r.fixedAssets),
+    fixedAssets:      scaleCr(r.fixedAssets),   // visible row — feeds the CapEx estimate
     investments:      scaleCr(r.investments),
     cash:             scaleCr(r.cash),   // Other Assets "+" -> Cash Equivalents
     currentAssets:      unavailable(),

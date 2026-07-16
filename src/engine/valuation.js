@@ -77,12 +77,15 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   if (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf) {
     const perShare = dcfPerShare(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntG, ntY)
     if (perShare != null) {
+      const caveats = [
+        r.fcfEstimated && 'FCF estimated (CapEx ≈ Depreciation) — no CapEx reported',
+        r.cashEstimated && 'Cash not reported — assumed nil, fair value understated',
+        r.debtEstimated && 'Debt estimated from Equity × D/E',
+      ].filter(Boolean)
       results.dcf = {
         value: perShare,
-        note: r.fcfEstimated
-          ? 'FCF estimated (CapEx ≈ Depreciation) — no CapEx reported'
-          : 'FCF-based',
-        estimated: !!r.fcfEstimated,
+        note: caveats.length ? caveats.join('; ') : 'FCF-based',
+        estimated: caveats.length > 0,
       }
     }
   }
@@ -93,10 +96,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   }
 
   // ── EV/EBITDA ── uses stock's actual multiple as anchor ───────────────────────
-  // cash/debt must be KNOWN to bridge EV -> equity. `|| 0` used to fake a
-  // debt-free, cash-free balance sheet and hand back a confident price.
-  if (isApplicable('evEbitda', modelMeta) && r.ebitda > 0 && r.shares
-      && r.cash != null && r.totalDebt != null) {
+  if (isApplicable('evEbitda', modelMeta) && r.ebitda > 0 && r.shares && r.totalDebt != null) {
     const impliedEV = r.ebitda * sectorEvEb
     const impliedEq = impliedEV + r.cash - r.totalDebt
     const perShare  = impliedEq / r.shares
@@ -132,8 +132,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   }
 
   // ── EV / Operating Profit ─────────────────────────────────────────────────────
-  if (isApplicable('evGrossProfit', modelMeta) && r.opProfit > 0 && r.shares
-      && r.cash != null && r.totalDebt != null) {
+  if (isApplicable('evGrossProfit', modelMeta) && r.opProfit > 0 && r.shares && r.totalDebt != null) {
     const impliedEV = r.opProfit * 8
     const perShare  = (impliedEV + r.cash - r.totalDebt) / r.shares
     if (perShare > 0) results.evGrossProfit = { value: perShare, note: 'Op.Profit × 8×' }
@@ -221,10 +220,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // ── Reverse DCF ───────────────────────────────────────────────────────────────
   let impliedGrowth = null
   const cfForRev = r.fcf > 0 ? r.fcf : null      // same rule as the DCF above
-  // `|| 0` on debt and cash silently treated "unknown" as "zero", which is how
-  // the old code produced a confident implied growth for a company whose balance
-  // sheet we hadn't actually read. Unknown means we don't solve.
-  if (cfForRev && r.price > 0 && r.shares && r.totalDebt != null && r.cash != null) {
+  if (cfForRev && r.price > 0 && r.shares && r.totalDebt != null) {
     const targetEV = r.price * r.shares + r.totalDebt - r.cash
     impliedGrowth  = solveGrowth(cfForRev, targetEV, wacc, termGrowth, projYears)
   }
@@ -362,8 +358,8 @@ function estimateGrowth(r) {
 
 // Enterprise PV → equity value per share, with a growth fade toward terminal.
 function dcfPerShare(cfBase, g, wacc, tg, yrs, cash, debt, shares, ntGrowth = null, ntYears = 0) {
-  // cash/debt unknown -> no per-share bridge. Was `(cash || 0) - (debt || 0)`,
-  // which quietly valued an unknown balance sheet as a pristine one.
+  // cash/debt are never null now — ratios.js assumes nil cash and flags it, so the
+  // bridge always runs. The flag rides along on r.bsEstimated and the note below.
   if (!(cfBase > 0) || !(shares > 0) || wacc <= tg) return null
   if (cash == null || debt == null) return null
   const ev = dcfEV(cfBase, g, wacc, tg, yrs, ntGrowth, ntYears)

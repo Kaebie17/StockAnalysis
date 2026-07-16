@@ -99,41 +99,71 @@ export function calcRatios(data) {
     const eq = val(latestB.totalEquity) ?? val(ttm?.totalEquity)
     if (de != null && eq != null && de >= 0) { totalDebt = eq * (de / 100); debtEstimated = true }
   }
-  // NO `?? 0`. Cash has no source on the Indian path, and defaulting it to zero
-  // silently reported ev/netDebt/evEbitda/netDebtRatio as if the company held no
-  // cash. Unknown cash means unknown EV — that is the honest answer.
-  const cash        = val(latestB.cash)        ?? val(ttm?.cash)       ?? null
-  const opCF        = val(latestCF.operatingCF) ?? val(ttm?.operatingCF)
-  const capex       = val(latestCF.capex)
-
-  // FCF, in order of how much we actually know:
-  //   1. reported outright
-  //   2. Operating CF - real CapEx        <- this derivation never existed
-  //   3. Yahoo's TTM figure
-  //   4. Operating CF - Depreciation      <- ESTIMATE, and labelled as one
+  // Cash: statement -> TTM -> nothing. No assumed zero.
   //
-  // Route 4 replaces the old `opCF x 0.7`, which was a 30%-of-OCF capex figure
-  // picked out of the air and tagged as if reported. CapEx ~ Depreciation is the
-  // steady-state assumption: a company replacing assets at the rate they wear out
-  // spends roughly what it depreciates. It uses the company's own reported number
-  // instead of a made-up percentage, and depreciation is a base metric so it's
-  // always there. It flatters a company mid-expansion, which is why it carries a
-  // visible 'estimated' tag rather than passing as fact.
+  // There is no honest estimate for a cash LEVEL. The roll-forward (last year's
+  // cash + the three cash flows) is exact but needs a cash balance to start from
+  // — and if we had one, cash wouldn't be missing. Nothing else in the statements
+  // pins down a level. Assuming nil would silently overstate EV and net debt and
+  // understate DCF fair value, which is a wrong valuation, not a cautious one.
+  const cash          = val(latestB.cash) ?? val(ttm?.cash) ?? null
+  const cashEstimated = false
+  const opCF        = val(latestCF.operatingCF) ?? val(ttm?.operatingCF)
+
+  // CapEx, in order of how much we actually know:
+  //   1. reported
+  //   2. (Fixed Assets this year − last year) + Depreciation   <- catches GROWTH
+  //   3. Depreciation alone                                    <- MAINTENANCE only
+  //
+  // Rung 3 is owner earnings: what the business throws off if it stops expanding.
+  // For a company mid-expansion it OVERSTATES FCF, which overstates fair value
+  // and makes the stock look cheap — the dangerous direction. Rung 2 fixes that,
+  // because an expanding company's asset base grows and depreciation alone can't
+  // see it. Fixed Assets is a plain visible row on Screener, no "+" needed. It
+  // misses disposals and revaluations, so it's still an estimate — but of TOTAL
+  // capex, not just the maintenance slice.
+  //
+  // None of these is the old `opCF x 0.7`: that was a constant, identical for
+  // every company, measuring nothing.
+  const _bRows      = realRows(balanceHistory)
+  const prevB       = _bRows[_bRows.length - 2] || {}
+  const fixedNow    = val(latestB.fixedAssets)
+  const fixedPrev   = val(prevB.fixedAssets)
+
+  let capex      = val(latestCF.capex)
+  let capexBasis = capex != null ? 'reported' : null
+  if (capex == null && fixedNow != null && fixedPrev != null && depreciation != null) {
+    const c = (fixedNow - fixedPrev) + depreciation
+    // negative = net disposals outran additions; don't claim a capex from that
+    if (c >= 0) { capex = c; capexBasis = 'delta-fixed-assets' }
+  }
+  if (capex == null && depreciation != null) { capex = depreciation; capexBasis = 'depreciation' }
+
+  // FCF = Operating CF − CapEx, at whatever rung the CapEx came from. The rung is
+  // carried through, because the three are NOT equally trustworthy.
   let fcf = val(latestCF.freeCashFlow)
   let fcfBasis = fcf != null ? 'reported' : null
-  if (fcf == null && opCF != null && capex != null) { fcf = opCF - capex; fcfBasis = 'derived' }
-  if (fcf == null) { const t = val(ttm?.freeCashFlow); if (t != null) { fcf = t; fcfBasis = 'ttm' } }
-  if (fcf == null && opCF != null && depreciation != null) {
-    fcf = opCF - depreciation
-    fcfBasis = 'estimated'
+  if (fcf == null && opCF != null && capex != null) {
+    fcf = opCF - capex
+    fcfBasis = capexBasis === 'reported'           ? 'derived'
+             : capexBasis === 'delta-fixed-assets' ? 'estimated-total'
+             : 'estimated-maintenance'
   }
-  const fcfEstimated = fcfBasis === 'estimated'
-  const fcfNote = fcfBasis === 'reported'  ? 'Reported Free Cash Flow'
-                : fcfBasis === 'derived'   ? 'Operating CF − CapEx'
-                : fcfBasis === 'ttm'       ? 'TTM Free Cash Flow'
-                : fcfBasis === 'estimated' ? 'Operating CF − Depreciation (CapEx ≈ Depreciation, steady-state assumption)'
-                : null
+  if (fcf == null) { const t = val(ttm?.freeCashFlow); if (t != null) { fcf = t; fcfBasis = 'ttm' } }
+
+  const fcfEstimated       = fcfBasis === 'estimated-total' || fcfBasis === 'estimated-maintenance'
+  const fcfMaintenanceOnly = fcfBasis === 'estimated-maintenance'
+  const fcfNote = fcfBasis === 'reported' ? 'Reported Free Cash Flow'
+    : fcfBasis === 'derived' ? 'Operating CF − CapEx'
+    : fcfBasis === 'estimated-total' ? 'Operating CF − CapEx (CapEx ≈ Δ Fixed Assets + Depreciation)'
+    : fcfBasis === 'estimated-maintenance' ? 'Operating CF − Depreciation (maintenance CapEx only — growth CapEx excluded, so FCF is overstated)'
+    : fcfBasis === 'ttm' ? 'TTM Free Cash Flow'
+    : null
   FCF_BASIS = { estimated: fcfEstimated, note: fcfNote || 'FCF unavailable' }
+  BS_BASIS  = {
+    estimated: debtEstimated,
+    note: debtEstimated ? 'Debt not reported — estimated from Equity × D/E' : '',
+  }
   const totalAssets = val(latestB.totalAssets)
   const fixedAssets = val(latestB.fixedAssets)
 
@@ -293,7 +323,10 @@ export function calcRatios(data) {
     price, marketCap, ev, shares,
     revenue, opProfit, ebitda, netProfit, interest, depreciation,
     totalEquity, totalDebt, cash, netDebt, capitalEmployed, totalAssets,
-    opCF, fcf, fcfBasis, fcfEstimated, debtEstimated, eps, bookPerShare, grahamNumber,
+    opCF, fcf, fcfBasis, fcfEstimated, fcfMaintenanceOnly, capex, capexBasis,
+    debtEstimated, cashEstimated,
+    bsEstimated: cashEstimated || debtEstimated,
+    eps, bookPerShare, grahamNumber,
 
     // Tagged ratios (used by UI for display + tooltips)
     ratios: {
@@ -309,13 +342,13 @@ export function calcRatios(data) {
       // Leverage
       de:              tag(de,              'calculated', 'Total Debt ÷ Total Equity'),
       icr:             tag(icr,             'calculated', 'EBITDA ÷ Interest Expense'),
-      netDebtRatio:    tag(div(netDebt, ebitda), 'calculated', 'Net Debt ÷ EBITDA'),
+      netDebtRatio:    tagBs(div(netDebt, ebitda), 'calculated', 'Net Debt ÷ EBITDA'),
       // Valuation multiples
       pe:              tag(pe,              pe === meta?.pe ? 'source-reference' : 'calculated', 'Price ÷ EPS'),
       pb:              tag(pb,              pb === meta?.pb ? 'source-reference' : 'calculated', 'Price ÷ Book Value per Share'),
       ps:              tag(ps,              'calculated', 'Market Cap ÷ Revenue'),
-      evEbitda:        tag(evEbitda,        'calculated', 'EV ÷ EBITDA'),
-      evRevenue:       tag(evRevenue,       'calculated', 'EV ÷ Revenue'),
+      evEbitda:        tagBs(evEbitda,        'calculated', 'EV ÷ EBITDA'),
+      evRevenue:       tagBs(evRevenue,       'calculated', 'EV ÷ Revenue'),
       grahamNumber:    tag(grahamNumber,    'calculated', '√(22.5 × EPS × Book Value per Share)'),
       // Growth
       revCagr:         tag(revCagr,         'calculated', `Revenue CAGR over ${n} years`),
@@ -366,6 +399,18 @@ function tagFcf(value, status, formula = null) {
 }
 
 let FCF_BASIS = { estimated: false, note: '' }
+let BS_BASIS  = { estimated: false, note: '' }
+
+/**
+ * Tag a ratio built on the balance sheet. If cash or debt was assumed rather than
+ * read, every multiple standing on it says so — an assumption can't launder
+ * itself into a clean number one layer up.
+ */
+function tagBs(value, status, formula = null) {
+  if (value == null) return tag(null, 'unavailable', formula)
+  if (BS_BASIS.estimated) return tag(value, 'estimated', `${formula} — ${BS_BASIS.note}`)
+  return tag(value, status, formula)
+}
 
 function tag(value, status, formula = null) {
   return { value: value ?? null, status: value != null ? (status || 'calculated') : 'unavailable', formula }

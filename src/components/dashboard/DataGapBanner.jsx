@@ -2,10 +2,11 @@
 import React from 'react'
 import { findMissingBaseMetrics } from '../../engine/dataGaps.js'
 
-export default function DataGapBanner({ ratioResult, data, onFix }) {
+export default function DataGapBanner({ ratioResult, data, dismissed = [], onDismiss, onFix }) {
   // `data` is required: capex and cogs sit on the history rows, not on
   // ratioResult. Called without it they read as permanently missing.
-  const { hasGaps, missing, byTable, softGaps, nextStep } = findMissingBaseMetrics(ratioResult, data)
+  const { hasGaps, missing, byTable, softGaps, nextStep, dismissed: hiddenGaps } =
+    findMissingBaseMetrics(ratioResult, data, dismissed)
   if (!hasGaps && !softGaps.length) return null
 
   const tableCount = Object.keys(byTable).length
@@ -18,7 +19,23 @@ export default function DataGapBanner({ ratioResult, data, onFix }) {
         <span className="shrink-0">⚠️</span>
         <span className="text-slate-300 min-w-0">
           <span className="text-neutral font-medium">{missing.length} metric{missing.length > 1 ? 's' : ''} missing</span>
-          {' '}{nextStep === 'ar' ? 'after Screener/SEC' : 'from Yahoo'}: <span className="text-slate-400">{metricNames}</span>
+          {' '}{nextStep === 'ar' ? 'after Screener/SEC' : 'from Yahoo'}:{' '}
+          {missing.map((m, i) => (
+            <span key={m.metric} className="text-slate-400">
+              {m.label}
+              {onDismiss && (
+                <button
+                  onClick={() => onDismiss(m.metric)}
+                  title={`${m.label} isn't reported for this company — stop asking`}
+                  className="ml-0.5 text-slate-600 hover:text-slate-300"
+                >×</button>
+              )}
+              {i < missing.length - 1 ? ', ' : ''}
+            </span>
+          ))}
+          {hiddenGaps.length > 0 && (
+            <span className="text-slate-600"> · {hiddenGaps.length} hidden</span>
+          )}
           {softGaps.length > 0 && (
             <span className="text-slate-500"> · {softGaps.map(g => g.label).join(', ')} estimated</span>
           )}

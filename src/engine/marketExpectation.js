@@ -202,7 +202,6 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
   const historicalRevGrowth = r?.ratios?.revCagr5y?.value ?? r?.ratios?.revCagr?.value
   // EV target for the EV/Sales variant (equity market cap ignores net debt, which
   // overstates sales-implied growth for levered firms). Earnings uses P/E → equity.
-  // `|| 0` treated unknown net debt as zero net debt. Unknown means no target.
   const evTarget = (marketCap != null && r?.netDebt != null) ? marketCap + r.netDebt : null
   const historicalNPGrowth  = r?.ratios?.npGrowthYoY?.value
 
@@ -291,9 +290,11 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
     variants.fcf = {
       applicable: true,
       label: 'FCF-based',
-      note: r?.fcfEstimated
-        ? 'FCF estimated as Operating CF − Depreciation (CapEx ≈ Depreciation). No CapEx reported — treat as indicative.'
-        : 'Uses Free Cash Flow — most precise for cash-generative businesses.',
+      note: [
+        r?.fcfEstimated && 'FCF estimated as Operating CF − Depreciation (CapEx ≈ Depreciation).',
+        r?.cashEstimated && 'Cash not reported — assumed nil.',
+        !r?.fcfEstimated && !r?.cashEstimated && 'Uses Free Cash Flow — most precise for cash-generative businesses.',
+      ].filter(Boolean).join(' '),
       base: fcfBase,
       baseLabel: r?.fcfEstimated ? 'Free Cash Flow (estimated)' : 'Free Cash Flow',
       terminalMultiple: termFcfMult,

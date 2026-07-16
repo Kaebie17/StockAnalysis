@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useCallback } from 'react'
 import { AppProvider, useApp } from './store/AppContext.jsx'
 import Header from './components/dashboard/Header.jsx'
@@ -17,7 +18,7 @@ import MoatQualityPanel from './components/dashboard/MoatQualityPanel.jsx'
 import BackupControls from './components/BackupControls.jsx'
 
 function Dashboard() {
-  const { state, applyCSV, setFolderHandle, applyPastedTable } = useApp()
+  const { state, applyCSV, setFolderHandle, applyPastedTable, dismissGap } = useApp()
   const [expanded, setExpanded] = useState(null)
   const [studioOpen, setStudioOpen] = useState(false)
   const [csvModal, setCsvModal] = useState(false)  // 'upload' | 'gap-fill' | false
@@ -101,7 +102,13 @@ function Dashboard() {
               <SummaryStrip onExpand={handleExpand} expanded={expanded} onAddHistory={() => setAddHistoryOpen(true)} detail={
                 <div className="space-y-4">
                   <div className="flex items-center justify-between gap-2">
-                    <DataGapBanner ratioResult={state.ratioResult} data={state.data} onFix={() => setGapFillOpen(true)} />
+                    <DataGapBanner
+                      ratioResult={state.ratioResult}
+                      data={state.data}
+                      dismissed={state.arData?.dismissedGaps || []}
+                      onDismiss={dismissGap}
+                      onFix={() => setGapFillOpen(true)}
+                    />
                   </div>
                   <div id="panel-valuation">
                     <ValuationPanel open={expanded === 'valuation'} onClose={() => setExpanded(null)} />

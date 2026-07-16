@@ -1,7 +1,7 @@
 
 import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react'
 import { fetchTicker } from '../api/orchestrator.js'
-import { normalize } from '../engine/normalize.js'
+import { normalize, applyDocFacts, migrateStoredData } from '../engine/normalize.js'
 import { calcRatios } from '../engine/ratios.js'
 import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
@@ -68,13 +68,13 @@ function reducer(s, a) {
       }
       const newHistory = Object.values(merged).sort((x, y) => x.year.localeCompare(y.year))
       const data = { ...s.data, [histKey]: newHistory, source: 'merged' }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights)
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData)
       return { ...s, data, ...computed }
     }
     case 'PRICE_UPDATE': {
       if (!s.data || a.price == null) return s
       const data = { ...s.data, price: a.price, marketCap: a.marketCap ?? s.data.marketCap }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights)
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData)
       return { ...s, data, ...computed }
     }
     case 'SWAP_FIELD':    return { ...s, ...a.payload }
@@ -83,7 +83,26 @@ function reducer(s, a) {
   }
 }
 
-function computeAll(data, assumptions, meAssumptions, weights) {
+/**
+ * The single chokepoint: every path that produces a dashboard goes through here.
+ * So the two data-repair steps live here rather than being sprinkled over eight
+ * call sites where one would inevitably get missed.
+ *
+ *   migrateStoredData — strips fabrications frozen into records saved by older
+ *     builds. What gets stored is the PROCESSED object, not the raw paste, so an
+ *     old record carries `freeCashFlow = operatingCF x 0.7` as a real number.
+ *     Left alone the new code reads it, sees a value, and reports it as
+ *     "Reported Free Cash Flow" — the fabrication survives with a better label.
+ *
+ *   applyDocFacts — figures the user pulled out of a filing, dropped onto the
+ *     year they belong to. Documents rank LAST: behind Yahoo, Screener and SEC.
+ *     Nothing here overwrites a real source; it only fills holes.
+ *
+ * Returns `data` alongside the computed blocks, so callers spreading
+ * `{ ...s, data, ...computed }` pick up the repaired copy automatically.
+ */
+function computeAll(data, assumptions, meAssumptions, weights, arData = null) {
+  data = applyDocFacts(migrateStoredData(data), arData)
   const ratioResult = calcRatios(data)
   const sectorType  = detectSectorType(data)
   const stage       = detectStage(data, ratioResult)
@@ -91,7 +110,7 @@ function computeAll(data, assumptions, meAssumptions, weights) {
   const technicals  = runTechnicals(data.priceHistory || [])
   const quality     = scoreQuality(data, ratioResult, weights)
   const marketExpectation = runMarketExpectation(data, ratioResult, stage, sectorType, meAssumptions)
-  return { ratioResult, sectorType, stage, valuation, technicals, quality, marketExpectation }
+  return { data, ratioResult, sectorType, stage, valuation, technicals, quality, marketExpectation }
 }
 
 export function AppProvider({ children }) {
@@ -101,7 +120,7 @@ export function AppProvider({ children }) {
   // pasted-history merge — not just the initial fetch — survives a reload.
   useEffect(() => {
     if (state.status !== 'success' || !state.ticker || !state.data || state.csvActive) return
-    const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}) }
+    const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData) }
     try { setCached(state.ticker, payload) } catch {}
     // Sync merged financials (they hold pasted Screener history the user built).
     // Pure Yahoo data is re-fetchable, so it isn't synced. Shape must match what
@@ -165,7 +184,7 @@ export function AppProvider({ children }) {
           const csvData = await autoLoadOverride(ticker, state.folderHandle)
           if (csvData) {
             const withCSV = applyCSVOverrides(cached.data, csvData)
-            const computed = computeAll(withCSV, {}, {}, {})
+            const computed = computeAll(withCSV, {}, {}, {}, state.arData)
             dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, data: withCSV, csvData, csvActive: true } })
             return
           }
@@ -195,9 +214,9 @@ export function AppProvider({ children }) {
         }
       }
 
-      const computed = computeAll(finalData, {}, {}, {})
+      const computed = computeAll(finalData, {}, {}, {}, state.arData)
       const payload  = { data: finalData, ...computed, csvData, csvActive, validation }
-      await setCached(ticker, { data, ...computeAll(data, {}, {}, {}) })  // cache without CSV
+      await setCached(ticker, { data, ...computeAll(data, {}, {}, {}, state.arData) })  // cache without CSV
       dispatch({ type: 'FETCH_SUCCESS', payload })
 
     } catch (err) {
@@ -216,6 +235,16 @@ export function AppProvider({ children }) {
     const me            = runMarketExpectation(state.data, state.ratioResult, state.stage, state.sectorType, meAssumptions)
     dispatch({ type: 'RECALC', payload: { valuation, quality, marketExpectation: me, assumptions, scoreWeights: weights, meAssumptions } })
   }, [state])
+
+  /** "This figure isn't reported for this company — stop asking." Stored per
+   *  ticker alongside the AR data, so it syncs and survives a reload. It changes
+   *  no number: the estimates already fire on their own. It only silences. */
+  const dismissGap = useCallback((metric) => {
+    const prev = state.arData || {}
+    const list = prev.dismissedGaps || []
+    if (list.includes(metric)) return
+    setQualInputs({ arData: { ...prev, dismissedGaps: [...list, metric] } })
+  }, [state.arData]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const setQualInputs = useCallback((patch) => {
     const next = {
@@ -257,7 +286,7 @@ export function AppProvider({ children }) {
   const applyCSV = useCallback((csvData) => {
     if (!state.data) return
     const withCSV  = applyCSVOverrides(state.data, csvData)
-    const computed = computeAll(withCSV, state.assumptions, state.meAssumptions, state.scoreWeights)
+    const computed = computeAll(withCSV, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData)
     dispatch({ type: 'CSV_APPLIED', payload: { data: withCSV, ...computed, csvData, csvActive: true } })
   }, [state])
 
@@ -265,7 +294,7 @@ export function AppProvider({ children }) {
   const swap = useCallback(async (historyType, year, field) => {
     if (!state.data) return
     const updated  = swapField(state.data, year, historyType, field)
-    const computed = computeAll(updated, state.assumptions, state.meAssumptions, state.scoreWeights)
+    const computed = computeAll(updated, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData)
 
     // Track swap state
     const newSwaps = { ...state.swapState }
@@ -318,7 +347,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs 
+      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap 
     }}>
       {children}
     </AppContext.Provider>

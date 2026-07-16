@@ -71,31 +71,54 @@ function resolvedValues(r, data) {
  *                 deep source.
  *   nextStep    — 'paste' | 'ar' | null
  */
-export function findMissingBaseMetrics(ratioResult, data = null) {
+export function findMissingBaseMetrics(ratioResult, data = null, dismissed = []) {
   const empty = {
-    hasGaps: false, missing: [], byTable: {}, softGaps: [],
+    hasGaps: false, missing: [], byTable: {}, softGaps: [], dismissed: [],
     expandHints: [], arTargets: [], nextStep: null, message: null,
   }
   if (!ratioResult) return empty
 
   const values = resolvedValues(ratioResult, data)
 
+  // Dismissed = "this figure doesn't exist for this company, stop asking".
+  //
+  // It does NOT switch anything to an estimate — the estimates already fire on
+  // their own the moment the real figure is absent (FCF from CapEx ~ Depreciation,
+  // debt from equity x D/E, gross margin from operating margin). Dismissing only
+  // silences the prompt. Where no estimate exists (cash), the metric stays blank
+  // and so do the ratios built on it. Nothing is invented to fill the silence.
+  const hidden = new Set(dismissed || [])
+
   const missing = []
+  const dismissedOut = []
+  const softGapsFromEstimable = []
   for (const [key, val] of Object.entries(values)) {
     const m = METRICS[key]
     if (!m || val != null) continue
-    missing.push({ metric: key, label: m.label, table: m.table, needs: m.needs })
+    const entry = { metric: key, label: m.label, table: m.table, needs: m.needs }
+    if (hidden.has(key)) { dismissedOut.push(entry); continue }
+    // Only demand what you can act on AND what nothing already covers.
+    //
+    // If an estimate is already standing in (capex -> FCF, debt -> equity x D/E),
+    // real data still beats it, but it's a nudge, not a hole: SOFT. And if no
+    // source can supply it, don't ask at all — nagging about a figure that
+    // doesn't exist for this company is noise, and pushing that onto the user to
+    // dismiss is making them do the app's thinking.
+    const actionable = !!m.expandFrom || m.screener?.length > 0 || m.sec?.length > 0 || m.ar?.length > 0
+    if (!actionable) continue
+    if (m.estimable) softGapsFromEstimable.push(entry)
+    else missing.push(entry)
   }
 
   // Present, but resting on an assumption rather than a reported figure.
-  const softGaps = []
-  if (ratioResult.fcfEstimated) {
-    softGaps.push({
-      metric: 'capex',
-      label:  METRICS.capex.label,
-      table:  'cashflow',
-      note:   'Free Cash Flow is estimated (CapEx \u2248 Depreciation). Real CapEx would replace the assumption.',
-    })
+  const softGaps = [...softGapsFromEstimable]
+  // The maintenance-only rung is the one worth flagging loudly: it excludes growth
+  // CapEx, so FCF — and every fair value built on it — is overstated.
+  if (ratioResult.fcfMaintenanceOnly && !hidden.has('capex')) {
+    const i = softGaps.findIndex(g => g.metric === 'capex')
+    const note = 'Free Cash Flow rests on maintenance CapEx only (\u2248 Depreciation). Growth CapEx is excluded, so FCF and fair value are overstated.'
+    if (i >= 0) softGaps[i] = { ...softGaps[i], note }
+    else softGaps.push({ metric: 'capex', label: METRICS.capex.label, table: 'cashflow', note })
   }
 
   const byTable = {}
@@ -114,6 +137,7 @@ export function findMissingBaseMetrics(ratioResult, data = null) {
     missing,
     byTable,
     softGaps,
+    dismissed: dismissedOut,
     expandHints: expandHints(keys),
     arTargets:   arTargets(keys),
     nextStep,

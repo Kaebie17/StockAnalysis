@@ -72,7 +72,14 @@ export default function DocumentReader({ open, onClose }) {
       const chars = pages.reduce((s, p) => s + (p.text?.length || 0), 0)
       setDiag({ pages: pages.length, chars, perPage: pages.length ? Math.round(chars / pages.length) : 0 })
       if (detectScanned(pages)) { setStatus('scanned'); return }
-      const { groups } = extractSections(pages)
+      // The reader hunts for the standing narrative sections PLUS a number field
+      // per metric still missing. This line was the whole point of buildArConfig
+      // and I'd left it calling the default config — so after I removed the
+      // hard-coded materialCost from that config, the reader was hunting for no
+      // numbers at all. Worse than before I touched it.
+      const gaps = findMissingBaseMetrics(state.ratioResult, state.data,
+                                          state.arData?.dismissedGaps || [])
+      const { groups } = extractSections(pages, buildArConfig(gaps.arTargets))
       const seed = {}
       groups.forEach(g => g.blocks.forEach(b => { seed[blockId(b)] = { status: 'pending', text: b.snippet } }))
       setGroups(groups); setDecisions(seed); setStatus('review')

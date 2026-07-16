@@ -176,6 +176,7 @@ export const METRICS = {
     ar: [/total borrowings/i, /\bborrowings\b/i],
     csv: ['totalDebt', 'debt', 'borrowings'],
     needs: 'D/E, net debt, EV, ROCE',
+    estimable: true,     // equity x D/E
   },
   totalAssets: {
     table: 'balance', label: 'Total Assets', base: true,
@@ -189,6 +190,17 @@ export const METRICS = {
     ar: [/total assets/i],
     csv: ['totalAssets', 'assets'],
     needs: 'ROA',
+  },
+  fixedAssets: {
+    table: 'balance', label: 'Fixed Assets', base: true,
+    yahoo: ['netPPE', 'grossPPE'],
+    sec: ['PropertyPlantAndEquipmentNet'],
+    // A plain visible row on Screener — no "+" needed.
+    screener: ['fixedassets', 'netblock', 'propertyplantandequipment'],
+    expandFrom: null,
+    ar: [/property,? plant and equipment/i, /fixed assets/i, /net block/i],
+    csv: ['fixedAssets', 'netPPE'],
+    needs: 'CapEx estimate (Δ Fixed Assets + Depreciation)',
   },
   cash: {
     table: 'balance', label: 'Cash & Equivalents', base: true,
@@ -228,6 +240,9 @@ export const METRICS = {
     ar: [/purchase of (?:property|fixed assets|plant)/i, /capital expenditure/i, /\bcapex\b/i],
     csv: ['capex', 'capitalExpenditure'],
     needs: 'free cash flow, FCF yield, DCF, reverse-DCF',
+    // An estimate exists downstream (see ratios.js), so a missing capex is a SOFT
+    // gap — mentioned, not shouted. Real capex still beats the estimate.
+    estimable: true,
   },
   freeCashFlow: {
     table: 'cashflow', label: 'Free Cash Flow', base: false,   // = operatingCF - capex
@@ -238,6 +253,7 @@ export const METRICS = {
     ar: [/free cash flow/i],
     csv: ['freeCashFlow', 'fcf'],
     needs: 'FCF yield, FCF conversion, DCF',
+    estimable: true,     // opCF - capex, or opCF - depreciation
   },
   investingCF: {
     table: 'cashflow', label: 'Investing Cash Flow', base: true,

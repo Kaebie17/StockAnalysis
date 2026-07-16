@@ -1,8 +1,7 @@
 
 import React, { useState, useEffect } from 'react'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
-import { expandHints as expandersFor } from '../../engine/metrics.js'
-import { METRICS } from '../../engine/metrics.js'
+import { expandHints as expandersFor, METRICS } from '../../engine/metrics.js'
 import { parseHoldings } from '../../engine/parseHoldings.js'
 import { useApp } from '../../store/AppContext.jsx'
 
@@ -137,7 +136,13 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-slate-600">{t.hint}</p>
+                  <p className="text-xs text-slate-600">{t.hint}}
+                  {expandersFor(ALL_METRICS, t.key).map(h => (
+                    <span key={h.expand} className="block text-accent/80">
+                      Click the + on <strong>{h.expand}</strong> before copying — it reveals {h.metrics.join(', ')}
+                    </span>
+                  ))}
+                  {'</p>
                   <textarea
                     value={pasteText[t.key]}
                     onChange={e => { setPasteText(prev => ({ ...prev, [t.key]: e.target.value })); setResults(null) }}
