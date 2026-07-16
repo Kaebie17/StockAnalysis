@@ -1,3 +1,4 @@
+
 /**
  * src/engine/ratios.js
  *
@@ -14,8 +15,21 @@
  *   3. Mark unavailable — never silently return null
  */
 
+/**
+ * THE gross-profit formula. One definition, used by calcRatios (latest year) and
+ * by moatQuality (the full series). {revenue, cogs, grossProfit} is a group: any
+ * two give the third. Sources emit raw fields; this is the only place that knows
+ * how they combine.
+ */
+export function grossProfitOf(row) {
+  const gp  = row?.grossProfit?.value
+  if (gp != null) return gp
+  const rev = row?.revenue?.value, cogs = row?.cogs?.value
+  return (rev != null && cogs != null) ? rev - cogs : null
+}
+
 export function calcRatios(data) {
-  const { price, marketCap, shares: sharesRaw, incomeHistory,
+  const { price, marketCap: marketCapRaw, shares: sharesRaw, incomeHistory,
           balanceHistory, cashflowHistory, ttm, meta } = data
 
   // ── Latest-year snapshot (synthetic-aware, gap-filled) ──────────────────────
@@ -74,15 +88,60 @@ export function calcRatios(data) {
   const equityFromROE = val(ttm?.netProfit) && val(ttm?.roe) && val(ttm?.roe) > 0
     ? val(ttm.netProfit) / val(ttm.roe) : null
   const totalEquity = rawEquity ?? equityFromDE ?? equityFromROE
-  const totalDebt   = val(latestB.totalDebt)   ?? val(ttm?.totalDebt) ?? 0
-  const cash        = val(latestB.cash)        ?? val(ttm?.cash)       ?? 0
+  // Debt: statement -> TTM -> equity x (D/E). The last one is an ESTIMATE and is
+  // flagged, unlike the old `?? 0` which fabricated a debt-free balance sheet and
+  // tagged it 'source' — inflating ROCE and understating EV on any ticker whose
+  // debt line we failed to read.
+  let totalDebt      = val(latestB.totalDebt) ?? val(ttm?.totalDebt) ?? null
+  let debtEstimated  = false
+  if (totalDebt == null) {
+    const de = val(ttm?.debtToEquity)
+    const eq = val(latestB.totalEquity) ?? val(ttm?.totalEquity)
+    if (de != null && eq != null && de >= 0) { totalDebt = eq * (de / 100); debtEstimated = true }
+  }
+  // NO `?? 0`. Cash has no source on the Indian path, and defaulting it to zero
+  // silently reported ev/netDebt/evEbitda/netDebtRatio as if the company held no
+  // cash. Unknown cash means unknown EV — that is the honest answer.
+  const cash        = val(latestB.cash)        ?? val(ttm?.cash)       ?? null
   const opCF        = val(latestCF.operatingCF) ?? val(ttm?.operatingCF)
-  const fcf         = val(latestCF.freeCashFlow) ?? val(ttm?.freeCashFlow)
+  const capex       = val(latestCF.capex)
+
+  // FCF, in order of how much we actually know:
+  //   1. reported outright
+  //   2. Operating CF - real CapEx        <- this derivation never existed
+  //   3. Yahoo's TTM figure
+  //   4. Operating CF - Depreciation      <- ESTIMATE, and labelled as one
+  //
+  // Route 4 replaces the old `opCF x 0.7`, which was a 30%-of-OCF capex figure
+  // picked out of the air and tagged as if reported. CapEx ~ Depreciation is the
+  // steady-state assumption: a company replacing assets at the rate they wear out
+  // spends roughly what it depreciates. It uses the company's own reported number
+  // instead of a made-up percentage, and depreciation is a base metric so it's
+  // always there. It flatters a company mid-expansion, which is why it carries a
+  // visible 'estimated' tag rather than passing as fact.
+  let fcf = val(latestCF.freeCashFlow)
+  let fcfBasis = fcf != null ? 'reported' : null
+  if (fcf == null && opCF != null && capex != null) { fcf = opCF - capex; fcfBasis = 'derived' }
+  if (fcf == null) { const t = val(ttm?.freeCashFlow); if (t != null) { fcf = t; fcfBasis = 'ttm' } }
+  if (fcf == null && opCF != null && depreciation != null) {
+    fcf = opCF - depreciation
+    fcfBasis = 'estimated'
+  }
+  const fcfEstimated = fcfBasis === 'estimated'
+  const fcfNote = fcfBasis === 'reported'  ? 'Reported Free Cash Flow'
+                : fcfBasis === 'derived'   ? 'Operating CF − CapEx'
+                : fcfBasis === 'ttm'       ? 'TTM Free Cash Flow'
+                : fcfBasis === 'estimated' ? 'Operating CF − Depreciation (CapEx ≈ Depreciation, steady-state assumption)'
+                : null
+  FCF_BASIS = { estimated: fcfEstimated, note: fcfNote || 'FCF unavailable' }
   const totalAssets = val(latestB.totalAssets)
   const fixedAssets = val(latestB.fixedAssets)
 
-  // Shares: from data or estimate from marketCap/price
-  const shares = sharesRaw ?? (marketCap && price ? marketCap / price : null)
+  // Shares <-> Market Cap: price x shares = marketCap. Any two give the third.
+  // Only the shares<-marketCap direction existed, so a ticker with price+shares
+  // but no marketCap silently lost EV, P/S, EV/EBITDA, EV/Revenue and FCF yield.
+  const shares    = sharesRaw ?? (marketCap && price ? marketCap / price : null)
+  const marketCap = marketCapRaw ?? (price != null && shares != null ? price * shares : null)
 
   // EPS: statement → TTM → derive
   const epsRaw = val(latestI.eps) ?? val(ttm?.eps)
@@ -148,7 +207,8 @@ export function calcRatios(data) {
   }
 
   // ── EV ─────────────────────────────────────────────────────────────────────
-  const ev = marketCap != null ? marketCap + totalDebt - cash : null
+  const ev = (marketCap != null && totalDebt != null && cash != null)
+    ? marketCap + totalDebt - cash : null
 
   // ── Margins ────────────────────────────────────────────────────────────────
   // Note: Indian P&L has no "Gross Profit" line — Operating Profit IS the first
@@ -156,16 +216,25 @@ export function calcRatios(data) {
   const operatingMargin = pct(opProfit, revenue)
   const ebitdaMargin    = pct(ebitda, revenue)  ?? pct100(val(ttm?.ebitdaMargins))
   const netMargin       = pct(netProfit, revenue) ?? pct100(val(ttm?.profitMargins))
-  // Gross margin priority: (1) gross profit from history — populated from
-  // Screener's Material Cost % breakup (revenue − material cost); (2) Yahoo's TTM
-  // gross margin (US cos); (3) operating-margin proxy (Indian P&L, no COGS line).
-  const gpHist          = val(latestI.grossProfit)
+  // Gross margin — ONE formula, switching on what is available. {revenue, cogs,
+  // grossProfit} is a group: any two give the third. Sources emit raw fields only;
+  // the derivation lives here, not in api/sec.js or the parser.
+  //   1. grossProfit reported      -> calculated
+  //   2. revenue - cogs            -> calculated
+  //   3. Yahoo TTM gross margin    -> ttm-fallback
+  //   4. operating-margin proxy    -> ONLY where there is genuinely no COGS line
+  //      (Indian P&L). Never on a US filer that simply failed a tag lookup.
+  const gpHist          = grossProfitOf(latestI)
+  const gpFormula       = val(latestI.grossProfit) != null
+    ? 'Gross Profit ÷ Revenue × 100'
+    : 'Gross Profit (Revenue − COGS) ÷ Revenue × 100'
   const grossMarginRaw  = val(ttm?.grossMargins)
+  const indianPL        = data.deepSource === 'screener' || data.source === 'screener'
   const grossMargin     = (gpHist != null && revenue)
-    ? { value: pct(gpHist, revenue), status: 'calculated', formula: 'Gross Profit ÷ Revenue × 100' }
+    ? { value: pct(gpHist, revenue), status: 'calculated', formula: gpFormula }
     : grossMarginRaw != null
     ? { value: grossMarginRaw * 100, status: 'ttm-fallback', formula: 'From Yahoo financialData' }
-    : operatingMargin != null
+    : (indianPL && operatingMargin != null)
     ? { value: operatingMargin, status: 'proxy', formula: 'Operating Margin (Indian P&L — no separate Gross Profit line)' }
     : { value: null, status: 'unavailable', formula: null }
 
@@ -182,7 +251,7 @@ export function calcRatios(data) {
   // ROCE = EBIT / Capital Employed × 100  (EBIT = operating profit, i.e. after
   // depreciation — NOT EBITDA, which overstates the return). Prefer reported
   // operating income; else derive EBIT = EBITDA − Depreciation.
-  const capitalEmployed = totalEquity != null ? totalEquity + totalDebt : null
+  const capitalEmployed = (totalEquity != null && totalDebt != null) ? totalEquity + totalDebt : null
   const ebit = opProfit != null ? opProfit
     : (ebitda != null && depreciation != null) ? ebitda - depreciation
     : ebitda
@@ -192,7 +261,7 @@ export function calcRatios(data) {
   const roa  = pct(netProfit, totalAssets)
 
   // ── Leverage ───────────────────────────────────────────────────────────────
-  const netDebt = totalDebt - cash
+  const netDebt = (totalDebt != null && cash != null) ? totalDebt - cash : null
   const de      = div(totalDebt, totalEquity)           // D/E ratio
   const icr     = div(ebitda, interest)                 // Interest coverage
 
@@ -224,7 +293,7 @@ export function calcRatios(data) {
     price, marketCap, ev, shares,
     revenue, opProfit, ebitda, netProfit, interest, depreciation,
     totalEquity, totalDebt, cash, netDebt, capitalEmployed, totalAssets,
-    opCF, fcf, eps, bookPerShare, grahamNumber,
+    opCF, fcf, fcfBasis, fcfEstimated, debtEstimated, eps, bookPerShare, grahamNumber,
 
     // Tagged ratios (used by UI for display + tooltips)
     ratios: {
@@ -235,7 +304,7 @@ export function calcRatios(data) {
       netMargin:       tag(netMargin,       'calculated', 'Net Profit ÷ Revenue × 100'),
       // Returns
       roe:             tag(roe,             roe != null ? (pct(netProfit, avgEquity) != null ? 'calculated' : 'ttm-fallback') : 'unavailable', 'Net Profit ÷ Avg Equity × 100'),
-      roce:            tag(roce,            'calculated', 'EBITDA ÷ (Total Equity + Total Debt) × 100'),
+      roce:            tag(roce,            'calculated', 'EBIT ÷ (Total Equity + Total Debt) × 100'),
       roa:             tag(roa,             'calculated', 'Net Profit ÷ Total Assets × 100'),
       // Leverage
       de:              tag(de,              'calculated', 'Total Debt ÷ Total Equity'),
@@ -256,8 +325,8 @@ export function calcRatios(data) {
       revGrowthYoY:    tag(revGrowthYoY,    'calculated', 'Revenue YoY growth'),
       npGrowthYoY:     tag(npGrowthYoY,     'calculated', 'Net Profit YoY growth'),
       // FCF
-      fcfYield:        tag(fcfYield,        'calculated', 'FCF ÷ Market Cap × 100'),
-      fcfConversion:   tag(fcfConversion,   'calculated', 'FCF ÷ Net Profit × 100'),
+      fcfYield:        tagFcf(fcfYield,        'calculated', 'FCF ÷ Market Cap × 100'),
+      fcfConversion:   tagFcf(fcfConversion,   'calculated', 'FCF ÷ Net Profit × 100'),
       // EPS / Book
       eps:             tag(eps,             epsRaw != null ? 'source' : 'calculated', epsRaw ? null : 'Net Profit ÷ Shares Outstanding'),
       bookPerShare:    tag(bookPerShare,     'calculated', 'Total Equity ÷ Shares Outstanding'),
@@ -281,6 +350,23 @@ function calc(formula, a, b, fn) {
   if (a == null || b == null) return null
   try { const r = fn(a, b); return isFinite(r) ? r : null } catch { return null }
 }
+/**
+ * Tag an FCF-derived ratio with the basis of the FCF underneath it. If FCF is an
+ * estimate, every ratio built on it says so — the estimate can't launder itself
+ * into a clean-looking number one layer up. That is precisely what the old
+ * `opCF x 0.7` did: untagged, it reached fcfYield, fcfConversion and the DCF
+ * looking exactly like a reported figure.
+ */
+function tagFcf(value, status, formula = null) {
+  if (value == null) return tag(null, 'unavailable', formula)
+  if (FCF_BASIS.estimated) {
+    return tag(value, 'estimated', `${formula} — ${FCF_BASIS.note}`)
+  }
+  return tag(value, status, `${formula} (${FCF_BASIS.note})`)
+}
+
+let FCF_BASIS = { estimated: false, note: '' }
+
 function tag(value, status, formula = null) {
   return { value: value ?? null, status: value != null ? (status || 'calculated') : 'unavailable', formula }
 }

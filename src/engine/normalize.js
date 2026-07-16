@@ -1,3 +1,4 @@
+
 /**
  * src/engine/normalize.js
  *
@@ -8,10 +9,57 @@
  * ALL values stored with resolution metadata: { value, status, formula }
  */
 
-export function normalize(source, raw, validHistoricalYears = null) {
+/**
+ * Fill remaining holes in the LATEST year from figures the user pulled out of a
+ * filing. Documents sit BEHIND Yahoo/Screener/SEC — they are the last resort, for
+ * metrics no automatic source carried. Nothing here overwrites a real value.
+ *
+ * Before this, an AR number had nowhere to go: the only one wired up was material
+ * cost, and even that only reached the Block 5 margin trend, never the dashboard.
+ * The reader would ask you for cash, you'd give it, and it vanished.
+ *
+ * @param arData  state.arData — the reconciled slot store
+ */
+export function applyDocFacts(data, arData) {
+  const slots = arData?.slots || arData
+  if (!data || !slots) return data
+
+  const scale = (data.currency === 'INR') ? 1e7 : 1   // AR figures are in Crore
+  const TARGETS = {
+    income:   ['cogs', 'grossProfit', 'revenue', 'operatingProfit', 'depreciation', 'interest', 'netProfit'],
+    balance:  ['cash', 'totalDebt', 'totalEquity', 'totalAssets'],
+    cashflow: ['capex', 'operatingCF', 'freeCashFlow'],
+  }
+  const HISTORY = { income: 'incomeHistory', balance: 'balanceHistory', cashflow: 'cashflowHistory' }
+
+  const out = { ...data }
+  let filled = 0
+  for (const [table, fields] of Object.entries(TARGETS)) {
+    const key  = HISTORY[table]
+    const rows = out[key]
+    if (!rows?.length) continue
+    const last = { ...rows[rows.length - 1] }
+    for (const f of fields) {
+      const v = slots[f]?.value
+      if (v == null) continue
+      if (last[f]?.value != null) continue          // a real source already has it
+      last[f] = {
+        value: v * scale,
+        status: 'document',
+        formula: `From filing (${slots[f].asOf || 'annual report'})`,
+      }
+      filled++
+    }
+    out[key] = [...rows.slice(0, -1), last]
+  }
+  if (filled > 0) out.docFilled = filled
+  return out
+}
+
+export function normalize(source, raw) {
   if (source === 'yahoo')    return normalizeYahoo(raw)
   if (source === 'screener') return normalizeScreener(raw)
-  if (source === 'merged')   return normalizeMerged(raw, validHistoricalYears)
+  if (source === 'merged')   return normalizeMerged(raw)
   if (source === 'sec-merged') return normalizeSecMerged(raw)
   if (source === 'csv')      return raw
   throw new Error(`Unknown source: ${source}`)
@@ -117,11 +165,17 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
     const ni  = pick(row, 'netIncome', 'netIncomeCommonStockholders')
     const epsVal = pick(row, 'dilutedEPS', 'basicEPS')
     const ebd = pick(row, 'EBITDA', 'normalizedEBITDA')
+    // fundamentalsTimeSeries is requested with module:'all', so gross profit and
+    // cost of revenue ARE in the payload. They were previously hard-coded
+    // unavailable — a leftover stub from the fts migration, not a decision.
+    const gp  = pick(row, 'grossProfit')
+    const cog = pick(row, 'costOfRevenue', 'reconciledCostOfRevenue')
     return {
       year,
       revenue:         rev != null ? src(rev) : unavailable(),
       expenses:        unavailable(),
-      grossProfit:     unavailable(),
+      grossProfit:     gp  != null ? src(gp)  : unavailable(),
+      cogs:            cog != null ? src(cog) : unavailable(),
       operatingProfit: opI != null ? src(opI) : unavailable(),
       ebitda:          ebd != null ? src(ebd) : unavailable(), // else derived later in ratios.js
       depreciation:    dep != null ? src(dep) : unavailable(),
@@ -148,17 +202,26 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
     const ta  = pick(row, 'totalAssets')
     const eq  = pick(row, 'stockholdersEquity', 'totalEquityGrossMinorityInterest', 'commonStockEquity')
     const ltd = pick(row, 'totalDebt', 'longTermDebt', 'longTermDebtAndCapitalLeaseObligation')
+    // Cash was hard-coded unavailable — same leftover stub as grossProfit above.
+    const csh = pick(row, 'cashAndCashEquivalents', 'cashCashEquivalentsAndShortTermInvestments',
+                          'endCashPosition', 'cashAndCashEquivalentsAtCarryingValue')
+    const ca  = pick(row, 'currentAssets', 'totalCurrentAssets')
+    const cl  = pick(row, 'currentLiabilities', 'totalCurrentLiabilities')
     return {
       year,
       equityCapital:    unavailable(),
       reserves:         unavailable(),
       totalEquity:      eq  != null ? src(eq)  : unavailable(),
-      totalDebt:        ltd != null ? src(ltd) : src(0),
-      cash:             unavailable(),
+      // NEVER default to src(0): a fabricated zero tagged 'source' understated
+      // capital employed (inflating ROCE) and corrupted netDebt/EV.
+      totalDebt:        ltd != null ? src(ltd) : unavailable(),
+      cash:             csh != null ? src(csh) : unavailable(),
       totalAssets:      ta  != null ? src(ta)  : unavailable(),
       totalLiabilities: unavailable(),
       fixedAssets:      unavailable(),
       investments:      unavailable(),
+      currentAssets:    ca  != null ? src(ca)  : unavailable(),
+      currentLiabilities: cl != null ? src(cl) : unavailable(),
     }
   }).filter(r => r.year && r.totalAssets.value != null)
     .sort((a, b) => a.year.localeCompare(b.year))
@@ -167,13 +230,24 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
     const row = ftsRows.find(r => yearOf(dateOf(r)) === year) || {}
     const opCF = pick(row, 'operatingCashFlow', 'cashFlowFromContinuingOperatingActivities')
     const fcf  = pick(row, 'freeCashFlow')
+    // capitalExpenditure is in the fts payload and was never picked up. Yahoo
+    // files it as a NEGATIVE outflow; store the absolute magnitude so every
+    // source agrees on sign (SEC files it positive).
+    const cxRaw = pick(row, 'capitalExpenditure', 'netPPEPurchaseAndSale', 'purchaseOfPPE')
+    const cx    = cxRaw != null ? Math.abs(cxRaw) : null
     return {
       year,
       operatingCF:  opCF != null ? src(opCF) : unavailable(),
       investingCF:  unavailable(),
       financingCF:  unavailable(),
+      capex:        cx != null ? src(cx) : unavailable(),
+      // Real FCF only. The old `opCF x 0.7` proxy invented a 30%-of-OCF capex
+      // assumption and fed it to fcfYield / fcfConversion / DCF / reverse-DCF.
+      // If capex is genuinely unknown, FCF is unknown — say so.
       freeCashFlow: fcf  != null ? src(fcf)
-                  : (opCF != null ? derived(opCF * 0.7, 'Operating CF × 0.7 (proxy — CapEx not separately available)') : unavailable()),
+                  : (opCF != null && cx != null)
+                      ? derived(opCF - cx, 'Operating CF − CapEx')
+                      : unavailable(),
     }
   }).filter(r => r.year && r.operatingCF.value != null)
     .sort((a, b) => a.year.localeCompare(b.year))
@@ -225,6 +299,7 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
       revenue:         ttmRev  != null ? src(ttmRev)  : unavailable(),
       expenses:        unavailable(),
       grossProfit:     ttmData.grossProfit.value != null ? src(ttmData.grossProfit.value) : unavailable(),
+      cogs:            unavailable(),
       operatingProfit: ttmRev && ttmOpM ? derived(ttmRev * ttmOpM, 'Revenue × Op.Margin (TTM)') : unavailable(),
       ebitda:          ttmEb   != null ? ttm(ttmEb)   : unavailable(),
       depreciation:    unavailable(),
@@ -253,6 +328,8 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
       totalLiabilities: unavailable(),
       fixedAssets:      unavailable(),
       investments:      unavailable(),
+      currentAssets:    unavailable(),
+      currentLiabilities: unavailable(),
     })
   }
 
@@ -264,9 +341,8 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
       operatingCF:  ttmOpCF != null ? src(ttmOpCF) : unavailable(),
       investingCF:  unavailable(),
       financingCF:  unavailable(),
-      freeCashFlow: ttmFCF  != null ? src(ttmFCF)
-                  : ttmOpCF != null ? derived(ttmOpCF * 0.7, 'Operating CF × 0.7 (proxy)')
-                  : unavailable(),
+      capex:        unavailable(),
+      freeCashFlow: ttmFCF  != null ? src(ttmFCF) : unavailable(),
     })
   }
 
@@ -274,6 +350,7 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
     ticker,
     name:     q.longName || q.shortName || ticker,
     source:   'yahoo',
+    deepSource: null,        // 'screener' | 'sec' once a deep source merges in
     currency,
     price,
     marketCap,
@@ -316,7 +393,11 @@ function normalizeScreener(raw) {
     otherIncome:     scaleCr(r.otherIncome),
     netProfit:       scaleCr(r.netProfit),
     eps:             r.eps ?? unavailable(),
-    grossProfit:     unavailable(),
+    grossProfit:     unavailable(),   // Indian P&L has no gross-profit line...
+    // ...but the Expenses "+" gives Material Cost, which the parser has already
+    // converted from % of sales to an absolute figure. ratios.js turns it into
+    // gross profit. Was hard-coded unavailable, which binned the user's expand.
+    cogs:            scaleCr(r.cogs),
   }))
   const bal = (raw.balanceHistory || []).map(r => ({
     year:             r.year,
@@ -328,13 +409,16 @@ function normalizeScreener(raw) {
     totalLiabilities: scaleCr(r.totalLiabilities),
     fixedAssets:      scaleCr(r.fixedAssets),
     investments:      scaleCr(r.investments),
-    cash:             unavailable(),
+    cash:             scaleCr(r.cash),   // Other Assets "+" -> Cash Equivalents
+    currentAssets:      unavailable(),
+    currentLiabilities: unavailable(),
   }))
   const cf = (raw.cashflowHistory || []).map(r => ({
     year:         r.year,
     operatingCF:  scaleCr(r.operatingCF),
     investingCF:  scaleCr(r.investingCF),
     financingCF:  scaleCr(r.financingCF),
+    capex:        scaleCr(r.capex),   // Investing "+" -> Fixed assets purchased
     freeCashFlow: scaleCr(r.freeCashFlow),
   }))
 
@@ -351,6 +435,7 @@ function normalizeScreener(raw) {
     ticker:   raw.ticker,
     name:     raw.name || raw.ticker,
     source:   'screener',
+    deepSource: null,
     currency: 'INR',
     price,
     marketCap,
@@ -383,47 +468,84 @@ function normalizeScreener(raw) {
 
 // ─── Merged normalizer ────────────────────────────────────────────────────────
 
-function normalizeMerged({ yahoo, screener }, validHistoricalYears = null) {
+
+/**
+ * THE merge. Used by both deep sources — Screener (India) and SEC (US).
+ *
+ * Yahoo is a taster: it exists so the first search isn't a screen of empty boxes,
+ * and so a ticker nobody has fed still shows something. The moment a real source
+ * covers a year, Yahoo stops being the answer for that year.
+ *
+ *   - Deep source wins every year it covers, FIELD BY FIELD.
+ *   - Yahoo fills only what the deep source doesn't carry (cash, EBITDA, gross
+ *     profit on the Indian path — things Screener has no row for).
+ *   - Years no deep source reaches stay pure Yahoo.
+ *
+ * This replaces "Yahoo always wins overlapping years", which spliced two sources
+ * mid-series: Screener for the old years, Yahoo for the recent ones, and a seam
+ * in the middle carrying every restatement and basis change — directly under the
+ * 10-year CAGR. One basis per series now.
+ *
+ * There is no numeric gate. Screener and SEC both win every year they carry. A
+ * paste that reaches here has already passed the structural check in the parser
+ * (right table, annual not quarterly) and nothing else needs to be true of it.
+ */
+function mergeDeep(yahooRows, deepRows, fields) {
+  const byYear = {}
+
+  for (const r of (yahooRows || [])) {
+    if (r?.year) byYear[r.year] = r
+  }
+
+  for (const d of (deepRows || [])) {
+    if (!d?.year) continue
+    const year = String(d.year)
+    const y = byYear[year]
+    if (!y) { byYear[year] = d; continue }
+
+    const out = { ...y, ...d }                 // deep source wins the shape
+    if (y.synthetic) delete out.synthetic      // real data replaced the stub
+    for (const f of fields) {
+      if (d[f]?.value != null) { out[f] = d[f]; continue }
+      // Deep source has no value here. Keep Yahoo's, labelled as a fill.
+      if (y[f]?.value != null) {
+        out[f] = { ...y[f], status: 'cross-source', formula: `From Yahoo (deep source has no ${f})` }
+      } else {
+        out[f] = y[f] ?? d[f] ?? unavailable()
+      }
+    }
+    byYear[year] = out
+  }
+  return Object.values(byYear).sort((a, b) => a.year.localeCompare(b.year))
+}
+
+const INCOME_F  = ['revenue', 'expenses', 'grossProfit', 'cogs', 'operatingProfit', 'ebitda',
+                   'depreciation', 'interest', 'otherIncome', 'netProfit', 'eps']
+const BALANCE_F = ['equityCapital', 'reserves', 'totalEquity', 'totalDebt', 'cash', 'totalAssets',
+                   'totalLiabilities', 'fixedAssets', 'investments',
+                   'currentAssets', 'currentLiabilities']
+const CF_F      = ['operatingCF', 'investingCF', 'financingCF', 'capex', 'freeCashFlow']
+
+function normalizeMerged({ yahoo, screener }) {
   const y = normalizeYahoo(yahoo)
-  const s = normalizeScreener(screener)
+  const sc = normalizeScreener(screener)
 
-  // Only use Screener rows for years that:
-  // 1. Are NOT in Yahoo (pre-Yahoo historical years)
-  // 2. Have passed validation (validHistoricalYears list)
-  // Yahoo ALWAYS wins for overlapping years — never override with Screener
-  const filterScreener = (rows) => {
-    if (!rows) return []
-    if (!validHistoricalYears || validHistoricalYears.length === 0) return []
-    return rows.filter(r => validHistoricalYears.includes(r.year))
-  }
+  const incomeHistory   = mergeDeep(y.incomeHistory,   sc.incomeHistory,   INCOME_F)
+  const balanceHistory  = mergeDeep(y.balanceHistory,  sc.balanceHistory,  BALANCE_F)
+  const cashflowHistory = mergeDeep(y.cashflowHistory, sc.cashflowHistory, CF_F)
 
-  // Merge: Yahoo years first, then append validated Screener pre-Yahoo years
-  const mergeHistorical = (yArr, sArr, mergeFn) => {
-    const yahooRows    = yArr || []
-    const screenerRows = filterScreener(sArr)
-    // No overlap possible since screenerRows are pre-Yahoo years only
-    return [...screenerRows, ...yahooRows].sort((a, b) => a.year.localeCompare(b.year))
-  }
-
-  const income   = mergeHistorical(y.incomeHistory,   s.incomeHistory,   mergeIncomeRow)
-  const balance  = mergeHistorical(y.balanceHistory,  s.balanceHistory,  mergeBalanceRow)
-  const cashflow = mergeHistorical(y.cashflowHistory, s.cashflowHistory, mergeCFRow)
-
-  const histYears = validHistoricalYears?.length || 0
-
+  const used = sc.incomeHistory?.length || 0
   return {
-    ...y,
-    source:         histYears > 0 ? 'merged' : 'yahoo',
-    historyYears:   histYears,  // how many extra years Screener added
-    price:          y.price     ?? s.price,
-    marketCap:      y.marketCap ?? s.marketCap,
-    incomeHistory:  income,
-    balanceHistory: balance,
-    cashflowHistory: cashflow,
-    ttm:            mergeTTM(y.ttm, s.ttm),
-    sourceStats:    s.keyStats ?? {}
+    ...y,                                   // price, mcap, shares, priceHistory, beta, TTM
+    source:       used > 0 ? 'merged' : 'yahoo',
+    deepSource:   used > 0 ? 'screener' : null,
+    historyYears: incomeHistory.length - (y.incomeHistory?.length || 0),
+    incomeHistory,
+    balanceHistory,
+    cashflowHistory,
   }
 }
+
 
 function mergeByYear(yArr, sArr, mergeFn) {
   const map = {}
@@ -521,34 +643,21 @@ function normalizeSecMerged({ yahoo, sec }) {
     for (const f of fields) out[f] = row[f] != null ? src(row[f]) : unavailable()
     return out
   }
+  const secYears = (sec.incomeHistory || []).map(r => String(r.year))
+  const tag = (rows, fields) => (rows || []).map(r => tagRow(r, fields))
 
-  const INCOME_F  = ['revenue', 'expenses', 'grossProfit', 'operatingProfit', 'ebitda',
-                     'depreciation', 'interest', 'otherIncome', 'netProfit', 'eps']
-  const BALANCE_F = ['totalAssets', 'totalEquity', 'totalDebt', 'cash',
-                     'currentAssets', 'currentLiabilities']
-  const CF_F      = ['operatingCF', 'capex', 'freeCashFlow']
-
-  // Append only the years Yahoo lacks — never override a Yahoo year.
-  const fill = (yRows, secRows, fields) => {
-    const have = new Set((yRows || []).map(r => r.year))
-    const extra = (secRows || [])
-      .filter(r => r.year && !have.has(String(r.year)))
-      .map(r => tagRow(r, fields))
-    return [...extra, ...(yRows || [])].sort((a, b) => a.year.localeCompare(b.year))
-  }
-
-  const incomeHistory   = fill(y.incomeHistory,   sec.incomeHistory,   INCOME_F)
-  const balanceHistory  = fill(y.balanceHistory,  sec.balanceHistory,  BALANCE_F)
-  const cashflowHistory = fill(y.cashflowHistory, sec.cashflowHistory, CF_F)
-
-  const added = incomeHistory.length - (y.incomeHistory?.length || 0)
+  const incomeHistory   = mergeDeep(y.incomeHistory,   tag(sec.incomeHistory,   INCOME_F),  INCOME_F)
+  const balanceHistory  = mergeDeep(y.balanceHistory,  tag(sec.balanceHistory,  BALANCE_F), BALANCE_F)
+  const cashflowHistory = mergeDeep(y.cashflowHistory, tag(sec.cashflowHistory, CF_F),      CF_F)
 
   return {
     ...y,
-    source:          added > 0 ? 'merged' : 'yahoo',
-    historyYears:    added,          // extra years SEC contributed
+    source:       secYears.length > 0 ? 'merged' : 'yahoo',
+    deepSource:   'sec',
+    historyYears: incomeHistory.length - (y.incomeHistory?.length || 0),
     incomeHistory,
     balanceHistory,
     cashflowHistory,
   }
 }
+

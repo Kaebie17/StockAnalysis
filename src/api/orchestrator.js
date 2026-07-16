@@ -1,3 +1,4 @@
+
 /**
  * src/api/orchestrator.js
  *
@@ -14,7 +15,6 @@
 import { fetchYahoo }   from './yahoo.js'
 import { fetchScreener } from './screener.js'
 import { fetchSec, isUsTicker } from './secClient.js'
-import { validateScreenerHistory } from '../engine/screenerValidation.js'
 
 export async function fetchTicker(rawTicker, onProgress) {
   const log  = (msg, step) => onProgress?.({ msg, step })
@@ -66,30 +66,15 @@ export async function fetchTicker(rawTicker, onProgress) {
     return { source: 'yahoo', raw: yahooData }
   }
 
-  // Screener available — validate before merging
-  log('Validating Screener data against Yahoo…', 2)
-
-  const validation = validateScreenerHistory(
-    yahooData,     // already normalized Yahoo data
-    screenerData   // raw Screener data (not yet normalized)
-  )
-
-  if (!validation.passed) {
-    console.warn('[orchestrator] Screener validation failed:', validation.message)
-    // Use Yahoo only — attach validation result for UI to show
-    return {
-      source:     'yahoo',
-      raw:        yahooData,
-      validation  // UI shows "extended history unavailable" with reason
-    }
-  }
-
-  // Validation passed — merge Yahoo with Screener's pre-Yahoo historical years
-  log(`Data loaded ✓ (+${validation.validHistoricalYears.length} historical years)`, 2)
+  // Screener available — merge. No numeric validation: Screener is a read of the
+  // filings, Yahoo is a vendor feed, and Screener now REPLACES Yahoo year for
+  // year. Checking the stronger source against the weaker one had it backwards,
+  // and it also failed on Yahoo's own holes. The only check on a paste is
+  // structural (right table, annual not quarterly) and it lives in the parser.
+  log('Merging Screener history…', 2)
   return {
-    source:     'merged',
-    raw:        { yahoo: yahooData, screener: screenerData },
-    validation
+    source: 'merged',
+    raw:    { yahoo: yahooData, screener: screenerData },
   }
-}
 
+}

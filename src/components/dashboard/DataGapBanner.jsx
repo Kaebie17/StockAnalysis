@@ -1,9 +1,12 @@
+
 import React from 'react'
 import { findMissingBaseMetrics } from '../../engine/dataGaps.js'
 
-export default function DataGapBanner({ ratioResult, onFix }) {
-  const { hasGaps, missing, byTable } = findMissingBaseMetrics(ratioResult)
-  if (!hasGaps) return null
+export default function DataGapBanner({ ratioResult, data, onFix }) {
+  // `data` is required: capex and cogs sit on the history rows, not on
+  // ratioResult. Called without it they read as permanently missing.
+  const { hasGaps, missing, byTable, softGaps, nextStep } = findMissingBaseMetrics(ratioResult, data)
+  if (!hasGaps && !softGaps.length) return null
 
   const tableCount = Object.keys(byTable).length
   const metricNames = missing.map(m => m.label).join(', ')
@@ -15,7 +18,10 @@ export default function DataGapBanner({ ratioResult, onFix }) {
         <span className="shrink-0">⚠️</span>
         <span className="text-slate-300 min-w-0">
           <span className="text-neutral font-medium">{missing.length} metric{missing.length > 1 ? 's' : ''} missing</span>
-          {' '}from Yahoo: <span className="text-slate-400">{metricNames}</span>
+          {' '}{nextStep === 'ar' ? 'after Screener/SEC' : 'from Yahoo'}: <span className="text-slate-400">{metricNames}</span>
+          {softGaps.length > 0 && (
+            <span className="text-slate-500"> · {softGaps.map(g => g.label).join(', ')} estimated</span>
+          )}
         </span>
       </div>
       <button

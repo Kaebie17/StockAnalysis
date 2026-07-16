@@ -1,3 +1,4 @@
+
 /**
  * src/utils/db.js — IndexedDB with eviction policy
  *
@@ -276,7 +277,7 @@ export async function exportSyncableRecords() {
       // financials: only sync records holding pasted effort (merged). Pure Yahoo
       // is re-fetchable. Record shape is { key, data: { data: <normalized>, ... } },
       // so the source flag is at rec.data.data.source.
-      if (store === 'financials' && rec?.data?.data?.source !== 'merged') continue
+      if (store === 'financials' && rec?.data?.data?.deepSource !== 'screener') continue
       out.push({ key: `${store}:${nk}`, value: rec })
     }
   }
@@ -308,5 +309,3 @@ export async function loadFolderHandle() {
     return req === 'granted' ? rec.handle : null
   } catch { return null }
 }
-
-

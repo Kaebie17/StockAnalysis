@@ -1,12 +1,25 @@
+
 import React, { useState, useEffect } from 'react'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
+import { expandHints as expandersFor } from '../../engine/metrics.js'
+import { METRICS } from '../../engine/metrics.js'
 import { parseHoldings } from '../../engine/parseHoldings.js'
 import { useApp } from '../../store/AppContext.jsx'
 
+const ALL_METRICS = Object.keys(METRICS)
+
 const TABLES = [
-  { key: 'income',   label: 'Profit & Loss',  icon: '📊', hint: 'Revenue, Operating Profit, Net Profit, EPS, Interest, Depreciation. Tip: expand the Expenses row (click the +) before copying to include Material Cost % — this recovers gross margin.' },
-  { key: 'balance',  label: 'Balance Sheet',  icon: '⚖️', hint: 'Total Assets, Total Equity, Total Debt' },
-  { key: 'cashflow', label: 'Cash Flow',      icon: '💵', hint: 'Operating Cash Flow, Free Cash Flow' },
+  // The "+" tips come from the dictionary (src/engine/metrics.js), not from
+  // whatever someone remembered. Every metric behind an expander is listed there
+  // with its parent row, so this can never drift out of date the way the old
+  // hand-written "expand the Expenses row" tip did — that one named the only
+  // expander anyone had noticed, and missed cash and capex entirely.
+  { key: 'income',   label: 'Profit & Loss',  icon: '📊',
+    hint: 'Revenue, Operating Profit, Net Profit, EPS, Interest, Depreciation.', expanders: 'income' },
+  { key: 'balance',  label: 'Balance Sheet',  icon: '⚖️',
+    hint: 'Total Assets, Total Equity, Total Debt.', expanders: 'balance' },
+  { key: 'cashflow', label: 'Cash Flow',      icon: '💵',
+    hint: 'Operating Cash Flow, Free Cash Flow.', expanders: 'cashflow' },
   { key: 'holdings', label: 'Shareholding',   icon: '👥', hint: 'Quarter row + Promoters row (promoter holding %)' },
 ]
 

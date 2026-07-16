@@ -1,3 +1,4 @@
+
 /**
  * src/engine/moatQuality.js — Block 5: Quality & Moat overlay.
  *
@@ -24,6 +25,7 @@
  * overlay (or apply moatOverride) to elevate. Numbers alone never award Very Wide.
  */
 
+import { grossProfitOf } from './ratios.js'
 import { latest, hasContent } from './reconcileDocs.js'
 import { deriveGrossMarginSeries } from './estimation.js'
 
@@ -141,7 +143,8 @@ function buildSeries(data, r) {
   for (const row of inc) {
     const y = row.year
     const b = balByYear[y] || {}
-    const rev = v(row.revenue), op = v(row.operatingProfit), gp = v(row.grossProfit)
+    const rev = v(row.revenue), op = v(row.operatingProfit)
+    const gp  = grossProfitOf(row)   // grossProfit, else revenue - cogs. One formula, in ratios.js.
     const np = v(row.netProfit), eps = v(row.eps)
     const eq = v(b.totalEquity), debt = v(b.totalDebt) ?? 0
     const ce = eq != null ? eq + debt : null

@@ -1,3 +1,5 @@
+import { METRICS } from './metrics.js'
+
 /**
  * src/engine/reconcileDocs.js
  *
@@ -15,6 +17,13 @@
  */
 
 export const SINGLE_SLOTS = ['outlook', 'pli', 'initiatives', 'runway']
+
+// Number slots the gap list can ask a filing for. Read from the dictionary so a
+// new metric needs no edit here. Recency wins, same as the text slots: a Q2
+// filing's cash beats last year's annual report.
+export const NUMBER_SLOTS = Object.entries(METRICS)
+  .filter(([, m]) => m.ar?.length)
+  .map(([k]) => k)
 export const TREND_SLOTS = { pledge: 'pledgeTrend', rpt: 'rptTrend' }
 
 export function emptyArData() {
@@ -54,11 +63,20 @@ export function reconcile(existing, incoming) {
     out.rptTrend = upsertRow(out.rptTrend, { asOf, pctOfRevenue: slots.rpt.pctOfRevenue ?? null, present: true, source })
   }
 
-  // Derivation inputs (numbers the user confirmed) — upsert by period into their
-  // own trend so a metric like gross margin can be derived per year.
-  if (slots.materialCost && slots.materialCost.value != null) {
+  // Numbers the user confirmed — upsert by period into their own trend, so a
+  // metric can be derived per YEAR, and expose the newest as a flat slot for
+  // normalize.applyDocFacts to drop onto the latest row.
+  //
+  // This used to handle exactly one field: materialCost. Everything else the
+  // reader found was discarded — which made asking for it pointless.
+  for (const k of NUMBER_SLOTS) {
+    const s2 = slots[k]
+    if (!s2 || s2.value == null) continue
     out.derivedInputs = { ...(out.derivedInputs || {}) }
-    out.derivedInputs.materialCost = upsertRow(out.derivedInputs.materialCost, { asOf, value: slots.materialCost.value, source })
+    out.derivedInputs[k] = upsertRow(out.derivedInputs[k], { asOf, value: s2.value, source })
+    // flat, newest-wins slot — the shape applyDocFacts reads
+    out.slots = { ...(out.slots || {}) }
+    out.slots[k] = freshest(out.slots[k], { value: s2.value, source, asOf, at, manual: false })
   }
 
   out.lastDoc = { docType: incoming.docType || null, docDate: incoming.docDate || null,

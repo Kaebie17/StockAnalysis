@@ -1,3 +1,4 @@
+
 import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react'
 import { fetchTicker } from '../api/orchestrator.js'
 import { normalize } from '../engine/normalize.js'
@@ -105,7 +106,7 @@ export function AppProvider({ children }) {
     // Sync merged financials (they hold pasted Screener history the user built).
     // Pure Yahoo data is re-fetchable, so it isn't synced. Shape must match what
     // setCached writes: { key, data: payload, ... }.
-    if (state.data.source === 'merged') {
+    if (state.data.deepSource === 'screener') {
       const t = state.ticker.toUpperCase()
       queuePush(`financials:${t}`, { key: t, data: payload, timestamp: Date.now(), lastAccessed: Date.now() })
     }

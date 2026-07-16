@@ -1,3 +1,4 @@
+
 /**
  * api/sec.js — SEC EDGAR (XBRL companyfacts) financial history for US tickers.
  *
@@ -86,6 +87,18 @@ async function getCik(ticker) {
  * Handles: annual (10-K/FY) filtering, restatement dedupe (latest filing wins),
  * and merging across tag regimes (a later tag fills years an earlier one lacks).
  */
+// A duration fact spanning ~a year. companyfacts carries entries filed IN a 10-K
+// that are tagged fp:'FY' but cover a QUARTER (e.g. the quarterly-data note). The
+// old filter (fp==='FY' && form==='10-K') accepted those, so a Q4 revenue/capex/
+// opCF figure could land in the annual series — and the restatement dedupe, which
+// keeps the latest `filed`, could actively prefer it. Instant facts (balance
+// sheet) have no `start` and are unaffected.
+function isAnnual(e) {
+  if (!e.start) return true                     // instant fact (balance sheet)
+  const days = (new Date(e.end) - new Date(e.start)) / 86400000
+  return days >= 300 && days <= 400             // 52/53-week years included
+}
+
 function seriesFor(facts, tags) {
   const byYear = {}   // year -> { val, filed }
   for (const tag of tags) {
@@ -100,6 +113,7 @@ function seriesFor(facts, tags) {
       if (e.fp !== 'FY') continue
       if (e.form !== '10-K' && e.form !== '10-K/A') continue
       if (e.val == null || !e.end) continue
+      if (!isAnnual(e)) continue
       const year = String(e.end).slice(0, 4)
       const filed = e.filed || ''
       // Restatement dedupe: keep the most recently FILED value for a year.

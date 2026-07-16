@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
@@ -146,11 +147,6 @@ function IdentityBar() {
         {mcapStr && <span className="text-xs text-slate-400">Mkt Cap: {mcapStr}</span>}
         {data.meta?.sector && <span className="text-xs text-slate-500">Sector: {data.meta.sector}</span>}
         <DataVintageBadge data={data} />
-        {validation && !validation.passed && validation.failedMetrics?.length > 0 && (
-          <span className="text-xs text-neutral" title={validation.message}>
-            ⚠️ History limited
-          </span>
-        )}
       </div>
 
       {/* Right: stage */}
@@ -239,7 +235,7 @@ function DataVintageBadge({ data }) {
 
   const latestYear  = years[years.length - 1]
   const yearCount   = years.length
-  const sourceLabel = data.source === 'merged' ? 'Yahoo + Screener' : 'Yahoo'
+  const sourceLabel = data.source === 'merged' ? data.deepSource === 'sec' ? 'Yahoo + SEC EDGAR' : 'Yahoo + Screener' : 'Yahoo'
 
   // Indian fiscal year ends March 31 — results typically filed by ~May 31
   // If we're more than 14 months past that fiscal year-end, the data is stale
@@ -258,5 +254,3 @@ function DataVintageBadge({ data }) {
     </span>
   )
 }
-
-

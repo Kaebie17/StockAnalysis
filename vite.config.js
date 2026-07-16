@@ -29,6 +29,7 @@ plugins: [
         skipWaiting: true,
         clientsClaim: true,
         cleanupOutdatedCaches: true,
+        navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/query1\.finance\.yahoo\.com\/.*/i,

@@ -1,3 +1,4 @@
+
 /**
  * src/engine/marketExpectation.js
  *
@@ -195,12 +196,14 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
   const revenue   = r?.revenue
   const netProfit = r?.netProfit
   const fcf       = r?.fcf > 0 ? r.fcf : null
-  const opCF      = r?.opCF > 0 ? r.opCF * 0.7 : null  // haircut as FCF proxy
+  const opCF      = null   // was `r.opCF * 0.7` — an invented capex assumption
+                           // dressed up as a fair-value input. FCF or nothing.
 
   const historicalRevGrowth = r?.ratios?.revCagr5y?.value ?? r?.ratios?.revCagr?.value
   // EV target for the EV/Sales variant (equity market cap ignores net debt, which
   // overstates sales-implied growth for levered firms). Earnings uses P/E → equity.
-  const evTarget = marketCap != null ? marketCap + (r?.netDebt || 0) : null
+  // `|| 0` treated unknown net debt as zero net debt. Unknown means no target.
+  const evTarget = (marketCap != null && r?.netDebt != null) ? marketCap + r.netDebt : null
   const historicalNPGrowth  = r?.ratios?.npGrowthYoY?.value
 
 const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
@@ -288,10 +291,11 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
     variants.fcf = {
       applicable: true,
       label: 'FCF-based',
-      note: fcf ? 'Uses Free Cash Flow — most precise for cash-generative businesses.'
-                : 'Uses Operating CF × 0.7 as FCF proxy (actual FCF not available).',
+      note: r?.fcfEstimated
+        ? 'FCF estimated as Operating CF − Depreciation (CapEx ≈ Depreciation). No CapEx reported — treat as indicative.'
+        : 'Uses Free Cash Flow — most precise for cash-generative businesses.',
       base: fcfBase,
-      baseLabel: fcf ? 'Free Cash Flow' : 'Operating CF (×0.7 proxy)',
+      baseLabel: r?.fcfEstimated ? 'Free Cash Flow (estimated)' : 'Free Cash Flow',
       terminalMultiple: termFcfMult,
       terminalMultipleLabel: `${termFcfMult}× FCF`,
       impliedGrowth: impliedG,
@@ -313,11 +317,9 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
         ? (isFinancial
             ? 'Operating CF is negative — this is structurally normal for banks/insurers (loan disbursements count as operating outflow) and does not indicate financial distress. Use Earnings-based instead.'
             : 'FCF and Operating CF are negative — FCF-based method not applicable')
-        : 'Cash flow data not available'
+        : 'Free Cash Flow not available (needs CapEx — see the data gaps banner)'
     }
   }
 
   return { variants, assumptions, marketCap, price }
 }
-
-

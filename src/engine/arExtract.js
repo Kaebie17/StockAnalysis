@@ -1,3 +1,4 @@
+
 /**
  * src/engine/arExtract.js
  *
@@ -29,8 +30,11 @@ export const SECTION_CONFIG = [
                /large(?:st)? market/i, /growing market/i, /demand potential/i, /market size/i] },
   // Derivation inputs — captured as NUMBERS (user confirms via keep/discard), then
   // used to fill/derive a missing metric (e.g. gross margin from material cost).
-  { field: 'materialCost', label: 'Cost of materials (→ derives gross margin)', input: 'number',
-    keywords: [/cost of materials? consumed/i, /raw materials? consumed/i, /cost of goods sold/i, /\bCOGS\b/i, /material cost/i] },
+  // NOTE: no hard-coded number fields any more. `materialCost` used to live here
+  // and it was the ONLY figure the AR reader ever hunted for — not because it was
+  // the only one worth having, but because nothing could tell this file what else
+  // was missing. buildArConfig() below now appends a number field per actual gap,
+  // with that metric's annual-report phrasings from the dictionary.
 ]
 
 const WIN_BEFORE = 120
@@ -39,6 +43,27 @@ const MAX_PER_FIELD = 6
 const OVERLAP_CHARS = 200
 
 /** @param {{page:number, text:string}[]} pages */
+/**
+ * The AR reader's config for THIS ticker: the standing narrative sections, plus a
+ * number field for every metric still missing after Yahoo and the deep source.
+ *
+ * This is the residue, not a first-load list. If Screener already supplied cash,
+ * the reader doesn't waste a pass hunting for it.
+ *
+ * @param arTargets from findMissingBaseMetrics(...).arTargets
+ */
+export function buildArConfig(arTargets = []) {
+  return [
+    ...SECTION_CONFIG,
+    ...arTargets.map(t => ({
+      field:    t.field,
+      label:    `${t.label} (needed for: ${t.needs})`,
+      input:    'number',
+      keywords: t.keywords,
+    })),
+  ]
+}
+
 export function extractSections(pages, config = SECTION_CONFIG) {
   const blocks = []
   for (const { page, text } of pages) {

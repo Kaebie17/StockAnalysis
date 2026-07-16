@@ -1,3 +1,4 @@
+
 /**
  * src/utils/pasteParser.js
  *
@@ -14,31 +15,17 @@
  * proven in api/screener.js, just applied to plain text instead of HTML.
  */
 
+import { screenerAliases, METRICS, TABLE_SHAPE } from '../engine/metrics.js'
+
+// Row labels come from the ONE dictionary (src/engine/metrics.js), not a private
+// copy. api/screener.js had its own duplicate of this list; normalize.js had
+// Yahoo's names inline; sec.js had the tags; arExtract had the AR phrasings. None
+// could see each other, so nothing could answer "cash is missing — what does each
+// source call it?". Now they all read the same entries.
 const ALIASES = {
-  income: {
-    revenue:         ['sales', 'revenue', 'totalrevenue', 'netsales', 'incomefromoperations',
-                       'revenuefromoperations', 'premiumearned', 'interestearned', 'totalinterestearned'],
-    operatingProfit: ['operatingprofit', 'ebit', 'operatingincome', 'profitfromoperations', 'pbdit'],
-    depreciation:    ['depreciation', 'depreciationandamortisation', 'da'],
-    interest:        ['interest', 'interestexpense', 'financecosts', 'financecost'],
-    netProfit:       ['netprofit', 'profitaftertax', 'pat', 'netincome', 'netearnings'],
-    eps:             ['epsinrs', 'eps', 'earningspershare', 'basiceps', 'dilutedeps'],
-    materialCostPct: ['materialcost'],
-  },
-  balance: {
-    equityCapital: ['equitycapital', 'sharecapital', 'paidupcapital'],
-    reserves:      ['reserves', 'reservesandsurplus', 'retainedearnings'],
-    totalEquity:   ['totalequity', 'networth', 'shareholdersfunds', 'shareholdersfund', 'totalshareholdersfunds'],
-    totalDebt:     ['borrowings', 'totaldebt', 'longtermborrowing', 'debt', 'loans'],
-    // Screener labels the balance-sheet total simply "Total" (it appears twice —
-    // once for liabilities+equity, once for assets — and both equal total assets
-    // because the sheet balances). Match it so a Screener BS paste populates it.
-    totalAssets:   ['totalassets', 'total', 'totalequityandliabilities', 'totalliabilities', 'totalliabilitiesandequity'],
-  },
-  cashflow: {
-    operatingCF:  ['cashfromoperatingactivity', 'netcashfromoperatingactivities', 'operatingactivities'],
-    freeCashFlow: ['freecashflow', 'fcf'],
-  },
+  income:   screenerAliases('income'),
+  balance:  screenerAliases('balance'),
+  cashflow: screenerAliases('cashflow'),
 }
 
 function normalizeLabel(l) {
@@ -92,6 +79,7 @@ export function parsePastedTable(text, tableType) {
 
   const aliasMap = ALIASES[tableType]
   const warnings = []
+  let shape = { ok: true }
 
   // Classify each header column (after the label cell) as a real year, YTD,
   // TTM, or a stray column. A 4-digit year is taken even if a mark is glued to
@@ -102,17 +90,26 @@ export function parsePastedTable(text, tableType) {
   // below) skip them automatically.
   let headerIdx = -1
   let colKinds = []   // per cell: '2015'… | 'TTM' | null
+  let colMonths = []  // month of each real year column, for the annual check
   for (let i = 0; i < Math.min(3, lines.length); i++) {
     const cells = splitRow(lines[i])
     // Classify EVERY cell (do not assume a leading empty "corner" cell). An empty
     // corner, a title, or a row-label header all classify as null and drop out,
     // so a real first year (e.g. "Mar 2015") is never sliced off by mistake.
+    colMonths = []
     const cand = cells.map(c => {
       // Match a 4-digit year even when letters or a symbol are glued to it
       // ("FY2026", "2026+", "Mar 2024*"), but not when it's part of a longer
       // number ("20250"). Non-digit neighbours are fine; digit neighbours aren't.
       const m = c.match(/(?:^|[^0-9])((?:19|20)\d{2})(?![0-9])/)
-      if (m) return m[1]
+      if (m) {
+        // Remember the month too. Annual Screener columns all share one month
+        // ("Mar 2023, Mar 2024"); a quarterly table walks Mar/Jun/Sep/Dec. That
+        // difference is the only reliable way to tell the two tables apart.
+        const mon = c.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i)
+        colMonths.push(mon ? mon[1].toLowerCase() : null)
+        return m[1]
+      }
       // TTM and YTD are both partial/overlapping periods — drop for now.
       if (/\bttm\b/i.test(c)) return 'TTM'
       if (/\bytd\b/i.test(c)) return 'TTM'
@@ -136,8 +133,21 @@ export function parsePastedTable(text, tableType) {
     years = colKinds.filter(k => k && k !== 'TTM')   // real years, in order
   }
 
+  // GATE — before a single number is read. A wrong table or a quarterly table is
+  // a mistake to correct, not data to salvage: parsing it would only produce a
+  // plausible-looking wrong answer. This is the ONLY check on a paste now. The
+  // old one compared every value against Yahoo, which made the weaker source the
+  // judge of the stronger one, and failed on Yahoo's own holes.
+  if (headerIdx !== -1) {
+    shape = checkShape(tableType, years, colMonths, lines.slice(headerIdx + 1))
+    if (!shape.ok) {
+      return { years: [], rows: [], warnings: shape.warnings, matchedCount: 0, shape, rejected: true }
+    }
+  }
+
   // Parse data rows
   const fieldsByYear = years.map(() => ({}))
+  const pctLabels = new Set()   // fields whose Screener label carried a '%'
   let matchedCount = 0
 
   for (let i = 0; i < lines.length; i++) {
@@ -173,6 +183,10 @@ export function parsePastedTable(text, tableType) {
 
     if (matchedField) {
       matchedCount++
+      // The RAW label is the only place the percent lives — normalizeLabel strips
+      // the '%' away, so "Material Cost %" and "Material Cost" look identical
+      // after it. Capture it here, before that happens.
+      if (/%/.test(rawLabel)) pctLabels.add(matchedField)
       padded.forEach((v, yi) => {
         if (yi < fieldsByYear.length) fieldsByYear[yi][matchedField] = v
       })
@@ -194,21 +208,103 @@ export function parsePastedTable(text, tableType) {
     }
   }
 
-  // Screener's expense breakup gives Material Cost % (of sales). Recover the
-  // otherwise-missing gross profit = revenue × (1 − materialCost%/100) so gross
-  // margin flows through the normal ratios / Block-5 paths. Material-only =
-  // standard gross-margin convention; 0% (services co) → left null.
-  if (tableType === 'income') {
-    for (const f of fieldsByYear) {
-      if (f.grossProfit == null && f.revenue != null && f.materialCostPct != null && f.materialCostPct > 0) {
-        f.grossProfit = f.revenue * (1 - f.materialCostPct / 100)
-      }
-      delete f.materialCostPct
+  // PERCENT vs ABSOLUTE, decided by the LABEL.
+  //
+  // Screener prints some rows as a percent of something ("Material Cost %",
+  // "OPM %", "Tax %") and others as absolute crore. Both are possible for the
+  // same metric. The label is the only reliable signal: guessing from magnitude
+  // ("under 100 must be a percent") reads Rs45cr of material cost on Rs1000cr of
+  // revenue as 45% -> Rs450cr. Silently, and ten times wrong.
+  //
+  // Converting % -> absolute is unit handling, which IS the source's job. Working
+  // out gross profit from it is not — that lives in ratios.js, once, for every
+  // source. It used to live here AND in api/sec.js.
+  for (const [key, m] of Object.entries(METRICS)) {
+    if (!m.pctOf) continue
+    for (let i = 0; i < fieldsByYear.length; i++) {
+      const f = fieldsByYear[i]
+      if (f[key] == null || !pctLabels.has(key)) continue     // absolute — leave it
+      const base = f[m.pctOf]
+      f[key] = base != null ? base * (f[key] / 100) : null
     }
+  }
+  // 0% material cost = a services company with no materials. Null, not a claim
+  // of a 100% gross margin.
+  for (const f of fieldsByYear) {
+    if (f.cogs != null && f.cogs <= 0) f.cogs = null
   }
 
   const rows = years.map((year, i) => ({ year, ...fieldsByYear[i] }))
-  return { years, rows, warnings, matchedCount }
+  return { years, rows, warnings, matchedCount, shape }
+}
+
+/**
+ * The whole check, now. Two questions, asked BEFORE anything is parsed:
+ *
+ *   1. Is this the table you think it is? (right rows in the right box)
+ *   2. Is it annual, not quarterly? (shareholding exempt — it IS quarterly)
+ *
+ * That's it. The old check compared every pasted number against Yahoo at 3
+ * significant figures and threw out the entire paste on one mismatch — which
+ * made Yahoo, the weaker source, the judge of Screener, the stronger one. It also
+ * failed on Yahoo's own holes and on our own parser misses, neither of which is
+ * anything to do with the paste.
+ *
+ * Arithmetic self-checks (Sales − Expenses = Operating Profit, etc.) were
+ * considered and dropped: Screener rounds to crore, so they'd need a tolerance
+ * band, and arguing about the band is what made the old check bad.
+ *
+ * Nothing numeric is gated any more, because nothing needs to be: an unread row
+ * is now a reported gap, not an invented number.
+ */
+export function checkShape(tableType, years, colMonths, bodyLines) {
+  const warnings = []
+  const spec = TABLE_SHAPE[tableType]
+  if (!spec) return { ok: true, quarterly: false, wrongTable: false, warnings }
+
+  // 1. RIGHT TABLE — score the pasted row LABELS against every statement, not
+  // just the box they landed in. Scoring only the target can tell you "these
+  // aren't P&L rows"; scoring all of them can tell you "that's the balance sheet,
+  // put it in the other box" — which is the message worth showing.
+  const labels = bodyLines.map(l => normalizeLabel(splitRow(l)[0] || ''))
+  const scoreOf = (t) => {
+    const aliases = screenerAliases(t)
+    let n = 0
+    for (const key of (TABLE_SHAPE[t]?.signature || [])) {
+      const alts = aliases[key] || []
+      if (labels.some(lab => lab && alts.some(a => lab === a || lab.startsWith(a)))) n++
+    }
+    return n
+  }
+
+  const mine = scoreOf(tableType)
+  let best = tableType, bestScore = mine
+  for (const t of Object.keys(TABLE_SHAPE)) {
+    const sc = scoreOf(t)
+    if (sc > bestScore) { best = t; bestScore = sc }
+  }
+
+  const wrongTable = best !== tableType && bestScore >= 2
+  if (wrongTable) {
+    warnings.push(`This looks like the ${TABLE_SHAPE[best].label} table, not ${spec.label}. Paste it into the ${TABLE_SHAPE[best].label} box instead.`)
+  } else if (mine === 0) {
+    warnings.push(`No ${spec.label} rows recognised. Check you copied the table including its row labels.`)
+  }
+
+  // 2. ANNUAL, NOT QUARTERLY — a quarterly table repeats a year across columns
+  // (Mar 2024, Jun 2024, Sep 2024, Dec 2024) and walks the month. Annual does
+  // neither. Shareholding is quarterly by nature and skips this.
+  let quarterly = false
+  if (spec.annual) {
+    const dupYear = new Set(years).size < years.length
+    const varies  = new Set(colMonths.filter(Boolean)).size > 1
+    quarterly = dupYear || varies
+    if (quarterly) {
+      warnings.push('This looks like the quarterly table. Switch Screener to the annual view and copy that instead.')
+    }
+  }
+
+  return { ok: !wrongTable && !quarterly && mine > 0, quarterly, wrongTable, matched: mine, looksLike: best, warnings }
 }
 
 /**

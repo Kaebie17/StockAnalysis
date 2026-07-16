@@ -1,3 +1,4 @@
+
 /**
  * src/utils/format.js — formatters + resolution badge helpers
  */
@@ -82,6 +83,13 @@ export function resolutionBadge(tagged) {
     case 'ttm':
     case 'ttm-fallback':
       return { icon: 'T', color: 'text-neutral/70', tooltip: 'TTM value from Yahoo financialData' }
+    case 'document':
+      return { icon: '📄', color: 'text-accent', tooltip: tagged.formula || 'Read from a filing you uploaded' }
+    case 'estimated':
+      // An assumption, shown as one. The old opCF x 0.7 FCF proxy carried no tag
+      // at all — it looked exactly like a reported number, which is why it sat
+      // unnoticed in the DCF for so long.
+      return { icon: '≈', color: 'text-neutral', tooltip: tagged.formula ? `Estimated: ${tagged.formula}` : 'Estimated' }
     case 'proxy':
       return { icon: '~', color: 'text-neutral/70', tooltip: tagged.formula || 'Proxy value' }
     case 'source-reference':
@@ -97,5 +105,3 @@ export function fmtTagged(tagged, formatter) {
   if (!tagged || tagged.value == null) return '—'
   return formatter(tagged.value)
 }
-
-

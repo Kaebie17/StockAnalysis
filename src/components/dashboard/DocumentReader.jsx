@@ -1,7 +1,11 @@
+
 import React, { useRef, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { extractSections, detectScanned, sniffAmount, sniffPledge, sniffRpt } from '../../engine/arExtract.js'
 import { reconcile } from '../../engine/reconcileDocs.js'
+import { METRICS } from '../../engine/metrics.js'
+import { buildArConfig } from '../../engine/arExtract.js'
+import { findMissingBaseMetrics } from '../../engine/dataGaps.js'
 
 /**
  * DocumentReader — reads ANY filing (annual report, quarterly result, investor
@@ -32,6 +36,12 @@ function fyOptions() {
 }
 const blockId = b => `${b.field}:${b.page}:${b.idx}`
 const SINGLE = new Set(['outlook', 'pli', 'initiatives', 'runway'])
+
+// Every metric the gap list can ask a document for. Derived from the dictionary,
+// so adding a metric there is enough — nothing here needs editing.
+const NUMBER_FIELDS = new Set(
+  Object.entries(METRICS).filter(([, m]) => m.ar?.length).map(([k]) => k)
+)
 
 export default function DocumentReader({ open, onClose }) {
   const { state, setQualInputs } = useApp()
@@ -96,9 +106,14 @@ export default function DocumentReader({ open, onClose }) {
       } else if (b.field === 'rpt') {
         const rr = sniffRpt(text || b.snippet)
         slots.rpt = { present: true, pctOfRevenue: rr.pctOfRevenue }
-      } else if (b.field === 'materialCost') {
+      } else if (NUMBER_FIELDS.has(b.field)) {
+        // ANY number field, not just materialCost. This used to be a hard-coded
+        // `b.field === 'materialCost'` branch — the single number anyone had
+        // wired up. Once the gap list started asking the reader to hunt for cash
+        // and capex, it found them, showed them, and then dropped them on the
+        // floor because there was no branch to catch them.
         const a = sniffAmount(text || b.snippet)
-        if (a.value != null) slots.materialCost = { value: a.value }
+        if (a.value != null) slots[b.field] = { value: a.value }
       } else if (SINGLE.has(b.field) && text) {
         textByField[b.field] = textByField[b.field] ? `${textByField[b.field]} ${text}` : text
       }

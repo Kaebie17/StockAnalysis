@@ -1,5 +1,6 @@
+
 import React, { useState, useEffect, useMemo } from 'react'
-import { findMissingBaseMetrics, TABLE_INFO } from '../../engine/dataGaps.js'
+import { findMissingBaseMetrics, TABLE_INFO , expandHintsForTable } from '../../engine/dataGaps.js'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 import { useApp } from '../../store/AppContext.jsx'
 
@@ -21,6 +22,7 @@ const pasteScale = (currency, ticker) =>
 export default function GapFillModal({ open, onClose, ratioResult, ticker, onApply }) {
   const { state: appState } = useApp()
   const currency = appState?.data?.currency
+  const data     = appState?.data
   // Stable plan captured when the modal opens. We must NOT drive the wizard off
   // the live ratioResult — it shrinks as gaps get filled, which previously made
   // the step indexing and the "all done" check break mid-flow.
@@ -34,7 +36,7 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
   // (Re)initialise every time the modal is opened.
   useEffect(() => {
     if (!open) return
-    const { byTable } = findMissingBaseMetrics(ratioResult)
+    const { byTable } = findMissingBaseMetrics(ratioResult, data)
     const tables = Object.keys(byTable)
     setPlan({ tables, byTable })
     setStepIdx(0)
@@ -46,10 +48,13 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
 
   // Live view of what is still missing — used only to relabel a step, never to
   // resize the wizard.
-  const liveByTable = useMemo(
-    () => findMissingBaseMetrics(ratioResult).byTable,
-    [ratioResult]
+  // `data` matters: capex and cogs live on the history rows, not on ratioResult.
+  // Without it they read as permanently missing.
+  const gaps = useMemo(
+    () => findMissingBaseMetrics(ratioResult, data),
+    [ratioResult, data]
   )
+  const liveByTable = gaps.byTable
 
   if (!open) return null
 
@@ -61,6 +66,7 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
   const currentMissing = (liveByTable[currentTable] || plan.byTable[currentTable] || [])
   const isLastStep    = stepIdx >= tables.length - 1
   const url           = screenerUrl(ticker)
+  const expandHints   = expandHintsForTable(gaps, currentTable)
 
   const handleParse = () => {
     setPreview(parsePastedTable(pasteText, currentTable))
@@ -74,7 +80,9 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
   }
 
   const handleConfirmStep = () => {
-    if (!preview) return
+    // A rejected paste (wrong table / quarterly) parses to zero rows. Applying it
+    // would blank the step rather than fill it. The warning is already on screen.
+    if (!preview || preview.rejected) return
     const tagged = tagPastedRows(preview.rows, currentTable, { scale: pasteScale(currency, ticker) })
     onApply(currentTable, tagged)
     setCompleted(prev => ({ ...prev, [currentTable]: true }))
@@ -128,6 +136,23 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
                 1. Open Screener, find the <strong className="text-slate-300">{tableInfo.screenerSection}</strong> table,
                 select it and copy (the whole table, including the year headers)
               </p>
+
+              {/* Some metrics are only visible once a row is expanded. Name the
+                  exact "+" to click, and only for the ones actually missing —
+                  we can't click it ourselves (it's someone else's website, and
+                  the browser won't let us reach into that tab). */}
+              {expandHints.length > 0 && (
+                <div className="rounded border border-accent/30 bg-accent/5 px-2 py-1.5 space-y-1">
+                  {expandHints.map(h => (
+                    <p key={h.expand} className="text-xs text-slate-300">
+                      Click the <strong className="text-accent">+</strong> on the{' '}
+                      <strong className="text-accent">{h.expand}</strong> row first — it reveals{' '}
+                      <strong>{h.metrics.join(', ')}</strong>
+                      <span className="text-slate-500"> (needed for {h.needs.join('; ')})</span>
+                    </p>
+                  ))}
+                </div>
+              )}
               {url ? (
                 <a href={url} target="_blank" rel="noopener noreferrer"
                    className="btn-ghost text-sm w-full inline-flex items-center justify-center">
