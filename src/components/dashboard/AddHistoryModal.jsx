@@ -136,13 +136,17 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-slate-600">{t.hint}}
-                  {expandersFor(ALL_METRICS, t.key).map(h => (
-                    <span key={h.expand} className="block text-accent/80">
-                      Click the + on <strong>{h.expand}</strong> before copying — it reveals {h.metrics.join(', ')}
-                    </span>
-                  ))}
-                  {'</p>
+                  <div className="text-xs text-slate-600 space-y-0.5">
+                    <p>{t.hint}</p>
+                    {/* Which "+" to click, straight from the dictionary. The old
+                        hard-written tip named only the Expenses row — the one
+                        expander anyone had noticed — and missed cash and capex. */}
+                    {expandersFor(ALL_METRICS, t.key).map(h => (
+                      <p key={h.expand} className="text-accent/80">
+                        Click the <strong>+</strong> on <strong>{h.expand}</strong> before copying — it reveals {h.metrics.join(', ')}
+                      </p>
+                    ))}
+                  </div>
                   <textarea
                     value={pasteText[t.key]}
                     onChange={e => { setPasteText(prev => ({ ...prev, [t.key]: e.target.value })); setResults(null) }}
