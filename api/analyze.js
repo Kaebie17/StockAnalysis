@@ -3,7 +3,7 @@
 // Vercel env as a fallback. Returns { text: null } on any failure so the client
 // falls back to the built-in boilerplate.
 
-const MODEL = 'gemini-2.5-flash'   // current stable; swap to any available Gemini model
+const DEFAULT_MODEL = 'gemini-2.5-flash'   // current stable; fallback if not provided by client
 
 const SYSTEM = `As a professional equity analyst, based strictly on the figures, scores, and qualitative points provided in this prompt, write a brief, balanced verdict in plain language that weighs ALL of the signals against one another. The user can see every figure you are given, so reason across them — do not lean on any single one.
 
@@ -24,6 +24,7 @@ export default async function handler(req, res) {
   // only if one is configured. Never logged.
   const key = req.body?.userKey || process.env.GEMINI_API_KEY
   const summary = req.body?.summary
+  const MODEL = req.body?.model || DEFAULT_MODEL
   if (!key || !summary) { res.status(200).json({ text: null }); return }
 
   // DEBUG (temporary): echo the exact prompt pieces so the client can log them.
