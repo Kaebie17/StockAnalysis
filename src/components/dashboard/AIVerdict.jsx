@@ -106,23 +106,25 @@ export default function AIVerdict() {
   const KeyBox = (
     <div className="mt-2 text-xs bg-navy-800/50 rounded-lg p-3 space-y-2">
       <div className="text-slate-300">Enable AI analysis with your own Gemini API key</div>
-      <div className="flex gap-2">
-        <select value={modelVal} onChange={e => setModelVal(e.target.value)} className="input-field text-xs shrink-0 bg-navy-900 cursor-pointer">
+      <div className="flex flex-col sm:flex-row gap-2">
+        <select value={modelVal} onChange={e => setModelVal(e.target.value)} className="input-field text-xs bg-navy-900 cursor-pointer sm:w-auto">
           <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
           <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
           <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
           <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
         </select>
-        <div className="relative flex-1 flex">
-          <input type={showKey ? "text" : "password"} value={keyInput} onChange={e => setKeyInput(e.target.value)}
-            autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off"
-            inputMode="text" placeholder="Paste Gemini API key…" className="input-field text-xs flex-1 pr-8" />
-          <button type="button" onClick={() => setShowKey(!showKey)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200">
-            {showKey ? '🙈' : '👁️'}
-          </button>
+        <div className="flex flex-1 gap-2">
+          <div className="relative flex-1 flex">
+            <input type={showKey ? "text" : "password"} value={keyInput} onChange={e => setKeyInput(e.target.value)}
+              autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="off"
+              inputMode="text" placeholder="Paste Gemini API key…" className="input-field text-xs flex-1 pr-8" />
+            <button type="button" onClick={() => setShowKey(!showKey)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200">
+              {showKey ? '🙈' : '👁️'}
+            </button>
+          </div>
+          <button onClick={saveKey} className="btn-primary text-xs shrink-0">Save</button>
+          {hasKey && <button onClick={() => setEditKey(false)} className="text-slate-500 text-xs shrink-0">Cancel</button>}
         </div>
-        <button onClick={saveKey} className="btn-primary text-xs shrink-0">Save</button>
-        {hasKey && <button onClick={() => setEditKey(false)} className="text-slate-500 text-xs">Cancel</button>}
       </div>
       <label className="flex items-center gap-2 text-[11px] text-slate-400">
         <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
