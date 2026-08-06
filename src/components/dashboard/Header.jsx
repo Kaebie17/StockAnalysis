@@ -106,12 +106,24 @@ export default function Header() {
 function IdentityBar() {
   const { state, overrideStage } = useApp()
   const { data, ratioResult, stage, validation } = state
+  const [refreshing, setRefreshing] = React.useState(false)
   const stageInfo = STAGES[stage] || STAGES.ESTABLISHED
 
   const price     = ratioResult?.price
   const marketCap = ratioResult?.marketCap
   const change    = data?.meta?.change1d
   const cur       = data?.currency === 'INR' ? '₹' : '$'
+
+  const handleRefreshPrice = async () => {
+    if (!state.ticker || refreshing) return
+    setRefreshing(true)
+    try {
+      // Re-triggers the full load/fetch pipeline for the current ticker to grab fresh CMP
+      await load(state.ticker)
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const mcapStr = marketCap
     ? cur + (data.currency === 'INR'
@@ -134,8 +146,15 @@ function IdentityBar() {
         {/* CMP — prominent */}
         {price != null && (
           <div className="flex items-center gap-1.5">
-            <span className="text-white font-semibold text-base">
+            <span className="text-white font-semibold text-base flex items-center gap-1">
               CMP: {cur}{price.toFixed(2)}
+              <button 
+                onClick={handleRefreshPrice} 
+                disabled={refreshing}
+                title="Refresh CMP"
+                className={`text-xs text-slate-400 hover:text-accent transition-transform ${refreshing ? 'animate-spin text-accent' : ''}`}>
+                🔄
+              </button>
             </span>
             {change != null && (
               <span className={change >= 0 ? 'text-bull text-xs' : 'text-bear text-xs'}>
