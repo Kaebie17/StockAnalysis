@@ -1,4 +1,5 @@
 
+
 /**
  * src/utils/pasteParser.js
  *
@@ -147,8 +148,27 @@ export function parsePastedTable(text, tableType) {
 
   // Parse data rows
   const fieldsByYear = years.map(() => ({}))
-  const pctLabels = new Set()   // fields whose Screener label carried a '%'
+  // Per (year, field) — NOT per field — whether the value currently sitting in
+  // that slot came from a %-labeled row. A field can be matched by more than one
+  // Screener alias (cogs = "Material Cost %" OR "Raw material cost"); tracking
+  // the flag per field only, in a Set that's never cleared, let a % row's flag
+  // survive a later row overwriting the VALUE with an absolute figure — so the
+  // absolute figure then got divided by 100 as if it were still a percentage.
+  const pctFlagsByYear = years.map(() => ({}))
   let matchedCount = 0
+
+  // Column index -> year, built once from the header. Every data row is read BY
+  // THIS POSITION, not by squeezing whatever numeric cells it happens to have
+  // into an N-year window. That distinction matters because Screener leaves the
+  // TTM cell blank for many sub-lines (e.g. "Raw material cost", "Material Cost
+  // %") while populating it for the top-level rows (Sales, Expenses). The old
+  // code built `numeric` by filtering out blanks first, so a blank trailing cell
+  // silently disappeared instead of leaving a gap — making the array one short
+  // and shifting every remaining value one column (one year) too early, with the
+  // true final year dropped off the end entirely. Reading by column index can't
+  // shift: a blank cell just means "no value for that column."
+  const yearAtCol = new Map()
+  colKinds.forEach((k, i) => { if (i > 0 && k && k !== 'TTM') yearAtCol.set(i, k) })
 
   for (let i = 0; i < lines.length; i++) {
     if (i === headerIdx) continue
@@ -158,21 +178,6 @@ export function parsePastedTable(text, tableType) {
     const rawLabel = cells[0]
     const norm = normalizeLabel(rawLabel)
 
-    // Values = the numeric cells only. Whatever follows the label — a "+" /
-    // expander, an "*"/footnote, an arrow, a "Note" tag, a blank — is non-numeric
-    // and simply isn't picked up, so alignment doesn't depend on how many marker
-    // cells a row has. (An inline mark stuck to a number like "10,572*" still
-    // parses to the number.)
-    const numeric = cells.map(parseNum).filter(v => v != null)
-
-    // Drop trailing non-kept columns (TTM / stray) from the right edge; YTD is a
-    // keeper so it stops this. Then right-align so the most recent period is last.
-    let trailingExtra = 0
-    for (let k = colKinds.length - 1; k >= 0 && (!colKinds[k] || colKinds[k] === 'TTM'); k--) trailingExtra++
-    const usable  = trailingExtra > 0 ? numeric.slice(0, Math.max(0, numeric.length - trailingExtra)) : numeric
-    const aligned = usable.slice(Math.max(0, usable.length - years.length))
-    const padded  = Array(Math.max(0, years.length - aligned.length)).fill(null).concat(aligned)
-
     let matchedField = null
     for (const [field, aliases] of Object.entries(aliasMap)) {
       if (aliases.some(a => norm === a || norm.startsWith(a))) {
@@ -180,16 +185,27 @@ export function parsePastedTable(text, tableType) {
         break
       }
     }
+    if (!matchedField) continue
 
-    if (matchedField) {
-      matchedCount++
-      // The RAW label is the only place the percent lives — normalizeLabel strips
-      // the '%' away, so "Material Cost %" and "Material Cost" look identical
-      // after it. Capture it here, before that happens.
-      if (/%/.test(rawLabel)) pctLabels.add(matchedField)
-      padded.forEach((v, yi) => {
-        if (yi < fieldsByYear.length) fieldsByYear[yi][matchedField] = v
-      })
+    matchedCount++
+    // The RAW label is the only place the percent lives — normalizeLabel strips
+    // the '%' away, so "Material Cost %" and "Material Cost" look identical
+    // after it. Capture it here, before that happens.
+    const isPct = /%/.test(rawLabel)
+
+    // Values = the numeric cells only, read at the exact column the header put
+    // them in. Whatever follows the label — a "+"/expander, an "*"/footnote, an
+    // arrow, a "Note" tag — is non-numeric and simply isn't picked up. A blank
+    // cell (missing year, or a column this row doesn't report, like TTM) leaves
+    // whatever was already in that slot untouched rather than being treated as
+    // "no data here, shift everything left."
+    for (const [colIdx, year] of yearAtCol) {
+      const v = colIdx < cells.length ? parseNum(cells[colIdx]) : null
+      if (v == null) continue
+      const yi = years.indexOf(year)
+      if (yi === -1) continue
+      fieldsByYear[yi][matchedField]   = v
+      pctFlagsByYear[yi][matchedField] = isPct
     }
   }
 
@@ -223,7 +239,7 @@ export function parsePastedTable(text, tableType) {
     if (!m.pctOf) continue
     for (let i = 0; i < fieldsByYear.length; i++) {
       const f = fieldsByYear[i]
-      if (f[key] == null || !pctLabels.has(key)) continue     // absolute — leave it
+      if (f[key] == null || !pctFlagsByYear[i][key]) continue     // absolute — leave it
       const base = f[m.pctOf]
       f[key] = base != null ? base * (f[key] / 100) : null
     }
@@ -330,3 +346,5 @@ export function tagPastedRows(rows, tableType, opts = {}) {
     return tagged
   })
 }
+
+
