@@ -105,7 +105,7 @@ export default function Header() {
 
 function IdentityBar() {
   const { state, overrideStage } = useApp()
-  const { data, ratioResult, stage, validation } = state
+  const { data, ratioResult, stage } = state
   const [refreshing, setRefreshing] = React.useState(false)
   const stageInfo = STAGES[stage] || STAGES.ESTABLISHED
 
@@ -115,13 +115,26 @@ function IdentityBar() {
   const cur       = data?.currency === 'INR' ? '₹' : '$'
 
   const handleRefreshPrice = async () => {
-    if (!state.ticker || refreshing) return
+    const ticker = state?.data?.ticker || state?.ticker
+    if (!ticker || refreshing) return
     setRefreshing(true)
     try {
-      // Re-triggers the full load/fetch pipeline for the current ticker to grab fresh CMP
-      await load(state.ticker)
+      // Lightweight fetch: hits backend quote endpoint directly instead of full pipeline
+      const res = await fetch(`/api/yahoo?endpoint=all&ticker=${encodeURIComponent(ticker)}`)
+      if (res.ok) {
+        const json = await res.json()
+        const newPrice = json?.quote?.regularMarketPrice
+        const newChange = json?.quote?.regularMarketChangePercent
+
+        if (newPrice != null) {
+          ratioResult.price = newPrice
+          if (data?.meta) data.meta.change1d = newChange ?? data.meta.change1d
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to refresh CMP:', err)
     } finally {
-      setRefreshing(false)
+      setTimeout(() => setRefreshing(false), 500)
     }
   }
 
@@ -143,17 +156,21 @@ function IdentityBar() {
         {data.name && data.name !== data.ticker && (
           <span className="text-slate-400 text-xs">{data.name}</span>
         )}
-        {/* CMP — prominent */}
+        {/* CMP — prominent with lightweight refresh spinner */}
         {price != null && (
           <div className="flex items-center gap-1.5">
-            <span className="text-white font-semibold text-base flex items-center gap-1">
+            <span className="text-white font-semibold text-base flex items-center gap-1.5">
               CMP: {cur}{price.toFixed(2)}
               <button 
+                type="button"
                 onClick={handleRefreshPrice} 
                 disabled={refreshing}
                 title="Refresh CMP"
-                className={`text-xs text-slate-400 hover:text-accent transition-transform ${refreshing ? 'animate-spin text-accent' : ''}`}>
-                🔄
+                style={{ background: 'transparent', border: 'none', padding: 0, boxShadow: 'none' }}
+                className="cursor-pointer focus:outline-none">
+                <span className={`inline-block text-xs text-slate-400 hover:text-accent transition-transform ${refreshing ? 'animate-spin' : ''}`}>
+                  🔄
+                </span>
               </button>
             </span>
             {change != null && (
