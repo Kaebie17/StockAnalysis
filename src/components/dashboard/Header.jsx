@@ -167,10 +167,16 @@ function IdentityBar() {
                 disabled={refreshing}
                 title="Refresh CMP"
                 style={{ background: 'transparent', border: 'none', padding: 0, boxShadow: 'none' }}
-                className="cursor-pointer focus:outline-none">
-                <span className={`inline-block text-xs text-slate-400 hover:text-accent transition-transform ${refreshing ? 'animate-spin' : ''}`}>
-                  🔄
-                </span>
+                className="cursor-pointer focus:outline-none p-0.5 group">
+                <svg 
+                  className={`w-3.5 h-3.5 text-slate-400 group-hover:text-accent transition-transform ${refreshing ? 'animate-spin text-accent' : ''}`}
+                  fill="none" 
+                  stroke="currentColor" 
+                  strokeWidth="2" 
+                  viewBox="0 0 24 24" 
+                  xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                </svg>
               </button>
             </span>
             {change != null && (
