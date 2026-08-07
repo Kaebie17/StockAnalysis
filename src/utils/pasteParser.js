@@ -1,5 +1,3 @@
-
-
 /**
  * src/utils/pasteParser.js
  *
@@ -128,11 +126,26 @@ export function parsePastedTable(text, tableType) {
   if (headerIdx === -1) {
     warnings.push('Could not detect year headers in the pasted text. Years may be misaligned — please verify in the preview below.')
     const firstRowCells = splitRow(lines[0])
-    colKinds = firstRowCells.map((_, i) => `Year ${i + 1}`)
-    years = colKinds.slice()
+    // Keep the same "label cell, then data columns" shape as the detected-header
+    // path below, instead of numbering the label cell itself as "Year 1".
+    colKinds = firstRowCells.map((_, i) => (i === 0 ? null : `Year ${i}`))
+    years = colKinds.filter(k => k != null)
   } else {
     years = colKinds.filter(k => k && k !== 'TTM')   // real years, in order
   }
+
+  // The header's data columns, in order — i.e. colKinds with any leading
+  // non-data cells (normally just the one blank "corner" cell above the label
+  // column) stripped off the front. This is read as a SEQUENCE, not by raw
+  // column index, because that leading corner cell doesn't always survive the
+  // trip: some mobile clipboards drop a lone leading tab on paste, which would
+  // otherwise shift every header column one index to the left relative to data
+  // rows (which always keep their own leading label cell — there's real text
+  // there, nothing for a clipboard to strip). Every data row is read the same
+  // way below — label cell, then its own sequence of value cells — so the two
+  // sequences line up correctly whether or not the header's corner cell made it.
+  const headerFirstDataIdx = colKinds.findIndex(k => k != null)
+  const dataColYears = headerFirstDataIdx === -1 ? [] : colKinds.slice(headerFirstDataIdx)
 
   // GATE — before a single number is read. A wrong table or a quarterly table is
   // a mistake to correct, not data to salvage: parsing it would only produce a
@@ -157,19 +170,6 @@ export function parsePastedTable(text, tableType) {
   const pctFlagsByYear = years.map(() => ({}))
   let matchedCount = 0
 
-  // Column index -> year, built once from the header. Every data row is read BY
-  // THIS POSITION, not by squeezing whatever numeric cells it happens to have
-  // into an N-year window. That distinction matters because Screener leaves the
-  // TTM cell blank for many sub-lines (e.g. "Raw material cost", "Material Cost
-  // %") while populating it for the top-level rows (Sales, Expenses). The old
-  // code built `numeric` by filtering out blanks first, so a blank trailing cell
-  // silently disappeared instead of leaving a gap — making the array one short
-  // and shifting every remaining value one column (one year) too early, with the
-  // true final year dropped off the end entirely. Reading by column index can't
-  // shift: a blank cell just means "no value for that column."
-  const yearAtCol = new Map()
-  colKinds.forEach((k, i) => { if (i > 0 && k && k !== 'TTM') yearAtCol.set(i, k) })
-
   for (let i = 0; i < lines.length; i++) {
     if (i === headerIdx) continue
     const cells = splitRow(lines[i])
@@ -193,15 +193,18 @@ export function parsePastedTable(text, tableType) {
     // after it. Capture it here, before that happens.
     const isPct = /%/.test(rawLabel)
 
-    // Values = the numeric cells only, read at the exact column the header put
-    // them in. Whatever follows the label — a "+"/expander, an "*"/footnote, an
-    // arrow, a "Note" tag — is non-numeric and simply isn't picked up. A blank
-    // cell (missing year, or a column this row doesn't report, like TTM) leaves
-    // whatever was already in that slot untouched rather than being treated as
-    // "no data here, shift everything left."
-    for (const [colIdx, year] of yearAtCol) {
-      const v = colIdx < cells.length ? parseNum(cells[colIdx]) : null
-      if (v == null) continue
+    // Every data row's own first cell is its label ("Sales +", "Raw material
+    // cost"…) — real text, so a clipboard has nothing whitespace-like to trim
+    // there. Its value cells start right after, in the same order as
+    // dataColYears. Matching by that shared sequence (rather than raw column
+    // index) is what keeps this correct even if the header's corner cell above
+    // the label column got stripped on the way in — see dataColYears above.
+    const values = cells.slice(1)
+    for (let j = 0; j < dataColYears.length; j++) {
+      const year = dataColYears[j]
+      if (!year || year === 'TTM') continue
+      const v = j < values.length ? parseNum(values[j]) : null
+      if (v == null) continue   // blank cell for this column — leave any existing value alone
       const yi = years.indexOf(year)
       if (yi === -1) continue
       fieldsByYear[yi][matchedField]   = v
@@ -346,5 +349,3 @@ export function tagPastedRows(rows, tableType, opts = {}) {
     return tagged
   })
 }
-
-
