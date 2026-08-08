@@ -288,6 +288,17 @@ function detectRsiDivergence(closes, rsiArr, type) {
   return priceHigher && rsiLower
 }
 
+/**
+ * Candlestick patterns.
+ *
+ * `evidenced: true` marks the patterns with published backtested support on
+ * Indian large-caps specifically (Harami and Engulfing consistently; Inverted
+ * Hammer in some studies). The distinction matters because the same patterns
+ * test as noise on US indices — the edge appears in less institutionally
+ * dominated markets, which is the one this app is built for. Everything else
+ * here is folklore worth displaying but not worth scoring heavily, so the
+ * position-health bar reads `evidenced` rather than counting all patterns alike.
+ */
 function detectPatterns(candles) {
   const patterns = []
   if (candles.length < 2) return patterns
@@ -307,6 +318,14 @@ function detectPatterns(candles) {
     patterns.push({ name: 'Hammer', type: 'bullish' })
   }
 
+  // Inverted Hammer — long upper shadow, small body, after a decline.
+  if (body2 / range2 < 0.35 &&
+      (c2.high - Math.max(c2.open, c2.close)) > 2 * body2 &&
+      (Math.min(c2.open, c2.close) - c2.low) < body2 &&
+      c1.close < c1.open) {
+    patterns.push({ name: 'Inverted Hammer', type: 'bullish', evidenced: true })
+  }
+
   // Shooting star (bearish)
   if (c2.close < c2.open && (c2.high > c2.open + 2 * body2)) {
     patterns.push({ name: 'Shooting Star', type: 'bearish' })
@@ -315,13 +334,27 @@ function detectPatterns(candles) {
   // Bullish engulfing
   if (c1.close < c1.open && c2.close > c2.open &&
       c2.open < c1.close && c2.close > c1.open) {
-    patterns.push({ name: 'Bullish Engulfing', type: 'bullish' })
+    patterns.push({ name: 'Bullish Engulfing', type: 'bullish', evidenced: true })
   }
 
   // Bearish engulfing
   if (c1.close > c1.open && c2.close < c2.open &&
       c2.open > c1.close && c2.close < c1.open) {
-    patterns.push({ name: 'Bearish Engulfing', type: 'bearish' })
+    patterns.push({ name: 'Bearish Engulfing', type: 'bearish', evidenced: true })
+  }
+
+  // Harami — the reverse of engulfing: a small second candle contained within
+  // the first's body, signalling the prior move losing force. The strongest
+  // performer in the NSE studies. Requires a genuinely small inside body, or
+  // any quiet day after a big one would qualify.
+  const inside = Math.max(c2.open, c2.close) < Math.max(c1.open, c1.close) &&
+                 Math.min(c2.open, c2.close) > Math.min(c1.open, c1.close)
+  if (inside && body1 > 0 && body2 < body1 * 0.6) {
+    if (c1.close < c1.open && c2.close > c2.open) {
+      patterns.push({ name: 'Bullish Harami', type: 'bullish', evidenced: true })
+    } else if (c1.close > c1.open && c2.close < c2.open) {
+      patterns.push({ name: 'Bearish Harami', type: 'bearish', evidenced: true })
+    }
   }
 
   return patterns
@@ -331,5 +364,3 @@ function avg(arr) {
   const valid = arr.filter(v => v != null)
   return valid.length ? valid.reduce((s, v) => s + v, 0) / valid.length : null
 }
-
-

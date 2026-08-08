@@ -1,0 +1,50 @@
+/**
+ * src/api/marketRegime.js — India VIX + index level, for the market-regime bar.
+ *
+ * Reuses the existing /api/yahoo endpoint — ^INDIAVIX and ^NSEI are just more
+ * symbols through a pipe that already works, so this needs no new backend.
+ *
+ * Cached in-module for the session: the regime is a market-wide reading shared
+ * by every position on screen, so fetching it per position would be the same
+ * request repeated a dozen times.
+ *
+ * Never throws. The regime bar degrades to "no volatility data" and the other
+ * three bars are unaffected — a missing macro reading must not take down a page
+ * about the user's own holdings.
+ */
+
+const TTL_MS = 5 * 60 * 1000
+let cache = null      // { at, data }
+
+async function quote(symbol) {
+  const r = await fetch(`/api/yahoo?endpoint=all&ticker=${encodeURIComponent(symbol)}`)
+  if (!r.ok) return null
+  const j = await r.json().catch(() => null)
+  return j?.quote || null
+}
+
+export async function fetchMarketRegime({ indian = true } = {}) {
+  if (cache && Date.now() - cache.at < TTL_MS) return cache.data
+
+  const volSymbol   = indian ? '^INDIAVIX' : '^VIX'
+  const indexSymbol = indian ? '^NSEI' : '^GSPC'
+
+  let data = { vix: null, vixAvg: null, indexChangePct: null }
+  try {
+    const [v, idx] = await Promise.allSettled([quote(volSymbol), quote(indexSymbol)])
+    const vq = v.status === 'fulfilled' ? v.value : null
+    const iq = idx.status === 'fulfilled' ? idx.value : null
+    data = {
+      vix: vq?.regularMarketPrice ?? null,
+      // The 50-day average gives "elevated relative to lately", which is more
+      // informative than an absolute threshold in a market whose baseline drifts.
+      vixAvg: vq?.fiftyDayAverage ?? null,
+      indexChangePct: iq?.regularMarketChangePercent ?? null,
+    }
+  } catch { /* leave nulls — the bar reports unavailable */ }
+
+  cache = { at: Date.now(), data }
+  return data
+}
+
+export function clearRegimeCache() { cache = null }
