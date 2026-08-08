@@ -3,7 +3,7 @@ import { useApp } from '../../store/AppContext.jsx'
 import PositionModal from './PositionModal.jsx'
 import { usePositions, positionMath } from '../../store/usePositions.js'
 
-export default function EmptyState({ onUpload, onOpenPositions }) {
+export default function EmptyState({ onUpload }) {
   const { state } = useApp()
   const [bulkOpen, setBulkOpen] = useState(false)
   const { positions, refresh } = usePositions()
@@ -45,19 +45,17 @@ export default function EmptyState({ onUpload, onOpenPositions }) {
           setting the app up — before you've looked up anything. */}
       <div className="mt-6 w-full max-w-sm">
         {held.length > 0 ? (
-          <button onClick={onOpenPositions}
-            className="w-full card-sm text-left hover:border-accent/40 transition-colors">
-            <div className="flex items-center justify-between">
-              <span className="text-slate-300 text-sm font-medium">
-                📊 {held.length} holding{held.length > 1 ? 's' : ''} tracked
-              </span>
-              <span className="text-accent text-xs">View →</span>
+          <div className="card-sm text-left">
+            <div className="text-slate-300 text-sm font-medium">
+              💼 {held.length} holding{held.length > 1 ? 's' : ''} tracked
             </div>
             <div className="text-xs text-slate-500 mt-0.5 truncate">
               {held.slice(0, 4).map(p => p.ticker.replace(/\.(NS|BO)$/, '')).join(' · ')}
               {held.length > 4 ? ` +${held.length - 4}` : ''}
             </div>
-          </button>
+            <button onClick={() => setBulkOpen(true)}
+              className="text-xs text-accent hover:text-accent-light mt-1.5">+ Add more</button>
+          </div>
         ) : (
           <button onClick={() => setBulkOpen(true)}
             className="w-full card-sm text-left hover:border-accent/40 transition-colors">

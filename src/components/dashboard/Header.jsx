@@ -1,7 +1,6 @@
 
 
 import React, { useState } from 'react'
-import PositionModal from './PositionModal.jsx'
 import { usePositions } from '../../store/usePositions.js'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
@@ -11,7 +10,7 @@ import SyncControls from '../../sync/SyncControls.jsx'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
 
-export default function Header({ onOpenPositions }) {
+export default function Header() {
   const { state, load, reset } = useApp()
   const [input, setInput] = useState('')
   const [fxOpen, setFxOpen] = useState(false)
@@ -63,17 +62,6 @@ export default function Header({ onOpenPositions }) {
               Analyze
             </button>
           </form>
-          {/* Positions is the opposite case from Formulas below: checking what
-              you hold isn't tied to the ticker on screen, so it stays reachable
-              everywhere. Icon-only to keep the mobile row short. */}
-          {onOpenPositions && (
-            <button onClick={onOpenPositions} title="My positions"
-              className="text-sm px-2.5 py-2 rounded-lg border border-navy-600 text-slate-400
-                         hover:text-accent hover:border-accent/50 shrink-0 transition-colors">
-              📊
-            </button>
-          )}
-
           {/* Formula overrides are GLOBAL — one set shared by every ticker — so
               this belongs on the landing page, not in the per-ticker row. On
               mobile that row was carrying logo + input + Analyze + Formulas +
@@ -138,10 +126,8 @@ function IdentityBar() {
   const { state, overrideStage } = useApp()
   const { data, ratioResult, stage } = state
   const [refreshing, setRefreshing] = React.useState(false)
-  // Buy/sell for the ticker on screen. Sell only appears when a lot actually
-  // exists — offering it otherwise is a dead button.
-  const [posModal, setPosModal] = React.useState(null)   // null | 'buy' | 'sell'
-  const { positions, refresh } = usePositions(state.ticker)
+  // Just the held-lots label; the actions themselves live in PositionFab.
+  const { positions } = usePositions(state.ticker)
   const openLots = positions.filter(p => p.status !== 'closed')
   const stageInfo = STAGES[stage] || STAGES.ESTABLISHED
 
@@ -227,34 +213,14 @@ function IdentityBar() {
         <DataVintageBadge data={data} />
       </div>
 
-      {/* Right: buy/sell + stage. Sits next to CMP because that's the number
-          the purchase form pre-fills from. */}
+      {/* Right: stage. Buy/sell moved to the floating action button — this row
+          was carrying too much on a phone. */}
       <div className="flex items-center gap-2">
-        <button onClick={() => setPosModal('buy')}
-          title="Record a purchase of this stock"
-          className="text-xs px-2 py-1 rounded-md border border-navy-600 text-slate-400
-                     hover:text-bull hover:border-bull/50 transition-colors">
-          + Bought
-        </button>
-        {openLots.length > 0 && (
-          <button onClick={() => setPosModal('sell')}
-            title="Record a sale"
-            className="text-xs px-2 py-1 rounded-md border border-navy-600 text-slate-400
-                       hover:text-bear hover:border-bear/50 transition-colors">
-            − Sold
-          </button>
-        )}
         {openLots.length > 0 && (
           <span className="text-[10px] text-slate-500">
             {openLots.length} lot{openLots.length > 1 ? 's' : ''} held
           </span>
         )}
-        <PositionModal
-          open={posModal !== null}
-          mode={posModal === 'sell' ? 'sell' : 'buy'}
-          position={posModal === 'sell' ? openLots[0] : null}
-          onClose={() => setPosModal(null)}
-          onSaved={refresh} />
         <span className="text-xs text-slate-500">Stage:</span>
         <span className="badge badge-neutral text-xs">{stageInfo.emoji} {stageInfo.label}</span>
         <select
