@@ -136,13 +136,17 @@ function Dashboard() {
       {/* Backup FABs — landing page only */}
       {!showDashboard && (
         <div className="fixed bottom-6 right-6 flex flex-col gap-2 z-40 items-end">
+          <PositionFab />
           <BackupControls />
         </div>
       )}
 
       {/* FAB buttons */}
       {showDashboard && (
-        <div className="fixed bottom-6 right-6 flex flex-col gap-2 z-40">
+        <div className="fixed bottom-6 right-6 flex flex-col gap-2 z-40 items-end">
+          {/* Positions — same cluster as CSV and Studio rather than a second
+              stack in the same corner, which would just overlap them. */}
+          <PositionFab />
           {/* CSV upload */}
           <button
             onClick={() => setCsvModal('upload')}
@@ -164,9 +168,6 @@ function Dashboard() {
           </button>
         </div>
       )}
-
-      {/* Floating position actions — available on every screen. */}
-      <PositionFab />
 
       <ScoringStudio open={studioOpen} onClose={() => setStudioOpen(false)} />
 

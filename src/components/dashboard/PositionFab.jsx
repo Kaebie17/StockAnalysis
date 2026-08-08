@@ -36,8 +36,10 @@ export default function PositionFab() {
         <div className="fixed inset-0 z-30" onClick={() => setExpanded(false)} />
       )}
 
-      <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end gap-2
-                      pb-[env(safe-area-inset-bottom)]">
+      {/* Renders INSIDE the app's existing FAB column (alongside 📎 and ⚙), not
+          as its own fixed stack — a second fixed cluster in the same corner just
+          lands on top of the first. Sizing matches those buttons (w-11 h-11). */}
+      <div className="relative flex flex-col items-end gap-2">
         {expanded && (
           <>
             {hasTicker && (
@@ -58,20 +60,16 @@ export default function PositionFab() {
           title="Positions"
           aria-label="Positions"
           aria-expanded={expanded}
-          className="w-12 h-12 rounded-full bg-navy-800 border border-navy-600 shadow-lg
+          className="relative w-11 h-11 rounded-full bg-navy-800 border border-navy-600 shadow-lg
                      text-slate-300 hover:text-accent hover:border-accent/50
-                     flex items-center justify-center transition-all active:scale-95">
-          {expanded ? <span className="text-lg leading-none">✕</span> : (
-            <span className="relative text-lg leading-none">
-              💼
-              {/* Count badge: the one piece of state worth showing while collapsed. */}
-              {openLots.length > 0 && (
-                <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 px-1 rounded-full
-                                 bg-accent text-navy-900 text-[10px] font-bold
-                                 flex items-center justify-center">
-                  {openLots.length}
-                </span>
-              )}
+                     flex items-center justify-center transition-all active:scale-95 text-lg">
+          {expanded ? '✕' : '💼'}
+          {/* Count badge: the one piece of state worth showing while collapsed. */}
+          {!expanded && openLots.length > 0 && (
+            <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full
+                             bg-accent text-navy-900 text-[10px] font-bold
+                             flex items-center justify-center">
+              {openLots.length}
             </span>
           )}
         </button>
