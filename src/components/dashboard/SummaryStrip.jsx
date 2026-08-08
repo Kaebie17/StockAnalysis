@@ -5,6 +5,7 @@ import DCFScenarioPanel from './DCFScenarioPanel.jsx'
 import { expectationInsight, primaryExpectation } from '../../engine/valuation.js'
 import AIVerdict from './AIVerdict.jsx'
 import NewsModal from './NewsModal.jsx'
+import EstimateLine from './EstimateLine.jsx'
 import AnalystTargetLine from './AnalystTargetLine.jsx'
 import { assessMoatQuality } from '../../engine/moatQuality.js'
 
@@ -114,6 +115,18 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
                   {valuation.fvRangeHigh !== valuation.fvRangeLow
                     ? ` – ${cur}${Math.round(valuation.fvRangeHigh).toLocaleString('en-IN')}` : ''}
                 </span>
+              </div>
+              {/* Three comparable ranges stacked — ours, and the Street's —
+                  each from a different method, so they read against each other.
+                  Ours carries a ⓘ describing what it rests on; theirs stays a
+                  plain line, since there's no working of theirs to show. */}
+              <div className="text-xs text-slate-400">
+                <EstimateLine
+                  currency={state.data?.currency}
+                  ratioResult={ratioResult}
+                  data={state.data}
+                  guidance={state.guidance}
+                  assumptions={state.assumptions} />
               </div>
               <div className="text-xs text-slate-400">
                 <AnalystTargetLine ticker={state.ticker} currency={state.data?.currency} />

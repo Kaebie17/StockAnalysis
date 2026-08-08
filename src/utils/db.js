@@ -11,7 +11,7 @@
  */
 
 const DB_NAME    = 'stockanalyzr'
-const DB_VERSION = 5
+const DB_VERSION = 6
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
@@ -64,6 +64,14 @@ function openDB() {
         const s = d.createObjectStore('revisions', { keyPath: 'id' })
         s.createIndex('ticker', 'ticker')
         s.createIndex('positionId', 'positionId')
+      }
+      // Estimates — frozen, dated claims about where the price can go. Stored
+      // rather than recomputed on demand precisely so they can turn out wrong:
+      // a number that silently re-derives itself from today's inputs has no
+      // track record and can never be corrected against what actually happened.
+      if (!d.objectStoreNames.contains('estimates')) {
+        const s = d.createObjectStore('estimates', { keyPath: 'id' })
+        s.createIndex('ticker', 'ticker')
       }
     }
     req.onsuccess = e => { db = e.target.result; openPromise = null; resolve(db) }
@@ -348,13 +356,54 @@ export async function openLevers(ticker) {
   return [...open]
 }
 
+// ─── Estimates (frozen, dated claims) ────────────────────────────────────────
+// A new estimate SUPERSEDES the previous one rather than replacing it: the old
+// row stays, marked superseded, so the history of what was believed and when
+// survives. Overwriting would leave only the current opinion, which is exactly
+// the state that made fair value uncheckable in the first place.
+
+export async function saveEstimate(ticker, estimate, meta = {}) {
+  const t = String(ticker || '').toUpperCase()
+  if (!t || !estimate) return null
+
+  // Retire whatever was current for this ticker.
+  const existing = (await txGetAll('estimates')).filter(e => e.ticker === t && e.current)
+  for (const old of existing) {
+    await txPut('estimates', { ...old, current: false, supersededAt: Date.now() })
+  }
+
+  const rec = {
+    id: newId(),
+    ticker: t,
+    current: true,
+    ...meta,                 // e.g. { trigger: 'quarterly' | 'revision' | 'initial' }
+    estimate,
+    createdAt: estimate.createdAt || Date.now(),
+  }
+  await txPut('estimates', rec)
+  return rec
+}
+
+export async function currentEstimate(ticker) {
+  const t = String(ticker || '').toUpperCase()
+  const all = await txGetAll('estimates')
+  return all.find(e => e.ticker === t && e.current) || null
+}
+
+export async function listEstimates(ticker) {
+  const t = String(ticker || '').toUpperCase()
+  return (await txGetAll('estimates'))
+    .filter(e => e.ticker === t)
+    .sort((a, b) => b.createdAt - a.createdAt)
+}
+
 // ─── Backup: export / import all user data ────────────────────────────────────
 // A backup/restore pair (not a sync mechanism). Exports every user-data store to
 // a JSON object; imports merge records back (put overwrites by key, so a restore
 // never wipes stores it doesn't mention). fsHandles is skipped (not serializable).
 
 const BACKUP_STORES = ['financials', 'guidance', 'swapStates', 'aiVerdicts', 'profiles',
-                       'positions', 'revisions']
+                       'positions', 'revisions', 'estimates']
 
 export async function exportAllData() {
   const stores = {}
@@ -393,6 +442,7 @@ export const SYNC_STORES = {
   profiles:   'name',
   positions:  'id',         // one row per LOT, not per ticker
   revisions:  'id',         // append-only; last-write-wins is safe (rows are immutable)
+  estimates:  'id',         // superseded rows are kept, so these are immutable too
 }
 
 export async function exportSyncableRecords() {

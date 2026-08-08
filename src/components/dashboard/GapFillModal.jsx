@@ -1,5 +1,3 @@
-
-
 import React, { useState, useEffect, useMemo } from 'react'
 import { findMissingBaseMetrics, TABLE_INFO , expandHintsForTable } from '../../engine/dataGaps.js'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
@@ -166,18 +164,9 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
 
             {/* Step 2: paste */}
             <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <p className="text-xs text-slate-400">2. Paste it here</p>
-                {/* Same reason as the Add-history boxes: select-all-delete on a
-                    scrolling monospace blob is painful on a phone. */}
-                {pasteText.trim().length > 0 && (
-                  <button type="button"
-                    onClick={() => { setPasteText(''); setPreview(null) }}
-                    className="ml-auto text-xs text-slate-500 hover:text-bear shrink-0 px-1.5 py-0.5 rounded transition-colors">
-                    ✕ Clear
-                  </button>
-                )}
-              </div>
+              <p className="text-xs text-slate-400">2. Paste it here</p>
+              {/* Clear below the box, not above — see AddHistoryModal. Font
+                  stays xs so the paste keeps its column width. */}
               <textarea
                 value={pasteText}
                 onChange={e => { setPasteText(e.target.value); setPreview(null) }}
@@ -187,6 +176,16 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
                            text-xs font-mono text-slate-200 placeholder-slate-600
                            focus:outline-none focus:border-accent resize-none"
               />
+              {pasteText.trim().length > 0 && (
+                <div className="flex justify-end">
+                  <button type="button"
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => { setPasteText(''); setPreview(null) }}
+                    className="text-[11px] px-2 py-1 rounded border border-navy-700 text-slate-400 hover:text-bear hover:border-bear/50 transition-colors">
+                    ✕ Clear
+                  </button>
+                </div>
+              )}
             </div>
 
             {!preview && (

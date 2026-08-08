@@ -1,5 +1,3 @@
-
-
 import React, { useState, useEffect } from 'react'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 import { expandHints as expandersFor, METRICS } from '../../engine/metrics.js'
@@ -180,17 +178,6 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
                         {parsedNote(results[t.key], t.key)}
                       </span>
                     )}
-                    {/* Clearing a mis-paste by hand on mobile means a long-press,
-                        "select all", delete — for a monospace blob that scrolls.
-                        Also drops any parse results, so a stale preview can't
-                        outlive the text it came from. */}
-                    {pasteText[t.key].trim().length > 0 && (
-                      <button type="button"
-                        onClick={() => { setPasteText(prev => ({ ...prev, [t.key]: '' })); setResults(null) }}
-                        className="ml-auto text-slate-500 hover:text-bear shrink-0 px-1.5 py-0.5 rounded transition-colors">
-                        ✕ Clear
-                      </button>
-                    )}
                   </div>
                   <div className="text-xs text-slate-600 space-y-0.5">
                     <p>{t.hint}</p>
@@ -203,12 +190,29 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
                       </p>
                     ))}
                   </div>
+                  {/* Font stays at xs: a 16px monospace blob shows barely half
+                      the columns, which defeats the point of eyeballing the
+                      paste before confirming. Mobile will zoom on focus as a
+                      result, so Clear sits BELOW the box instead of above it —
+                      the zoom scrolls the focused field into view and anything
+                      under it comes along, whereas the old position above the
+                      field was pushed off-screen. */}
                   <textarea
                     value={pasteText[t.key]}
                     onChange={e => { setPasteText(prev => ({ ...prev, [t.key]: e.target.value })); setResults(null) }}
                     placeholder={`Paste ${t.label} table here (optional)...`}
                     rows={3}
                     className="w-full bg-navy-800 border border-navy-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent resize-none" />
+                  {pasteText[t.key].trim().length > 0 && (
+                    <div className="flex justify-end">
+                      <button type="button"
+                        onMouseDown={e => e.preventDefault()}
+                        onClick={() => { setPasteText(prev => ({ ...prev, [t.key]: '' })); setResults(null) }}
+                        className="text-[11px] px-2 py-1 rounded border border-navy-700 text-slate-400 hover:text-bear hover:border-bear/50 transition-colors">
+                        ✕ Clear
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
