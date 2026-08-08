@@ -1,4 +1,5 @@
 
+
 /**
  * src/utils/db.js — IndexedDB with eviction policy
  *
@@ -10,7 +11,7 @@
  */
 
 const DB_NAME    = 'stockanalyzr'
-const DB_VERSION = 4
+const DB_VERSION = 5
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
@@ -44,6 +45,25 @@ function openDB() {
       // Guidance + governance inputs (holdings paste, AR data) — one per ticker
       if (!d.objectStoreNames.contains('guidance')) {
         d.createObjectStore('guidance', { keyPath: 'ticker' })
+      }
+      // Positions — keyed by generated id, NOT by ticker: the same stock can be
+      // bought more than once, and each lot carries its own price, date and
+      // frozen snapshot. Collapsing to one row per ticker would average away
+      // exactly the per-lot detail the whole "since you bought" comparison runs
+      // on. Indexed by ticker (list a stock's lots) and by status (open vs sold).
+      if (!d.objectStoreNames.contains('positions')) {
+        const s = d.createObjectStore('positions', { keyPath: 'id' })
+        s.createIndex('ticker', 'ticker')
+        s.createIndex('status', 'status')
+      }
+      // Revisions — append-only log of every estimate change and every decision
+      // NOT to change one. Dismissals and defers are rows too: that's what lets
+      // a bar answer "is anything still open on this lever?" by querying the log
+      // rather than by keeping a second copy of that state somewhere else.
+      if (!d.objectStoreNames.contains('revisions')) {
+        const s = d.createObjectStore('revisions', { keyPath: 'id' })
+        s.createIndex('ticker', 'ticker')
+        s.createIndex('positionId', 'positionId')
       }
     }
     req.onsuccess = e => { db = e.target.result; openPromise = null; resolve(db) }
@@ -222,12 +242,119 @@ export async function clearSwapState(ticker) {
   await txDelete('swapStates', ticker.toUpperCase())
 }
 
+// ─── Positions (stocks the user actually owns) ───────────────────────────────
+// A sale CLOSES a position, it never deletes one: a sold holding is precisely
+// the record that says whether the call was right, so it's the last thing to
+// throw away. `snapshot` freezes what the app believed at purchase — estimate,
+// quality, market-implied growth — because none of it is reconstructible later
+// (the financials move on, and re-deriving the past with today's data would be
+// a fiction). `snapshot.isLate` marks a position added well after the buy date,
+// so any "since you bought" comparison built on it can say so plainly instead
+// of implying it captured conditions that were never actually observed.
+
+const newId = () =>
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`
+
+export async function savePosition(position) {
+  const now = Date.now()
+  const rec = {
+    status: 'open',
+    ...position,
+    id:     position.id || newId(),
+    ticker: String(position.ticker || '').toUpperCase(),
+    createdAt: position.createdAt || now,
+    updatedAt: now,
+  }
+  await txPut('positions', rec)
+  return rec
+}
+
+export async function listPositions({ ticker, status } = {}) {
+  let recs = await txGetAll('positions')
+  if (ticker) {
+    const t = String(ticker).toUpperCase()
+    recs = recs.filter(r => r.ticker === t)
+  }
+  if (status) recs = recs.filter(r => r.status === status)
+  return recs.sort((a, b) => (b.buyDate || 0) - (a.buyDate || 0))
+}
+
+export async function getPosition(id) {
+  return (await txGet('positions', id)) || null
+}
+
+// Selling is an update, not a delete — see the note above.
+export async function closePosition(id, { sellPrice, sellDate, sharesSold } = {}) {
+  const rec = await txGet('positions', id)
+  if (!rec) return null
+  const updated = {
+    ...rec,
+    status: 'closed',
+    sellPrice: sellPrice ?? null,
+    sellDate:  sellDate  ?? Date.now(),
+    sharesSold: sharesSold ?? rec.shares,
+    updatedAt: Date.now(),
+  }
+  await txPut('positions', updated)
+  return updated
+}
+
+// Only for a mis-entry the user wants gone. Closing is the normal path.
+export async function deletePosition(id) {
+  await txDelete('positions', id)
+}
+
+// ─── Revision log (append-only) ──────────────────────────────────────────────
+// Every estimate change AND every deliberate decision not to change one. A
+// dismissal is as much a fact worth keeping as a revision: it's the difference
+// between "nobody looked at this" and "someone looked and judged it immaterial",
+// and only the log can tell those apart. Never updated in place, never deleted.
+
+export async function appendRevision(entry) {
+  const rec = {
+    ...entry,
+    id:     entry.id || newId(),
+    ticker: String(entry.ticker || '').toUpperCase(),
+    createdAt: entry.createdAt || Date.now(),
+  }
+  await txPut('revisions', rec)
+  return rec
+}
+
+export async function listRevisions({ ticker, positionId } = {}) {
+  let recs = await txGetAll('revisions')
+  if (ticker) {
+    const t = String(ticker).toUpperCase()
+    recs = recs.filter(r => r.ticker === t)
+  }
+  if (positionId) recs = recs.filter(r => r.positionId === positionId)
+  return recs.sort((a, b) => b.createdAt - a.createdAt)   // newest first
+}
+
+/**
+ * Which levers still have an unresolved item hanging over them. A bar shows
+ * "under review" while its lever appears here, and clears only once EVERY open
+ * item on it has a disposition — dismissing one of two doesn't clear the bar.
+ * Derived from the log rather than stored separately, so the two can't drift.
+ */
+export async function openLevers(ticker) {
+  const recs = await listRevisions({ ticker })
+  const open = new Set()
+  for (const r of recs) {
+    if (r.disposition === 'deferred' || r.disposition == null) {
+      if (r.lever) open.add(r.lever)
+    }
+  }
+  return [...open]
+}
+
 // ─── Backup: export / import all user data ────────────────────────────────────
 // A backup/restore pair (not a sync mechanism). Exports every user-data store to
 // a JSON object; imports merge records back (put overwrites by key, so a restore
 // never wipes stores it doesn't mention). fsHandles is skipped (not serializable).
 
-const BACKUP_STORES = ['financials', 'guidance', 'swapStates', 'aiVerdicts', 'profiles']
+const BACKUP_STORES = ['financials', 'guidance', 'swapStates', 'aiVerdicts', 'profiles',
+                       'positions', 'revisions']
 
 export async function exportAllData() {
   const stores = {}
@@ -264,6 +391,8 @@ export const SYNC_STORES = {
   swapStates: 'ticker',
   aiVerdicts: 'ticker',
   profiles:   'name',
+  positions:  'id',         // one row per LOT, not per ticker
+  revisions:  'id',         // append-only; last-write-wins is safe (rows are immutable)
 }
 
 export async function exportSyncableRecords() {
