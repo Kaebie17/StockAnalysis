@@ -1,8 +1,13 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
+import PositionModal from './PositionModal.jsx'
+import { usePositions, positionMath } from '../../store/usePositions.js'
 
-export default function EmptyState({ onUpload }) {
+export default function EmptyState({ onUpload, onOpenPositions }) {
   const { state } = useApp()
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const { positions, refresh } = usePositions()
+  const held = positions.filter(p => p.status !== 'closed')
 
   if (state.status === 'loading') return <LoadingSkeleton />
   if (state.status === 'error')   return <ErrorState onUpload={onUpload} />
@@ -34,6 +39,38 @@ export default function EmptyState({ onUpload }) {
           </div>
         ))}
       </div>
+
+      {/* Portfolio entry point. On the landing page rather than buried in a menu
+          because the natural moment to enter holdings you already own is when
+          setting the app up — before you've looked up anything. */}
+      <div className="mt-6 w-full max-w-sm">
+        {held.length > 0 ? (
+          <button onClick={onOpenPositions}
+            className="w-full card-sm text-left hover:border-accent/40 transition-colors">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-300 text-sm font-medium">
+                📊 {held.length} holding{held.length > 1 ? 's' : ''} tracked
+              </span>
+              <span className="text-accent text-xs">View →</span>
+            </div>
+            <div className="text-xs text-slate-500 mt-0.5 truncate">
+              {held.slice(0, 4).map(p => p.ticker.replace(/\.(NS|BO)$/, '')).join(' · ')}
+              {held.length > 4 ? ` +${held.length - 4}` : ''}
+            </div>
+          </button>
+        ) : (
+          <button onClick={() => setBulkOpen(true)}
+            className="w-full card-sm text-left hover:border-accent/40 transition-colors">
+            <div className="text-slate-300 text-sm font-medium">📥 Already own stocks?</div>
+            <div className="text-xs text-slate-500 mt-0.5">
+              Add them once and the app tracks how they're doing against what you paid.
+            </div>
+          </button>
+        )}
+      </div>
+
+      <PositionModal open={bulkOpen} mode="bulk"
+        onClose={() => setBulkOpen(false)} onSaved={refresh} />
     </div>
   )
 }
@@ -85,5 +122,3 @@ function ErrorState({ onUpload }) {
     </div>
   )
 }
-
-

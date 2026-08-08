@@ -1,16 +1,22 @@
-
 import React from 'react'
 import { findMissingBaseMetrics } from '../../engine/dataGaps.js'
 
 export default function DataGapBanner({ ratioResult, data, dismissed = [], onDismiss, onFix }) {
   // `data` is required: capex and cogs sit on the history rows, not on
   // ratioResult. Called without it they read as permanently missing.
-  const { hasGaps, missing, byTable, softGaps, nextStep, dismissed: hiddenGaps } =
+  const { missing, softGaps, nextStep, dismissed: hiddenGaps } =
     findMissingBaseMetrics(ratioResult, data, dismissed)
-  if (!hasGaps && !softGaps.length) return null
 
-  const tableCount = Object.keys(byTable).length
-  const metricNames = missing.map(m => m.label).join(', ')
+  // Nothing missing → no banner at all.
+  //
+  // The old guard also kept it alive for softGaps (metrics that were derived
+  // rather than reported). But softGaps outlive the fix — they're still
+  // "estimated" after every gap is filled — so the banner stayed on screen
+  // reading "0 metrics missing" next to a "Fix this →" button with nothing left
+  // to fix. That the derivation happened is worth knowing, but it belongs on the
+  // metric itself (each carries its own `status`), not in a standing warning
+  // that never clears.
+  if (missing.length === 0) return null
 
   return (
     <div className="flex items-center justify-between gap-3 px-3 py-2.5

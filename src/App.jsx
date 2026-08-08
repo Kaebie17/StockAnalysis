@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useCallback } from 'react'
 import { AppProvider, useApp } from './store/AppContext.jsx'
 import Header from './components/dashboard/Header.jsx'
@@ -16,6 +15,7 @@ import { parseCSV } from './utils/csv.js'
 import { requestFolderAccess, exportOverrideJSON, openFilePicker, importOverrideFile } from './utils/csv.js'
 import MoatQualityPanel from './components/dashboard/MoatQualityPanel.jsx'
 import BackupControls from './components/BackupControls.jsx'
+import PositionsPanel from './components/dashboard/PositionsPanel.jsx'
 
 function Dashboard() {
   const { state, applyCSV, setFolderHandle, applyPastedTable, dismissGap } = useApp()
@@ -24,6 +24,8 @@ function Dashboard() {
   const [csvModal, setCsvModal] = useState(false)  // 'upload' | 'gap-fill' | false
   const [gapFillOpen, setGapFillOpen] = useState(false)
   const [addHistoryOpen, setAddHistoryOpen] = useState(false)
+  // Reachable from every screen: checking holdings isn't tied to any one ticker.
+  const [positionsOpen, setPositionsOpen] = useState(false)
   const fileRef = useRef()
 
   const handleExpand = (panel) => {
@@ -78,11 +80,11 @@ function Dashboard() {
 
   return (
     <div className="min-h-screen bg-navy-950 overflow-x-hidden">
-      <Header />
+      <Header onOpenPositions={() => setPositionsOpen(true)} />
 
       <main className="max-w-5xl mx-auto px-4 py-5 space-y-4">
         {!showDashboard
-          ? <EmptyState onUpload={() => setCsvModal('upload')} />
+          ? <EmptyState onUpload={() => setCsvModal('upload')} onOpenPositions={() => setPositionsOpen(true)} />
           : <>
               {/* CSV active banner */}
               {state.csvActive && (
@@ -164,6 +166,8 @@ function Dashboard() {
           </button>
         </div>
       )}
+
+      <PositionsPanel open={positionsOpen} onClose={() => setPositionsOpen(false)} />
 
       <ScoringStudio open={studioOpen} onClose={() => setStudioOpen(false)} />
 
