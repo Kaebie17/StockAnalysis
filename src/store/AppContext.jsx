@@ -1,4 +1,5 @@
 
+
 import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react'
 import { fetchTicker } from '../api/orchestrator.js'
 import { normalize, applyDocFacts, migrateStoredData } from '../engine/normalize.js'
@@ -30,7 +31,7 @@ const initial = {
   // Swap state: { income:{year:{field:true}}, balance:{...}, cashflow:{...} }
   swapState: {},
   // Qualitative / governance inputs (Block 5)
-  holdingsData: null, arData: null,
+  holdingsData: null, arData: null, quarterlyData: null,
 }
 
 function reducer(s, a) {
@@ -248,15 +249,20 @@ export function AppProvider({ children }) {
 
   const setQualInputs = useCallback((patch) => {
     const next = {
-      holdingsData: patch.holdingsData !== undefined ? patch.holdingsData : state.holdingsData,
-      arData:       patch.arData       !== undefined ? patch.arData       : state.arData,
+      holdingsData:  patch.holdingsData  !== undefined ? patch.holdingsData  : state.holdingsData,
+      arData:        patch.arData        !== undefined ? patch.arData        : state.arData,
+      // Pasted quarterly P&L. Kept HERE rather than merged into incomeHistory:
+      // that series is keyed by fiscal year and read as full years everywhere
+      // (ratios, CAGR, DCF), so a quarter dropped into a year slot would read as
+      // a collapse in revenue rather than as the partial period it is.
+      quarterlyData: patch.quarterlyData !== undefined ? patch.quarterlyData : state.quarterlyData,
     }
     dispatch({ type: 'SET_QUAL', payload: next })
     if (state.ticker) {
       saveGuidance(state.ticker, next)
       queuePush(`guidance:${state.ticker.toUpperCase()}`, { ticker: state.ticker.toUpperCase(), ...next })
     }
-  }, [state.ticker, state.holdingsData, state.arData])
+  }, [state.ticker, state.holdingsData, state.arData, state.quarterlyData])
 
   // Load saved guidance/holdings/AR when the ticker changes. We clear first (so a
   // new ticker never shows the previous ticker's inputs) then load this ticker's
@@ -265,11 +271,13 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (!state.ticker) return
     let cancelled = false
-    dispatch({ type: 'SET_QUAL', payload: { holdingsData: null, arData: null } })
+    dispatch({ type: 'SET_QUAL', payload: { holdingsData: null, arData: null, quarterlyData: null } })
     loadGuidance(state.ticker).then(rec => {
       if (cancelled || !rec) return
       dispatch({ type: 'SET_QUAL', payload: {
-        holdingsData: rec.holdingsData || null, arData: rec.arData || null,
+        holdingsData:  rec.holdingsData  || null,
+        arData:        rec.arData        || null,
+        quarterlyData: rec.quarterlyData || null,
       } })
     })
     return () => { cancelled = true }

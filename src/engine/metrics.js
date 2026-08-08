@@ -295,6 +295,13 @@ export const TABLE_SHAPE = {
               signature: ['totalEquity', 'equityCapital', 'reserves', 'totalDebt', 'totalAssets'] },
   cashflow: { label: 'Cash Flow', annual: true,
               signature: ['operatingCF', 'investingCF', 'financingCF'] },
+  // Quarterly P&L — the same rows as `income`, but one column per quarter. Read
+  // through the income aliases (see ALIASES in pasteParser) rather than getting
+  // its own metric definitions, because the rows genuinely are the same rows.
+  // annual:false exempts it from the "this looks quarterly" rejection, which is
+  // the whole point: here quarterly IS the expected shape.
+  quarterly: { label: 'Quarterly Results', annual: false,
+              signature: ['revenue', 'operatingProfit', 'netProfit', 'interest', 'depreciation', 'eps'] },
   // Shareholding is quarterly BY NATURE — exempt from the annual check.
   shareholding: { label: 'Shareholding', annual: false, signature: [] },
 }
@@ -303,9 +310,13 @@ export const TABLE_SHAPE = {
 
 /** Screener row aliases for one statement, in the shape the parser wants. */
 export function screenerAliases(table) {
+  // Quarterly Results IS the P&L, just sliced by quarter — it has no metric
+  // definitions of its own, and shouldn't: duplicating them would mean two
+  // places to update every time a Screener row label changes.
+  const t = table === 'quarterly' ? 'income' : table
   const out = {}
   for (const [key, m] of Object.entries(METRICS)) {
-    if (m.table === table && m.screener?.length) out[key] = m.screener
+    if (m.table === t && m.screener?.length) out[key] = m.screener
   }
   return out
 }

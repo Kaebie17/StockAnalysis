@@ -1,3 +1,5 @@
+
+
 /**
  * src/utils/pasteParser.js
  *
@@ -25,6 +27,8 @@ const ALIASES = {
   income:   screenerAliases('income'),
   balance:  screenerAliases('balance'),
   cashflow: screenerAliases('cashflow'),
+  // Quarterly Results carries the same P&L rows, just one column per quarter.
+  quarterly: screenerAliases('income'),
 }
 
 function normalizeLabel(l) {
@@ -87,8 +91,14 @@ export function parsePastedTable(text, tableType) {
   // window that overlaps the last FY) and any stray/blank column, wherever it
   // sits. Stray columns never carry real data, so row values (numbers only,
   // below) skip them automatically.
+  // Quarterly columns repeat the calendar year (Mar 2024, Jun 2024, Sep 2024…),
+  // so a year-only label would collide: two columns would resolve to the same
+  // slot and the later one would overwrite the earlier. Period labels therefore
+  // carry the month for quarterly tables ("Jun 2024") and stay year-only for
+  // annual ones, where the month is noise.
+  const isQuarterly = tableType === 'quarterly'
   let headerIdx = -1
-  let colKinds = []   // per cell: '2015'… | 'TTM' | null
+  let colKinds = []   // per cell: '2015' | 'Jun 2024' … | 'TTM' | null
   let colMonths = []  // month of each real year column, for the annual check
   for (let i = 0; i < Math.min(3, lines.length); i++) {
     const cells = splitRow(lines[i])
@@ -106,7 +116,14 @@ export function parsePastedTable(text, tableType) {
         // ("Mar 2023, Mar 2024"); a quarterly table walks Mar/Jun/Sep/Dec. That
         // difference is the only reliable way to tell the two tables apart.
         const mon = c.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i)
-        colMonths.push(mon ? mon[1].toLowerCase() : null)
+        const mn = mon ? mon[1].toLowerCase() : null
+        colMonths.push(mn)
+        if (isQuarterly) {
+          // Without a month there's nothing to disambiguate one quarter of a
+          // year from another, so fall back to the bare year and let the
+          // duplicate check below surface it rather than silently colliding.
+          return mn ? `${mn[0].toUpperCase()}${mn.slice(1)} ${m[1]}` : m[1]
+        }
         return m[1]
       }
       // TTM and YTD are both partial/overlapping periods — drop for now.
@@ -114,8 +131,8 @@ export function parsePastedTable(text, tableType) {
       if (/\bytd\b/i.test(c)) return 'TTM'
       return null
     })
-    const keepers = cand.filter(k => k && k !== 'TTM')   // real years
-    if (keepers.length >= 2) {                            // a real year header row
+    const keepers = cand.filter(k => k && k !== 'TTM')   // real periods
+    if (keepers.length >= 2) {                            // a real period header row
       headerIdx = i
       colKinds = cand
       break
@@ -253,7 +270,15 @@ export function parsePastedTable(text, tableType) {
     if (f.cogs != null && f.cogs <= 0) f.cogs = null
   }
 
-  const rows = years.map((year, i) => ({ year, ...fieldsByYear[i] }))
+  // Quarterly rows carry their fiscal-year placement, so downstream consumers
+  // (guidance tracking, seasonality) don't each have to re-derive it from the
+  // label and risk disagreeing about which FY a March quarter belongs to.
+  const rows = years.map((year, i) => {
+    const base = { year, ...fieldsByYear[i] }
+    if (!isQuarterly) return base
+    const meta = quarterMeta(year)
+    return meta ? { ...base, period: year, ...meta } : base
+  })
   return { years, rows, warnings, matchedCount, shape }
 }
 
@@ -303,7 +328,15 @@ export function checkShape(tableType, years, colMonths, bodyLines) {
     if (sc > bestScore) { best = t; bestScore = sc }
   }
 
-  const wrongTable = best !== tableType && bestScore >= 2
+  // `quarterly` and `income` are the SAME rows — only the column periods differ —
+  // so a row-label score can never tell them apart and will happily "correct" one
+  // into the other. Which of the two it is, is decided by the period check below,
+  // not here. Treating them as interchangeable at this step stops a valid
+  // quarterly paste being bounced with "paste it into the P&L box instead".
+  const sameRows = (a, b) =>
+    (a === 'income' && b === 'quarterly') || (a === 'quarterly' && b === 'income')
+
+  const wrongTable = best !== tableType && !sameRows(best, tableType) && bestScore >= 2
   if (wrongTable) {
     warnings.push(`This looks like the ${TABLE_SHAPE[best].label} table, not ${spec.label}. Paste it into the ${TABLE_SHAPE[best].label} box instead.`)
   } else if (mine === 0) {
@@ -314,6 +347,7 @@ export function checkShape(tableType, years, colMonths, bodyLines) {
   // (Mar 2024, Jun 2024, Sep 2024, Dec 2024) and walks the month. Annual does
   // neither. Shareholding is quarterly by nature and skips this.
   let quarterly = false
+  let notQuarterly = false
   if (spec.annual) {
     const dupYear = new Set(years).size < years.length
     const varies  = new Set(colMonths.filter(Boolean)).size > 1
@@ -321,9 +355,51 @@ export function checkShape(tableType, years, colMonths, bodyLines) {
     if (quarterly) {
       warnings.push('This looks like the quarterly table. Switch Screener to the annual view and copy that instead.')
     }
+  } else if (tableType === 'quarterly') {
+    // The mirror of the above: an annual table in the quarterly box. Annual
+    // columns all share one month and never repeat a year, so a single distinct
+    // month across several columns is the tell. Without this the annual figures
+    // would parse cleanly and be stored as if they were quarters — every one
+    // roughly 4x too large, and silently wrong rather than visibly rejected.
+    const months = new Set(colMonths.filter(Boolean))
+    notQuarterly = months.size === 1 && years.length >= 2
+    if (notQuarterly) {
+      warnings.push('This looks like the annual table. Switch Screener to the quarterly view and copy that instead.')
+    }
   }
 
-  return { ok: !wrongTable && !quarterly && mine > 0, quarterly, wrongTable, matched: mine, looksLike: best, warnings }
+  return { ok: !wrongTable && !quarterly && !notQuarterly && mine > 0,
+           quarterly, notQuarterly, wrongTable, matched: mine, looksLike: best, warnings }
+}
+
+/**
+ * Which fiscal year and quarter a Screener quarterly column belongs to.
+ *
+ * Indian FY runs April–March, and Screener labels a column by the month the
+ * quarter ENDS in. So Jun/Sep/Dec/Mar are Q1/Q2/Q3/Q4, and the March quarter
+ * closes the fiscal year that began the previous April: "Mar 2026" is Q4 FY26,
+ * while "Jun 2025" is Q1 of that same FY26.
+ *
+ * Companies on other calendars (some US listings) don't follow this, hence
+ * `assumedIndianFY` — the caller can see which convention produced the answer
+ * rather than having to trust it blindly.
+ */
+export function quarterMeta(label) {
+  const m = String(label || '').match(/^([A-Za-z]{3})\s+((?:19|20)\d{2})$/)
+  if (!m) return null
+  const mon  = m[1].toLowerCase()
+  const year = Number(m[2])
+  const IDX = { jun: 1, sep: 2, dec: 3, mar: 4 }
+  const quarterIndex = IDX[mon] ?? null
+  if (quarterIndex == null) return null
+  // Mar closes the FY it's named in; Jun/Sep/Dec belong to the NEXT one.
+  const fyEndYear = mon === 'mar' ? year : year + 1
+  return {
+    quarterIndex,
+    fiscalYear: `FY${String(fyEndYear).slice(-2)}`,
+    fiscalYearFull: fyEndYear,
+    assumedIndianFY: true,
+  }
 }
 
 /**
@@ -349,3 +425,5 @@ export function tagPastedRows(rows, tableType, opts = {}) {
     return tagged
   })
 }
+
+

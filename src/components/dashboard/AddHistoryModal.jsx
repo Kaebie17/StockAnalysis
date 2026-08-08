@@ -16,6 +16,11 @@ const TABLES = [
   // expander anyone had noticed, and missed cash and capex entirely.
   { key: 'income',   label: 'Profit & Loss',  icon: '📊',
     hint: 'Revenue, Operating Profit, Net Profit, EPS, Interest, Depreciation.', expanders: 'income' },
+  // Quarterly is the same P&L rows sliced by quarter. It's what makes an
+  // in-year read possible at all — the annual table can't say anything about
+  // how the current year is tracking until the year is over.
+  { key: 'quarterly', label: 'Quarterly Results', icon: '🗓️',
+    hint: 'Same rows as P&L, one column per quarter. Switch Screener to the quarterly view.', expanders: 'income' },
   { key: 'balance',  label: 'Balance Sheet',  icon: '⚖️',
     hint: 'Total Assets, Total Equity, Total Debt.', expanders: 'balance' },
   { key: 'cashflow', label: 'Cash Flow',      icon: '💵',
@@ -28,6 +33,9 @@ const FIELD_LABELS = {
   balance:  { equityCapital: 'Equity Capital', reserves: 'Reserves', totalEquity: 'Total Equity', totalDebt: 'Total Debt', totalAssets: 'Total Assets' },
   cashflow: { operatingCF: 'Operating Cash Flow', freeCashFlow: 'Free Cash Flow' },
 }
+// Quarterly previews the same fields as the annual P&L — same rows, different
+// column periods — so it reuses that label set rather than duplicating it.
+FIELD_LABELS.quarterly = FIELD_LABELS.income
 
 const screenerUrl = (ticker) =>
   ticker ? `https://www.screener.in/company/${ticker.replace(/\.(NS|BO)$/i, '').toUpperCase()}/consolidated/` : null
@@ -44,13 +52,13 @@ const pasteScale = (currency, ticker) =>
 export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
   const { state: appState, setQualInputs } = useApp()
   const currency = appState?.data?.currency
-  const [pasteText, setPasteText] = useState({ income: '', balance: '', cashflow: '', holdings: '' })
+  const [pasteText, setPasteText] = useState({ income: '', quarterly: '', balance: '', cashflow: '', holdings: '' })
   const [results, setResults] = useState(null)      // { income:{…}, …, holdings:{ok,…} }
   const [applied, setApplied] = useState(false)
 
   useEffect(() => {
     if (!open) return
-    setPasteText({ income: '', balance: '', cashflow: '', holdings: '' })
+    setPasteText({ income: '', quarterly: '', balance: '', cashflow: '', holdings: '' })
     setResults(null)
     setApplied(false)
   }, [open])
@@ -70,23 +78,59 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
 
   const handleConfirm = () => {
     if (!results) return
-    // Financials → history series
+    // Annual financials → history series.
+    // Quarterly is deliberately NOT sent here: incomeHistory is keyed by fiscal
+    // year and every consumer (ratios, CAGR, the DCF) reads it as full years.
+    // Merging quarters in would silently corrupt all of them — a Q2 revenue
+    // figure sitting in a year slot reads as a catastrophic collapse.
     for (const [tableType, result] of Object.entries(results)) {
-      if (tableType === 'holdings') continue
+      if (tableType === 'holdings' || tableType === 'quarterly') continue
       if (result.matchedCount > 0) {
         onApplyAll(tableType, tagPastedRows(result.rows, tableType, { scale: pasteScale(currency, ticker) }))
       }
     }
+    // Quarterly → its own series, alongside (not inside) the annual history.
+    const q = results.quarterly
+    if (q?.matchedCount > 0 && !q.rejected) {
+      const scale = pasteScale(currency, ticker)
+      const money = new Set(['revenue', 'operatingProfit', 'netProfit', 'interest', 'depreciation'])
+      setQualInputs({
+        quarterlyData: {
+          // Keep the raw shape: period label, FY placement and quarter index all
+          // travel with the row so guidance tracking and seasonality don't have
+          // to re-derive which fiscal year a March quarter belongs to.
+          rows: q.rows.map(r => {
+            const out = { period: r.period ?? r.year, fiscalYear: r.fiscalYear,
+                          quarterIndex: r.quarterIndex }
+            for (const [k, v] of Object.entries(r)) {
+              if (k === 'year' || k === 'period' || k === 'fiscalYear' ||
+                  k === 'quarterIndex' || k === 'fiscalYearFull' || k === 'assumedIndianFY') continue
+              out[k] = (v != null && money.has(k)) ? v * scale : v
+            }
+            return out
+          }),
+          savedAt: Date.now(),
+        },
+      })
+    }
     // Shareholding → store (promoter holding, Block-5 gate input)
     const h = results.holdings
     if (h?.ok && h.promoterSeries?.length) {
-      setQualInputs({ holdingsData: { promoterSeries: h.promoterSeries, quarters: h.quarters, savedAt: Date.now() } })
+      setQualInputs({
+        holdingsData: {
+          promoterSeries: h.promoterSeries,
+          fiiSeries: h.fiiSeries || [],
+          diiSeries: h.diiSeries || [],
+          quarters: h.quarters,
+          savedAt: Date.now(),
+        },
+      })
     }
     setApplied(true)
   }
 
   const handleClose = () => {
-    setPasteText({ income: '', balance: '', cashflow: '', holdings: '' })
+    setPasteText({ income: '', quarterly: '', balance: '', cashflow: '', holdings: '' })
     setResults(null); setApplied(false); onClose()
   }
 
@@ -250,6 +294,13 @@ function parsedOk(r, key) {
 }
 function parsedNote(r, key) {
   if (key === 'holdings') return r.ok ? '✓ promoter holding parsed' : '✗ ' + r.note
+  if (r.rejected) return '✗ ' + (r.warnings?.[0] || 'not accepted')
+  if (key === 'quarterly' && r.matchedCount > 0) {
+    // Quarters covered matters more here than field count: the point of this
+    // table is how much of the current year has actually reported.
+    const fys = [...new Set(r.rows.map(x => x.fiscalYear).filter(Boolean))]
+    return `✓ ${r.rows.length} quarters${fys.length ? ` (${fys.join(', ')})` : ''}`
+  }
   return r.matchedCount > 0 ? `✓ ${r.matchedCount} fields parsed` : '✗ nothing recognized'
 }
 

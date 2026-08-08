@@ -1,10 +1,12 @@
+
 /**
  * api/news.js — Vercel serverless (CommonJS)
  *
  * Standalone company-news endpoint. Pulls headlines from two independent,
  * key-free sources IN PARALLEL and returns a merged, de-duplicated list.
- * Does NOT call Gemini and does NOT cache — freshness is the point; the client
- * fetches on panel-open and on a short interval.
+ * Does NOT call Gemini. Results are cached briefly (see "caching" below) — short
+ * enough that nothing the client would have seen is withheld, long enough that
+ * polling many held positions doesn't hammer the upstream sources.
  *
  *   GET /api/news?query=<user search text>&ticker=<resolved ticker>&company=<name>
  *
@@ -33,6 +35,47 @@ const yf = new YahooFinance({
 const MAX_ITEMS = 100         // Google's own ceiling; small-caps keep everything
 const YAHOO_COUNT = 12        // Yahoo search-news is a short, relevance-ranked head
 const RSS_TIMEOUT_MS = 8000
+
+// ── caching ──────────────────────────────────────────────────────────────────
+// The original design cached nothing on purpose ("freshness is the point"), and
+// that was right when one open panel polled one ticker. It stops being right the
+// moment the app polls every position a user holds on the same 3-minute timer:
+// 15 positions × 2 upstream sources × every 3 min is ~600 outbound requests an
+// hour from a SHARED serverless IP, multiplied by every user. Google News RSS
+// throttles an IP that looks like that, and when it does, news breaks for
+// everyone — not just the person who triggered it.
+//
+// A ~2.5-minute TTL is shorter than the client's own poll interval, so nothing
+// the user would have seen gets withheld; it only collapses the duplicate
+// requests that the poll loop generates for the same ticker.
+//
+// Two layers, because they cover different cases:
+//   1. CDN (s-maxage) — shared across ALL users and all instances. Does the real
+//      work: the second user asking about RELIANCE never reaches this function.
+//   2. In-memory Map — per warm instance, covers requests the CDN passes through
+//      (cache miss, revalidation) before they become upstream calls.
+const CACHE_TTL_MS  = 150 * 1000    // 2.5 min
+const CACHE_SWR_MS  = 300 * 1000    // serve stale up to 5 min while revalidating
+const CACHE_MAX_KEYS = 300          // bounded: a warm instance must not grow forever
+
+const memCache = new Map()          // key -> { at, payload }
+
+function cacheGet(key) {
+  const hit = memCache.get(key)
+  if (!hit) return null
+  if (Date.now() - hit.at > CACHE_TTL_MS) { memCache.delete(key); return null }
+  // Refresh recency for the LRU eviction below.
+  memCache.delete(key); memCache.set(key, hit)
+  return hit.payload
+}
+
+function cacheSet(key, payload) {
+  memCache.set(key, { at: Date.now(), payload })
+  // Map preserves insertion order, so the first key is the least recently used.
+  while (memCache.size > CACHE_MAX_KEYS) {
+    memCache.delete(memCache.keys().next().value)
+  }
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -182,12 +225,33 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
   if (req.method === 'OPTIONS') return res.status(200).end()
-  res.setHeader('Cache-Control', 'no-store')
 
   const query = (req.query.query || req.query.ticker || '').toString().trim()
   const ticker = (req.query.ticker || '').toString().trim()
   const company = (req.query.company || '').toString().trim()
-  if (!query) return res.status(400).json({ items: [], error: 'missing_query' })
+  if (!query) {
+    res.setHeader('Cache-Control', 'no-store')      // never cache a bad request
+    return res.status(400).json({ items: [], error: 'missing_query' })
+  }
+
+  // Everything that changes the RESULT belongs in the key: `company` feeds the
+  // relevance tokens, so two callers passing different company names for the
+  // same ticker must not share a cache entry.
+  const cacheKey = [query, ticker, company].join('\u0000').toLowerCase()
+
+  // Let the CDN absorb the repeat traffic from the poll loop across all users.
+  res.setHeader(
+    'Cache-Control',
+    `public, s-maxage=${Math.floor(CACHE_TTL_MS / 1000)}, ` +
+    `stale-while-revalidate=${Math.floor(CACHE_SWR_MS / 1000)}`
+  )
+
+  const cached = cacheGet(cacheKey)
+  if (cached) {
+    res.setHeader('X-Cache', 'HIT')
+    return res.status(200).json(cached)
+  }
+  res.setHeader('X-Cache', 'MISS')
 
   const indian = /\.(NS|BO)$/i.test(ticker)
   const tokens = relevanceTokens(company || query, ticker)
@@ -200,6 +264,9 @@ module.exports = async function handler(req, res) {
   // Only a genuine outage (BOTH sources threw) is a fetch failure.
   if (y.status === 'rejected' && g.status === 'rejected') {
     console.warn('[news] both sources failed:', y.reason?.message, g.reason?.message)
+    // A transient failure must not be cached — the client shows a retry, and
+    // that retry has to be able to actually reach the sources again.
+    res.setHeader('Cache-Control', 'no-store')
     return res.status(200).json({ items: [], error: 'fetch_failed' })
   }
 
@@ -221,5 +288,13 @@ module.exports = async function handler(req, res) {
   const rank = t => (t === 'sector' ? 1 : 0)
   merged.sort((a, b) => rank(a.tier) - rank(b.tier) || b.date - a.date)
 
-  return res.status(200).json({ items: merged.slice(0, MAX_ITEMS), error: null })
+  const payload = { items: merged.slice(0, MAX_ITEMS), error: null }
+
+  // Only cache a result that actually has something in it. An empty list is
+  // usually one source degrading rather than genuine silence, and pinning that
+  // for the TTL would hide news that's already there.
+  if (payload.items.length > 0) cacheSet(cacheKey, payload)
+  else res.setHeader('Cache-Control', 'no-store')
+
+  return res.status(200).json(payload)
 }
