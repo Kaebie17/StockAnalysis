@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect } from 'react'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 import { expandHints as expandersFor, METRICS } from '../../engine/metrics.js'
@@ -135,6 +136,17 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
                         {parsedNote(results[t.key], t.key)}
                       </span>
                     )}
+                    {/* Clearing a mis-paste by hand on mobile means a long-press,
+                        "select all", delete — for a monospace blob that scrolls.
+                        Also drops any parse results, so a stale preview can't
+                        outlive the text it came from. */}
+                    {pasteText[t.key].trim().length > 0 && (
+                      <button type="button"
+                        onClick={() => { setPasteText(prev => ({ ...prev, [t.key]: '' })); setResults(null) }}
+                        className="ml-auto text-slate-500 hover:text-bear shrink-0 px-1.5 py-0.5 rounded transition-colors">
+                        ✕ Clear
+                      </button>
+                    )}
                   </div>
                   <div className="text-xs text-slate-600 space-y-0.5">
                     <p>{t.hint}</p>
@@ -240,3 +252,4 @@ function parsedNote(r, key) {
   if (key === 'holdings') return r.ok ? '✓ promoter holding parsed' : '✗ ' + r.note
   return r.matchedCount > 0 ? `✓ ${r.matchedCount} fields parsed` : '✗ nothing recognized'
 }
+

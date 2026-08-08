@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useMemo } from 'react'
 import { findMissingBaseMetrics, TABLE_INFO , expandHintsForTable } from '../../engine/dataGaps.js'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
@@ -165,7 +166,18 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
 
             {/* Step 2: paste */}
             <div className="space-y-2">
-              <p className="text-xs text-slate-400">2. Paste it here</p>
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-slate-400">2. Paste it here</p>
+                {/* Same reason as the Add-history boxes: select-all-delete on a
+                    scrolling monospace blob is painful on a phone. */}
+                {pasteText.trim().length > 0 && (
+                  <button type="button"
+                    onClick={() => { setPasteText(''); setPreview(null) }}
+                    className="ml-auto text-xs text-slate-500 hover:text-bear shrink-0 px-1.5 py-0.5 rounded transition-colors">
+                    ✕ Clear
+                  </button>
+                )}
+              </div>
               <textarea
                 value={pasteText}
                 onChange={e => { setPasteText(e.target.value); setPreview(null) }}
@@ -254,3 +266,4 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
     </div>
   )
 }
+

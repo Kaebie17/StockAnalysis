@@ -1,3 +1,4 @@
+
 /**
  * src/engine/dataGaps.js
  *
@@ -26,6 +27,7 @@
  */
 
 import { METRICS, expandHints, arTargets } from './metrics.js'
+import { detectSectorType, SECTOR_TYPES } from './stage.js'
 
 export const TABLE_INFO = {
   income:   { name: 'Profit & Loss', screenerSection: 'Profit & Loss' },
@@ -71,6 +73,17 @@ function resolvedValues(r, data) {
  *                 deep source.
  *   nextStep    — 'paste' | 'ar' | null
  */
+// Manufacturing/standard-company concepts that Screener never prints for a
+// bank, NBFC or insurer, because they genuinely don't exist there — a
+// financial company's "cost of revenue" is interest expense (already tracked
+// separately as `interest`), not cost of materials. Asking for these on a
+// financial company isn't flagging a real gap, it's asking a question that has
+// no answer — the sector-aware valuation layer (getApplicableModels in
+// stage.js) already excludes the models built on them (EV/Gross Profit) for
+// exactly this reason; this list is the same exclusion applied to the gap
+// prompt itself.
+const FINANCIAL_SECTOR_SKIP = new Set(['cogs', 'grossProfit'])
+
 export function findMissingBaseMetrics(ratioResult, data = null, dismissed = []) {
   const empty = {
     hasGaps: false, missing: [], byTable: {}, softGaps: [], dismissed: [],
@@ -79,6 +92,8 @@ export function findMissingBaseMetrics(ratioResult, data = null, dismissed = [])
   if (!ratioResult) return empty
 
   const values = resolvedValues(ratioResult, data)
+  const sectorType = data ? detectSectorType(data) : SECTOR_TYPES.STANDARD
+  const isFinancialSector = sectorType !== SECTOR_TYPES.STANDARD
 
   // Dismissed = "this figure doesn't exist for this company, stop asking".
   //
@@ -95,6 +110,7 @@ export function findMissingBaseMetrics(ratioResult, data = null, dismissed = [])
   for (const [key, val] of Object.entries(values)) {
     const m = METRICS[key]
     if (!m || val != null) continue
+    if (isFinancialSector && FINANCIAL_SECTOR_SKIP.has(key)) continue
     const entry = { metric: key, label: m.label, table: m.table, needs: m.needs }
     if (hidden.has(key)) { dismissedOut.push(entry); continue }
     // Only demand what you can act on AND what nothing already covers.
@@ -167,3 +183,6 @@ function buildMessage(missing, softGaps, deep, nextStep) {
 export function expandHintsForTable(gaps, tableType) {
   return (gaps?.expandHints || []).filter(h => h.table === tableType)
 }
+
+
+

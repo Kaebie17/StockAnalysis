@@ -1,3 +1,4 @@
+
 /**
  * src/engine/stage.js
  *
@@ -34,7 +35,12 @@ const INSURANCE_TICKERS = new Set([
 ])
 
 const BANK_KEYWORDS   = ['bank', 'banking']
-const NBFC_KEYWORDS   = ['finance', 'financial', 'housing finance', 'microfinance', 'lending']
+// 'credit services' is Yahoo's actual GICS-style industry label for most Indian
+// NBFCs (confirmed for Bajaj Finance) — it doesn't contain "finance", so the
+// original list never matched it. 'consumer finance' / 'specialty finance' cover
+// the other common labels for this group.
+const NBFC_KEYWORDS   = ['finance', 'financial', 'housing finance', 'microfinance',
+                          'lending', 'credit services', 'consumer finance', 'specialty finance']
 const INSURANCE_KEYWORDS = ['insurance', 'life insur', 'general insur', 'reinsur']
 
 export function detectSectorType(data) {
@@ -46,7 +52,12 @@ export function detectSectorType(data) {
   if (INSURANCE_TICKERS.has(ticker)) return SECTOR_TYPES.INSURANCE
   if (INSURANCE_KEYWORDS.some(k => industry.includes(k) || name.includes(k))) return SECTOR_TYPES.INSURANCE
   if (BANK_KEYWORDS.some(k => industry.includes(k) || sector.includes(k)))    return SECTOR_TYPES.BANK
-  if (NBFC_KEYWORDS.some(k => industry.includes(k)))                           return SECTOR_TYPES.NBFC
+  // Also checked against `name`, not just `industry`: Yahoo's industry taxonomy
+  // for Indian NBFCs is inconsistent (see 'credit services' above), but the
+  // company's own name is a far more reliable tell — "Bajaj Finance Limited",
+  // "Cholamandalam Investment and Finance", "Shriram Finance" etc. all say so
+  // directly even when Yahoo's industry bucket doesn't.
+  if (NBFC_KEYWORDS.some(k => industry.includes(k) || name.includes(k)))     return SECTOR_TYPES.NBFC
   return SECTOR_TYPES.STANDARD
 }
 
@@ -141,5 +152,8 @@ export function getApplicableModels(stage, sectorType) {
       }
   }
 }
+
+
+
 
 

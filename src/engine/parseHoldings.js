@@ -1,3 +1,4 @@
+
 /**
  * src/engine/parseHoldings.js
  *
@@ -30,25 +31,50 @@ export function parseHoldings(text) {
     return fail('Could not find a quarter header (e.g. "Mar 2023  Jun 2023 …"). Paste the shareholding table including the date row.')
   }
 
-  // Find the promoter row.
-  let promoterSeries = []
+  // Find the promoter row, plus the institutional rows sitting alongside it.
+  // FII/DII are read from the SAME paste — Screener prints them directly under
+  // Promoters, so this costs one extra pass over lines already in hand and no
+  // extra work for the user. They're context, not a trigger: the series is
+  // quarterly, so it can only move four times a year and can never be the thing
+  // that flags something today. Displayed as a trend panel, never scored.
+  let promoterSeries = [], fiiSeries = [], diiSeries = []
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const label = lines[i].toLowerCase()
-    if (/promoter/.test(label) && !/pledg/.test(label)) {
-      const nums = extractNums(lines[i])
-      if (nums.length) { promoterSeries = zip(quarters, nums); break }
-    }
+    if (/pledg/.test(label)) continue          // pledge comes from documents, not here
+
+    // Screener's own labels: "FIIs"/"Foreign Institutions", "DIIs"/"Domestic
+    // Institutions". Match on the distinguishing token, not the exact string,
+    // since the wording differs between the classic and newer table layouts.
+    const isPromoter = /promoter/.test(label)
+    const isFii      = /\bfiis?\b|foreign\s*institution/.test(label)
+    const isDii      = /\bdiis?\b|domestic\s*institution/.test(label)
+    if (!isPromoter && !isFii && !isDii) continue
+
+    const nums = extractNums(lines[i])
+    if (!nums.length) continue
+    const series = zip(quarters, nums)
+    if (isPromoter && !promoterSeries.length) promoterSeries = series
+    else if (isFii  && !fiiSeries.length)     fiiSeries      = series
+    else if (isDii  && !diiSeries.length)     diiSeries      = series
   }
 
   if (promoterSeries.length === 0) {
     return fail('Found the date row but no "Promoters" line. Include the promoter holding row.', { quarters })
   }
 
+  const extras = [
+    fiiSeries.length ? 'FII' : null,
+    diiSeries.length ? 'DII' : null,
+  ].filter(Boolean)
+
   return {
     ok: true,
     quarters,
     promoterSeries,
-    note: `Parsed ${promoterSeries.length} quarters of promoter holding.`,
+    fiiSeries,
+    diiSeries,
+    note: `Parsed ${promoterSeries.length} quarters of promoter holding`
+        + (extras.length ? ` (plus ${extras.join(' + ')}).` : '.'),
   }
 }
 
@@ -86,5 +112,6 @@ function zip(quarters, nums) {
 }
 
 function fail(note, extra = {}) {
-  return { ok: false, quarters: extra.quarters || [], promoterSeries: [], note }
+  return { ok: false, quarters: extra.quarters || [], promoterSeries: [], fiiSeries: [], diiSeries: [], note }
 }
+

@@ -1,4 +1,5 @@
 
+
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
@@ -12,6 +13,16 @@ export default function Header() {
   const { state, load, reset } = useApp()
   const [input, setInput] = useState('')
   const [fxOpen, setFxOpen] = useState(false)
+
+  // Keep the box showing whatever ticker is actually loaded. Without this the
+  // input is local state that starts empty and is never written back to, so
+  // after a successful load the box sits blank while a ticker IS loaded — on
+  // mobile that reads as "did my old entry get cleared or not?", with no way to
+  // tell. Mirroring state.ticker makes the current selection visible, and the
+  // select-on-focus below turns "type over it" into a single tap.
+  React.useEffect(() => {
+    if (state.ticker && state.status === 'success') setInput(state.ticker)
+  }, [state.ticker, state.status])
 
   const submit = (e) => {
     e?.preventDefault()
@@ -38,6 +49,7 @@ export default function Header() {
                 placeholder="Enter ticker — RELIANCE, TCS, LICI, AAPL…"
                 value={input}
                 onChange={e => setInput(e.target.value.toUpperCase())}
+                onFocus={e => e.target.select()}
                 disabled={state.status === 'loading'}
               />
               {state.status === 'loading' && (
@@ -49,10 +61,16 @@ export default function Header() {
               Analyze
             </button>
           </form>
-          <button onClick={() => setFxOpen(true)} title="Edit metric formulas"
-            className="text-xs px-3 py-2 rounded-lg border border-navy-600 text-slate-400 hover:text-accent hover:border-accent/50 shrink-0 transition-colors">
-            ƒ Formulas
-          </button>
+          {/* Formula overrides are GLOBAL — one set shared by every ticker — so
+              this belongs on the landing page, not in the per-ticker row. On
+              mobile that row was carrying logo + input + Analyze + Formulas +
+              Reset all at once, which is what made it unusable. */}
+          {state.status !== 'success' && (
+            <button onClick={() => setFxOpen(true)} title="Edit metric formulas"
+              className="text-xs px-3 py-2 rounded-lg border border-navy-600 text-slate-400 hover:text-accent hover:border-accent/50 shrink-0 transition-colors">
+              ƒ Formulas
+            </button>
+          )}
           {state.ticker && state.status === 'success' && (
             <button
               onClick={async () => {
@@ -296,3 +314,4 @@ function DataVintageBadge({ data }) {
     </span>
   )
 }
+

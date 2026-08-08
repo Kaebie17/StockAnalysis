@@ -1,4 +1,5 @@
 
+
 /**
  * src/engine/ratios.js
  *
@@ -21,6 +22,8 @@
  * two give the third. Sources emit raw fields; this is the only place that knows
  * how they combine.
  */
+import { detectSectorType, SECTOR_TYPES } from './stage.js'
+
 export function grossProfitOf(row) {
   const gp  = row?.grossProfit?.value
   if (gp != null) return gp
@@ -31,6 +34,9 @@ export function grossProfitOf(row) {
 export function calcRatios(data) {
   const { price, marketCap: marketCapRaw, shares: sharesRaw, incomeHistory,
           balanceHistory, cashflowHistory, ttm, meta } = data
+
+  // Which ratios even apply is sector-dependent — see NIM below.
+  const sectorType = detectSectorType(data)
 
   // ── Latest-year snapshot (synthetic-aware, gap-filled) ──────────────────────
   // Real fiscal-year rows always take precedence over the synthetic current-year
@@ -282,6 +288,30 @@ export function calcRatios(data) {
   // depreciation — NOT EBITDA, which overstates the return). Prefer reported
   // operating income; else derive EBIT = EBITDA − Depreciation.
   const capitalEmployed = (totalEquity != null && totalDebt != null) ? totalEquity + totalDebt : null
+
+  // ── NIM (Net Interest Margin) — banks / NBFCs only ─────────────────────────
+  // The lender's answer to gross margin: what's earned on the SPREAD between
+  // lending yield and cost of funds, rather than on a markup over materials.
+  // Deliberately gated to financial companies — for a manufacturer this number
+  // is meaningless (interest is a financing cost, not a cost of revenue), and
+  // showing it anyway would invite reading it as a margin it isn't.
+  //
+  //   NIM ≈ (interest income − interest expense) / average total assets × 100
+  //
+  // Two honest approximations, both flagged in the formula string rather than
+  // hidden. First, for a financial company Screener's "Revenue" row IS interest
+  // income, so `revenue` stands in for it. Second, the textbook denominator is
+  // average interest-EARNING assets — a narrower base than total assets, which
+  // isn't separable from anything the app currently parses. Total assets is
+  // wider, so this reads slightly LOW versus a company's own reported NIM. It's
+  // consistent period-over-period, which is what makes the trend readable —
+  // it just shouldn't be compared against an investor-deck figure verbatim.
+  const isLender   = sectorType === SECTOR_TYPES.BANK || sectorType === SECTOR_TYPES.NBFC
+  const prevAssets = val(balanceReal[balanceReal.length - 2]?.totalAssets)
+  const avgAssets  = totalAssets != null && prevAssets != null
+    ? (totalAssets + prevAssets) / 2 : totalAssets
+  const nim = (isLender && revenue != null && interest != null)
+    ? pct(revenue - interest, avgAssets) : null
   const ebit = opProfit != null ? opProfit
     : (ebitda != null && depreciation != null) ? ebitda - depreciation
     : ebitda
@@ -339,6 +369,10 @@ export function calcRatios(data) {
       roe:             tag(roe,             roe != null ? (pct(netProfit, avgEquity) != null ? 'calculated' : 'ttm-fallback') : 'unavailable', 'Net Profit ÷ Avg Equity × 100'),
       roce:            tag(roce,            'calculated', 'EBIT ÷ (Total Equity + Total Debt) × 100'),
       roa:             tag(roa,             'calculated', 'Net Profit ÷ Total Assets × 100'),
+      nim:             isLender
+        ? tag(nim, nim != null ? 'estimated' : 'unavailable',
+              '(Interest income − Interest expense) ÷ Avg Total Assets × 100 — approximation: uses total assets, not interest-earning assets, so it reads slightly low vs a reported NIM')
+        : tag(null, 'not-applicable', 'Only meaningful for banks and NBFCs'),
       // Leverage
       de:              tag(de,              'calculated', 'Total Debt ÷ Total Equity'),
       icr:             tag(icr,             'calculated', 'EBITDA ÷ Interest Expense'),
@@ -415,3 +449,4 @@ function tagBs(value, status, formula = null) {
 function tag(value, status, formula = null) {
   return { value: value ?? null, status: value != null ? (status || 'calculated') : 'unavailable', formula }
 }
+

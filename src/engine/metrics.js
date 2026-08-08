@@ -1,3 +1,4 @@
+
 /**
  * src/engine/metrics.js — THE metric dictionary.
  *
@@ -77,7 +78,11 @@ export const METRICS = {
     table: 'income', label: 'Operating Profit', base: true,
     yahoo: ['operatingIncome', 'totalOperatingIncomeAsReported', 'EBIT'],
     sec: ['OperatingIncomeLoss', 'OperatingIncomeLossIncludingNoncontrollingInterest'],
-    screener: ['operatingprofit', 'ebit', 'operatingincome', 'profitfromoperations', 'pbdit'],
+    // 'financingprofit' — Screener's own label for this line on bank/NBFC P&Ls
+    // (Revenue − Interest − Expenses). It's the direct analog of Operating
+    // Profit there; "Operating Profit"/"EBIT"/"PBDIT" simply never appear on a
+    // financial company's statement.
+    screener: ['operatingprofit', 'ebit', 'operatingincome', 'profitfromoperations', 'pbdit', 'financingprofit'],
     expandFrom: null,
     ar: [/operating profit/i, /profit from operations/i, /\bEBIT\b/],
     csv: ['operatingProfit', 'operatingIncome', 'ebit'],
@@ -353,3 +358,6 @@ export function arTargets(missingKeys) {
 /** The irreducible inputs — the ones no formula can recover. */
 export const baseMetrics = () =>
   Object.entries(METRICS).filter(([, m]) => m.base).map(([k]) => k)
+
+
+
