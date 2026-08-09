@@ -16,9 +16,10 @@ import { requestFolderAccess, exportOverrideJSON, openFilePicker, importOverride
 import MoatQualityPanel from './components/dashboard/MoatQualityPanel.jsx'
 import BackupControls from './components/BackupControls.jsx'
 import PositionFab from './components/dashboard/PositionFab.jsx'
+import PortfolioNews from './components/dashboard/PortfolioNews.jsx'
 
 function Dashboard() {
-  const { state, applyCSV, setFolderHandle, applyPastedTable, dismissGap } = useApp()
+  const { state, load, applyCSV, setFolderHandle, applyPastedTable, dismissGap } = useApp()
   const [expanded, setExpanded] = useState(null)
   const [studioOpen, setStudioOpen] = useState(false)
   const [csvModal, setCsvModal] = useState(false)  // 'upload' | 'gap-fill' | false
@@ -136,6 +137,7 @@ function Dashboard() {
       {/* Backup FABs — landing page only */}
       {!showDashboard && (
         <div className="fixed bottom-6 right-6 flex flex-col gap-2 z-40 items-end">
+          <PortfolioNews onOpenTicker={t => load(t)} />
           <BackupControls />
         </div>
       )}
@@ -143,6 +145,9 @@ function Dashboard() {
       {/* FAB buttons */}
       {showDashboard && (
         <div className="fixed bottom-6 right-6 flex flex-col gap-2 z-40 items-end">
+          {/* Portfolio-wide news brief — opens once per session when something
+              on a holding needs attention, then collapses to a badge. */}
+          <PortfolioNews onOpenTicker={t => load(t)} />
           {/* Positions — same cluster as CSV and Studio rather than a second
               stack in the same corner, which would just overlap them. */}
           <PositionFab />
