@@ -1,4 +1,3 @@
-
 /**
  * src/engine/normalize.js
  *
@@ -601,89 +600,20 @@ function normalizeMerged({ yahoo, screener }) {
 }
 
 
-function mergeByYear(yArr, sArr, mergeFn) {
-  const map = {}
-  for (const r of (sArr || [])) if (r.year) map[r.year] = r
-  for (const r of (yArr || [])) {
-    if (!r.year) continue
-    map[r.year] = map[r.year] ? mergeFn(r, map[r.year]) : r
-  }
-  return Object.values(map).sort((a, b) => a.year.localeCompare(b.year))
-}
-
-function mergeIncomeRow(y, s) {
-  const pick = (yf, sf, name) => {
-    if (yf?.value != null) return yf
-    if (sf?.value != null) return { ...sf, status: 'cross-source', formula: `From Screener (Yahoo missing ${name})` }
-    return unavailable()
-  }
-  return {
-    year: y.year,
-    revenue:         pick(y.revenue,         s.revenue,         'revenue'),
-    expenses:        pick(y.expenses,        s.expenses,        'expenses'),
-    grossProfit:     pick(y.grossProfit,     s.grossProfit,     'grossProfit'),
-    operatingProfit: pick(y.operatingProfit, s.operatingProfit, 'operatingProfit'),
-    ebitda:          pick(y.ebitda,          s.ebitda,          'ebitda'),
-    depreciation:    pick(y.depreciation,    s.depreciation,    'depreciation'),
-    interest:        pick(y.interest,        s.interest,        'interest'),
-    otherIncome:     pick(y.otherIncome,     s.otherIncome,     'otherIncome'),
-    netProfit:       pick(y.netProfit,       s.netProfit,       'netProfit'),
-    eps:             pick(y.eps,             s.eps,             'eps'),
-  }
-}
-
-function mergeBalanceRow(y, s) {
-  const pick = (yf, sf, name) => {
-    if (yf?.value != null) return yf
-    if (sf?.value != null) return { ...sf, status: 'cross-source', formula: `From Screener (Yahoo missing ${name})` }
-    return unavailable()
-  }
-  return {
-    year: y.year,
-    equityCapital:    pick(y.equityCapital,    s.equityCapital,    'equityCapital'),
-    reserves:         pick(y.reserves,         s.reserves,         'reserves'),
-    totalEquity:      pick(y.totalEquity,      s.totalEquity,      'totalEquity'),
-    totalDebt:        pick(y.totalDebt,        s.totalDebt,        'totalDebt'),
-    cash:             pick(y.cash,             s.cash,             'cash'),
-    totalAssets:      pick(y.totalAssets,      s.totalAssets,      'totalAssets'),
-    totalLiabilities: pick(y.totalLiabilities, s.totalLiabilities, 'totalLiabilities'),
-    fixedAssets:      pick(y.fixedAssets,      s.fixedAssets,      'fixedAssets'),
-    investments:      pick(y.investments,      s.investments,      'investments'),
-  }
-}
-
-function mergeCFRow(y, s) {
-  const pick = (yf, sf, name) => {
-    if (yf?.value != null) return yf
-    if (sf?.value != null) return { ...sf, status: 'cross-source', formula: `From Screener (Yahoo missing ${name})` }
-    return unavailable()
-  }
-  return {
-    year: y.year,
-    operatingCF:  pick(y.operatingCF,  s.operatingCF,  'operatingCF'),
-    investingCF:  pick(y.investingCF,  s.investingCF,  'investingCF'),
-    financingCF:  pick(y.financingCF,  s.financingCF,  'financingCF'),
-    freeCashFlow: pick(y.freeCashFlow, s.freeCashFlow, 'freeCashFlow'),
-  }
-}
-
-function mergeTTM(y, s) {
-  if (!y) return s
-  if (!s) return y
-  const out = { ...y }
-  for (const k of Object.keys(s ?? {})) {
-    if (out[k]?.value == null && s[k]?.value != null) out[k] = s[k]
-  }
-  return out
-}
-
+// NOTE: five per-statement merge helpers (mergeByYear / mergeIncomeRow /
+// mergeBalanceRow / mergeCFRow / mergeTTM) were removed here. They had no call
+// sites — mergeDeep replaced them — and they were actively misleading as a
+// reference: their field lists omitted cogs, grossProfit and currentAssets,
+// which the live path does carry.
 
 // ── SEC (US tickers) ─────────────────────────────────────────────────────────
 // SEC EDGAR fills the same slot Screener fills for Indian tickers: deep annual
 // history. Yahoo still supplies price / marketCap / priceHistory / meta / ttm.
 //
-// Same merge contract as normalizeMerged: Yahoo ALWAYS wins for overlapping
-// years; SEC only contributes years Yahoo doesn't have (pre-Yahoo history). No
+// Same merge contract as normalizeMerged: the DEEP source wins field by field.
+// SEC is a read of the filings and Yahoo is a vendor feed, so where both have a
+// value for a year, SEC's is kept; Yahoo fills only the fields SEC lacks (tagged
+// 'cross-source') and supplies whole years SEC doesn't reach. No
 // validation list is needed — SEC is the primary filing source, not a scrape.
 //
 // raw = { yahoo, sec } where sec = { incomeHistory, balanceHistory, cashflowHistory }
@@ -714,4 +644,3 @@ function normalizeSecMerged({ yahoo, sec }) {
     cashflowHistory,
   }
 }
-

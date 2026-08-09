@@ -1,15 +1,17 @@
-
 /**
  * src/api/orchestrator.js
  *
  * Fetches Yahoo (primary) + Screener (historical extension) in parallel.
  *
- * Screener validation:
- *   - Yahoo and Screener data compared on 12 base metrics for overlapping years
- *   - All 12 must match (to Crore precision) across all overlapping years
- *   - Only if validation passes: Screener's pre-Yahoo years (2016-2021) are used
- *   - If validation fails: Yahoo 4-year data only, clear message shown
- *   - If Screener blocked (Cloudflare): Yahoo only, no error shown to user
+ * Merge policy:
+ *   - Screener REPLACES Yahoo year for year where both have a value; Yahoo fills
+ *     only the fields Screener lacks. Screener reads the filings, Yahoo is a
+ *     vendor feed, so the stronger source wins.
+ *   - No numeric cross-validation. An earlier version compared 12 metrics and
+ *     discarded Screener on any mismatch — which had the sources backwards, and
+ *     also failed on Yahoo's own gaps. The only remaining check is structural
+ *     (right table, annual not quarterly) and it lives in the parser.
+ *   - If Screener is blocked (Cloudflare): Yahoo only, no error shown to user
  */
 
 import { fetchYahoo }   from './yahoo.js'

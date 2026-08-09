@@ -17,7 +17,7 @@ import { queuePush } from '../sync/sync.js'
 const AppContext = createContext(null)
 
 const initial = {
-  status: 'idle', progress: null, error: null, ticker: '', query: '', validation: null,
+  status: 'idle', progress: null, error: null, ticker: '', query: '',
   data: null, ratioResult: null,
   valuation: null, technicals: null, quality: null,
   marketExpectation: null,
@@ -197,11 +197,13 @@ export function AppProvider({ children }) {
         return
       }
 
-      const { source, raw, validation } = await fetchTicker(rawTicker, p => dispatch({ type: 'PROGRESS', payload: p }))
-      // Pass validated historical years to normalize so only those are merged
-      const data = source === 'merged'
-        ? normalize(source, raw, validation?.validHistoricalYears)
-        : normalize(source, raw)
+      const { source, raw } = await fetchTicker(rawTicker, p => dispatch({ type: 'PROGRESS', payload: p }))
+      // No year filtering: fetchTicker returns only { source, raw }, and normalize
+      // takes two arguments. The old third argument (validation.validHistoricalYears)
+      // was always undefined and silently discarded — a leftover from when Screener
+      // was cross-validated against Yahoo before merging. That check was dropped
+      // because it had the sources backwards; Screener now replaces Yahoo outright.
+      const data = normalize(source, raw)
 
       // Try auto-load CSV for this ticker (Chrome/Android)
       let finalData = data
@@ -216,7 +218,7 @@ export function AppProvider({ children }) {
       }
 
       const computed = computeAll(finalData, {}, {}, {}, state.arData)
-      const payload  = { data: finalData, ...computed, csvData, csvActive, validation }
+      const payload  = { data: finalData, ...computed, csvData, csvActive }
       await setCached(ticker, { data, ...computeAll(data, {}, {}, {}, state.arData) })  // cache without CSV
       dispatch({ type: 'FETCH_SUCCESS', payload })
 

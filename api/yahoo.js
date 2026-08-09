@@ -252,10 +252,15 @@ module.exports = async function handler(req, res) {
         return res.status(404).json({ error: `No data for "${ticker}"` })
       }
 
-      // ── TEMPORARY DIAGNOSTIC — remove once fundamentalsTimeSeries field
-      // names below are confirmed against real data. Logs to Vercel function
-      // logs only. Safe, read-only, no behavior change.
-      try {
+      // ── DIAGNOSTIC — fundamentalsTimeSeries field names ──────────────────
+      // The `pick()` aliases in normalize.js are best-effort guesses at Yahoo's
+      // concept keys; this is how the real ones get confirmed. Kept, because
+      // that reconciliation hasn't happened yet — but now opt-in, since it dumps
+      // a full fundamentals entry on EVERY fetch and buries the rest of the log.
+      //
+      // Turn on with FTS_DIAGNOSTIC=1 (Vercel env), pull one US-ticker fetch from
+      // the function logs, reconcile the aliases, then delete this block.
+      if (process.env.FTS_DIAGNOSTIC === '1') try {
         const ftsArr = Array.isArray(fts) ? fts : (fts ? [fts] : [])
         const sample = ftsArr[ftsArr.length - 1] || ftsArr[0] || {}
         console.log(`[DIAGNOSTIC-FTS] ${ticker}`, JSON.stringify({
@@ -267,7 +272,7 @@ module.exports = async function handler(req, res) {
       } catch (e) {
         console.warn('[DIAGNOSTIC-FTS] logging failed:', e.message)
       }
-      // ── END TEMPORARY DIAGNOSTIC ──────────────────────────────────────────────
+      // ── END DIAGNOSTIC ────────────────────────────────────────────────────────
 
       res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate')
       return res.status(200).json({ ticker, quote, summary, history, fts })

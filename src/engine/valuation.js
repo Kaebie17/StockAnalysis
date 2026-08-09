@@ -1,4 +1,3 @@
-
 /**
  * src/engine/valuation.js
  * Stage + sector aware. All models calculated from raw scalars in ratioResult.
@@ -166,7 +165,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // the "best two". We present their range (low–high) rather than a blended mean.
   const MODEL_NAMES = {
     dcf: 'DCF', pe: 'P/E', evEbitda: 'EV/EBITDA', pb: 'P/B',
-    ps: 'P/S', graham: 'Graham', evGrossProfit: 'EV/Gross Profit', peg: 1.5,
+    ps: 'P/S', graham: 'Graham', evGrossProfit: 'EV/Gross Profit', peg: 'PEG',
   }
   const topKeys = validKeys.slice(0, 2)
   const topModels = topKeys.map(m => ({ key: m, name: MODEL_NAMES[m] || m, value: results[m].value }))

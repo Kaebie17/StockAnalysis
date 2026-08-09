@@ -155,19 +155,16 @@ export function resolveMarginBasis(incomeHistory = [], opts = {}) {
  * count overstates EPS for anyone funding growth with equity — lenders
  * especially, since growing the book needs capital.
  */
-export function resolveDilution(incomeHistory = [], balanceHistory = []) {
+export function resolveDilution(incomeHistory = []) {
+  // Derived as profit ÷ EPS rather than read off a share-count field: normalize
+  // stores no per-year share count on balanceHistory (BALANCE_F has no such
+  // field), so an earlier loop reading row.shares there could never fire.
+  // Profit ÷ EPS is the weighted average count the company itself used for that
+  // year's EPS, which is the right basis for a dilution rate anyway.
   const counts = []
-  for (const row of (balanceHistory || [])) {
-    const s = val(row?.shares) ?? val(row?.sharesOutstanding)
-    if (s > 0) counts.push(s)
-  }
-  // Derive the count from profit ÷ eps when it isn't reported directly.
-  if (counts.length < 2) {
-    counts.length = 0
-    for (const row of (incomeHistory || [])) {
-      const np = val(row?.netProfit), eps = val(row?.eps)
-      if (np > 0 && eps > 0) counts.push(np / eps)
-    }
+  for (const row of (incomeHistory || [])) {
+    const np = val(row?.netProfit), eps = val(row?.eps)
+    if (np > 0 && eps > 0) counts.push(np / eps)
   }
   if (counts.length < 2) {
     return { rate: 0, source: 'assumed-flat', rung: 'fallback', label: 'no share-count history' }
@@ -249,7 +246,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     : resolveMarginBasis(incomeHistory, { guidedMargin })
 
   // ── dilution ──────────────────────────────────────────────────────────────
-  const dilution = resolveDilution(incomeHistory, balanceHistory)
+  const dilution = resolveDilution(incomeHistory)
 
   // ── forward EPS ───────────────────────────────────────────────────────────
   // Preferred: revenue → margin → profit → per-share, which exposes the margin

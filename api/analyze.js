@@ -27,8 +27,12 @@ export default async function handler(req, res) {
   const MODEL = req.body?.model || DEFAULT_MODEL
   if (!key || !summary) { res.status(200).json({ text: null }); return }
 
-  // DEBUG (temporary): echo the exact prompt pieces so the client can log them.
-  const debug = { model: MODEL, system: SYSTEM, userContent: JSON.stringify(summary, null, 2) }
+  // Prompt echo, for local debugging only. SYSTEM is the analyst prompt — the
+  // actual product here — so it must not be returned to a browser in
+  // production, where anyone can read it from the network tab.
+  const debug = process.env.NODE_ENV === 'development'
+    ? { model: MODEL, system: SYSTEM, userContent: JSON.stringify(summary, null, 2) }
+    : undefined
 
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`
@@ -42,7 +46,13 @@ export default async function handler(req, res) {
       }),
     })
     const data = await r.json()
-    if (!r.ok) { res.status(200).json({ text: null, error: `gemini ${r.status}`, raw: data }); return }
+    if (!r.ok) {
+      // Log the full body server-side; return only the status. A Gemini error
+      // body can echo the prompt back, so it shouldn't reach the client either.
+      console.warn('[analyze] gemini error', r.status, JSON.stringify(data).slice(0, 800))
+      res.status(200).json({ text: null, error: `gemini ${r.status}` })
+      return
+    }
     const cand = data?.candidates?.[0]
     const parts = cand?.content?.parts
     let text = Array.isArray(parts)
@@ -50,11 +60,11 @@ export default async function handler(req, res) {
       : null
     if (!text) text = null
     if (!text) {
+      console.warn('[analyze] empty completion', JSON.stringify(data).slice(0, 800))
       res.status(200).json({
         text: null,
         finishReason: cand?.finishReason ?? null,
         blockReason: data?.promptFeedback?.blockReason ?? null,
-        raw: data,
       })
       return
     }
