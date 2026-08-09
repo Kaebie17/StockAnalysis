@@ -35,7 +35,43 @@ module.exports = async function handler(req, res) {
       return res.status(200).json(results)
     }
 
-    if (!ticker) return res.status(400).json({ error: 'Missing ticker' })
+    if (!ticker && endpoint !== 'quotes') return res.status(400).json({ error: 'Missing ticker' })
+
+    // ── QUOTES — many symbols, one call ──────────────────────────────────────
+    // /api/yahoo?endpoint=quotes&tickers=A.NS,B.NS,^INDIAVIX
+    //
+    // Exists for the positions pages, which need a current price for every
+    // holding INCLUDING ones the user hasn't opened. Doing that through
+    // `endpoint=all` would mean one heavy call per stock — financials, multi-year
+    // history and metadata — to extract a single number. yf.quote() takes an
+    // array and returns just the quote fields, so a whole portfolio costs about
+    // what one ordinary request costs.
+    //
+    // Cached briefly at the CDN: a price is the same for every user, and the
+    // page polls, so this collapses the repeats without making anything stale
+    // enough to matter for a position review.
+    if (endpoint === 'quotes') {
+      const symbols = String(req.query.tickers || '')
+        .split(',').map(s => s.trim()).filter(Boolean).slice(0, 50)
+      if (symbols.length === 0) return res.status(400).json({ error: 'Missing tickers' })
+
+      const rows = await yf.quote(symbols, { validateResult: false })
+      const list = Array.isArray(rows) ? rows : [rows]
+      const out = {}
+      for (const q of list) {
+        if (!q?.symbol) continue
+        out[q.symbol] = {
+          price: q.regularMarketPrice ?? null,
+          changePct: q.regularMarketChangePercent ?? null,
+          prevClose: q.regularMarketPreviousClose ?? null,
+          currency: q.currency ?? null,
+          fiftyDayAverage: q.fiftyDayAverage ?? null,
+          time: q.regularMarketTime ?? null,
+        }
+      }
+      res.setHeader('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=300')
+      return res.status(200).json({ quotes: out })
+    }
 
     // ── ALL DATA — single endpoint returns everything ──────────────────────
     // Client calls /api/yahoo?endpoint=all&ticker=TCS.NS

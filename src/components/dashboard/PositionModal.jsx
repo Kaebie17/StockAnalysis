@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { recordBuy, recordSell, positionMath } from '../../store/usePositions.js'
+import { recordBuy, recordSell, positionMath, previewFifo } from '../../store/usePositions.js'
+import { EXIT_REASONS } from '../../engine/exitReview.js'
 
 const cur = c => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[c]) || ''
 
@@ -86,11 +87,13 @@ export function priceAt(priceHistory, whenMs, cmp, venue = 'IN') {
  * from today rather than from the purchase date, because the app genuinely
  * didn't observe anything back then.
  */
-export default function PositionModal({ open, mode = 'buy', position = null, onClose, onSaved }) {
+export default function PositionModal({ open, mode = 'buy', position = null, lots = null, onClose, onSaved }) {
   const { state } = useApp()
   const venue = venueOf(state.ticker)
   const [rows, setRows] = useState(() => [blankRow(state, venue)])
-  const [sell, setSell] = useState(() => ({ price: '', when: defaultWhen(venue), shares: '' }))
+  const [sell, setSell] = useState(() => ({
+    price: '', when: defaultWhen(venue), shares: '', reason: '', note: '',
+  }))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
 
@@ -142,20 +145,30 @@ export default function PositionModal({ open, mode = 'buy', position = null, onC
     } catch (e) { setErr(String(e?.message || e)) } finally { setBusy(false) }
   }
 
+  const sellLots = lots && lots.length ? lots : (position ? [position] : [])
+  const fifo = isSell ? previewFifo(sellLots, sell.shares ? +sell.shares : null) : null
+
   const submitSell = async () => {
     setErr(''); setBusy(true)
     try {
       if (!(+sell.price > 0)) { setErr('Enter the price you sold at.'); setBusy(false); return }
-      await recordSell(position.id, {
+      await recordSell(sellLots[0]?.ticker, {
         sellPrice: sell.price,
         sellDate: Date.parse(sell.when) || Date.now(),
-        sharesSold: sell.shares ? +sell.shares : undefined,
+        shares: sell.shares ? +sell.shares : undefined,
+        exitReason: sell.reason || null,
+        exitNote: sell.note || null,
       })
       onSaved?.(); onClose()
     } catch (e) { setErr(String(e?.message || e)) } finally { setBusy(false) }
   }
 
-  const m = isSell && position ? positionMath(position, +sell.price || null) : null
+  // Realised P/L across whatever FIFO actually consumes — not an average, since
+  // lots bought at different prices realise different gains.
+  const realised = (fifo && +sell.price > 0)
+    ? fifo.take.reduce((s, t) => s + t.shares * (+sell.price - (Number(t.lot.buyPrice) || 0)), 0)
+    : null
+  const costOfSold = fifo ? fifo.take.reduce((s, t) => s + t.shares * (Number(t.lot.buyPrice) || 0), 0) : 0
 
   return (
     // Layout note: the sheet is a flex COLUMN capped at 90dvh with only the body
@@ -179,7 +192,8 @@ export default function PositionModal({ open, mode = 'buy', position = null, onC
           {isSell ? (
             <>
               <p className="text-xs text-slate-400">
-                {position?.ticker} · {position?.shares} shares bought at {symbol}{position?.buyPrice}
+                {sellLots[0]?.ticker} · {fifo?.held} share{fifo?.held === 1 ? '' : 's'} held
+                across {sellLots.length} lot{sellLots.length === 1 ? '' : 's'}
               </p>
               <Field label="When did you sell?">
                 <input type="datetime-local" value={sell.when}
@@ -196,20 +210,62 @@ export default function PositionModal({ open, mode = 'buy', position = null, onC
                   onChange={e => setSell(s => ({ ...s, price: e.target.value, priceEdited: true }))}
                   className="input-field text-sm w-full" placeholder="e.g. 7400" />
               </Field>
-              <Field label={`Shares sold (blank = all ${position?.shares})`}>
+              <Field label={`Shares sold (blank = all ${fifo?.held})`}>
                 <input type="number" inputMode="numeric" value={sell.shares}
                   onChange={e => setSell(s => ({ ...s, shares: e.target.value }))}
-                  className="input-field text-sm w-full" placeholder={String(position?.shares ?? '')} />
+                  className="input-field text-sm w-full" placeholder={String(fifo?.held ?? '')} />
               </Field>
-              {m?.pnl != null && (
-                <div className={`text-sm rounded-lg px-3 py-2 ${m.pnl >= 0 ? 'bg-bull/10 text-bull' : 'bg-bear/10 text-bear'}`}>
-                  {m.pnl >= 0 ? 'Gain' : 'Loss'} {symbol}{Math.abs(Math.round(m.pnl)).toLocaleString('en-IN')}
-                  {' '}({m.pnlPct >= 0 ? '+' : ''}{m.pnlPct.toFixed(1)}%)
+
+              {/* FIFO breakdown. Shown whenever a sale spans more than one lot,
+                  because the realised gain then isn't obvious from an average —
+                  older shares usually carry a lower cost and a bigger gain. */}
+              {fifo && fifo.take.length > 1 && (
+                <div className="text-[11px] bg-navy-800/50 rounded-lg px-3 py-2 space-y-0.5">
+                  <div className="text-slate-400">Oldest shares sell first:</div>
+                  {fifo.take.map((t, i) => (
+                    <div key={i} className="text-slate-500">
+                      {t.shares} of {t.lot.shares} bought {dateShort(t.lot.buyDate)} at {symbol}{t.lot.buyPrice}
+                      {!t.whole && <span className="text-slate-600"> — rest stays open</span>}
+                    </div>
+                  ))}
                 </div>
               )}
+
+              {realised != null && (
+                <div className={`text-sm rounded-lg px-3 py-2 ${realised >= 0 ? 'bg-bull/10 text-bull' : 'bg-bear/10 text-bear'}`}>
+                  Realised {realised >= 0 ? 'gain' : 'loss'} {symbol}
+                  {Math.abs(Math.round(realised)).toLocaleString('en-IN')}
+                  {costOfSold > 0 && <> ({realised >= 0 ? '+' : ''}{((realised / costOfSold) * 100).toFixed(1)}%)</>}
+                </div>
+              )}
+
+              {/* Exit reason. Tagged at the point of sale because it can't be
+                  reconstructed later — six months on, nobody remembers whether
+                  they sold on a policy worry or just wanted the cash. The fixed
+                  list is what makes the pattern countable ("4 of your 6 policy
+                  exits kept rising"); free text alone can't be grouped. */}
+              <div>
+                <span className="text-xs text-slate-400 block mb-1.5">Why are you selling?</span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {EXIT_REASONS.map(r => (
+                    <button key={r.id} type="button"
+                      onClick={() => setSell(s => ({ ...s, reason: s.reason === r.id ? '' : r.id }))}
+                      className={`text-[11px] py-1.5 px-2 rounded-lg border text-left transition-colors ${
+                        sell.reason === r.id
+                          ? 'border-accent bg-navy-800 text-white'
+                          : 'border-navy-700 text-slate-400 hover:border-navy-600'}`}>
+                      {r.label}
+                    </button>
+                  ))}
+                </div>
+                <input value={sell.note} onChange={e => setSell(s => ({ ...s, note: e.target.value }))}
+                  placeholder="Anything worth remembering about this exit"
+                  className="input-field text-xs w-full mt-2" />
+              </div>
+
               <p className="text-[11px] text-slate-600">
-                The lot stays in your history after selling — a closed position is what tells you
-                whether the call was right.
+                Sold lots stay in your history — a closed position is what tells you whether the
+                call was right.
               </p>
             </>
           ) : (
@@ -289,6 +345,8 @@ export default function PositionModal({ open, mode = 'buy', position = null, onC
     </div>
   )
 }
+
+const dateShort = t => (t ? new Date(t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' }) : '')
 
 function isCurrentTicker(a, b) {
   return !!a && !!b && a.trim().toUpperCase() === b.toUpperCase()

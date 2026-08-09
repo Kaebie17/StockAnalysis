@@ -105,15 +105,85 @@ export async function recordBuy({ ticker, name, shares, buyPrice, buyDate, note,
   return rec
 }
 
-/** Record a sale. Closes the lot; the record stays. */
-export async function recordSell(id, { sellPrice, sellDate, sharesSold } = {}) {
-  const rec = await closePosition(id, {
-    sellPrice: sellPrice != null ? Number(sellPrice) : null,
-    sellDate: sellDate || Date.now(),
-    sharesSold: sharesSold != null ? Number(sharesSold) : undefined,
-  })
-  if (rec) queuePush(`positions:${rec.id}`, rec)
-  return rec
+/**
+ * Record a sale, allocated FIFO across the lots held for a ticker.
+ *
+ * FIFO is the convention (and what Indian capital-gains treatment assumes), so
+ * there is nothing for the user to choose — the oldest shares are the ones sold.
+ * What DOES need handling is a sale that doesn't line up with lot boundaries:
+ * selling 50 when the oldest lot holds 40 closes that lot and takes 10 from the
+ * next one.
+ *
+ * A partially sold lot is SPLIT rather than edited down: the sold portion
+ * becomes its own closed record with the original buy price and date, and the
+ * remainder stays open. That keeps the realised gain on those 10 shares in the
+ * history instead of quietly rewriting the lot as though they were never bought.
+ */
+export async function recordSell(ticker, { sellPrice, sellDate, shares, exitReason, exitNote } = {}) {
+  const t = String(ticker || '').toUpperCase()
+  const open = (await listPositions({ ticker: t, status: 'open' }))
+    .sort((a, b) => (a.buyDate || 0) - (b.buyDate || 0))    // oldest first
+  if (open.length === 0) return { closed: [], remaining: 0 }
+
+  const held = open.reduce((s, p) => s + (Number(p.shares) || 0), 0)
+  let toSell = shares != null && +shares > 0 ? Math.min(+shares, held) : held
+  const when  = sellDate || Date.now()
+  const price = sellPrice != null ? Number(sellPrice) : null
+  const closed = []
+
+  for (const lot of open) {
+    if (toSell <= 0) break
+    const lotShares = Number(lot.shares) || 0
+    if (lotShares <= 0) continue
+
+    if (toSell >= lotShares) {
+      // Whole lot goes.
+      let rec = await closePosition(lot.id, { sellPrice: price, sellDate: when, sharesSold: lotShares })
+      if (rec && (exitReason || exitNote)) rec = await savePosition({ ...rec, exitReason, exitNote })
+      if (rec) { queuePush(`positions:${rec.id}`, rec); closed.push(rec) }
+      toSell -= lotShares
+    } else {
+      // Split: a closed record for the sold part, the rest stays open.
+      const sold = await savePosition({
+        ...lot,
+        id: undefined,                       // new record
+        shares: toSell,
+        status: 'closed',
+        sellPrice: price, sellDate: when, sharesSold: toSell,
+        exitReason: exitReason || null, exitNote: exitNote || null,
+        splitFrom: lot.id,
+        createdAt: undefined,
+      })
+      const remainder = await savePosition({ ...lot, shares: lotShares - toSell })
+      if (sold)      { queuePush(`positions:${sold.id}`, sold); closed.push(sold) }
+      if (remainder) queuePush(`positions:${remainder.id}`, remainder)
+      toSell = 0
+    }
+  }
+
+  return { closed, remaining: held - (shares != null ? Math.min(+shares, held) : held) }
+}
+
+/**
+ * What a FIFO sale of `shares` would actually consume, without writing anything.
+ * Lets the sell form show the breakdown before the user commits, which matters
+ * when a sale spans lots bought at different prices — the realised gain isn't
+ * obvious from the average.
+ */
+export function previewFifo(lots, shares) {
+  const open = (lots || [])
+    .filter(p => p.status !== 'closed')
+    .sort((a, b) => (a.buyDate || 0) - (b.buyDate || 0))
+  const held = open.reduce((s, p) => s + (Number(p.shares) || 0), 0)
+  let left = shares != null && +shares > 0 ? Math.min(+shares, held) : held
+  const take = []
+  for (const lot of open) {
+    if (left <= 0) break
+    const n = Math.min(left, Number(lot.shares) || 0)
+    if (n > 0) take.push({ lot, shares: n, whole: n === Number(lot.shares) })
+    left -= n
+  }
+  return { take, held, selling: (shares != null && +shares > 0) ? Math.min(+shares, held) : held }
 }
 
 export async function removePosition(id) {

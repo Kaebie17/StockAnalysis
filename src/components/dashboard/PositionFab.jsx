@@ -4,103 +4,113 @@ import PositionModal from './PositionModal.jsx'
 import { usePositions } from '../../store/usePositions.js'
 
 /**
- * PositionFab — floating circular actions for buy / sell / my-positions.
+ * PositionFab — floating buttons, rendered inside the app's existing FAB column
+ * alongside 📎 and ⚙.
  *
- * These lived in the header row and IdentityBar, which put four or five controls
- * on one line and made the mobile ticker page unreadable. Floating them frees
- * that row entirely, and position actions are a natural fit for it: they're
- * available everywhere, unrelated to whatever panel is open, and used
- * occasionally rather than constantly.
+ *   💼  my positions (with a count badge)
+ *   📕  exit record — what happened after each sale
+ *   ➕  record a purchase of the ticker on screen
+ *   ➖  record a sale — only when the ticker on screen is actually held
  *
- * Collapsed to a single button by default. Buy and sell only appear once
- * expanded, and sell only when a lot actually exists — an action with nothing to
- * act on shouldn't occupy a button.
+ * Deliberately flat: no toggle, no buttons nested inside buttons.
+ *
+ * Selling never asks which lot. Shares are sold FIFO — oldest first, which is
+ * both the convention and what capital-gains treatment assumes — so the
+ * allocation is determined, not a choice. The user enters a quantity and a
+ * price; the form shows which lots that consumes.
  */
 export default function PositionFab() {
   const { state } = useApp()
-  const [expanded, setExpanded] = useState(false)
-  const [modal, setModal] = useState(null)          // null | 'buy' | 'sell' | 'list'
+  const [modal, setModal] = useState(null)          // null | 'buy' | 'sell' | 'list' | 'sold'
   const { positions, refresh } = usePositions()
 
-  const hasTicker = state.status === 'success' && !!state.ticker
-  const openLots  = positions.filter(p => p.status !== 'closed')
+  const hasTicker  = state.status === 'success' && !!state.ticker
+  const openLots   = positions.filter(p => p.status !== 'closed')
   const tickerLots = openLots.filter(p => p.ticker === state.ticker)
-
-  const act = m => { setModal(m); setExpanded(false) }
+  const hasClosed  = positions.some(p => p.status === 'closed')
 
   return (
     <>
-      {/* Tap-away layer: on touch there's no hover-out, so without this the
-          expanded cluster has no way to close except hitting the toggle again. */}
-      {expanded && (
-        <div className="fixed inset-0 z-30" onClick={() => setExpanded(false)} />
+      {hasTicker && (
+        <button
+          onClick={() => setModal('buy')}
+          title="Record a purchase"
+          aria-label="Record a purchase"
+          className="w-11 h-11 rounded-full bg-navy-800 border border-navy-600 shadow-lg
+                     text-slate-400 hover:text-bull hover:border-bull/60
+                     active:scale-95 transition-all flex items-center justify-center text-xl">
+          ➕
+        </button>
       )}
 
-      {/* Renders INSIDE the app's existing FAB column (alongside 📎 and ⚙), not
-          as its own fixed stack — a second fixed cluster in the same corner just
-          lands on top of the first. Sizing matches those buttons (w-11 h-11). */}
-      <div className="relative flex flex-col items-end gap-2">
-        {expanded && (
-          <>
-            {hasTicker && (
-              <FabButton label="Record a purchase" onClick={() => act('buy')}
-                className="border-bull/40 text-bull hover:bg-bull/10">+</FabButton>
-            )}
-            {hasTicker && tickerLots.length > 0 && (
-              <FabButton label="Record a sale" onClick={() => act('sell')}
-                className="border-bear/40 text-bear hover:bg-bear/10">−</FabButton>
-            )}
-            <FabButton label="My positions" onClick={() => act('list')}
-              className="border-accent/40 text-accent hover:bg-accent/10">📊</FabButton>
-          </>
-        )}
-
+      {hasTicker && tickerLots.length > 0 && (
         <button
-          onClick={() => setExpanded(e => !e)}
-          title="Positions"
-          aria-label="Positions"
-          aria-expanded={expanded}
-          className="relative w-11 h-11 rounded-full bg-navy-800 border border-navy-600 shadow-lg
-                     text-slate-300 hover:text-accent hover:border-accent/50
-                     flex items-center justify-center transition-all active:scale-95 text-lg">
-          {expanded ? '✕' : '💼'}
-          {/* Count badge: the one piece of state worth showing while collapsed. */}
-          {!expanded && openLots.length > 0 && (
-            <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full
-                             bg-accent text-navy-900 text-[10px] font-bold
-                             flex items-center justify-center">
-              {openLots.length}
-            </span>
-          )}
+          onClick={() => setModal('sell')}
+          title="Record a sale"
+          aria-label="Record a sale"
+          className="w-11 h-11 rounded-full bg-navy-800 border border-navy-600 shadow-lg
+                     text-slate-400 hover:text-bear hover:border-bear/60
+                     active:scale-95 transition-all flex items-center justify-center text-xl">
+          ➖
         </button>
-      </div>
+      )}
+
+      <button
+        onClick={() => setModal('list')}
+        title="My positions"
+        aria-label="My positions"
+        className="relative w-11 h-11 rounded-full bg-navy-800 border border-navy-600 shadow-lg
+                   text-slate-400 hover:text-accent hover:border-accent/60
+                   active:scale-95 transition-all flex items-center justify-center text-lg">
+        💼
+        {openLots.length > 0 && (
+          <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full
+                           bg-accent text-navy-900 text-[10px] font-bold
+                           flex items-center justify-center">
+            {openLots.length}
+          </span>
+        )}
+      </button>
+
+      {/* Only once there's something to review — an empty exit record is a
+          button that teaches nothing. */}
+      {hasClosed && (
+        <button
+          onClick={() => setModal('sold')}
+          title="Exit record"
+          aria-label="Exit record"
+          className="w-11 h-11 rounded-full bg-navy-800 border border-navy-600 shadow-lg
+                     text-slate-400 hover:text-accent hover:border-accent/60
+                     active:scale-95 transition-all flex items-center justify-center text-lg">
+          📕
+        </button>
+      )}
 
       <PositionModal open={modal === 'buy'} mode="buy"
         onClose={() => setModal(null)} onSaved={refresh} />
-      <PositionModal open={modal === 'sell'} mode="sell" position={tickerLots[0] || null}
+      <PositionModal open={modal === 'sell'} mode="sell" lots={tickerLots}
         onClose={() => setModal(null)} onSaved={refresh} />
       <PositionsPanelLazy open={modal === 'list'} onClose={() => setModal(null)} />
+      <SoldPositionsLazy open={modal === 'sold'} onClose={() => setModal(null)} />
     </>
   )
 }
 
-function FabButton({ children, label, onClick, className = '' }) {
-  return (
-    <button onClick={onClick} title={label} aria-label={label}
-      className={`w-10 h-10 rounded-full bg-navy-800 border shadow-lg text-base
-                  flex items-center justify-center transition-all active:scale-95 ${className}`}>
-      {children}
-    </button>
-  )
-}
-
 /**
- * PositionsPanel imports this file's sibling modal, so importing it directly at
- * the top would close a cycle (Fab → Panel → Modal → …). Loading it on demand
- * breaks that and keeps the panel out of the initial bundle, which it doesn't
- * need to be in — it only renders once someone taps through.
+ * Loaded on demand: PositionsPanel imports the same modal this file does, so a
+ * direct top-level import would close a cycle. It also keeps the panel out of
+ * the initial bundle, which it has no reason to be in.
  */
 const PositionsPanel = React.lazy(() => import('./PositionsPanel.jsx'))
+const SoldPositions  = React.lazy(() => import('./SoldPositions.jsx'))
+function SoldPositionsLazy({ open, onClose }) {
+  if (!open) return null
+  return (
+    <React.Suspense fallback={null}>
+      <SoldPositions open={open} onClose={onClose} />
+    </React.Suspense>
+  )
+}
 function PositionsPanelLazy({ open, onClose }) {
   if (!open) return null
   return (
