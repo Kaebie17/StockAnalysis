@@ -136,7 +136,6 @@ function Dashboard() {
       {/* Backup FABs — landing page only */}
       {!showDashboard && (
         <div className="fixed bottom-6 right-6 flex flex-col gap-2 z-40 items-end">
-          <PositionFab />
           <BackupControls />
         </div>
       )}

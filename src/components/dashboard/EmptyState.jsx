@@ -1,13 +1,19 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import PositionModal from './PositionModal.jsx'
-import { usePositions, positionMath } from '../../store/usePositions.js'
+import { usePositions } from '../../store/usePositions.js'
+
+// Loaded on demand — both pull in PositionModal, and neither is needed until
+// someone taps through to them.
+const PositionsPanel = React.lazy(() => import('./PositionsPanel.jsx'))
+const SoldPositions  = React.lazy(() => import('./SoldPositions.jsx'))
 
 export default function EmptyState({ onUpload }) {
   const { state } = useApp()
-  const [bulkOpen, setBulkOpen] = useState(false)
+  const [panel, setPanel] = useState(null)          // null | 'bulk' | 'list' | 'sold'
   const { positions, refresh } = usePositions()
-  const held = positions.filter(p => p.status !== 'closed')
+  const held      = positions.filter(p => p.status !== 'closed')
+  const hasClosed = positions.some(p => p.status === 'closed')
 
   if (state.status === 'loading') return <LoadingSkeleton />
   if (state.status === 'error')   return <ErrorState onUpload={onUpload} />
@@ -44,20 +50,36 @@ export default function EmptyState({ onUpload }) {
           because the natural moment to enter holdings you already own is when
           setting the app up — before you've looked up anything. */}
       <div className="mt-6 w-full max-w-sm">
-        {held.length > 0 ? (
-          <div className="card-sm text-left">
-            <div className="text-slate-300 text-sm font-medium">
-              💼 {held.length} holding{held.length > 1 ? 's' : ''} tracked
+        {/* Portfolio lives here, not on the ticker pages: this is the screen you
+            open to think about holdings as a whole rather than about one
+            company. The ticker pages keep only buy and sell. */}
+        {held.length > 0 || hasClosed ? (
+          <div className="card-sm text-left space-y-2">
+            {held.length > 0 && (
+              <button onClick={() => setPanel('list')} className="w-full text-left group">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-300 text-sm font-medium">
+                    💼 {held.length} holding{held.length > 1 ? 's' : ''} tracked
+                  </span>
+                  <span className="text-accent text-xs group-hover:text-accent-light">View →</span>
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5 truncate">
+                  {held.slice(0, 4).map(p => p.ticker.replace(/\.(NS|BO)$/, '')).join(' · ')}
+                  {held.length > 4 ? ` +${held.length - 4}` : ''}
+                </div>
+              </button>
+            )}
+            <div className="flex items-center gap-3 pt-1 border-t border-navy-800">
+              <button onClick={() => setPanel('bulk')}
+                className="text-xs text-accent hover:text-accent-light">+ Add holdings</button>
+              {hasClosed && (
+                <button onClick={() => setPanel('sold')}
+                  className="text-xs text-slate-500 hover:text-slate-300 ml-auto">📕 Exit record</button>
+              )}
             </div>
-            <div className="text-xs text-slate-500 mt-0.5 truncate">
-              {held.slice(0, 4).map(p => p.ticker.replace(/\.(NS|BO)$/, '')).join(' · ')}
-              {held.length > 4 ? ` +${held.length - 4}` : ''}
-            </div>
-            <button onClick={() => setBulkOpen(true)}
-              className="text-xs text-accent hover:text-accent-light mt-1.5">+ Add more</button>
           </div>
         ) : (
-          <button onClick={() => setBulkOpen(true)}
+          <button onClick={() => setPanel('bulk')}
             className="w-full card-sm text-left hover:border-accent/40 transition-colors">
             <div className="text-slate-300 text-sm font-medium">📥 Already own stocks?</div>
             <div className="text-xs text-slate-500 mt-0.5">
@@ -67,8 +89,12 @@ export default function EmptyState({ onUpload }) {
         )}
       </div>
 
-      <PositionModal open={bulkOpen} mode="bulk"
-        onClose={() => setBulkOpen(false)} onSaved={refresh} />
+      <PositionModal open={panel === 'bulk'} mode="bulk"
+        onClose={() => setPanel(null)} onSaved={refresh} />
+      <React.Suspense fallback={null}>
+        {panel === 'list' && <PositionsPanel open onClose={() => setPanel(null)} />}
+        {panel === 'sold' && <SoldPositions  open onClose={() => setPanel(null)} />}
+      </React.Suspense>
     </div>
   )
 }

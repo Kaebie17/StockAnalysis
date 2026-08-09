@@ -109,7 +109,10 @@ export default function PositionsPanel({ open, onClose }) {
 
       <PositionModal open={addOpen} mode="bulk"
         onClose={() => setAddOpen(false)} onSaved={refresh} />
-      <PositionModal open={sellTarget !== null} mode="sell" position={sellTarget}
+      {/* Selling is per TICKER, not per lot: FIFO decides which shares go, so
+          tapping any lot of a stock opens the same sale form for that stock. */}
+      <PositionModal open={sellTarget !== null} mode="sell"
+        lots={sellTarget ? held.filter(p => p.ticker === sellTarget.ticker) : []}
         onClose={() => setSellTarget(null)} onSaved={refresh} />
     </div>
   )
