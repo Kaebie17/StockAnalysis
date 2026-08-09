@@ -4,6 +4,7 @@ import PositionModal from './PositionModal.jsx'
 import { usePositions, positionMath, removePosition } from '../../store/usePositions.js'
 import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
+import { assessFromQuarterly } from '../../engine/quarterlyBridge.js'
 import { fetchMarketRegime } from '../../api/marketRegime.js'
 
 const sym = c => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[c]) || ''
@@ -132,11 +133,22 @@ function healthFor(pos, state, regime) {
     incomeHistory:  state.data?.incomeHistory  || [],
     balanceHistory: state.data?.balanceHistory || [],
   })
+  // The beat/miss verdict from reported quarters. positionHealth has always
+  // accepted this and nothing ever passed it, so the fundamental bar was moving
+  // on the quality score alone and ignoring whether the company actually hit its
+  // numbers — the single hardest fact available to it.
+  const guidanceAssessment = assessFromQuarterly(state.quarterlyData, {
+    guidance: state.guidance,
+    modelGrowth: est?.growth ?? null,
+    incomeHistory: state.data?.incomeHistory || [],
+  })
+
   return positionHealth(pos, {
     currentEstimate: est,
     currentPrice: state.ratioResult.price,
     qualityScore: state.quality?.score ?? null,
     marginTrendPct: est?.marginTrendPct ?? null,
+    guidanceAssessment,
     technicals: state.technicals,
     regime: {
       ...(regime || {}),

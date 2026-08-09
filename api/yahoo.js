@@ -50,6 +50,37 @@ module.exports = async function handler(req, res) {
     // Cached briefly at the CDN: a price is the same for every user, and the
     // page polls, so this collapses the repeats without making anything stale
     // enough to matter for a position review.
+    // ── PEERS — similar companies + their multiples ─────────────────────────
+    // /api/yahoo?endpoint=peers&ticker=BAJFINANCE.NS
+    //
+    // Own-history multiples are blind to a SECTOR-wide re-rating: if every NBFC
+    // de-rates, this company's own past says nothing about it and the estimate
+    // keeps calling the stock cheap all the way down. Peers are the second
+    // anchor that catches it.
+    if (endpoint === 'peers') {
+      let symbols = []
+      try {
+        const rec = await yf.recommendationsBySymbol(ticker)
+        const list = Array.isArray(rec) ? rec[0] : rec
+        symbols = (list?.recommendedSymbols || []).map(r => r.symbol).filter(Boolean).slice(0, 8)
+      } catch (e) {
+        console.info('[yahoo] peers unavailable:', e?.message)
+      }
+      if (symbols.length === 0) return res.status(200).json({ peers: [], error: 'no_peers' })
+
+      const rows = await yf.quote(symbols, { validateResult: false })
+      const list = Array.isArray(rows) ? rows : [rows]
+      const peers = list
+        .filter(q => q?.symbol && q.trailingPE > 0)
+        .map(q => ({
+          symbol: q.symbol, name: q.shortName || q.longName || q.symbol,
+          pe: q.trailingPE, forwardPe: q.forwardPE ?? null,
+          marketCap: q.marketCap ?? null,
+        }))
+      res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400')
+      return res.status(200).json({ peers })
+    }
+
     if (endpoint === 'quotes') {
       const symbols = String(req.query.tickers || '')
         .split(',').map(s => s.trim()).filter(Boolean).slice(0, 50)

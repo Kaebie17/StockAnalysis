@@ -3,6 +3,10 @@ import { useApp } from '../../store/AppContext.jsx'
 import { fmtPct, fmtPctPlain } from '../../utils/format.js'
 import DCFScenarioPanel from './DCFScenarioPanel.jsx'
 import { buildEstimate } from '../../engine/estimate.js'
+import { useEstimate } from '../../store/useEstimate.js'
+import FactInputModal from './FactInputModal.jsx'
+import { useNewsFacts, keyOf, leverOf } from '../../store/useNewsFacts.js'
+import { computeFact } from '../../engine/factImpact.js'
 
 // Dot bar: 5 dots, filled based on upside magnitude
 // Green dots = upside, red dots = downside
@@ -80,6 +84,11 @@ export default function ValuationPanel({ open, onClose }) {
           who actually wants it. Collapsed by default so it doesn't push the
           model table down the page. */}
       <EstimateExplainer ratioResult={state.ratioResult} data={state.data} assumptions={state.assumptions} />
+
+      {/* Revisions live next to the working, not in a separate screen: the
+          number, how it was derived, and what has been changed about it are one
+          subject. */}
+      <EstimateRevisions state={state} />
 
       {/* Model table — matches the spec exactly */}
       <div className="overflow-x-auto">
@@ -373,4 +382,222 @@ function Step({ n, title, children }) {
       </div>
     </div>
   )
+}
+
+/**
+ * EstimateRevisions — the correction loop, and the log of what's been corrected.
+ *
+ * Without this the estimate could be computed but never actually revised:
+ * overrides were function arguments that vanished on reload. Every entry here is
+ * an append-only row, so today's number always carries its reasoning with it.
+ */
+function EstimateRevisions({ state }) {
+  const [open, setOpen] = useState(false)
+  const [factOpen, setFactOpen] = useState(false)
+  const [seedItem, setSeedItem] = useState(null)
+  const {
+    estimate, overrides, revisions, rerating, commit, peerBand,
+    guidanceAssessment, quarterlySuggestion, score, handledKeys, deferredLevers,
+  } = useEstimate(state)
+
+  const r = state.ratioResult
+  const ctx = r ? {
+    revenue: r.revenue, netProfit: r.netProfit, totalAssets: r.totalAssets,
+    growth: estimate?.growth ?? null,
+    margin: estimate?.marginPct != null ? estimate.marginPct / 100 : null,
+    nim: r.ratios?.nim?.value ?? null,
+    currency: state.data?.currency, sectorType: state.data?.sectorType,
+  } : null
+
+  // News is read for facts automatically — this is the main path, not the paste
+  // box. Items already handled are filtered out so a dealt-with headline doesn't
+  // come back every three minutes.
+  const { actionable, incomplete, loading } = useNewsFacts(
+    state.ticker, state.data?.name, ctx, handledKeys)
+
+  const applied = revisions.filter(x => x.disposition === 'revised')
+  const levers = Object.keys(overrides)
+  const pending = actionable.length + incomplete.length
+
+  const applyItem = async (a) => {
+    const entries = [a.impact, a.impact.second].filter(Boolean)
+    for (const imp of entries) {
+      await commit({
+        lever: imp.lever, oldValue: imp.from ?? null, newValue: imp.to,
+        disposition: 'revised', trigger: 'news',
+        factType: a.parsed.typeId, factFields: a.parsed.fields, steps: imp.steps,
+        reason: a.item.title, sourceKey: a.key,
+        sourceItem: { title: a.item.title, url: a.item.url, date: a.item.date },
+      })
+    }
+  }
+
+  // Dismiss and defer are logged, not just hidden. "Someone looked and judged it
+  // immaterial" is a different fact from "nobody looked", and only the log can
+  // tell them apart later.
+  const disposeItem = (a, disposition) => commit({
+    lever: leverOf(a.parsed.typeId), disposition, trigger: 'news',
+    factType: a.parsed.typeId, reason: a.item.title, sourceKey: a.key,
+    sourceItem: { title: a.item.title, url: a.item.url, date: a.item.date },
+  })
+
+  const applySuggestion = () => commit({
+    lever: quarterlySuggestion.lever,
+    oldValue: quarterlySuggestion.from, newValue: quarterlySuggestion.to,
+    disposition: 'revised', trigger: 'quarterly',
+    steps: quarterlySuggestion.steps, reason: quarterlySuggestion.reason,
+  })
+
+  return (
+    <div className="bg-navy-800/40 rounded-lg overflow-hidden">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-3 py-2 text-xs text-slate-300 hover:text-white">
+        <span>
+          📌 Events &amp; revisions
+          {levers.length > 0 && <span className="text-accent ml-1.5">{levers.length} applied</span>}
+          {pending > 0 && <span className="text-neutral ml-1.5">· {pending} to review</span>}
+          {deferredLevers.length > 0 && <span className="text-neutral ml-1.5">· {deferredLevers.join(', ')} under review</span>}
+        </span>
+        <span className="text-slate-500">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3 space-y-3 text-xs">
+          {/* How the last frozen estimate has actually fared. */}
+          {score && (
+            <div className="bg-navy-900/60 rounded px-2.5 py-2 text-[11px]">
+              <span className="text-slate-500">Last estimate, {score.elapsedDays}d ago: </span>
+              <span className={score.outcome === 'below-range' ? 'text-bear'
+                : score.outcome === 'above-range' ? 'text-bull' : 'text-slate-300'}>
+                price is {score.outcome === 'in-range' ? 'inside the range'
+                  : score.outcome === 'above-range' ? 'above the range' : 'below the range'}
+              </span>
+              <span className="text-slate-600"> ({score.vsBasePct >= 0 ? '+' : ''}{score.vsBasePct}% vs base)</span>
+              {!score.matured && <span className="text-slate-600"> · still within its horizon</span>}
+            </div>
+          )}
+
+          {/* Reported results — mechanical, so it proposes a number. */}
+          {quarterlySuggestion && (
+            <div className="border border-accent/40 rounded-lg p-2.5 space-y-1.5">
+              <div className="text-[11px] text-slate-300">📊 {quarterlySuggestion.reason}</div>
+              {quarterlySuggestion.steps.map((x, i) => (
+                <div key={i} className="text-[11px] text-slate-500">{x}</div>
+              ))}
+              <button onClick={applySuggestion} className="btn-primary text-[11px] w-full py-1">
+                Apply — growth {(quarterlySuggestion.from * 100).toFixed(1)}% → {(quarterlySuggestion.to * 100).toFixed(1)}%
+              </button>
+            </div>
+          )}
+
+          {guidanceAssessment && !quarterlySuggestion && (
+            <div className="text-[11px] text-slate-500">📊 {guidanceAssessment.note}</div>
+          )}
+
+          {/* Items the feed carried enough detail to price. */}
+          {actionable.map(a => (
+            <NewsFact key={a.key} a={a} onApply={() => applyItem(a)}
+              onDefer={() => disposeItem(a, 'deferred')}
+              onDismiss={() => disposeItem(a, 'dismissed')} />
+          ))}
+
+          {/* Items that matter but don't state their size — these hold a bar open. */}
+          {incomplete.map(a => (
+            <NewsFact key={a.key} a={a}
+              onOpen={() => { setSeedItem(a.item); setFactOpen(true) }}
+              onDefer={() => disposeItem(a, 'deferred')}
+              onDismiss={() => disposeItem(a, 'dismissed')} />
+          ))}
+
+          {loading && pending === 0 && <p className="text-[11px] text-slate-600">Checking news…</p>}
+
+          {rerating?.detected && (
+            <div className="text-[11px] text-neutral bg-neutral/10 rounded px-2 py-1.5">
+              ⚑ {rerating.summary}
+              <button onClick={() => setFactOpen(true)}
+                className="text-accent hover:text-accent-light ml-1">review</button>
+            </div>
+          )}
+          {peerBand && (
+            <div className="text-[11px] text-slate-500">
+              Peers trade at {peerBand.low}–{peerBand.high}× (median {peerBand.median}×, {peerBand.count} companies)
+            </div>
+          )}
+
+          <button onClick={() => { setSeedItem(null); setFactOpen(true) }}
+            className="text-[11px] text-accent hover:text-accent-light">
+            + Record something else
+          </button>
+
+          {applied.length > 0 && (
+            <div className="space-y-1.5 pt-2 border-t border-navy-700/60">
+              {applied.slice(0, 8).map(x => (
+                <div key={x.id} className="text-[11px]">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-slate-400 capitalize">{x.lever}</span>
+                    <span className="font-mono text-slate-500">
+                      {fmtLever(x.lever, x.oldValue)} → {fmtLever(x.lever, x.newValue)}
+                    </span>
+                    <span className="text-slate-600 ml-auto shrink-0">
+                      {new Date(x.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                    </span>
+                  </div>
+                  {x.reason && <div className="text-slate-600 truncate">{x.reason}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <FactInputModal
+        open={factOpen} onClose={() => { setFactOpen(false); setSeedItem(null) }}
+        ctx={ctx} rerating={rerating} onCommit={commit} sourceItem={seedItem} />
+    </div>
+  )
+}
+
+/**
+ * One news-derived item. Actionable ones show the computed change and apply in a
+ * tap; incomplete ones name the missing fact and open the form to supply it.
+ */
+function NewsFact({ a, onApply, onOpen, onDefer, onDismiss }) {
+  const high = a.severity === 'high'
+  return (
+    <div className={`rounded-lg p-2.5 space-y-1.5 border ${
+      high ? 'border-neutral/40 bg-neutral/5' : 'border-navy-700'}`}>
+      <div className="text-[11px] text-slate-300">{high && '⚑ '}{a.item.title}</div>
+
+      {a.impact?.lever ? (
+        <>
+          {a.impact.steps.map((s, i) => <div key={i} className="text-[10px] text-slate-500">{s}</div>)}
+          <div className="text-[11px]">
+            <span className="text-slate-500 capitalize">{a.impact.lever}</span>{' '}
+            <span className="font-mono text-slate-400">{fmtLever(a.impact.lever, a.impact.from)}</span>
+            <span className="text-slate-600"> → </span>
+            <span className={`font-mono ${a.impact.to > a.impact.from ? 'text-bull' : 'text-bear'}`}>
+              {fmtLever(a.impact.lever, a.impact.to)}
+            </span>
+          </div>
+        </>
+      ) : (
+        <div className="text-[10px] text-neutral">
+          Needs {a.parsed.missing.map(m => m.ask).join(', ')} before it can be priced.
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 pt-0.5">
+        {a.impact?.lever
+          ? <button onClick={onApply} className="text-[11px] text-accent hover:text-accent-light">Apply</button>
+          : <button onClick={onOpen} className="text-[11px] text-accent hover:text-accent-light">Add the missing bit</button>}
+        <button onClick={onDefer} className="text-[11px] text-slate-500 hover:text-slate-300">Defer</button>
+        <button onClick={onDismiss} className="text-[11px] text-slate-600 hover:text-bear ml-auto">Not material</button>
+      </div>
+    </div>
+  )
+}
+
+function fmtLever(lever, v) {
+  if (v == null) return '—'
+  return lever === 'multiple' ? `${(+v).toFixed(1)}×` : `${(v * 100).toFixed(1)}%`
 }

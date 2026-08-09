@@ -121,12 +121,7 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
                   Ours carries a ⓘ describing what it rests on; theirs stays a
                   plain line, since there's no working of theirs to show. */}
               <div className="text-xs text-slate-400">
-                <EstimateLine
-                  currency={state.data?.currency}
-                  ratioResult={ratioResult}
-                  data={state.data}
-                  guidance={state.guidance}
-                  assumptions={state.assumptions} />
+                <EstimateLine currency={state.data?.currency} state={state} />
               </div>
               <div className="text-xs text-slate-400">
                 <AnalystTargetLine ticker={state.ticker} currency={state.data?.currency} />

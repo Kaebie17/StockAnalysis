@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { buildEstimate } from '../../engine/estimate.js'
+import { useEstimate } from '../../store/useEstimate.js'
 
 /**
  * EstimateLine — our own estimate, as its own line on the dashboard.
@@ -18,27 +18,13 @@ import { buildEstimate } from '../../engine/estimate.js'
  * always on gets ignored, so silence is the normal state and the dot means
  * something specific: an input degraded.
  */
-export default function EstimateLine({ currency, ratioResult, data, guidance, assumptions }) {
+export default function EstimateLine({ currency, state }) {
   const [open, setOpen] = useState(false)
 
-  // Guided growth has two homes. The stored guidance record is a dated promise
-  // about a named fiscal year and outranks everything; assumptions.nearTermGrowth
-  // is what ScoringStudio is holding right now — session-level and untracked,
-  // but it IS what the user just told the app to assume, so it beats a bare CAGR.
-  const g = guidance?.revenueGuidance
-  const guidanceLive = g && g.status !== 'resolved'
-  const storedGuided = (guidanceLive && g.unit === 'growthPct' && g.value != null) ? g.value / 100 : null
-  const liveGuided = (assumptions?.nearTermGrowth != null && isFinite(assumptions.nearTermGrowth))
-    ? assumptions.nearTermGrowth : null
-
-  const est = ratioResult ? buildEstimate(ratioResult, {
-    guidedGrowth: storedGuided ?? liveGuided,
-    guidanceFiscalYear: g?.fiscalYear || null,
-    guidanceExpired: !!(g && g.status === 'resolved'),
-    priceHistory:   data?.priceHistory   || [],
-    incomeHistory:  data?.incomeHistory  || [],
-    balanceHistory: data?.balanceHistory || [],
-  }) : null
+  // One source of truth with ValuationPanel: the same hook resolves guidance,
+  // applies stored revisions and fetches peers, so the dashboard line and the
+  // detail screen can never disagree about what the estimate currently is.
+  const { estimate: est, overrides } = useEstimate(state)
 
   const cur = symbolFor(currency)
 
@@ -82,6 +68,10 @@ export default function EstimateLine({ currency, ratioResult, data, guidance, as
                     pct={`${est.multiples.low}–${est.multiples.high}×`} />
           {est.dilutionPct > 0.1 && (
             <BasisRow label="Dilution" value={est.dilutionLabel} pct={null} />
+          )}
+          {Object.keys(overrides || {}).length > 0 && (
+            <BasisRow label="Revised" pct={null}
+              value={`${Object.keys(overrides).join(', ')} set by you`} />
           )}
           {isDegraded && (
             <span className="block border-t border-navy-800 pt-1 mt-1 text-neutral">
