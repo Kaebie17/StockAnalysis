@@ -1,7 +1,10 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import PositionModal from './PositionModal.jsx'
-import { usePositions, positionMath, removePosition } from '../../store/usePositions.js'
+import { usePositions, positionMath, removePosition, backfillSnapshot } from '../../store/usePositions.js'
+import { getCached } from '../../utils/db.js'
+import { fetchQuotes } from '../../api/quotesClient.js'
+import { analyzeMany } from '../../store/analyzeTicker.js'
 import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
 import { assessFromQuarterly } from '../../engine/quarterlyBridge.js'
@@ -38,6 +41,67 @@ export default function PositionsPanel({ open, onClose }) {
       .then(r => { if (!dead) setRegime(r) }).catch(() => {})
     return () => { dead = true }
   }, [open, state.ticker])
+
+  // Cached analysis + live price for EVERY held ticker, not just the one loaded.
+  //
+  // The bars used to compute only for `state.ticker`, which made them invisible
+  // in the case that matters: this panel opens from the landing page, where no
+  // ticker is loaded, so every row said "open this stock" and clicking it
+  // navigated away and closed the panel. The health of a portfolio isn't
+  // something you should have to visit twelve pages to read.
+  //
+  // Every owned stock already has a full cached analysis — you had to look it up
+  // to buy it — so ratioResult, quality and technicals are all on disk. Only the
+  // price is stale, and the batch quote endpoint fixes that in one request.
+  const [analyses, setAnalyses] = useState({})
+  const [quotes, setQuotes] = useState({})
+  const [fetching, setFetching] = useState(0)
+  React.useEffect(() => {
+    if (!open || positions.length === 0) return
+    let dead = false
+    ;(async () => {
+      const tickers = [...new Set(positions.filter(p => p.status !== 'closed').map(p => p.ticker))]
+
+      // Cached first, so rows that can render do so immediately.
+      const out = {}
+      const missing = []
+      for (const t of tickers) {
+        try { const c = await getCached(t); if (c) out[t] = c; else missing.push(t) }
+        catch { missing.push(t) }
+      }
+      if (dead) return
+      setAnalyses(out)
+
+      try { const q = await fetchQuotes(tickers); if (!dead) setQuotes(q) } catch { /* optional */ }
+
+      // Anything with no saved analysis is fetched here rather than waiting for
+      // the user to open it. Adding holdings you already own is the normal way
+      // in, so on a fresh install NOTHING is cached — leaving the whole
+      // portfolio blank exactly when the bars are most wanted. Rows fill in as
+      // each lands.
+      if (missing.length > 0 && !dead) {
+        setFetching(missing.length)
+        await analyzeMany(missing, {
+          onEach: async (t, res) => {
+            if (dead) return
+            setAnalyses(prev => ({ ...prev, [t]: res }))
+            setFetching(n => Math.max(0, n - 1))
+            // Lots entered in bulk have no purchase snapshot, so the
+            // estimate-vs-price bar would never have a baseline to compare
+            // against. Give them one now, flagged as starting from today.
+            for (const p of positions) {
+              if (p.ticker === t && p.status !== 'closed' && !p.snapshot?.estimate) {
+                try { await backfillSnapshot(p, res) } catch { /* non-fatal */ }
+              }
+            }
+            if (!dead) refresh()
+          },
+        })
+        if (!dead) setFetching(0)
+      }
+    })()
+    return () => { dead = true }
+  }, [open, positions])
 
   if (!open) return null
 
@@ -79,9 +143,14 @@ export default function PositionsPanel({ open, onClose }) {
             </div>
           ) : (
             <>
+              {fetching > 0 && (
+                <p className="text-[11px] text-slate-500">
+                  Analysing {fetching} stock{fetching > 1 ? 's' : ''} you haven't opened yet…
+                </p>
+              )}
               {held.map(p => (
                 <Lot key={p.id} pos={p} price={livePrice(p.ticker)}
-                     health={healthFor(p, state, regime)}
+                     health={healthFor(p, state, regime, analyses, quotes)}
                      onSell={() => setSellTarget(p)}
                      onOpen={() => { load(p.ticker); onClose() }}
                      onDelete={async () => { await removePosition(p.id); refresh() }} />
@@ -124,36 +193,53 @@ export default function PositionsPanel({ open, onClose }) {
  * has no ratioResult or price history in memory. Rather than show four empty
  * bars for every other row, those collapse to a prompt to open the stock.
  */
-function healthFor(pos, state, regime) {
-  if (!state?.ticker || pos.ticker !== state.ticker || !state.ratioResult) return null
-  const est = buildEstimate(state.ratioResult, {
-    guidedGrowth: (state.assumptions?.nearTermGrowth != null && isFinite(state.assumptions.nearTermGrowth))
-      ? state.assumptions.nearTermGrowth : null,
-    priceHistory:   state.data?.priceHistory   || [],
-    incomeHistory:  state.data?.incomeHistory  || [],
-    balanceHistory: state.data?.balanceHistory || [],
+/**
+ * Health for one position, from whichever source has the fuller picture:
+ * live app state when this happens to be the loaded ticker, otherwise the
+ * cached analysis written the last time it was analysed.
+ */
+function healthFor(pos, state, regime, analyses, quotes) {
+  const isLoaded = state?.ticker === pos.ticker && state?.ratioResult
+  const cached = analyses?.[pos.ticker]
+  const src = isLoaded ? state : cached
+  if (!src?.ratioResult) return null
+
+  // Live price beats the cached one — the cache can be days old, and every bar
+  // that compares against price would otherwise be reading a stale number.
+  const livePrice = quotes?.[pos.ticker]?.price ?? src.ratioResult.price
+  const ratioResult = livePrice != null && livePrice !== src.ratioResult.price
+    ? { ...src.ratioResult, price: livePrice }
+    : src.ratioResult
+
+  const est = buildEstimate(ratioResult, {
+    guidedGrowth: (state?.assumptions?.nearTermGrowth != null && isLoaded
+      && isFinite(state.assumptions.nearTermGrowth)) ? state.assumptions.nearTermGrowth : null,
+    priceHistory:   src.data?.priceHistory   || [],
+    incomeHistory:  src.data?.incomeHistory  || [],
+    balanceHistory: src.data?.balanceHistory || [],
   })
   // The beat/miss verdict from reported quarters. positionHealth has always
   // accepted this and nothing ever passed it, so the fundamental bar was moving
   // on the quality score alone and ignoring whether the company actually hit its
   // numbers — the single hardest fact available to it.
-  const guidanceAssessment = assessFromQuarterly(state.quarterlyData, {
-    guidance: state.guidance,
+  const guidanceAssessment = assessFromQuarterly(isLoaded ? state.quarterlyData : null, {
+    guidance: isLoaded ? state.guidance : null,
     modelGrowth: est?.growth ?? null,
-    incomeHistory: state.data?.incomeHistory || [],
+    incomeHistory: src.data?.incomeHistory || [],
   })
 
   return positionHealth(pos, {
     currentEstimate: est,
-    currentPrice: state.ratioResult.price,
-    qualityScore: state.quality?.score ?? null,
+    currentPrice: livePrice,
+    qualityScore: src.quality?.score ?? null,
     marginTrendPct: est?.marginTrendPct ?? null,
     guidanceAssessment,
-    technicals: state.technicals,
+    technicals: src.technicals,
     regime: {
       ...(regime || {}),
-      stockChangePct: state.data?.meta?.change1d ?? null,
+      stockChangePct: quotes?.[pos.ticker]?.changePct ?? src.data?.meta?.change1d ?? null,
     },
+    stale: !isLoaded,
   })
 }
 
@@ -217,10 +303,19 @@ function Lot({ pos, price, closed, health, onSell, onOpen, onDelete }) {
     <div className="bg-navy-800/40 rounded-lg p-3 space-y-2">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <button onClick={onOpen} disabled={!onOpen}
-            className={`font-mono text-sm ${onOpen ? 'text-white hover:text-accent' : 'text-slate-400'}`}>
+          {/* Opens the full ticker page. Labelled, because tapping a name and
+              being navigated away — closing the panel you were reading — is not
+              what anyone expects a name to do. The bars are already here; this
+              is for when you want the whole analysis. */}
+          <span className="font-mono text-sm text-white">
             {pos.ticker.replace(/\.(NS|BO)$/, '')}
-          </button>
+          </span>
+          {onOpen && (
+            <button onClick={onOpen}
+              className="text-[10px] text-slate-500 hover:text-accent ml-1.5 align-middle">
+              analyse ↗
+            </button>
+          )}
           {pos.name && <span className="text-xs text-slate-500 ml-2 truncate">{pos.name}</span>}
           <div className="text-[11px] text-slate-500 mt-0.5">
             {pos.shares} × {money(pos.buyPrice, c)} on {dateStr(pos.buyDate)}
@@ -247,7 +342,9 @@ function Lot({ pos, price, closed, health, onSell, onOpen, onDelete }) {
 
       {!closed && <HealthBars health={health} />}
       {!closed && !health && (
-        <p className="text-[10px] text-slate-600">Open this stock to see its health bars.</p>
+        <p className="text-[10px] text-slate-600">
+          Couldn't analyse this stock — check the ticker is right.
+        </p>
       )}
 
       {pos.snapshot?.isLate && !health && (

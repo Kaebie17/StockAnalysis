@@ -102,7 +102,12 @@ function reducer(s, a) {
  * Returns `data` alongside the computed blocks, so callers spreading
  * `{ ...s, data, ...computed }` pick up the repaired copy automatically.
  */
-function computeAll(data, assumptions, meAssumptions, weights, arData = null) {
+/**
+ * The full analysis pass. Exported so it can be run headlessly — the positions
+ * pages need an analysis for stocks the user has never opened, and duplicating
+ * this pipeline there would guarantee the two drift apart.
+ */
+export function computeAll(data, assumptions, meAssumptions, weights, arData = null) {
   data = applyDocFacts(migrateStoredData(data), arData)
   const ratioResult = calcRatios(data)
   const sectorType  = detectSectorType(data)

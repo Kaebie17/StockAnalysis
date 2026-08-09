@@ -200,5 +200,10 @@ export function positionHealth(position, ctx = {}) {
     fundamental: fundamentalBar(position, ctx),
     technical:   technicalBar(ctx.technicals),
     regime:      regimeBar(ctx.regime || {}),
+    // True when the financials came from a saved analysis rather than a live
+    // load. The price is still current (batch quote), but the statements are as
+    // of whenever the stock was last analysed — worth saying rather than
+    // presenting month-old fundamentals as today's.
+    stale: !!ctx.stale,
   }
 }

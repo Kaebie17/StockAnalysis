@@ -191,6 +191,54 @@ export async function removePosition(id) {
   queuePush(`positions:${id}`, null)
 }
 
+/**
+ * Give a position a baseline it never got.
+ *
+ * A lot added through bulk entry has no snapshot: there was no analysis in
+ * memory at the time, so nothing was frozen. Bar 1 compares today's
+ * estimate-to-price gap against the gap at purchase, so without one it stays
+ * permanently unavailable — the stocks entered on day one would be the only
+ * ones that never show it.
+ *
+ * Backfilling uses today's numbers and is marked `isLate`, because that is what
+ * it is: a baseline starting now, not a reconstruction of what was true when the
+ * shares were bought. The UI says so rather than implying the app saw something
+ * it didn't.
+ */
+export async function backfillSnapshot(position, analysis) {
+  if (!position || position.snapshot?.estimate) return null      // already has one
+  if (!analysis?.ratioResult) return null
+
+  const est = buildEstimate(analysis.ratioResult, {
+    priceHistory:   analysis.data?.priceHistory   || [],
+    incomeHistory:  analysis.data?.incomeHistory  || [],
+    balanceHistory: analysis.data?.balanceHistory || [],
+  })
+  if (!est?.ok) return null
+
+  const rec = await savePosition({
+    ...position,
+    snapshot: {
+      ...(position.snapshot || {}),
+      takenAt: Date.now(),
+      isLate: true,                 // baseline starts now, not at purchase
+      backfilled: true,
+      price: analysis.ratioResult.price ?? null,
+      currency: analysis.data?.currency ?? position.snapshot?.currency ?? null,
+      estimate: {
+        low: est.target.low, base: est.target.base, high: est.target.high,
+        growthPct: est.growthPct, marginPct: est.marginPct,
+        multipleBase: est.multiples?.base ?? null,
+        basisSummary: est.basisSummary,
+      },
+      qualityScore: analysis.quality?.score ?? position.snapshot?.qualityScore ?? null,
+      marketImpliedGrowth: analysis.valuation?.impliedGrowth ?? null,
+    },
+  })
+  if (rec) queuePush(`positions:${rec.id}`, rec)
+  return rec
+}
+
 /** Cost, value and P/L for a lot at the current price. */
 export function positionMath(pos, currentPrice) {
   const shares = Number(pos?.shares) || 0
