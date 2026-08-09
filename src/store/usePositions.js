@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  savePosition, listPositions, closePosition, deletePosition, saveEstimate, currentEstimate,
+  savePosition, listPositions, getPosition, closePosition, deletePosition,
+  saveEstimate, currentEstimate,
 } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
 import { buildEstimate } from '../engine/estimate.js'
@@ -237,6 +238,22 @@ export async function backfillSnapshot(position, analysis) {
   })
   if (rec) queuePush(`positions:${rec.id}`, rec)
   return rec
+}
+
+/**
+ * The exit plan for a lot: an optional stop, an optional target, and any
+ * threshold overrides. Stored on the position rather than in its own table —
+ * it's per-lot, changes with the lot, and dies with it.
+ */
+export async function saveExitPlan(id, plan) {
+  const rec = await getPosition(id)
+  if (!rec) return null
+  const updated = await savePosition({
+    ...rec,
+    plan: { ...(rec.plan || {}), ...plan, updatedAt: Date.now() },
+  })
+  if (updated) queuePush(`positions:${updated.id}`, updated)
+  return updated
 }
 
 /** Cost, value and P/L for a lot at the current price. */

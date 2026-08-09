@@ -5,6 +5,8 @@ import { usePositions, positionMath, removePosition, backfillSnapshot } from '..
 import { getCached } from '../../utils/db.js'
 import { fetchQuotes } from '../../api/quotesClient.js'
 import { analyzeMany } from '../../store/analyzeTicker.js'
+import { evaluateTriggers, assessStopPrice } from '../../engine/exitTriggers.js'
+import { saveExitPlan } from '../../store/usePositions.js'
 import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
 import { assessFromQuarterly } from '../../engine/quarterlyBridge.js'
@@ -151,6 +153,8 @@ export default function PositionsPanel({ open, onClose }) {
               {held.map(p => (
                 <Lot key={p.id} pos={p} price={livePrice(p.ticker)}
                      health={healthFor(p, state, regime, analyses, quotes)}
+                     triggers={triggersFor(p, state, analyses, quotes, held)}
+                     onSavePlan={async plan => { await saveExitPlan(p.id, plan); refresh() }}
                      onSell={() => setSellTarget(p)}
                      onOpen={() => { load(p.ticker); onClose() }}
                      onDelete={async () => { await removePosition(p.id); refresh() }} />
@@ -243,6 +247,44 @@ function healthFor(pos, state, regime, analyses, quotes) {
   })
 }
 
+/**
+ * Exit conditions for a lot. Deliberately built from absolute data — years of
+ * financials and the price actually paid — so a holding added today has working
+ * triggers immediately, rather than waiting weeks for a drift baseline.
+ */
+function triggersFor(pos, state, analyses, quotes, allHeld) {
+  const isLoaded = state?.ticker === pos.ticker && state?.ratioResult
+  const src = isLoaded ? state : analyses?.[pos.ticker]
+  if (!src?.ratioResult) return null
+
+  const price = quotes?.[pos.ticker]?.price ?? src.ratioResult.price
+  const est = buildEstimate({ ...src.ratioResult, price }, {
+    priceHistory:   src.data?.priceHistory   || [],
+    incomeHistory:  src.data?.incomeHistory  || [],
+    balanceHistory: src.data?.balanceHistory || [],
+  })
+  // Portfolio total priced the same way this lot is — live price where we have
+  // one, cost where we don't — so concentration compares like with like.
+  const portfolioValue = (allHeld || []).reduce((t, x) => {
+    const px = quotes?.[x.ticker]?.price
+    return t + (Number(x.shares) || 0) * (px > 0 ? px : (Number(x.buyPrice) || 0))
+  }, 0)
+
+  return evaluateTriggers(pos, {
+    price, estimate: est, ratioResult: src.ratioResult,
+    marketExpectation: src.marketExpectation,
+    guidance: isLoaded ? state.guidance : null,
+    guidanceAssessment: isLoaded
+      ? assessFromQuarterly(state.quarterlyData, {
+          guidance: state.guidance, modelGrowth: est?.growth ?? null,
+          incomeHistory: src.data?.incomeHistory || [] })
+      : null,
+    priceHistory: src.data?.priceHistory || [],
+    portfolioValue,
+    plan: pos.plan,
+  })
+}
+
 const BAR_LABELS = {
   estimate: 'Estimate vs price',
   fundamental: 'Fundamentals',
@@ -294,7 +336,7 @@ function HealthBars({ health }) {
   )
 }
 
-function Lot({ pos, price, closed, health, onSell, onOpen, onDelete }) {
+function Lot({ pos, price, closed, health, triggers, onSavePlan, onSell, onOpen, onDelete }) {
   const c = pos.snapshot?.currency
   const m = positionMath(pos, price)
   const up = m.pnl != null && m.pnl >= 0
@@ -341,6 +383,9 @@ function Lot({ pos, price, closed, health, onSell, onOpen, onDelete }) {
       )}
 
       {!closed && <HealthBars health={health} />}
+      {!closed && triggers && (
+        <ExitPlan pos={pos} triggers={triggers} price={price} onSave={onSavePlan} />
+      )}
       {!closed && !health && (
         <p className="text-[10px] text-slate-600">
           Couldn't analyse this stock — check the ticker is right.
@@ -362,6 +407,111 @@ function Lot({ pos, price, closed, health, onSell, onOpen, onDelete }) {
           Delete
         </button>
       </div>
+    </div>
+  )
+}
+
+/**
+ * ExitPlan — the conditions worth reviewing this holding over, and the optional
+ * price levels the user has set.
+ *
+ * Collapsed by default and silent when nothing has fired, because a section
+ * that always shows something gets skimmed and then the one day it matters is
+ * skimmed too. Fired conditions surface at the top row without expanding.
+ *
+ * The app never places a stop for you. It checks the one you chose against how
+ * far this stock ordinarily moves in a day (ATR) and says whether that level
+ * sits inside normal noise — the single most common reason a stop gets hit for
+ * no reason. Where to place it depends on horizon and risk appetite the app
+ * can't see.
+ */
+function ExitPlan({ pos, triggers, price, onSave }) {
+  const [open, setOpen] = React.useState(false)
+  const [stop, setStop] = React.useState(pos.plan?.stopPrice ?? '')
+  const [target, setTarget] = React.useState(pos.plan?.targetPrice ?? '')
+  const [saving, setSaving] = React.useState(false)
+
+  const fired = triggers?.fired || []
+  const profit = fired.filter(t => t.side === 'profit')
+  const loss = fired.filter(t => t.side === 'loss' || t.side === 'risk')
+
+  const stopCheck = stop > 0 && price > 0
+    ? assessStopPrice(+stop, price, [], undefined) : null
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await onSave({
+        stopPrice: stop === '' ? null : +stop,
+        targetPrice: target === '' ? null : +target,
+      })
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="pt-1">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 text-[11px] text-slate-500 hover:text-slate-300">
+        <span>Exit plan</span>
+        {profit.length > 0 && <span className="text-bull">● {profit.length} profit</span>}
+        {loss.length > 0 && <span className="text-bear">● {loss.length} caution</span>}
+        {fired.length === 0 && <span className="text-slate-600">nothing triggered</span>}
+        <span className="ml-auto">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="mt-1.5 space-y-2">
+          {fired.map(t => (
+            <div key={t.id}
+              className={`text-[11px] rounded px-2 py-1.5 ${
+                t.side === 'profit' ? 'bg-bull/10 text-bull' : 'bg-bear/10 text-bear'}`}>
+              <div>{t.title}</div>
+              {t.detail && <div className="text-slate-400 mt-0.5">{t.detail}</div>}
+            </div>
+          ))}
+
+          {(triggers.watching || []).map(t => (
+            <div key={t.id} className="text-[10px] text-slate-600">{t.title} {t.detail}</div>
+          ))}
+          {(triggers.context || []).map(t => (
+            <div key={t.id} className="text-[10px] text-slate-500">{t.title}</div>
+          ))}
+
+          {triggers.baselineFrom && (
+            <p className="text-[10px] text-slate-600">
+              Drift measured from {new Date(triggers.baselineFrom).toLocaleDateString('en-IN',
+                { day: 'numeric', month: 'short' })}, when this was added — the conditions above
+              use full history and work now.
+            </p>
+          )}
+
+          <div className="grid grid-cols-2 gap-2 pt-1 border-t border-navy-800">
+            <label className="block">
+              <span className="text-[10px] text-slate-500 block mb-0.5">Stop price</span>
+              <input type="number" inputMode="decimal" value={stop}
+                onChange={e => setStop(e.target.value)}
+                className="input-field text-xs w-full" placeholder="optional" />
+            </label>
+            <label className="block">
+              <span className="text-[10px] text-slate-500 block mb-0.5">Target price</span>
+              <input type="number" inputMode="decimal" value={target}
+                onChange={e => setTarget(e.target.value)}
+                className="input-field text-xs w-full" placeholder="optional" />
+            </label>
+          </div>
+
+          {triggers.stop?.assessment && (
+            <p className={`text-[10px] ${triggers.stop.assessment.tooTight ? 'text-neutral' : 'text-slate-600'}`}>
+              {triggers.stop.assessment.tooTight ? '⚠ ' : ''}{triggers.stop.assessment.note}
+            </p>
+          )}
+
+          <button onClick={save} disabled={saving}
+            className="text-[11px] text-accent hover:text-accent-light">
+            {saving ? 'Saving…' : 'Save plan'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
