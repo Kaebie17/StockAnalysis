@@ -6,7 +6,8 @@ import { getCached } from '../../utils/db.js'
 import { fetchQuotes } from '../../api/quotesClient.js'
 import { analyzeMany } from '../../store/analyzeTicker.js'
 import { evaluateTriggers, assessStopPrice } from '../../engine/exitTriggers.js'
-import { saveExitPlan } from '../../store/usePositions.js'
+import { saveExitPlan, updatePositionDate } from '../../store/usePositions.js'
+import { benchmarkReturn } from '../../engine/snapshotRebuild.js'
 import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
 import { assessFromQuarterly } from '../../engine/quarterlyBridge.js'
@@ -145,19 +146,46 @@ export default function PositionsPanel({ open, onClose }) {
             </div>
           ) : (
             <>
+              {/* One market-wide reading, once. It was previously rendered on
+                  every row, which repeats a single fact N times and invites
+                  reading it as something about the stock. It isn't — it's a
+                  caveat on how much weight the other bars deserve today. */}
+              {regime?.vix != null && (
+                <div className={`text-[11px] rounded-lg px-3 py-2 ${
+                  regime.vix >= 20 ? 'bg-neutral/10 text-neutral' : 'bg-navy-800/50 text-slate-500'}`}>
+                  India VIX {Math.round(regime.vix)}
+                  {regime.vix >= 28 ? ' — stressed market'
+                    : regime.vix >= 20 ? ' — elevated volatility'
+                    : regime.vix < 15 ? ' — calm market' : ' — normal volatility'}
+                  {regime.vix >= 20 && ' · single-stock signals are less reliable while everything moves together'}
+                </div>
+              )}
+
               {fetching > 0 && (
                 <p className="text-[11px] text-slate-500">
                   Analysing {fetching} stock{fetching > 1 ? 's' : ''} you haven't opened yet…
                 </p>
               )}
-              {held.map(p => (
-                <Lot key={p.id} pos={p} price={livePrice(p.ticker)}
-                     health={healthFor(p, state, regime, analyses, quotes)}
-                     triggers={triggersFor(p, state, analyses, quotes, held)}
-                     onSavePlan={async plan => { await saveExitPlan(p.id, plan); refresh() }}
-                     onSell={() => setSellTarget(p)}
-                     onOpen={() => { load(p.ticker); onClose() }}
-                     onDelete={async () => { await removePosition(p.id); refresh() }} />
+              {/* Grouped by ticker. Three lots of one stock share their
+                  fundamentals, technicals and estimate — rendering those three
+                  times says nothing new and buries what IS per-lot: what you
+                  paid, when, and how it has done since. */}
+              {groupByTicker(held).map(([ticker, lots]) => (
+                <TickerGroup key={ticker} ticker={ticker} lots={lots}
+                  price={livePrice(ticker)}
+                  health={healthFor(lots[0], state, regime, analyses, quotes)}
+                  indexNow={regime?.indexLevel ?? null}
+                  onOpen={() => { load(ticker); onClose() }}
+                  renderLot={p => (
+                    <Lot key={p.id} pos={p} price={livePrice(ticker)}
+                         health={healthFor(p, state, regime, analyses, quotes)}
+                         triggers={triggersFor(p, state, analyses, quotes, held)}
+                         indexNow={regime?.indexLevel ?? null}
+                         onSavePlan={async plan => { await saveExitPlan(p.id, plan); refresh() }}
+                         onSetDate={async ms => { await updatePositionDate(p.id, ms); refresh() }}
+                         onSell={() => setSellTarget(p)}
+                         onDelete={async () => { await removePosition(p.id); refresh() }} />
+                  )} />
               ))}
 
               {closed.length > 0 && (
@@ -308,73 +336,84 @@ function Bars({ level, tone }) {
   )
 }
 
-function HealthBars({ health }) {
-  if (!health) return null
-  return (
-    <div className="space-y-1 pt-1">
-      {Object.entries(BAR_LABELS).map(([key, label]) => {
-        const b = health[key]
-        return (
-          <div key={key} className="flex items-center gap-2 text-[11px]">
-            <span className="text-slate-500 w-28 shrink-0">{label}</span>
-            <Bars level={b?.available ? b.level : null} tone={key === 'regime' ? 'neutral' : null} />
-            <span className={`truncate ${b?.available ? 'text-slate-400' : 'text-slate-600'}`}>
-              {b?.available ? b.label : b?.reason}
-            </span>
-          </div>
-        )
-      })}
-      {health.regime?.caution && (
-        <p className="text-[10px] text-neutral pt-0.5">⚠ {health.regime.note}</p>
-      )}
-      {health.estimate?.lateSnapshot && (
-        <p className="text-[10px] text-slate-600">
-          Comparison runs from when this was added, not when it was bought.
-        </p>
-      )}
-    </div>
-  )
-}
-
-function Lot({ pos, price, closed, health, triggers, onSavePlan, onSell, onOpen, onDelete }) {
+function Lot({ pos, price, closed, health, triggers, indexNow,
+               onSavePlan, onSetDate, onSell, onDelete }) {
   const c = pos.snapshot?.currency
   const m = positionMath(pos, price)
   const up = m.pnl != null && m.pnl >= 0
+  const [editingDate, setEditingDate] = React.useState(false)
+
+  // What the company did, separated from what the market did. Up 18% while the
+  // index rose 11% is a 7% contribution from the business — and the raw number
+  // alone would have flattered it.
+  const bench = benchmarkReturn(pos.snapshot, price, indexNow)
 
   return (
-    <div className="bg-navy-800/40 rounded-lg p-3 space-y-2">
+    <div className="bg-navy-900/40 rounded-lg p-2.5 space-y-1.5">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          {/* Opens the full ticker page. Labelled, because tapping a name and
-              being navigated away — closing the panel you were reading — is not
-              what anyone expects a name to do. The bars are already here; this
-              is for when you want the whole analysis. */}
-          <span className="font-mono text-sm text-white">
-            {pos.ticker.replace(/\.(NS|BO)$/, '')}
-          </span>
-          {onOpen && (
-            <button onClick={onOpen}
-              className="text-[10px] text-slate-500 hover:text-accent ml-1.5 align-middle">
-              analyse ↗
+          <div className="text-[11px] text-slate-400">
+            {pos.shares} × {money(pos.buyPrice, c)}
+            <button onClick={() => setEditingDate(e => !e)}
+              className="text-slate-500 hover:text-accent ml-1.5">
+              {dateStr(pos.buyDate)} ✎
             </button>
-          )}
-          {pos.name && <span className="text-xs text-slate-500 ml-2 truncate">{pos.name}</span>}
-          <div className="text-[11px] text-slate-500 mt-0.5">
-            {pos.shares} × {money(pos.buyPrice, c)} on {dateStr(pos.buyDate)}
-            {closed && pos.sellPrice != null && <> → sold {money(pos.sellPrice, c)} on {dateStr(pos.sellDate)}</>}
+            {closed && pos.sellPrice != null && <> → sold {money(pos.sellPrice, c)} {dateStr(pos.sellDate)}</>}
           </div>
+          {pos.snapshot?.reconstructed && (
+            <div className="text-[10px] text-slate-600">
+              baseline rebuilt from that date's prices and filings
+            </div>
+          )}
+          {pos.snapshot?.backfilled && (
+            <div className="text-[10px] text-neutral">
+              baseline starts from when this was added — set the real purchase date to fix
+            </div>
+          )}
+          {pos.snapshot?.missing?.length > 0 && (
+            <div className="text-[10px] text-slate-600">
+              not available for that date: {pos.snapshot.missing.join(', ')}
+            </div>
+          )}
         </div>
         <div className="text-right shrink-0">
-          <div className="text-sm text-slate-300">{money(m.cost, c)}</div>
-          {m.pnl != null ? (
+          <div className="text-[11px] text-slate-400">{money(m.cost, c)}</div>
+          {m.pnl != null && (
             <div className={`text-xs font-mono ${up ? 'text-bull' : 'text-bear'}`}>
               {up ? '+' : ''}{money(m.pnl, c)} ({m.pnlPct >= 0 ? '+' : ''}{m.pnlPct.toFixed(1)}%)
             </div>
-          ) : (
-            <div className="text-[11px] text-slate-600">open this stock for live P/L</div>
           )}
         </div>
       </div>
+
+      {editingDate && !closed && (
+        <DateEditor current={pos.buyDate}
+          onCancel={() => setEditingDate(false)}
+          onSet={async ms => { setEditingDate(false); await onSetDate(ms) }} />
+      )}
+
+      {bench && (
+        <div className="text-[10px] text-slate-500">
+          {bench.alphaPct != null ? (
+            <>stock {sign(bench.stockPct)}% · index {sign(bench.indexPct)}% ·{' '}
+              <span className={bench.alphaPct >= 0 ? 'text-bull' : 'text-bear'}>
+                {sign(bench.alphaPct)}% from the company
+              </span>
+              {bench.vixThen != null && <span className="text-slate-600"> · bought at VIX {Math.round(bench.vixThen)}</span>}
+            </>
+          ) : <span className="text-slate-600">{bench.note}</span>}
+        </div>
+      )}
+
+      {/* Only the estimate bar is per-lot — it depends on what you paid and
+          when. The rest live on the ticker header above. */}
+      {!closed && health?.estimate?.available && (
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="text-slate-500 w-24 shrink-0">vs your entry</span>
+          <Bars level={health.estimate.level} />
+          <span className="text-slate-400 truncate">{health.estimate.label}</span>
+        </div>
+      )}
 
       {pos.note && (
         <p className="text-[11px] text-slate-500 italic border-l-2 border-navy-700 pl-2">
@@ -382,15 +421,10 @@ function Lot({ pos, price, closed, health, triggers, onSavePlan, onSell, onOpen,
         </p>
       )}
 
-      {!closed && <HealthBars health={health} />}
       {!closed && triggers && (
         <ExitPlan pos={pos} triggers={triggers} price={price} onSave={onSavePlan} />
       )}
-      {!closed && !health && (
-        <p className="text-[10px] text-slate-600">
-          Couldn't analyse this stock — check the ticker is right.
-        </p>
-      )}
+
 
       {pos.snapshot?.isLate && !health && (
         <p className="text-[10px] text-neutral">
@@ -515,3 +549,122 @@ function ExitPlan({ pos, triggers, price, onSave }) {
     </div>
   )
 }
+
+/**
+ * TickerGroup — everything true of the STOCK, once, with its lots beneath.
+ *
+ * Fundamentals, technicals and the estimate range are properties of the company:
+ * three lots of the same stock have identical values for all three. Rendering
+ * them per lot padded the page with repetition and made a multi-lot holding
+ * harder to read than a single one, which is backwards.
+ */
+function TickerGroup({ ticker, lots, price, health, indexNow, onOpen, renderLot }) {
+  const c = lots[0]?.snapshot?.currency
+  const totalShares = lots.reduce((t, p) => t + (Number(p.shares) || 0), 0)
+  const totalCost = lots.reduce((t, p) => t + (Number(p.shares) || 0) * (Number(p.buyPrice) || 0), 0)
+  const avgCost = totalShares > 0 ? totalCost / totalShares : null
+  const value = price > 0 ? totalShares * price : null
+  const pnl = value != null ? value - totalCost : null
+
+  return (
+    <div className="bg-navy-800/40 rounded-lg p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <span className="font-mono text-sm text-white">{ticker.replace(/\.(NS|BO)$/, '')}</span>
+          <button onClick={onOpen} className="text-[10px] text-slate-500 hover:text-accent ml-1.5">
+            analyse ↗
+          </button>
+          <div className="text-[11px] text-slate-500">
+            {totalShares} shares · avg {money(avgCost, c)}
+            {lots.length > 1 && <span className="text-slate-600"> · {lots.length} lots</span>}
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-sm text-slate-300">{price > 0 ? money(price, c) : '—'}</div>
+          {pnl != null && (
+            <div className={`text-xs font-mono ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
+              {pnl >= 0 ? '+' : ''}{money(pnl, c)}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Stock-level bars: the same for every lot, so shown once. */}
+      {health && (
+        <div className="space-y-1 pt-1 border-t border-navy-800">
+          {['fundamental', 'technical'].map(key => {
+            const b = health[key]
+            return (
+              <div key={key} className="flex items-center gap-2 text-[11px]">
+                <span className="text-slate-500 w-24 shrink-0">{BAR_LABELS[key]}</span>
+                <Bars level={b?.available ? b.level : null} />
+                <span className={`truncate ${b?.available ? 'text-slate-400' : 'text-slate-600'}`}>
+                  {b?.available ? b.label : b?.reason}
+                </span>
+              </div>
+            )
+          })}
+          {health.regime?.idiosyncratic && (
+            <p className="text-[10px] text-neutral">{health.regime.detail}</p>
+          )}
+          {health.stale && (
+            <p className="text-[10px] text-slate-600">from the last saved analysis</p>
+          )}
+        </div>
+      )}
+
+      <div className="space-y-1.5 pt-1">
+        {lots.map(renderLot)}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Set a purchase date, in the terms people actually remember it. Changing it
+ * rebuilds the baseline from that date's prices and filings, so the comparison
+ * genuinely starts where the money did.
+ */
+function DateEditor({ current, onSet, onCancel }) {
+  const [val, setVal] = React.useState(
+    current ? new Date(current).toISOString().slice(0, 10) : '')
+  const AGO = [['1 month', 30], ['3 months', 91], ['6 months', 182],
+               ['1 year', 365], ['2 years', 730]]
+  return (
+    <div className="bg-navy-800/60 rounded p-2 space-y-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {AGO.map(([label, days]) => (
+          <button key={label} type="button"
+            onClick={() => onSet(Date.now() - days * 86400000)}
+            className="text-[10px] px-2 py-0.5 rounded-full border border-navy-700
+                       text-slate-500 hover:text-accent hover:border-accent/50">
+            {label} ago
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-1.5">
+        <input type="date" value={val} onChange={e => setVal(e.target.value)}
+          className="input-field text-xs flex-1" />
+        <button onClick={() => { const t = Date.parse(val); if (isFinite(t)) onSet(t) }}
+          className="text-[11px] text-accent hover:text-accent-light">Set</button>
+        <button onClick={onCancel} className="text-[11px] text-slate-500">cancel</button>
+      </div>
+      <p className="text-[10px] text-slate-600">
+        Rebuilds the baseline from that date — anything unavailable for it is named rather than
+        guessed.
+      </p>
+    </div>
+  )
+}
+
+function groupByTicker(lots) {
+  const map = new Map()
+  for (const p of lots) {
+    if (!map.has(p.ticker)) map.set(p.ticker, [])
+    map.get(p.ticker).push(p)
+  }
+  for (const arr of map.values()) arr.sort((a, b) => (a.buyDate || 0) - (b.buyDate || 0))
+  return [...map.entries()]
+}
+
+const sign = v => (v == null ? '—' : (v >= 0 ? '+' : '') + v)

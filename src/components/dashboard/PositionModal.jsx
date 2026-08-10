@@ -285,6 +285,7 @@ export default function PositionModal({ open, mode = 'buy', position = null, lot
                     <input type="datetime-local" value={r.when}
                       onChange={e => setRow(i, { when: e.target.value })}
                       className="input-field text-sm w-full" />
+                    <DateShortcuts venue={venue} onPick={when => setRow(i, { when })} />
                   </Field>
 
                   <div className="grid grid-cols-2 gap-2">
@@ -316,8 +317,9 @@ export default function PositionModal({ open, mode = 'buy', position = null, lot
 
                   {isBackdated(r.when) && (
                     <p className="text-[10px] text-slate-500">
-                      Back-dated purchase — recorded normally. The health bars will measure from
-                      today, since the app has no reading of what it looked like back then.
+                      Back-dated — the app will rebuild what its estimate would have been on that
+                      date from the financials and prices of the time, so the comparison starts
+                      from your actual purchase rather than from today.
                     </p>
                   )}
                 </div>
@@ -365,6 +367,37 @@ function blankRow(state, venue) {
     when: defaultWhen(venue),
     note: '',
   }
+}
+
+/**
+ * Relative shortcuts. People remember "about six months ago", not a calendar
+ * date, and making them count backwards in a date picker for a purchase from
+ * last year is friction with nothing gained — the exact day rarely matters, and
+ * it stays editable for when it does.
+ */
+const AGO_PRESETS = [
+  ['1w', 'A week', 7], ['1m', '1 month', 30], ['3m', '3 months', 91],
+  ['6m', '6 months', 182], ['1y', '1 year', 365], ['2y', '2 years', 730],
+]
+
+function DateShortcuts({ onPick, venue }) {
+  return (
+    <div className="flex flex-wrap gap-1.5 mt-1.5">
+      {AGO_PRESETS.map(([id, label, days]) => (
+        <button key={id} type="button"
+          onClick={() => {
+            const d = new Date(Date.now() - days * 86400000)
+            const c = CLOSE[venue] || CLOSE.IN
+            d.setHours(c.h, c.m, 0, 0)      // a past entry means that day's close
+            onPick(toLocalInput(d))
+          }}
+          className="text-[10px] px-2 py-1 rounded-full border border-navy-700
+                     text-slate-500 hover:text-accent hover:border-accent/50 transition-colors">
+          {label} ago
+        </button>
+      ))}
+    </div>
+  )
 }
 
 function isBackdated(when) {

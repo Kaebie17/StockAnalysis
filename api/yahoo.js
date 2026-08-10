@@ -50,6 +50,33 @@ module.exports = async function handler(req, res) {
     // Cached briefly at the CDN: a price is the same for every user, and the
     // page polls, so this collapses the repeats without making anything stale
     // enough to matter for a position review.
+    // ── HISTORY — daily closes over a window ────────────────────────────────
+    // /api/yahoo?endpoint=history&ticker=^INDIAVIX&from=2026-01-01&to=2026-01-15
+    //
+    // Used to reconstruct the market conditions a position was entered in. Kept
+    // separate from `all` because that fetches a fixed 2-year window plus
+    // financials and metadata; this needs a narrow slice of one series.
+    if (endpoint === 'history') {
+      const from = String(req.query.from || '')
+      const to   = String(req.query.to || '')
+      if (!from || !to) return res.status(400).json({ error: 'Missing from/to' })
+      try {
+        const ch = await yf.chart(ticker, { period1: from, period2: to, interval: '1d' })
+        const rows = (ch?.quotes || [])
+          .filter(q => q?.date && (q.adjclose != null || q.close != null))
+          .map(q => ({
+            date: (q.date instanceof Date ? q.date : new Date(q.date)).toISOString().slice(0, 10),
+            close: q.adjclose ?? q.close,
+          }))
+        // Long cache: a past close never changes.
+        res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=604800')
+        return res.status(200).json({ history: rows })
+      } catch (e) {
+        console.info(`[yf2] history ${ticker} ${from}..${to}:`, e?.message)
+        return res.status(200).json({ history: [], error: 'unavailable' })
+      }
+    }
+
     // ── PEERS — similar companies + their multiples ─────────────────────────
     // /api/yahoo?endpoint=peers&ticker=BAJFINANCE.NS
     //
@@ -250,6 +277,14 @@ module.exports = async function handler(req, res) {
 
       if (!quote && !summary && (!history || history.length === 0)) {
         return res.status(404).json({ error: `No data for "${ticker}"` })
+      }
+
+      // Permanent, one-line: technicals need 30+ daily closes and the SMA200
+      // needs 200. When a ticker silently shows no technicals this is the first
+      // thing to check, and without it there's nothing in the logs to look at.
+      if (!history || history.length < 200) {
+        console.warn(`[yf2] ${ticker}: only ${history?.length ?? 0} daily closes ` +
+          `(technicals need 30+, SMA200 needs 200)`)
       }
 
       // ── DIAGNOSTIC — fundamentalsTimeSeries field names ──────────────────

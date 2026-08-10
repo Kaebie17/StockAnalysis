@@ -5,6 +5,9 @@ import {
 } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
 import { buildEstimate } from '../engine/estimate.js'
+import { rebuildSnapshot } from '../engine/snapshotRebuild.js'
+import { fetchRegimeOn, fetchMarketRegime } from '../api/marketRegime.js'
+import { analyzeTicker } from './analyzeTicker.js'
 
 /**
  * usePositions — the read/write layer for stocks the user actually owns.
@@ -42,7 +45,7 @@ export function usePositions(ticker) {
  * describes today, not the purchase, and every comparison built on it has to say
  * so rather than quietly implying it observed something it didn't.
  */
-export function buildSnapshot({ state, buyDate }) {
+export function buildSnapshot({ state, buyDate, regime }) {
   const { ratioResult, data, valuation, quality, marketExpectation, assumptions } = state || {}
   const now = Date.now()
   const LATE_MS = 7 * 86400000
@@ -72,18 +75,35 @@ export function buildSnapshot({ state, buyDate }) {
       ?? marketExpectation?.variants?.earnings?.impliedGrowth ?? null,
     sectorType: data?.sectorType ?? null,
     currency: data?.currency ?? null,
+    // Market conditions entered in. Without these a holding's return can't be
+    // separated from the market's — up 18% in a market that rose 11% is a very
+    // different result from the same 18% in a flat one.
+    vix: regime?.vix ?? null,
+    indexLevel: regime?.indexChangePct != null ? (regime.indexLevel ?? null) : (regime?.indexLevel ?? null),
+    missing: regime?.missing?.length ? regime.missing : undefined,
   }
 }
 
 /** Record a purchase, freezing the snapshot at the same moment. */
 export async function recordBuy({ ticker, name, shares, buyPrice, buyDate, note, state }) {
+  // Regime at the moment of purchase — today's reading for a same-day entry, the
+  // historical one for a back-dated lot. Never blocks the save: a position that
+  // fails to record because a volatility index was unreachable would be absurd.
+  let regime = null
+  try {
+    const indian = /\.(NS|BO)$/i.test(ticker || '')
+    const isBackdated = buyDate && (Date.now() - buyDate) > 2 * 86400000
+    regime = isBackdated ? await fetchRegimeOn(buyDate, { indian })
+                         : await fetchMarketRegime({ indian })
+  } catch { /* recorded as unavailable */ }
+
   const rec = await savePosition({
     ticker, name: name || null,
     shares: Number(shares) || 0,
     buyPrice: Number(buyPrice) || 0,
     buyDate: buyDate || Date.now(),
     note: note || null,
-    snapshot: buildSnapshot({ state, buyDate }),
+    snapshot: buildSnapshot({ state, buyDate, regime }),
   })
   if (rec) queuePush(`positions:${rec.id}`, rec)
 
@@ -238,6 +258,38 @@ export async function backfillSnapshot(position, analysis) {
   })
   if (rec) queuePush(`positions:${rec.id}`, rec)
   return rec
+}
+
+/**
+ * Move a lot's purchase date, and rebuild its baseline to match.
+ *
+ * Changing the date alone would be close to useless: the recorded estimate would
+ * still be whatever was captured when the position was ADDED, so every
+ * comparison would stay flat while wearing a convincingly old date — worse than
+ * an obvious placeholder, because it looks like a real six-month result.
+ *
+ * So the snapshot is reconstructed from data as it stood on the new date, and
+ * anything unavailable for that date is named rather than filled in.
+ */
+export async function updatePositionDate(id, newDateMs) {
+  const rec = await getPosition(id)
+  if (!rec || !isFinite(newDateMs)) return null
+
+  let snapshot = rec.snapshot
+  try {
+    const analysis = await analyzeTicker(rec.ticker)
+    if (analysis) {
+      const indian = /\.(NS|BO)$/i.test(rec.ticker || '')
+      let regimeOn = null
+      try { regimeOn = await fetchRegimeOn(newDateMs, { indian }) } catch { /* named below */ }
+      const rebuilt = rebuildSnapshot(analysis, newDateMs, regimeOn)
+      if (rebuilt) snapshot = rebuilt
+    }
+  } catch { /* keep the existing snapshot rather than lose the date change */ }
+
+  const updated = await savePosition({ ...rec, buyDate: newDateMs, snapshot })
+  if (updated) queuePush(`positions:${updated.id}`, updated)
+  return updated
 }
 
 /**
