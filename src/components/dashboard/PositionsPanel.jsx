@@ -114,9 +114,17 @@ export default function PositionsPanel({ open, onClose }) {
   // Only the ticker currently loaded has a live price. Everything else shows
   // cost and waits — inventing a price for an unloaded ticker would be worse
   // than admitting we don't have one.
-  const livePrice = t =>
-    (state.ticker && t === state.ticker && state.ratioResult?.price != null)
-      ? state.ratioResult.price : null
+  // Live price for ANY held ticker. This used to return a price only for the
+  // stock currently loaded, so every other card rendered a bare "—" where the
+  // price should be — which reads as a broken control rather than as missing
+  // data. The batch quotes are already fetched above; they just weren't wired
+  // to the display. Falls back to the cached analysis price, then to nothing.
+  const livePrice = t => {
+    if (state.ticker === t && state.ratioResult?.price != null) return state.ratioResult.price
+    const q = quotes?.[t]?.price
+    if (q > 0) return q
+    return analyses?.[t]?.ratioResult?.price ?? null
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center
@@ -342,6 +350,7 @@ function Lot({ pos, price, closed, health, triggers, indexNow,
   const m = positionMath(pos, price)
   const up = m.pnl != null && m.pnl >= 0
   const [editingDate, setEditingDate] = React.useState(false)
+  const [confirmDelete, setConfirmDelete] = React.useState(false)
 
   // What the company did, separated from what the market did. Up 18% while the
   // index rose 11% is a 7% contribution from the business — and the raw number
@@ -432,14 +441,36 @@ function Lot({ pos, price, closed, health, triggers, indexNow,
         </p>
       )}
 
+      {/* Delete sits on its own line rather than beside the exit-plan toggle:
+          the two were a few pixels apart, and one is an expand while the other
+          destroys a record permanently. It also asks first — an accidental tap
+          previously wiped a lot with no way back, and a position carries a
+          purchase price and date that can't be recovered from anywhere. */}
       <div className="flex items-center gap-3 pt-0.5">
         {!closed && onSell && (
-          <button onClick={onSell} className="text-[11px] text-slate-400 hover:text-bear">Record sale</button>
+          <button onClick={onSell} className="text-[11px] text-slate-400 hover:text-bear">
+            Record sale
+          </button>
         )}
-        <button onClick={onDelete} className="text-[11px] text-slate-600 hover:text-bear ml-auto"
-          title="Only for a mis-entry — selling should use Record sale, which keeps the history">
-          Delete
-        </button>
+      </div>
+      <div className="flex justify-end pt-1 border-t border-navy-800/60">
+        {confirmDelete ? (
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-bear">Delete this lot permanently?</span>
+            <button onClick={() => { setConfirmDelete(false); onDelete() }}
+              className="text-[10px] px-2 py-0.5 rounded border border-bear/60 text-bear hover:bg-bear/10">
+              Delete
+            </button>
+            <button onClick={() => setConfirmDelete(false)}
+              className="text-[10px] text-slate-500 hover:text-slate-300">cancel</button>
+          </div>
+        ) : (
+          <button onClick={() => setConfirmDelete(true)}
+            className="text-[10px] text-slate-600 hover:text-bear"
+            title="Only for a mis-entry — a sale should use Record sale, which keeps the history">
+            Delete lot
+          </button>
+        )}
       </div>
     </div>
   )
@@ -580,7 +611,10 @@ function TickerGroup({ ticker, lots, price, health, indexNow, onOpen, renderLot 
           </div>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-sm text-slate-300">{price > 0 ? money(price, c) : '—'}</div>
+          <div className="text-sm text-slate-300">
+            {price > 0 ? money(price, c)
+              : <span className="text-[10px] text-slate-600">price unavailable</span>}
+          </div>
           {pnl != null && (
             <div className={`text-xs font-mono ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
               {pnl >= 0 ? '+' : ''}{money(pnl, c)}
