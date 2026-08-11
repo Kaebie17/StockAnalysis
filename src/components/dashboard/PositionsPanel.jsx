@@ -1,32 +1,35 @@
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import PositionModal from './PositionModal.jsx'
-import { usePositions, positionMath, removePosition, backfillSnapshot } from '../../store/usePositions.js'
-import { getCached } from '../../utils/db.js'
-import { fetchQuotes } from '../../api/quotesClient.js'
-import { analyzeMany } from '../../store/analyzeTicker.js'
-import { evaluateTriggers, assessStopPrice, suggestLevels } from '../../engine/exitTriggers.js'
-import { saveExitPlan, updatePositionDate } from '../../store/usePositions.js'
-import { benchmarkReturn } from '../../engine/snapshotRebuild.js'
+import { usePositions, positionMath, removePosition, saveExitPlan, updatePositionDate } from '../../store/usePositions.js'
 import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
 import { assessFromQuarterly } from '../../engine/quarterlyBridge.js'
 import { fetchMarketRegime } from '../../api/marketRegime.js'
+import { getCached } from '../../utils/db.js'
+import { fetchQuotes } from '../../api/quotesClient.js'
+import { analyzeMany } from '../../store/analyzeTicker.js'
+import { evaluateTriggers, suggestLevels } from '../../engine/exitTriggers.js'
+import { benchmarkReturn } from '../../engine/snapshotRebuild.js'
+import { aggregateLots, holdingMath, summaryLevel } from '../../engine/positionAggregate.js'
 
-const sym = c => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[c]) || ''
-const money = (v, c) => (v == null ? '—' : sym(c) + Math.round(v).toLocaleString('en-IN'))
-const dateStr = t => (t ? new Date(t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' }) : '')
+const sym = c => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[c]) || '₹'
+const money = (v, c) => (v == null ? '—' : sym(c) + Math.abs(Math.round(v)).toLocaleString('en-IN'))
+const signed = (v, c) => (v == null ? '—' : (v >= 0 ? '+' : '−') + money(v, c))
+const dstr = t => (t ? new Date(t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' }) : '')
 
 /**
- * PositionsPanel — everything the user owns, and everything they used to.
+ * PositionsPanel — holdings, one row each, opened for detail.
  *
- * Closed lots are kept and shown separately rather than deleted: a sold holding
- * is the only record that says whether a decision worked out, which is the point
- * of tracking any of this. Deleting one is possible but deliberate — it's for a
- * mis-entry, not for tidying up after a loss.
+ * The organising decision: analysis belongs to the HOLDING, not to each lot. You
+ * sell FIFO and you decide on the whole position, so per-lot bars were splitting
+ * one judgement into three and repeating the two thirds of it (fundamentals,
+ * technicals) that are identical across lots. The entry baseline is
+ * share-weighted instead — which moves the way a cost basis actually moves — and
+ * lots become a plain ledger of how the holding was built.
  *
- * The health bars (item 19) land here. For now this is the ledger they'll hang
- * off: lots, cost, current value, and the note explaining why each was bought.
+ * Collapsed by default so a twelve-stock portfolio is readable in one screen,
+ * with a marker only on the ones where something has fired.
  */
 export default function PositionsPanel({ open, onClose }) {
   const { state, load } = useApp()
@@ -34,9 +37,12 @@ export default function PositionsPanel({ open, onClose }) {
   const [sellTarget, setSellTarget] = useState(null)
   const [addOpen, setAddOpen] = useState(false)
   const [showClosed, setShowClosed] = useState(false)
-  // One regime read for the whole panel — it's a market-wide number, identical
-  // for every position, so fetching it per row would repeat the same request.
+  const [expanded, setExpanded] = useState(null)
   const [regime, setRegime] = useState(null)
+  const [analyses, setAnalyses] = useState({})
+  const [quotes, setQuotes] = useState({})
+  const [fetching, setFetching] = useState(0)
+
   React.useEffect(() => {
     if (!open) return
     let dead = false
@@ -45,27 +51,15 @@ export default function PositionsPanel({ open, onClose }) {
     return () => { dead = true }
   }, [open, state.ticker])
 
-  // Cached analysis + live price for EVERY held ticker, not just the one loaded.
-  //
-  // The bars used to compute only for `state.ticker`, which made them invisible
-  // in the case that matters: this panel opens from the landing page, where no
-  // ticker is loaded, so every row said "open this stock" and clicking it
-  // navigated away and closed the panel. The health of a portfolio isn't
-  // something you should have to visit twelve pages to read.
-  //
-  // Every owned stock already has a full cached analysis — you had to look it up
-  // to buy it — so ratioResult, quality and technicals are all on disk. Only the
-  // price is stale, and the batch quote endpoint fixes that in one request.
-  const [analyses, setAnalyses] = useState({})
-  const [quotes, setQuotes] = useState({})
-  const [fetching, setFetching] = useState(0)
+  // Cached analysis + live price for every held ticker, fetching anything that
+  // has never been analysed. Adding holdings you already own is the normal way
+  // in, so on a fresh install nothing is cached — waiting for the user to visit
+  // each stock would leave the whole portfolio blank exactly when it matters.
   React.useEffect(() => {
     if (!open || positions.length === 0) return
     let dead = false
     ;(async () => {
       const tickers = [...new Set(positions.filter(p => p.status !== 'closed').map(p => p.ticker))]
-
-      // Cached first, so rows that can render do so immediately.
       const out = {}
       const missing = []
       for (const t of tickers) {
@@ -74,30 +68,15 @@ export default function PositionsPanel({ open, onClose }) {
       }
       if (dead) return
       setAnalyses(out)
-
       try { const q = await fetchQuotes(tickers); if (!dead) setQuotes(q) } catch { /* optional */ }
 
-      // Anything with no saved analysis is fetched here rather than waiting for
-      // the user to open it. Adding holdings you already own is the normal way
-      // in, so on a fresh install NOTHING is cached — leaving the whole
-      // portfolio blank exactly when the bars are most wanted. Rows fill in as
-      // each lands.
       if (missing.length > 0 && !dead) {
         setFetching(missing.length)
         await analyzeMany(missing, {
-          onEach: async (t, res) => {
+          onEach: (t, res) => {
             if (dead) return
             setAnalyses(prev => ({ ...prev, [t]: res }))
             setFetching(n => Math.max(0, n - 1))
-            // Lots entered in bulk have no purchase snapshot, so the
-            // estimate-vs-price bar would never have a baseline to compare
-            // against. Give them one now, flagged as starting from today.
-            for (const p of positions) {
-              if (p.ticker === t && p.status !== 'closed' && !p.snapshot?.estimate) {
-                try { await backfillSnapshot(p, res) } catch { /* non-fatal */ }
-              }
-            }
-            if (!dead) refresh()
           },
         })
         if (!dead) setFetching(0)
@@ -106,35 +85,35 @@ export default function PositionsPanel({ open, onClose }) {
     return () => { dead = true }
   }, [open, positions])
 
-  if (!open) return null
-
-  const held   = positions.filter(p => p.status !== 'closed')
+  const held = positions.filter(p => p.status !== 'closed')
   const closed = positions.filter(p => p.status === 'closed')
 
-  // Only the ticker currently loaded has a live price. Everything else shows
-  // cost and waits — inventing a price for an unloaded ticker would be worse
-  // than admitting we don't have one.
-  // Live price for ANY held ticker. This used to return a price only for the
-  // stock currently loaded, so every other card rendered a bare "—" where the
-  // price should be — which reads as a broken control rather than as missing
-  // data. The batch quotes are already fetched above; they just weren't wired
-  // to the display. Falls back to the cached analysis price, then to nothing.
-  const livePrice = t => {
+  const holdings = useMemo(() => {
+    const byTicker = new Map()
+    for (const p of held) {
+      if (!byTicker.has(p.ticker)) byTicker.set(p.ticker, [])
+      byTicker.get(p.ticker).push(p)
+    }
+    return [...byTicker.values()].map(aggregateLots).filter(Boolean)
+  }, [held])
+
+  const priceOf = t => {
     if (state.ticker === t && state.ratioResult?.price != null) return state.ratioResult.price
     const q = quotes?.[t]?.price
     if (q > 0) return q
     return analyses?.[t]?.ratioResult?.price ?? null
   }
 
+  const totalValue = holdings.reduce((s, h) => s + h.shares * (priceOf(h.ticker) ?? h.avgPrice ?? 0), 0)
+
+  if (!open) return null
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center
                     p-0 sm:p-4 bg-black/60 backdrop-blur-sm"
          onClick={e => e.target === e.currentTarget && onClose()}>
-      {/* Same column layout as PositionModal: cap the sheet, scroll only the
-          body, so a long list can't push the title off the top of the screen. */}
       <div className="w-full sm:max-w-2xl bg-navy-900 border border-navy-700
-                      rounded-t-2xl sm:rounded-2xl shadow-2xl
-                      flex flex-col max-h-[90dvh]">
+                      rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90dvh]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-navy-700 shrink-0">
           <h2 className="font-semibold text-white">📊 My positions</h2>
           <div className="flex items-center gap-3">
@@ -143,29 +122,23 @@ export default function PositionsPanel({ open, onClose }) {
           </div>
         </div>
 
-        <div className="p-5 overflow-y-auto flex-1 space-y-3
+        <div className="p-4 overflow-y-auto flex-1 space-y-2
                         pb-[max(1.25rem,env(safe-area-inset-bottom))]">
           {loading ? (
             <p className="text-sm text-slate-500">Loading…</p>
-          ) : held.length === 0 && closed.length === 0 ? (
+          ) : holdings.length === 0 && closed.length === 0 ? (
             <div className="text-center py-8 space-y-2">
               <p className="text-slate-400 text-sm">Nothing tracked yet.</p>
               <button onClick={() => setAddOpen(true)} className="btn-primary text-sm">Add a holding</button>
             </div>
           ) : (
             <>
-              {/* One market-wide reading, once. It was previously rendered on
-                  every row, which repeats a single fact N times and invites
-                  reading it as something about the stock. It isn't — it's a
-                  caveat on how much weight the other bars deserve today. */}
-              {regime?.vix != null && (
-                <div className={`text-[11px] rounded-lg px-3 py-2 ${
-                  regime.vix >= 20 ? 'bg-neutral/10 text-neutral' : 'bg-navy-800/50 text-slate-500'}`}>
-                  India VIX {Math.round(regime.vix)}
-                  {regime.vix >= 28 ? ' — stressed market'
-                    : regime.vix >= 20 ? ' — elevated volatility'
-                    : regime.vix < 15 ? ' — calm market' : ' — normal volatility'}
-                  {regime.vix >= 20 && ' · single-stock signals are less reliable while everything moves together'}
+              {/* One market-wide reading, once — a caveat on how much weight the
+                  bars below deserve today, not a fact about any stock. */}
+              {regime?.vix >= 20 && (
+                <div className="text-[11px] rounded-lg px-3 py-2 bg-neutral/10 text-neutral">
+                  India VIX {Math.round(regime.vix)} — {regime.vix >= 28 ? 'stressed market' : 'elevated volatility'} ·
+                  single-stock signals are less reliable while everything moves together
                 </div>
               )}
 
@@ -174,27 +147,18 @@ export default function PositionsPanel({ open, onClose }) {
                   Analysing {fetching} stock{fetching > 1 ? 's' : ''} you haven't opened yet…
                 </p>
               )}
-              {/* Grouped by ticker. Three lots of one stock share their
-                  fundamentals, technicals and estimate — rendering those three
-                  times says nothing new and buries what IS per-lot: what you
-                  paid, when, and how it has done since. */}
-              {groupByTicker(held).map(([ticker, lots]) => (
-                <TickerGroup key={ticker} ticker={ticker} lots={lots}
-                  price={livePrice(ticker)}
-                  health={healthFor(lots[0], state, regime, analyses, quotes)}
-                  estimate={triggersFor(lots[0], state, analyses, quotes, held)?.estimate}
-                  indexNow={regime?.indexLevel ?? null}
-                  onOpen={() => { load(ticker); onClose() }}
-                  renderLot={p => (
-                    <Lot key={p.id} pos={p} price={livePrice(ticker)}
-                         health={healthFor(p, state, regime, analyses, quotes)}
-                         triggers={triggersFor(p, state, analyses, quotes, held)}
-                         indexNow={regime?.indexLevel ?? null}
-                         onSavePlan={async plan => { await saveExitPlan(p.id, plan); refresh() }}
-                         onSetDate={async ms => { await updatePositionDate(p.id, ms); refresh() }}
-                         onSell={() => setSellTarget(p)}
-                         onDelete={async () => { await removePosition(p.id); refresh() }} />
-                  )} />
+
+              {holdings.map(h => (
+                <Holding key={h.ticker} agg={h}
+                  price={priceOf(h.ticker)}
+                  analysis={state.ticker === h.ticker && state.ratioResult ? state : analyses[h.ticker]}
+                  isLive={state.ticker === h.ticker && !!state.ratioResult}
+                  state={state} regime={regime} totalValue={totalValue}
+                  expanded={expanded === h.ticker}
+                  onToggle={() => setExpanded(e => (e === h.ticker ? null : h.ticker))}
+                  onAnalyse={() => { load(h.ticker); onClose() }}
+                  onSell={lot => setSellTarget(lot)}
+                  onRefresh={refresh} />
               ))}
 
               {closed.length > 0 && (
@@ -204,10 +168,14 @@ export default function PositionsPanel({ open, onClose }) {
                     {showClosed ? '▲' : '▼'} {closed.length} closed position{closed.length > 1 ? 's' : ''}
                   </button>
                   {showClosed && (
-                    <div className="space-y-3 mt-2 opacity-70">
+                    <div className="space-y-1.5 mt-2 opacity-70">
                       {closed.map(p => (
-                        <Lot key={p.id} pos={p} price={null} closed
-                             onDelete={async () => { await removePosition(p.id); refresh() }} />
+                        <div key={p.id} className="bg-navy-800/40 rounded-lg px-3 py-2 text-[11px]">
+                          <span className="font-mono text-slate-300">{p.ticker.replace(/\.(NS|BO)$/, '')}</span>
+                          <span className="text-slate-500 ml-2">
+                            {p.shares} × {money(p.buyPrice, p.snapshot?.currency)} → {money(p.sellPrice, p.snapshot?.currency)} {dstr(p.sellDate)}
+                          </span>
+                        </div>
                       ))}
                     </div>
                   )}
@@ -220,8 +188,6 @@ export default function PositionsPanel({ open, onClose }) {
 
       <PositionModal open={addOpen} mode="bulk"
         onClose={() => setAddOpen(false)} onSaved={refresh} />
-      {/* Selling is per TICKER, not per lot: FIFO decides which shares go, so
-          tapping any lot of a stock opens the same sale form for that stock. */}
       <PositionModal open={sellTarget !== null} mode="sell"
         lots={sellTarget ? held.filter(p => p.ticker === sellTarget.ticker) : []}
         onClose={() => setSellTarget(null)} onSaved={refresh} />
@@ -230,118 +196,154 @@ export default function PositionsPanel({ open, onClose }) {
 }
 
 /**
- * Bars can only be computed for the ticker currently loaded — everything else
- * has no ratioResult or price history in memory. Rather than show four empty
- * bars for every other row, those collapse to a prompt to open the stock.
+ * One holding: a scannable row, expanding to the analysis and the lot ledger.
  */
-/**
- * Health for one position, from whichever source has the fuller picture:
- * live app state when this happens to be the loaded ticker, otherwise the
- * cached analysis written the last time it was analysed.
- */
-function healthFor(pos, state, regime, analyses, quotes) {
-  const isLoaded = state?.ticker === pos.ticker && state?.ratioResult
-  const cached = analyses?.[pos.ticker]
-  const src = isLoaded ? state : cached
-  if (!src?.ratioResult) return null
+function Holding({ agg, price, analysis, isLive, state, regime, totalValue,
+                   expanded, onToggle, onAnalyse, onSell, onRefresh }) {
+  const c = agg.lots[0]?.snapshot?.currency
+  const m = holdingMath(agg, price)
 
-  // Live price beats the cached one — the cache can be days old, and every bar
-  // that compares against price would otherwise be reading a stale number.
-  const livePrice = quotes?.[pos.ticker]?.price ?? src.ratioResult.price
-  const ratioResult = livePrice != null && livePrice !== src.ratioResult.price
-    ? { ...src.ratioResult, price: livePrice }
-    : src.ratioResult
+  // Analysis is computed once for the holding, from live state when this is the
+  // loaded ticker and from the saved analysis otherwise.
+  const { estimate, health, triggers } = useMemo(() => {
+    if (!analysis?.ratioResult) return {}
+    const rr = price != null && price !== analysis.ratioResult.price
+      ? { ...analysis.ratioResult, price } : analysis.ratioResult
+    const est = buildEstimate(rr, {
+      guidedGrowth: (isLive && state.assumptions?.nearTermGrowth != null
+        && isFinite(state.assumptions.nearTermGrowth)) ? state.assumptions.nearTermGrowth : null,
+      priceHistory:   analysis.data?.priceHistory   || [],
+      incomeHistory:  analysis.data?.incomeHistory  || [],
+      balanceHistory: analysis.data?.balanceHistory || [],
+    })
+    const ga = assessFromQuarterly(isLive ? state.quarterlyData : null, {
+      guidance: isLive ? state.guidance : null,
+      modelGrowth: est?.growth ?? null,
+      incomeHistory: analysis.data?.incomeHistory || [],
+    })
+    const h = positionHealth(agg, {
+      currentEstimate: est, currentPrice: price,
+      qualityScore: analysis.quality?.score ?? null,
+      marginTrendPct: est?.marginTrendPct ?? null,
+      guidanceAssessment: ga,
+      technicals: analysis.technicals,
+      regime: { ...(regime || {}), stockChangePct: quotesChange(analysis) },
+      stale: !isLive,
+    })
+    const t = Object.assign(
+      evaluateTriggers(agg, {
+        price, estimate: est, ratioResult: rr,
+        marketExpectation: analysis.marketExpectation,
+        guidance: isLive ? state.guidance : null, guidanceAssessment: ga,
+        priceHistory: analysis.data?.priceHistory || [],
+        portfolioValue: totalValue, plan: agg.lots[0]?.plan,
+      }),
+      { estimate: est,
+        suggestions: suggestLevels({
+          price, estimate: est, technicals: analysis.technicals,
+          priceHistory: analysis.data?.priceHistory || [], buyPrice: agg.avgPrice }) })
+    return { estimate: est, health: h, triggers: t }
+  }, [analysis, price, isLive, state, regime, agg, totalValue])
 
-  const est = buildEstimate(ratioResult, {
-    guidedGrowth: (state?.assumptions?.nearTermGrowth != null && isLoaded
-      && isFinite(state.assumptions.nearTermGrowth)) ? state.assumptions.nearTermGrowth : null,
-    priceHistory:   src.data?.priceHistory   || [],
-    incomeHistory:  src.data?.incomeHistory  || [],
-    balanceHistory: src.data?.balanceHistory || [],
-  })
-  // The beat/miss verdict from reported quarters. positionHealth has always
-  // accepted this and nothing ever passed it, so the fundamental bar was moving
-  // on the quality score alone and ignoring whether the company actually hit its
-  // numbers — the single hardest fact available to it.
-  const guidanceAssessment = assessFromQuarterly(isLoaded ? state.quarterlyData : null, {
-    guidance: isLoaded ? state.guidance : null,
-    modelGrowth: est?.growth ?? null,
-    incomeHistory: src.data?.incomeHistory || [],
-  })
+  const level = summaryLevel(health)
+  const firedCount = triggers?.fired?.length || 0
 
-  return positionHealth(pos, {
-    currentEstimate: est,
-    currentPrice: livePrice,
-    qualityScore: src.quality?.score ?? null,
-    marginTrendPct: est?.marginTrendPct ?? null,
-    guidanceAssessment,
-    technicals: src.technicals,
-    regime: {
-      ...(regime || {}),
-      stockChangePct: quotes?.[pos.ticker]?.changePct ?? src.data?.meta?.change1d ?? null,
-    },
-    stale: !isLoaded,
-  })
+  return (
+    <div className="bg-navy-800/40 rounded-lg overflow-hidden">
+      {/* Collapsed row — the whole portfolio should read in one screen. */}
+      <button onClick={onToggle} className="w-full flex items-center gap-3 px-3 py-2.5 text-left">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium text-white">
+            {agg.ticker.replace(/\.(NS|BO)$/, '')}
+            {firedCount > 0 && <span className="text-neutral ml-1.5 text-xs">⚠</span>}
+          </div>
+          <div className="text-[11px] text-slate-500">
+            {agg.shares} sh · {money(agg.avgPrice, c)}
+          </div>
+        </div>
+        <Bars level={level} />
+        <div className="text-right w-24 shrink-0">
+          <div className="text-[13px] text-slate-200">{price > 0 ? money(price, c) : '—'}</div>
+          {m?.pnl != null && (
+            <div className={`text-[11px] ${m.pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
+              {signed(m.pnl, c)}
+            </div>
+          )}
+        </div>
+        <span className="text-slate-600 text-xs">{expanded ? '▲' : '▼'}</span>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3 space-y-2.5">
+          <div className="flex items-center justify-between text-[11px] pt-1 border-t border-navy-800">
+            <span className="text-slate-500">
+              {money(m?.value, c)} value · {money(agg.cost, c)} cost
+            </span>
+            <button onClick={onAnalyse} className="text-accent hover:text-accent-light">analyse ↗</button>
+          </div>
+
+          {estimate?.ok && (
+            <div className="text-[12px] text-slate-300">
+              <span className="text-slate-500">Estimate today </span>
+              {money(estimate.target.low, c)}–{money(estimate.target.high, c)}
+              {price > 0 && (
+                <span className={estimate.upside?.base >= 0 ? 'text-bull ml-1.5' : 'text-bear ml-1.5'}>
+                  {estimate.upside?.base >= 0 ? '+' : ''}{estimate.upside?.base}% from {money(price, c)}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Four bars, all holding-level. Named, because an unlabelled bar is a
+              shape rather than a reading. */}
+          {health && (
+            <div className="space-y-1">
+              <BarRow label="Fundamentals" bar={health.fundamental} />
+              <BarRow label="Technical" bar={health.technical} />
+              <BarRow label="vs your entry" bar={health.estimate} />
+            </div>
+          )}
+          {health?.stale && (
+            <p className="text-[10px] text-slate-600">from the last saved analysis</p>
+          )}
+
+          <LotLedger agg={agg} price={price} currency={c}
+                     indexNow={regime?.indexLevel ?? null}
+                     onSell={onSell} onRefresh={onRefresh} />
+
+          {triggers && (
+            <ExitPlan agg={agg} triggers={triggers} price={price} currency={c}
+              onSave={async plan => { await saveExitPlan(agg.lots[0].id, plan); onRefresh() }} />
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
-/**
- * Exit conditions for a lot. Deliberately built from absolute data — years of
- * financials and the price actually paid — so a holding added today has working
- * triggers immediately, rather than waiting weeks for a drift baseline.
- */
-function triggersFor(pos, state, analyses, quotes, allHeld) {
-  const isLoaded = state?.ticker === pos.ticker && state?.ratioResult
-  const src = isLoaded ? state : analyses?.[pos.ticker]
-  if (!src?.ratioResult) return null
-
-  const price = quotes?.[pos.ticker]?.price ?? src.ratioResult.price
-  const est = buildEstimate({ ...src.ratioResult, price }, {
-    priceHistory:   src.data?.priceHistory   || [],
-    incomeHistory:  src.data?.incomeHistory  || [],
-    balanceHistory: src.data?.balanceHistory || [],
-  })
-  // Portfolio total priced the same way this lot is — live price where we have
-  // one, cost where we don't — so concentration compares like with like.
-  const portfolioValue = (allHeld || []).reduce((t, x) => {
-    const px = quotes?.[x.ticker]?.price
-    return t + (Number(x.shares) || 0) * (px > 0 ? px : (Number(x.buyPrice) || 0))
-  }, 0)
-
-  const suggestions = suggestLevels({
-    price, estimate: est, technicals: src.technicals,
-    priceHistory: src.data?.priceHistory || [], buyPrice: pos.buyPrice,
-  })
-
-  return Object.assign(evaluateTriggers(pos, {
-    price, estimate: est, ratioResult: src.ratioResult,
-    marketExpectation: src.marketExpectation,
-    guidance: isLoaded ? state.guidance : null,
-    guidanceAssessment: isLoaded
-      ? assessFromQuarterly(state.quarterlyData, {
-          guidance: state.guidance, modelGrowth: est?.growth ?? null,
-          incomeHistory: src.data?.incomeHistory || [] })
-      : null,
-    priceHistory: src.data?.priceHistory || [],
-    portfolioValue,
-    plan: pos.plan,
-  }), { suggestions, estimate: est })
+function quotesChange(analysis) {
+  return analysis?.data?.meta?.change1d ?? null
 }
 
-const BAR_LABELS = {
-  estimate: 'Estimate vs price',
-  fundamental: 'Fundamentals',
-  technical: 'Technical',
-  regime: 'Market regime',
+function BarRow({ label, bar }) {
+  return (
+    <div className="flex items-center gap-2 text-[11px]">
+      <span className="text-slate-500 w-24 shrink-0">{label}</span>
+      <Bars level={bar?.available ? bar.level : null} />
+      <span className={`truncate ${bar?.available ? 'text-slate-400' : 'text-slate-600'}`}>
+        {bar?.available ? bar.label : bar?.reason}
+      </span>
+    </div>
+  )
 }
 
-/** Signal-strength bars. Four rungs, coloured by level, greyed when unavailable. */
-function Bars({ level, tone }) {
-  const heights = [6, 9, 12, 15]
+/** Signal-strength bars. Four rungs, coloured by level, grey when unavailable. */
+function Bars({ level }) {
+  const heights = [5, 8, 11, 14]
   const colour = level == null ? 'bg-navy-700'
-    : tone === 'neutral' ? 'bg-neutral'
     : level >= 3 ? 'bg-bull' : level <= 1 ? 'bg-bear' : 'bg-neutral'
   return (
-    <span className="inline-flex items-end gap-[2px] h-4">
+    <span className="inline-flex items-end gap-[2px] h-4 shrink-0">
       {heights.map((h, i) => (
         <span key={i} style={{ height: h }}
           className={`w-[3px] rounded-sm ${level != null && i < level ? colour : 'bg-navy-700'}`} />
@@ -350,184 +352,162 @@ function Bars({ level, tone }) {
   )
 }
 
-function Lot({ pos, price, closed, health, triggers, indexNow,
-               onSavePlan, onSetDate, onSell, onDelete }) {
-  const c = pos.snapshot?.currency
-  const m = positionMath(pos, price)
-  const up = m.pnl != null && m.pnl >= 0
-  const [editingDate, setEditingDate] = React.useState(false)
-  const [confirmDelete, setConfirmDelete] = React.useState(false)
-
-  // What the company did, separated from what the market did. Up 18% while the
-  // index rose 11% is a 7% contribution from the business — and the raw number
-  // alone would have flattered it.
-  const bench = benchmarkReturn(pos.snapshot, price, indexNow)
+/**
+ * The lots, as a ledger. No analysis here — that lives above, on the holding.
+ * These rows say how the position was built and let each entry be corrected.
+ */
+function LotLedger({ agg, price, currency, indexNow, onSell, onRefresh }) {
+  const [editing, setEditing] = useState(null)
+  const [menu, setMenu] = useState(null)
+  const bench = benchmarkReturn(agg.snapshot, price, indexNow)
+  const heldDays = agg.firstBuy ? Math.floor((Date.now() - agg.firstBuy) / 86400000) : 0
 
   return (
-    <div className="bg-navy-900/40 rounded-lg p-2.5 space-y-1.5">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-[11px] text-slate-400">
-            {pos.shares} × {money(pos.buyPrice, c)}
-            <button onClick={() => setEditingDate(e => !e)}
-              className="text-slate-500 hover:text-accent ml-1.5">
-              {dateStr(pos.buyDate)} ✎
-            </button>
-            {closed && pos.sellPrice != null && <> → sold {money(pos.sellPrice, c)} {dateStr(pos.sellDate)}</>}
-          </div>
-          {pos.snapshot?.estimate?.base > 0 && (
-            <div className="text-[10px] text-slate-600">
-              {pos.snapshot.reconstructed ? 'When you bought (rebuilt): ' : 'When you bought: '}
-              price {money(pos.snapshot.price, c)}, estimate mid {money(pos.snapshot.estimate.base, c)}
+    <div className="bg-navy-900/50 rounded-lg p-2.5 space-y-1.5">
+      {agg.lots.map(p => {
+        const lm = positionMath(p, price)
+        return (
+          <div key={p.id} className="space-y-1">
+            <div className="flex items-center justify-between text-[11px]">
+              <div className="min-w-0">
+                <button onClick={() => setEditing(editing === p.id ? null : p.id)}
+                  className="text-slate-400 hover:text-accent">
+                  {dstr(p.buyDate)} ✎
+                </button>
+                <span className="text-slate-500 ml-2">
+                  {p.shares} × {money(p.buyPrice, currency)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {lm?.pnl != null && (
+                  <span className={lm.pnl >= 0 ? 'text-bull' : 'text-bear'}>{signed(lm.pnl, currency)}</span>
+                )}
+                <button onClick={() => setMenu(menu === p.id ? null : p.id)}
+                  className="text-slate-600 hover:text-slate-300 px-1">⋯</button>
+              </div>
             </div>
-          )}
-          {pos.snapshot?.backfilled && (
-            <div className="text-[10px] text-neutral">
-              baseline starts from when this was added — set the real purchase date to fix
-            </div>
-          )}
-          {pos.snapshot?.missing?.length > 0 && (
-            <div className="text-[10px] text-slate-600">
-              not available for that date: {pos.snapshot.missing.join(', ')}
-            </div>
-          )}
-        </div>
-        <div className="text-right shrink-0">
-          <div className="text-[11px] text-slate-400">{money(m.cost, c)}</div>
-          {m.pnl != null && (
-            <div className={`text-xs font-mono ${up ? 'text-bull' : 'text-bear'}`}>
-              {up ? '+' : ''}{money(m.pnl, c)} ({m.pnlPct >= 0 ? '+' : ''}{m.pnlPct.toFixed(1)}%)
-            </div>
-          )}
-        </div>
-      </div>
 
-      {editingDate && !closed && (
-        <DateEditor current={pos.buyDate}
-          onCancel={() => setEditingDate(false)}
-          onSet={async ms => { setEditingDate(false); await onSetDate(ms) }} />
+            {p.note && <p className="text-[10px] text-slate-600 italic">“{p.note}”</p>}
+
+            {editing === p.id && (
+              <DateEditor current={p.buyDate}
+                onCancel={() => setEditing(null)}
+                onSet={async ms => { setEditing(null); await updatePositionDate(p.id, ms); onRefresh() }} />
+            )}
+
+            {menu === p.id && (
+              <LotMenu onSell={() => { setMenu(null); onSell(p) }}
+                onDelete={async () => { setMenu(null); await removePosition(p.id); onRefresh() }}
+                onCancel={() => setMenu(null)} />
+            )}
+          </div>
+        )
+      })}
+
+      {/* Entry baseline for the HOLDING — share-weighted, so a small top-up
+          barely moves it and a large one properly does. */}
+      {agg.entryEstimate && (
+        <div className="text-[10px] text-slate-600 pt-1 border-t border-navy-800">
+          Range at entry {money(agg.entryEstimate.low, currency)}–{money(agg.entryEstimate.high, currency)}
+          {agg.entryEstimate.coverage < 100 && <> · from {agg.entryEstimate.coverage}% of shares</>}
+          {agg.spansYears && (
+            <> · averaged across purchases from {dstr(agg.firstBuy)} to {dstr(agg.lastBuy)}</>
+          )}
+        </div>
       )}
 
-      {bench && (
+      {/* Only when time has passed and the gap is worth a line. */}
+      {bench?.alphaPct != null && heldDays >= 30 && Math.abs(bench.alphaPct) >= 3 && (
         <div className="text-[10px] text-slate-500">
-          {bench.alphaPct != null ? (
-            <>stock {sign(bench.stockPct)}% · index {sign(bench.indexPct)}% ·{' '}
-              <span className={bench.alphaPct >= 0 ? 'text-bull' : 'text-bear'}>
-                {sign(bench.alphaPct)}% from the company
-              </span>
-              {bench.vixThen != null && <span className="text-slate-600"> · bought at VIX {Math.round(bench.vixThen)}</span>}
-            </>
-          ) : <span className="text-slate-600">{bench.note}</span>}
+          <span className={bench.alphaPct >= 0 ? 'text-bull' : 'text-bear'}>
+            {bench.alphaPct >= 0 ? '+' : ''}{bench.alphaPct}% vs the index
+          </span>
+          <span className="text-slate-600"> since you bought</span>
         </div>
       )}
 
-      {/* Only the estimate bar is per-lot — it depends on what you paid and
-          when. The rest live on the ticker header above. */}
-      {!closed && health?.estimate?.available && (
-        <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-slate-500 w-24 shrink-0">vs your entry</span>
-          <Bars level={health.estimate.level} />
-          <span className="text-slate-400 truncate">{health.estimate.label}</span>
-        </div>
-      )}
-
-      {pos.note && (
-        <p className="text-[11px] text-slate-500 italic border-l-2 border-navy-700 pl-2">
-          “{pos.note}”
-        </p>
-      )}
-
-      {!closed && triggers && (
-        <ExitPlan pos={pos} triggers={triggers} price={price} onSave={onSavePlan} />
-      )}
-
-
-      {pos.snapshot?.isLate && !health && (
+      {agg.snapshot?.backfilled && (
         <p className="text-[10px] text-neutral">
-          ⚠ Added after purchase — the starting point is the day it was entered, not the day it was bought.
+          set the real purchase dates to compare from when you actually bought
         </p>
       )}
+    </div>
+  )
+}
 
-      {/* Delete sits on its own line rather than beside the exit-plan toggle:
-          the two were a few pixels apart, and one is an expand while the other
-          destroys a record permanently. It also asks first — an accidental tap
-          previously wiped a lot with no way back, and a position carries a
-          purchase price and date that can't be recovered from anywhere. */}
-      <div className="flex items-center gap-3 pt-0.5">
-        {!closed && onSell && (
-          <button onClick={onSell} className="text-[11px] text-slate-400 hover:text-bear">
-            Record sale
+function LotMenu({ onSell, onDelete, onCancel }) {
+  const [confirm, setConfirm] = useState(false)
+  return (
+    <div className="flex items-center gap-3 bg-navy-800/60 rounded px-2 py-1.5">
+      {confirm ? (
+        <>
+          <span className="text-[10px] text-bear">Delete this lot permanently?</span>
+          <button onClick={onDelete}
+            className="text-[10px] px-2 py-0.5 rounded border border-bear/60 text-bear hover:bg-bear/10">
+            Delete
           </button>
-        )}
-      </div>
-      <div className="flex justify-end pt-1 border-t border-navy-800/60">
-        {confirmDelete ? (
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-bear">Delete this lot permanently?</span>
-            <button onClick={() => { setConfirmDelete(false); onDelete() }}
-              className="text-[10px] px-2 py-0.5 rounded border border-bear/60 text-bear hover:bg-bear/10">
-              Delete
-            </button>
-            <button onClick={() => setConfirmDelete(false)}
-              className="text-[10px] text-slate-500 hover:text-slate-300">cancel</button>
-          </div>
-        ) : (
-          <button onClick={() => setConfirmDelete(true)}
-            className="text-[10px] text-slate-600 hover:text-bear"
+          <button onClick={() => setConfirm(false)} className="text-[10px] text-slate-500">cancel</button>
+        </>
+      ) : (
+        <>
+          <button onClick={onSell} className="text-[11px] text-slate-300 hover:text-bear">Record sale</button>
+          <button onClick={() => setConfirm(true)} className="text-[11px] text-slate-600 hover:text-bear ml-auto"
             title="Only for a mis-entry — a sale should use Record sale, which keeps the history">
             Delete lot
           </button>
-        )}
+          <button onClick={onCancel} className="text-[11px] text-slate-600">close</button>
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Set a purchase date in the terms people remember it. Changing it rebuilds the
+ * baseline from that date's prices and filings.
+ */
+function DateEditor({ current, onSet, onCancel }) {
+  const [val, setVal] = useState(current ? new Date(current).toISOString().slice(0, 10) : '')
+  const AGO = [['1m', 30], ['3m', 91], ['6m', 182], ['1y', 365], ['2y', 730]]
+  return (
+    <div className="bg-navy-800/60 rounded p-2 space-y-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {AGO.map(([label, days]) => (
+          <button key={label} onClick={() => onSet(Date.now() - days * 86400000)}
+            className="text-[10px] px-2 py-0.5 rounded-full border border-navy-700
+                       text-slate-500 hover:text-accent hover:border-accent/50">
+            {label} ago
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-1.5">
+        <input type="date" value={val} onChange={e => setVal(e.target.value)}
+          className="input-field text-xs flex-1" />
+        <button onClick={() => { const t = Date.parse(val); if (isFinite(t)) onSet(t) }}
+          className="text-[11px] text-accent hover:text-accent-light">Set</button>
+        <button onClick={onCancel} className="text-[11px] text-slate-500">cancel</button>
       </div>
     </div>
   )
 }
 
 /**
- * ExitPlan — the conditions worth reviewing this holding over, and the optional
- * price levels the user has set.
- *
- * Collapsed by default and silent when nothing has fired, because a section
- * that always shows something gets skimmed and then the one day it matters is
- * skimmed too. Fired conditions surface at the top row without expanding.
- *
- * The app never places a stop for you. It checks the one you chose against how
- * far this stock ordinarily moves in a day (ATR) and says whether that level
- * sits inside normal noise — the single most common reason a stop gets hit for
- * no reason. Where to place it depends on horizon and risk appetite the app
- * can't see.
+ * Exit plan for the holding. Tapping a level sets the alert — choosing a level
+ * and wanting to be told when it's reached are the same intent, so a separate
+ * save step only obscured that anything was being watched.
  */
-function ExitPlan({ pos, triggers, price, onSave }) {
-  const [open, setOpen] = React.useState(false)
-  const [stop, setStop] = React.useState(pos.plan?.stopPrice ?? '')
-  const [target, setTarget] = React.useState(pos.plan?.targetPrice ?? '')
-  const [saving, setSaving] = React.useState(false)
-
+function ExitPlan({ agg, triggers, price, currency, onSave }) {
+  const [open, setOpen] = useState(false)
   const fired = triggers?.fired || []
-  const profit = fired.filter(t => t.side === 'profit')
-  const loss = fired.filter(t => t.side === 'loss' || t.side === 'risk')
-
-  const stopCheck = stop > 0 && price > 0
-    ? assessStopPrice(+stop, price, [], undefined) : null
-
-  const save = async () => {
-    setSaving(true)
-    try {
-      await onSave({
-        stopPrice: stop === '' ? null : +stop,
-        targetPrice: target === '' ? null : +target,
-      })
-    } finally { setSaving(false) }
-  }
+  const plan = agg.lots[0]?.plan
 
   return (
-    <div className="pt-1">
+    <div className="pt-1 border-t border-navy-800">
       <button onClick={() => setOpen(o => !o)}
         className="w-full flex items-center gap-2 text-[11px] text-slate-500 hover:text-slate-300">
         <span>Exit plan</span>
-        {profit.length > 0 && <span className="text-bull">● {profit.length} profit</span>}
-        {loss.length > 0 && <span className="text-bear">● {loss.length} caution</span>}
-        {fired.length === 0 && <span className="text-slate-600">nothing triggered</span>}
+        {fired.length > 0 && <span className="text-neutral">{fired.length} to look at</span>}
+        {plan?.stopPrice > 0 && <span className="text-slate-600">alert {money(plan.stopPrice, currency)}</span>}
         <span className="ml-auto">{open ? '▲' : '▼'}</span>
       </button>
 
@@ -542,225 +522,58 @@ function ExitPlan({ pos, triggers, price, onSave }) {
             </div>
           ))}
 
-          {(triggers.watching || []).map(t => (
-            <div key={t.id} className="text-[10px] text-slate-600">{t.title} {t.detail}</div>
-          ))}
-          {(triggers.context || []).map(t => (
-            <div key={t.id} className="text-[10px] text-slate-500">{t.title}</div>
-          ))}
-
-          {triggers.baselineFrom && (
-            <p className="text-[10px] text-slate-600">
-              Drift measured from {new Date(triggers.baselineFrom).toLocaleDateString('en-IN',
-                { day: 'numeric', month: 'short' })}, when this was added — the conditions above
-              use full history and work now.
-            </p>
-          )}
-
-          {/* Suggested levels, each from a different basis and each carrying
-              its reasoning. Empty boxes asked the user to produce a number the
-              app is better placed to propose — and a level you can't justify is
-              one you abandon the first time it's tested. Still editable: these
-              are starting points, not instructions. */}
           {triggers.suggestions?.stops?.length > 0 && (
-            <div className="pt-1 border-t border-navy-800 space-y-1">
-              <div className="text-[10px] text-slate-500">Where a stop could sit</div>
+            <div className="space-y-1">
+              <div className="text-[10px] text-slate-500">Alert me if it falls below</div>
               {triggers.suggestions.stops.map(sg => (
-                <button key={sg.id} onClick={() => setStop(String(sg.price))}
-                  className="w-full text-left rounded px-2 py-1 hover:bg-navy-800/60 transition-colors">
-                  <div className="text-[11px] text-slate-300">
-                    {money(sg.price, pos.snapshot?.currency)}
-                    <span className="text-slate-500 ml-1.5">{sg.label}</span>
-                    {price > 0 && <span className="text-slate-600 ml-1.5">
-                      {Math.round(((sg.price - price) / price) * 100)}%</span>}
-                  </div>
-                  <div className="text-[10px] text-slate-600">{sg.why}</div>
-                </button>
+                <LevelOption key={sg.id} sg={sg} price={price} side="below" currency={currency}
+                  active={Number(plan?.stopPrice) === sg.price}
+                  onPick={() => onSave({ stopPrice: sg.price })} />
               ))}
             </div>
           )}
 
           {triggers.suggestions?.targets?.length > 0 && (
-            <div className="pt-1 border-t border-navy-800 space-y-1">
-              <div className="text-[10px] text-slate-500">Where to consider booking</div>
+            <div className="space-y-1">
+              <div className="text-[10px] text-slate-500">Alert me if it rises above</div>
               {triggers.suggestions.targets.map(sg => (
-                <button key={sg.id} onClick={() => setTarget(String(sg.price))}
-                  className="w-full text-left rounded px-2 py-1 hover:bg-navy-800/60 transition-colors">
-                  <div className="text-[11px] text-slate-300">
-                    {money(sg.price, pos.snapshot?.currency)}
-                    <span className="text-slate-500 ml-1.5">{sg.label}</span>
-                    {price > 0 && <span className="text-bull ml-1.5">
-                      +{Math.round(((sg.price - price) / price) * 100)}%</span>}
-                  </div>
-                  <div className="text-[10px] text-slate-600">{sg.why}</div>
-                </button>
+                <LevelOption key={sg.id} sg={sg} price={price} side="above" currency={currency}
+                  active={Number(plan?.targetPrice) === sg.price}
+                  onPick={() => onSave({ targetPrice: sg.price })} />
               ))}
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-2 pt-1 border-t border-navy-800">
-            <label className="block">
-              <span className="text-[10px] text-slate-500 block mb-0.5">Stop price</span>
-              <input type="number" inputMode="decimal" value={stop}
-                onChange={e => setStop(e.target.value)}
-                className="input-field text-xs w-full" placeholder="tap a level above" />
-            </label>
-            <label className="block">
-              <span className="text-[10px] text-slate-500 block mb-0.5">Target price</span>
-              <input type="number" inputMode="decimal" value={target}
-                onChange={e => setTarget(e.target.value)}
-                className="input-field text-xs w-full" placeholder="tap a level above" />
-            </label>
-          </div>
-
-          {triggers.stop?.assessment && (
-            <p className={`text-[10px] ${triggers.stop.assessment.tooTight ? 'text-neutral' : 'text-slate-600'}`}>
-              {triggers.stop.assessment.tooTight ? '⚠ ' : ''}{triggers.stop.assessment.note}
-            </p>
+          {(plan?.stopPrice > 0 || plan?.targetPrice > 0) && (
+            <button onClick={() => onSave({ stopPrice: null, targetPrice: null })}
+              className="text-[10px] text-slate-600 hover:text-bear">clear alerts</button>
           )}
-
-          <button onClick={save} disabled={saving}
-            className="text-[11px] text-accent hover:text-accent-light">
-            {saving ? 'Saving…' : 'Save plan'}
-          </button>
         </div>
       )}
     </div>
   )
 }
 
-/**
- * TickerGroup — everything true of the STOCK, once, with its lots beneath.
- *
- * Fundamentals, technicals and the estimate range are properties of the company:
- * three lots of the same stock have identical values for all three. Rendering
- * them per lot padded the page with repetition and made a multi-lot holding
- * harder to read than a single one, which is backwards.
- */
-function TickerGroup({ ticker, lots, price, health, estimate, indexNow, onOpen, renderLot }) {
-  const c = lots[0]?.snapshot?.currency
-  const totalShares = lots.reduce((t, p) => t + (Number(p.shares) || 0), 0)
-  const totalCost = lots.reduce((t, p) => t + (Number(p.shares) || 0) * (Number(p.buyPrice) || 0), 0)
-  const avgCost = totalShares > 0 ? totalCost / totalShares : null
-  const value = price > 0 ? totalShares * price : null
-  const pnl = value != null ? value - totalCost : null
-
+function LevelOption({ sg, price, side, currency, active, onPick }) {
+  const pct = price > 0 ? Math.round(((sg.price - price) / price) * 100) : null
   return (
-    <div className="bg-navy-800/40 rounded-lg p-3 space-y-2">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <span className="font-mono text-sm text-white">{ticker.replace(/\.(NS|BO)$/, '')}</span>
-          <button onClick={onOpen} className="text-[10px] text-slate-500 hover:text-accent ml-1.5">
-            analyse ↗
-          </button>
-          <div className="text-[11px] text-slate-500">
-            {totalShares} shares · avg {money(avgCost, c)}
-            {lots.length > 1 && <span className="text-slate-600"> · {lots.length} lots</span>}
-          </div>
-        </div>
-        <div className="text-right shrink-0">
-          <div className="text-sm text-slate-300">
-            {price > 0 ? money(price, c)
-              : <span className="text-[10px] text-slate-600">price unavailable</span>}
-          </div>
-          {pnl != null && (
-            <div className={`text-xs font-mono ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
-              {pnl >= 0 ? '+' : ''}{money(pnl, c)}
-            </div>
-          )}
-        </div>
+    <button onClick={onPick}
+      className={`w-full text-left rounded px-2 py-1 transition-colors border ${
+        active ? 'border-accent/50 bg-navy-800/60' : 'border-transparent hover:bg-navy-800/40'
+      } ${sg.tooClose ? 'opacity-60' : ''}`}>
+      <div className="text-[11px] text-slate-300">
+        {active && <span className="text-accent mr-1">✓</span>}
+        {money(sg.price, currency)}
+        <span className={sg.tooClose ? 'text-neutral ml-1.5' : 'text-slate-500 ml-1.5'}>
+          {sg.tooClose ? '⚠ ' : ''}{sg.label}
+        </span>
+        {pct != null && (
+          <span className={side === 'above' ? 'text-bull ml-1.5' : 'text-slate-600 ml-1.5'}>
+            {Math.abs(pct)}% {side}
+          </span>
+        )}
       </div>
-
-      {/* Where the stock stands now, once — the same for every lot. The
-          per-lot rows below compare against what each ENTRY was, which is a
-          different question and lives with the lot it belongs to. */}
-      {estimate?.ok && (
-        <div className="text-[11px] text-slate-500 pt-1 border-t border-navy-800">
-          Estimate {money(estimate.target.low, c)}–{money(estimate.target.high, c)}
-          {price > 0 && (
-            <span className={estimate.target.base >= price ? 'text-bull ml-1.5' : 'text-bear ml-1.5'}>
-              ({estimate.upside?.base >= 0 ? '+' : ''}{estimate.upside?.base}% to mid)
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Stock-level bars: the same for every lot, so shown once. */}
-      {health && (
-        <div className="space-y-1 pt-1 border-t border-navy-800">
-          {['fundamental', 'technical'].map(key => {
-            const b = health[key]
-            return (
-              <div key={key} className="flex items-center gap-2 text-[11px]">
-                <span className="text-slate-500 w-24 shrink-0">{BAR_LABELS[key]}</span>
-                <Bars level={b?.available ? b.level : null} />
-                <span className={`truncate ${b?.available ? 'text-slate-400' : 'text-slate-600'}`}>
-                  {b?.available ? b.label : b?.reason}
-                </span>
-              </div>
-            )
-          })}
-          {health.regime?.idiosyncratic && (
-            <p className="text-[10px] text-neutral">{health.regime.detail}</p>
-          )}
-          {health.stale && (
-            <p className="text-[10px] text-slate-600">from the last saved analysis</p>
-          )}
-        </div>
-      )}
-
-      <div className="space-y-1.5 pt-1">
-        {lots.map(renderLot)}
-      </div>
-    </div>
+      <div className="text-[10px] text-slate-600">{sg.why}</div>
+    </button>
   )
 }
-
-/**
- * Set a purchase date, in the terms people actually remember it. Changing it
- * rebuilds the baseline from that date's prices and filings, so the comparison
- * genuinely starts where the money did.
- */
-function DateEditor({ current, onSet, onCancel }) {
-  const [val, setVal] = React.useState(
-    current ? new Date(current).toISOString().slice(0, 10) : '')
-  const AGO = [['1 month', 30], ['3 months', 91], ['6 months', 182],
-               ['1 year', 365], ['2 years', 730]]
-  return (
-    <div className="bg-navy-800/60 rounded p-2 space-y-1.5">
-      <div className="flex flex-wrap gap-1.5">
-        {AGO.map(([label, days]) => (
-          <button key={label} type="button"
-            onClick={() => onSet(Date.now() - days * 86400000)}
-            className="text-[10px] px-2 py-0.5 rounded-full border border-navy-700
-                       text-slate-500 hover:text-accent hover:border-accent/50">
-            {label} ago
-          </button>
-        ))}
-      </div>
-      <div className="flex items-center gap-1.5">
-        <input type="date" value={val} onChange={e => setVal(e.target.value)}
-          className="input-field text-xs flex-1" />
-        <button onClick={() => { const t = Date.parse(val); if (isFinite(t)) onSet(t) }}
-          className="text-[11px] text-accent hover:text-accent-light">Set</button>
-        <button onClick={onCancel} className="text-[11px] text-slate-500">cancel</button>
-      </div>
-      <p className="text-[10px] text-slate-600">
-        Rebuilds the baseline from that date — anything unavailable for it is named rather than
-        guessed.
-      </p>
-    </div>
-  )
-}
-
-function groupByTicker(lots) {
-  const map = new Map()
-  for (const p of lots) {
-    if (!map.has(p.ticker)) map.set(p.ticker, [])
-    map.get(p.ticker).push(p)
-  }
-  for (const arr of map.values()) arr.sort((a, b) => (a.buyDate || 0) - (b.buyDate || 0))
-  return [...map.entries()]
-}
-
-const sign = v => (v == null ? '—' : (v >= 0 ? '+' : '') + v)

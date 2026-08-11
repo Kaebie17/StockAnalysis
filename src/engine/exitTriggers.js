@@ -92,11 +92,14 @@ export function suggestLevels({ price, estimate, technicals, priceHistory, buyPr
   // Volatility floor: far enough out that ordinary daily movement won't reach
   // it. The most common way a stop fails is being placed inside the noise.
   const a = atr(priceHistory)
+  const atrPct = (a > 0 && price > 0) ? (a / price) * 100 : null
   if (a > 0 && price > 0) {
     const p = round(price - a * TRIGGER_DEFAULTS.atrMultiple, 2)
     if (p > 0) stops.push({
-      id: 'atr', price: p, label: 'Outside normal movement',
-      why: `${TRIGGER_DEFAULTS.atrMultiple}× the ${round(a, 1)} average daily range — below the noise this stock makes on an ordinary day.`,
+      id: 'atr', price: p, label: 'Below the daily noise',
+      why: `This stock moves about ${round(a, 1)} (${round(atrPct, 1)}%) on an ordinary day. ` +
+           `${TRIGGER_DEFAULTS.atrMultiple} such days below today's price puts a stop outside routine movement, ` +
+           `so it isn't tripped by a normal session.`,
     })
   }
 
@@ -104,9 +107,20 @@ export function suggestLevels({ price, estimate, technicals, priceHistory, buyPr
   // view on value, which is exactly why it's worth having alongside one.
   const sup = technicals?.levels?.strongestSupport || technicals?.levels?.nearestSupport
   if (sup?.price > 0 && price > 0 && sup.price < price) {
+    // A support level can sit closer than one day's range, which makes it a poor
+    // stop however good a level it is: ordinary movement reaches it. Flagged
+    // rather than dropped — it's still where the floor is, it just shouldn't be
+    // presented as an equal option to one placed outside the noise.
+    const awayPct = ((price - sup.price) / price) * 100
+    const tooClose = atrPct != null && awayPct < atrPct * 1.5
     stops.push({
-      id: 'support', price: round(sup.price, 2), label: 'Below support',
-      why: `Buyers have turned up around ${round(sup.price, 0)} before${sup.touches ? ` (${sup.touches} times)` : ''}. Losing it says that floor has gone.`,
+      id: 'support', price: round(sup.price, 2),
+      label: tooClose ? 'Support — but very close' : 'Just below support',
+      tooClose,
+      why: `Buyers have turned up around ${round(sup.price, 0)} before${sup.touches ? ` (${sup.touches} times)` : ''}; losing it says that floor has gone. ` +
+           (tooClose
+             ? `But it's only ${round(awayPct, 1)}% away and this stock moves ${round(atrPct, 1)}% on an ordinary day — an average session could reach it.`
+             : `It sits ${round(awayPct, 1)}% below, clear of a typical day's move.`),
     })
   }
 
@@ -115,7 +129,8 @@ export function suggestLevels({ price, estimate, technicals, priceHistory, buyPr
   if (estimate?.ok && buyPrice > 0 && estimate.target.low > 0) {
     stops.push({
       id: 'thesis', price: round(estimate.target.low, 2), label: 'Thesis floor',
-      why: `The pessimistic end of your estimate. Below this the numbers no longer support ${round(buyPrice, 0)}, whatever the chart says.`,
+      why: `The pessimistic end of your estimate — the low case your own numbers support. ` +
+           `Below it, holding means expecting something the figures don't currently show.`,
     })
   }
 
@@ -135,7 +150,9 @@ export function suggestLevels({ price, estimate, technicals, priceHistory, buyPr
   }
 
   // Sorted so the nearest is first: the one most likely to matter soonest.
-  stops.sort((x, y) => y.price - x.price)
+  // Viable stops first; a level inside the daily noise goes last however good a
+  // chart level it is, because acting on it would mostly mean acting on noise.
+  stops.sort((x, y) => (x.tooClose === y.tooClose) ? y.price - x.price : (x.tooClose ? 1 : -1))
   targets.sort((x, y) => x.price - y.price)
   return { stops, targets }
 }
@@ -210,12 +227,11 @@ export function evaluateTriggers(pos, ctx = {}) {
   }
 
   // ── Loss side — thesis, not price ─────────────────────────────────────────
-  // The honest fundamental stop: you would not buy this today at what you paid.
-  if (est?.ok && pos.buyPrice > 0 && est.target.low < pos.buyPrice) {
-    add(trig('below-cost-estimate', 'loss', 'fired',
-      `Your estimate's low (${fmt(est.target.low)}) is under your cost (${fmt(pos.buyPrice)})`,
-      'Even the pessimistic end of your own range no longer reaches what you paid — the case for holding has to come from something other than the numbers you bought on.'))
-  }
+  // NOTE: a "your estimate's low is under your cost" condition used to live
+  // here. It was removed because it fires on arithmetic rather than on news:
+  // buy anywhere but the very bottom of a range, let the price drift down, and
+  // the low end is below cost by definition. It restated where the price sat
+  // relative to the range, which the range already shows.
 
   // Margin erosion against the company's own history.
   const marginNow = ctx.ratioResult?.ratios?.netMargin?.value
