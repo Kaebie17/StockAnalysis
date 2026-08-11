@@ -29,7 +29,7 @@ export async function fetchMarketRegime({ indian = true } = {}) {
   const volSymbol   = indian ? '^INDIAVIX' : '^VIX'
   const indexSymbol = indian ? '^NSEI' : '^GSPC'
 
-  let data = { vix: null, vixAvg: null, indexChangePct: null }
+  let data = { vix: null, vixAvg: null, indexChangePct: null, indexLevel: null }
   try {
     const [v, idx] = await Promise.allSettled([quote(volSymbol), quote(indexSymbol)])
     const vq = v.status === 'fulfilled' ? v.value : null
@@ -40,6 +40,11 @@ export async function fetchMarketRegime({ indian = true } = {}) {
       // informative than an absolute threshold in a market whose baseline drifts.
       vixAvg: vq?.fiftyDayAverage ?? null,
       indexChangePct: iq?.regularMarketChangePercent ?? null,
+      // The LEVEL, not just the day's move. Without it a position's entry index
+      // has nothing to be compared against, so every benchmark line fell back to
+      // "no index recorded" — including ones whose snapshot had a perfectly good
+      // entry level stored.
+      indexLevel: iq?.regularMarketPrice ?? null,
     }
   } catch { /* leave nulls — the bar reports unavailable */ }
 

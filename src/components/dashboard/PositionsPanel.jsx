@@ -5,7 +5,7 @@ import { usePositions, positionMath, removePosition, backfillSnapshot } from '..
 import { getCached } from '../../utils/db.js'
 import { fetchQuotes } from '../../api/quotesClient.js'
 import { analyzeMany } from '../../store/analyzeTicker.js'
-import { evaluateTriggers, assessStopPrice } from '../../engine/exitTriggers.js'
+import { evaluateTriggers, assessStopPrice, suggestLevels } from '../../engine/exitTriggers.js'
 import { saveExitPlan, updatePositionDate } from '../../store/usePositions.js'
 import { benchmarkReturn } from '../../engine/snapshotRebuild.js'
 import { positionHealth } from '../../engine/positionHealth.js'
@@ -182,6 +182,7 @@ export default function PositionsPanel({ open, onClose }) {
                 <TickerGroup key={ticker} ticker={ticker} lots={lots}
                   price={livePrice(ticker)}
                   health={healthFor(lots[0], state, regime, analyses, quotes)}
+                  estimate={triggersFor(lots[0], state, analyses, quotes, held)?.estimate}
                   indexNow={regime?.indexLevel ?? null}
                   onOpen={() => { load(ticker); onClose() }}
                   renderLot={p => (
@@ -306,7 +307,12 @@ function triggersFor(pos, state, analyses, quotes, allHeld) {
     return t + (Number(x.shares) || 0) * (px > 0 ? px : (Number(x.buyPrice) || 0))
   }, 0)
 
-  return evaluateTriggers(pos, {
+  const suggestions = suggestLevels({
+    price, estimate: est, technicals: src.technicals,
+    priceHistory: src.data?.priceHistory || [], buyPrice: pos.buyPrice,
+  })
+
+  return Object.assign(evaluateTriggers(pos, {
     price, estimate: est, ratioResult: src.ratioResult,
     marketExpectation: src.marketExpectation,
     guidance: isLoaded ? state.guidance : null,
@@ -318,7 +324,7 @@ function triggersFor(pos, state, analyses, quotes, allHeld) {
     priceHistory: src.data?.priceHistory || [],
     portfolioValue,
     plan: pos.plan,
-  })
+  }), { suggestions, estimate: est })
 }
 
 const BAR_LABELS = {
@@ -369,9 +375,10 @@ function Lot({ pos, price, closed, health, triggers, indexNow,
             </button>
             {closed && pos.sellPrice != null && <> → sold {money(pos.sellPrice, c)} {dateStr(pos.sellDate)}</>}
           </div>
-          {pos.snapshot?.reconstructed && (
+          {pos.snapshot?.estimate?.base > 0 && (
             <div className="text-[10px] text-slate-600">
-              baseline rebuilt from that date's prices and filings
+              {pos.snapshot.reconstructed ? 'When you bought (rebuilt): ' : 'When you bought: '}
+              price {money(pos.snapshot.price, c)}, estimate mid {money(pos.snapshot.estimate.base, c)}
             </div>
           )}
           {pos.snapshot?.backfilled && (
@@ -550,18 +557,59 @@ function ExitPlan({ pos, triggers, price, onSave }) {
             </p>
           )}
 
+          {/* Suggested levels, each from a different basis and each carrying
+              its reasoning. Empty boxes asked the user to produce a number the
+              app is better placed to propose — and a level you can't justify is
+              one you abandon the first time it's tested. Still editable: these
+              are starting points, not instructions. */}
+          {triggers.suggestions?.stops?.length > 0 && (
+            <div className="pt-1 border-t border-navy-800 space-y-1">
+              <div className="text-[10px] text-slate-500">Where a stop could sit</div>
+              {triggers.suggestions.stops.map(sg => (
+                <button key={sg.id} onClick={() => setStop(String(sg.price))}
+                  className="w-full text-left rounded px-2 py-1 hover:bg-navy-800/60 transition-colors">
+                  <div className="text-[11px] text-slate-300">
+                    {money(sg.price, pos.snapshot?.currency)}
+                    <span className="text-slate-500 ml-1.5">{sg.label}</span>
+                    {price > 0 && <span className="text-slate-600 ml-1.5">
+                      {Math.round(((sg.price - price) / price) * 100)}%</span>}
+                  </div>
+                  <div className="text-[10px] text-slate-600">{sg.why}</div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {triggers.suggestions?.targets?.length > 0 && (
+            <div className="pt-1 border-t border-navy-800 space-y-1">
+              <div className="text-[10px] text-slate-500">Where to consider booking</div>
+              {triggers.suggestions.targets.map(sg => (
+                <button key={sg.id} onClick={() => setTarget(String(sg.price))}
+                  className="w-full text-left rounded px-2 py-1 hover:bg-navy-800/60 transition-colors">
+                  <div className="text-[11px] text-slate-300">
+                    {money(sg.price, pos.snapshot?.currency)}
+                    <span className="text-slate-500 ml-1.5">{sg.label}</span>
+                    {price > 0 && <span className="text-bull ml-1.5">
+                      +{Math.round(((sg.price - price) / price) * 100)}%</span>}
+                  </div>
+                  <div className="text-[10px] text-slate-600">{sg.why}</div>
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-2 pt-1 border-t border-navy-800">
             <label className="block">
               <span className="text-[10px] text-slate-500 block mb-0.5">Stop price</span>
               <input type="number" inputMode="decimal" value={stop}
                 onChange={e => setStop(e.target.value)}
-                className="input-field text-xs w-full" placeholder="optional" />
+                className="input-field text-xs w-full" placeholder="tap a level above" />
             </label>
             <label className="block">
               <span className="text-[10px] text-slate-500 block mb-0.5">Target price</span>
               <input type="number" inputMode="decimal" value={target}
                 onChange={e => setTarget(e.target.value)}
-                className="input-field text-xs w-full" placeholder="optional" />
+                className="input-field text-xs w-full" placeholder="tap a level above" />
             </label>
           </div>
 
@@ -589,7 +637,7 @@ function ExitPlan({ pos, triggers, price, onSave }) {
  * them per lot padded the page with repetition and made a multi-lot holding
  * harder to read than a single one, which is backwards.
  */
-function TickerGroup({ ticker, lots, price, health, indexNow, onOpen, renderLot }) {
+function TickerGroup({ ticker, lots, price, health, estimate, indexNow, onOpen, renderLot }) {
   const c = lots[0]?.snapshot?.currency
   const totalShares = lots.reduce((t, p) => t + (Number(p.shares) || 0), 0)
   const totalCost = lots.reduce((t, p) => t + (Number(p.shares) || 0) * (Number(p.buyPrice) || 0), 0)
@@ -622,6 +670,20 @@ function TickerGroup({ ticker, lots, price, health, indexNow, onOpen, renderLot 
           )}
         </div>
       </div>
+
+      {/* Where the stock stands now, once — the same for every lot. The
+          per-lot rows below compare against what each ENTRY was, which is a
+          different question and lives with the lot it belongs to. */}
+      {estimate?.ok && (
+        <div className="text-[11px] text-slate-500 pt-1 border-t border-navy-800">
+          Estimate {money(estimate.target.low, c)}–{money(estimate.target.high, c)}
+          {price > 0 && (
+            <span className={estimate.target.base >= price ? 'text-bull ml-1.5' : 'text-bear ml-1.5'}>
+              ({estimate.upside?.base >= 0 ? '+' : ''}{estimate.upside?.base}% to mid)
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Stock-level bars: the same for every lot, so shown once. */}
       {health && (

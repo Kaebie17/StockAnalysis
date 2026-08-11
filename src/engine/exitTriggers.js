@@ -75,6 +75,72 @@ export function assessStopPrice(stopPrice, currentPrice, priceHistory, mult = TR
 }
 
 /**
+ * Levels the app can defensibly propose, each from a different basis — which is
+ * the point of offering more than one. The estimate range is what the business
+ * is worth; support and resistance are where buyers and sellers have actually
+ * turned up. Those disagree often, and the disagreement is informative.
+ *
+ * Nothing here is picked FOR the user. Each option carries the reasoning that
+ * produced it, because a level you can't justify is one you'll abandon the first
+ * time it's tested.
+ */
+export function suggestLevels({ price, estimate, technicals, priceHistory, buyPrice } = {}) {
+  const stops = []
+  const targets = []
+
+  // ── Stops ────────────────────────────────────────────────────────────────
+  // Volatility floor: far enough out that ordinary daily movement won't reach
+  // it. The most common way a stop fails is being placed inside the noise.
+  const a = atr(priceHistory)
+  if (a > 0 && price > 0) {
+    const p = round(price - a * TRIGGER_DEFAULTS.atrMultiple, 2)
+    if (p > 0) stops.push({
+      id: 'atr', price: p, label: 'Outside normal movement',
+      why: `${TRIGGER_DEFAULTS.atrMultiple}× the ${round(a, 1)} average daily range — below the noise this stock makes on an ordinary day.`,
+    })
+  }
+
+  // Chart floor: where buyers have previously stepped in. Independent of any
+  // view on value, which is exactly why it's worth having alongside one.
+  const sup = technicals?.levels?.strongestSupport || technicals?.levels?.nearestSupport
+  if (sup?.price > 0 && price > 0 && sup.price < price) {
+    stops.push({
+      id: 'support', price: round(sup.price, 2), label: 'Below support',
+      why: `Buyers have turned up around ${round(sup.price, 0)} before${sup.touches ? ` (${sup.touches} times)` : ''}. Losing it says that floor has gone.`,
+    })
+  }
+
+  // Thesis floor: the point where your own numbers stop supporting what you
+  // paid. Not a price level at all — a valuation one.
+  if (estimate?.ok && buyPrice > 0 && estimate.target.low > 0) {
+    stops.push({
+      id: 'thesis', price: round(estimate.target.low, 2), label: 'Thesis floor',
+      why: `The pessimistic end of your estimate. Below this the numbers no longer support ${round(buyPrice, 0)}, whatever the chart says.`,
+    })
+  }
+
+  // ── Targets ──────────────────────────────────────────────────────────────
+  if (estimate?.ok && estimate.target.high > 0) {
+    targets.push({
+      id: 'estimate-high', price: round(estimate.target.high, 2), label: 'Top of your estimate',
+      why: 'The optimistic end of what your own numbers support. Above it you are relying on a re-rating rather than on earnings.',
+    })
+  }
+  const res = technicals?.levels?.strongestResistance || technicals?.levels?.nearestResistance
+  if (res?.price > 0 && price > 0 && res.price > price) {
+    targets.push({
+      id: 'resistance', price: round(res.price, 2), label: 'At resistance',
+      why: `Sellers have appeared around ${round(res.price, 0)} before${res.touches ? ` (${res.touches} times)` : ''} — a natural place to take something off.`,
+    })
+  }
+
+  // Sorted so the nearest is first: the one most likely to matter soonest.
+  stops.sort((x, y) => y.price - x.price)
+  targets.sort((x, y) => x.price - y.price)
+  return { stops, targets }
+}
+
+/**
  * Evaluate every condition for one lot.
  *
  * @param pos       position record
