@@ -243,9 +243,23 @@ module.exports = async function handler(req, res) {
         })).filter(d => d.close != null)
       }
 
-      // Fallback: if yahoo-finance2 historical() failed, use Yahoo v8/finance/chart directly
-      // This endpoint needs no crumb and reliably returns 2yr OHLCV for all tickers
-      if (!history || history.length < 30) {
+      // Fallback to Yahoo's raw chart endpoint (no crumb needed, reliably 2yr
+      // OHLCV for all tickers) whenever the library path gave us something we
+      // can't compute technicals from.
+      //
+      // The trigger used to be `length < 30`, which missed the case that
+      // actually happens: chart() returns rows, but with null OHLC — a quote-only
+      // response, or an intraday-halted symbol. Those rows survive the
+      // `close != null` filter if close alone is present, so the array looks
+      // healthy while RSI, ATR and every candlestick pattern have nothing to
+      // read. Checking that the bars are USABLE rather than merely present is
+      // what stops a stock showing every metric except technicals.
+      const usableBars = (history || []).filter(d =>
+        d.close > 0 && d.high != null && d.low != null && d.open != null).length
+      if (!history || history.length < 30 || usableBars < history.length * 0.8) {
+        if (history?.length >= 30) {
+          console.warn(`[yf2] ${ticker}: ${history.length} bars but only ${usableBars} have full OHLC — refetching`)
+        }
         try {
           const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=2y&interval=1d&includePrePost=false`
           const chartRes = await fetch(chartUrl, {
@@ -267,7 +281,8 @@ module.exports = async function handler(req, res) {
                 adjClose: adj[i]            ?? ohlcv.close?.[i] ?? null,
                 volume:   ohlcv.volume?.[i] ?? null
               })).filter(d => d.close != null)
-              console.log(`[yf2] chart fallback: got ${history.length} days for ${ticker}`)
+              const full = history.filter(d => d.high != null && d.low != null && d.open != null).length
+              console.log(`[yf2] chart fallback: ${history.length} days for ${ticker} (${full} with full OHLC)`)
             }
           }
         } catch(e) {
@@ -282,9 +297,17 @@ module.exports = async function handler(req, res) {
       // Permanent, one-line: technicals need 30+ daily closes and the SMA200
       // needs 200. When a ticker silently shows no technicals this is the first
       // thing to check, and without it there's nothing in the logs to look at.
-      if (!history || history.length < 200) {
-        console.warn(`[yf2] ${ticker}: only ${history?.length ?? 0} daily closes ` +
-          `(technicals need 30+, SMA200 needs 200)`)
+      // One line whenever technicals will come out thin, naming which of the two
+      // reasons applies — too few bars, or bars without the OHLC that patterns
+      // and ATR need.
+      {
+        const n = history?.length ?? 0
+        const full = (history || []).filter(d =>
+          d.close > 0 && d.high != null && d.low != null && d.open != null).length
+        if (n < 200 || full < n * 0.8) {
+          console.warn(`[yf2] ${ticker}: ${n} daily bars, ${full} with full OHLC ` +
+            `(need 30+ for technicals, 200 for SMA200, full OHLC for ATR and patterns)`)
+        }
       }
 
       // ── DIAGNOSTIC — fundamentalsTimeSeries field names ──────────────────

@@ -24,7 +24,7 @@ export default function EstimateLine({ currency, state }) {
   // One source of truth with ValuationPanel: the same hook resolves guidance,
   // applies stored revisions and fetches peers, so the dashboard line and the
   // detail screen can never disagree about what the estimate currently is.
-  const { estimate: est, overrides } = useEstimate(state)
+  const { estimate: est, overrides, sanity } = useEstimate(state)
 
   const cur = symbolFor(currency)
 
@@ -46,9 +46,10 @@ export default function EstimateLine({ currency, state }) {
   const isDegraded = degraded.length > 0
 
   return (
-    <span className="inline-flex items-center gap-1">
+    <span className="inline-flex items-center gap-1 flex-wrap min-w-0">
       <span>Estimate: </span>
-      <span className="font-mono font-bold text-white ml-1">
+      <span className={`font-mono font-bold ml-1 ${
+        sanity?.severity === 'high' ? 'text-slate-500 line-through decoration-neutral/60' : 'text-white'}`}>
         {cur}{fmt(target.low)} – {cur}{fmt(target.high)}
       </span>
       {upside?.base != null && (
@@ -56,7 +57,13 @@ export default function EstimateLine({ currency, state }) {
           ({upside.base >= 0 ? '+' : ''}{upside.base}%)
         </span>
       )}
-      <Dot open={open} setOpen={setOpen} degraded={isDegraded}>
+      <Dot open={open} setOpen={setOpen} degraded={isDegraded || sanity?.severity === 'high'}>
+        {sanity && (
+          <span className="block text-[11px] text-neutral border-b border-navy-800 pb-1.5 mb-1.5">
+            ⚠ {sanity.banner}
+            {sanity.issues.map((x, i) => <span key={i} className="block text-slate-500">{x}</span>)}
+          </span>
+        )}
         <span className="block space-y-1 text-[11px]">
           {/* Three lines. Enough to know what the number rests on, short enough
               to read at a glance — the working itself is in Valuation Detail. */}
@@ -91,10 +98,10 @@ export default function EstimateLine({ currency, state }) {
 
 function BasisRow({ label, value, pct }) {
   return (
-    <span className="flex items-baseline gap-1.5">
+    <span className="flex items-baseline gap-1.5 min-w-0">
       <span className="text-slate-500 w-14 shrink-0">{label}</span>
-      {pct && <span className="font-mono text-slate-300">{pct}</span>}
-      <span className="text-slate-500 truncate">{value}</span>
+      {pct && <span className="font-mono text-slate-300 shrink-0 tabular-nums">{pct}</span>}
+      <span className="text-slate-500 truncate min-w-0">{value}</span>
     </span>
   )
 }

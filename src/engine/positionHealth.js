@@ -46,6 +46,11 @@ export function estimateBar(position, currentEstimate, currentPrice) {
   const dir = drift >= 0 ? 'wider' : 'narrower'
   return {
     available: true, level,
+    // Drift is inherently directional — the gap widened or narrowed — so the
+    // reading is carried as a direction and a magnitude rather than a level
+    // that has to be decoded.
+    direction: Math.abs(drift) < 0.03 ? 'neutral' : (drift > 0 ? 'up' : 'down'),
+    magnitudePct: Math.abs(round(drift * 100)),
     gapThenPct: round(gapThen * 100), gapNowPct: round(gapNow * 100),
     driftPct: round(drift * 100),
     label: Math.abs(drift) < 0.03 ? 'Gap unchanged since purchase'
@@ -115,6 +120,8 @@ export function technicalBar(technicals) {
   if (!technicals?.available) return NA(technicals?.reason || 'Not enough price history')
 
   const sig = technicals.signals || {}
+  const ind = technicals.indicators || {}
+  const lv = technicals.levels || {}
   const pats = technicals.patterns || []
   const evidenced = pats.filter(p => p.evidenced)
 
@@ -127,14 +134,43 @@ export function technicalBar(technicals) {
   if (sig.goldenCross) { level += 1; parts.push('golden cross') }
   if (sig.deathCross)  { level -= 1; parts.push('death cross') }
 
+  // MACD — computed all along and ignored by this bar. A crossover is the most
+  // commonly acted-on momentum signal there is; leaving it out while scoring RSI
+  // was arbitrary.
+  if (sig.macdBullCross) { level += 1; parts.push('MACD crossed up') }
+  if (sig.macdBearCross) { level -= 1; parts.push('MACD crossed down') }
+
   // Evidenced patterns carry weight; the rest are mentioned, not scored.
   for (const p of evidenced) {
     level += p.type === 'bullish' ? 1 : p.type === 'bearish' ? -1 : 0
     parts.push(p.name.toLowerCase())
   }
 
+  // RSI divergence — price making a new extreme that momentum doesn't confirm.
+  // Weaker evidence than a crossover and interpretation-dependent, so it moves
+  // the bar by less and is named for what it is.
+  if (sig.rsiBullDiv) { level += 1; parts.push('bullish RSI divergence') }
+  if (sig.rsiBearDiv) { level -= 1; parts.push('bearish RSI divergence') }
+
   if (sig.rsiOverbought) { level -= 1; parts.push('RSI overbought') }
   if (sig.rsiOversold)   { level += 1; parts.push('RSI oversold') }
+
+  // Position against the levels the engine already found. Sitting just above
+  // strong support is a materially different situation from mid-range, and the
+  // bar had no way to see it.
+  const price = ind.price
+  const sup = lv.strongestSupport || lv.nearestSupport
+  const res = lv.strongestResistance || lv.nearestResistance
+  if (price > 0 && sup?.price > 0 && (price - sup.price) / price < 0.03) {
+    parts.push(`holding above support at ${Math.round(sup.price)}`)
+  }
+  if (price > 0 && res?.price > 0 && (res.price - price) / price < 0.03) {
+    level -= 1
+    parts.push(`pressing against resistance at ${Math.round(res.price)}`)
+  }
+
+  // Unusual volume on the day, which the engine computes and nothing read.
+  if (ind.volume?.ratio > 2) parts.push(`volume ${ind.volume.ratio}× normal`)
 
   return {
     available: true, level: clamp(level, 0, 4),
@@ -142,6 +178,85 @@ export function technicalBar(technicals) {
     detail: parts.join(' · ') || 'Nothing notable',
     evidencedPatterns: evidenced.map(p => p.name),
     otherPatterns: pats.filter(p => !p.evidenced).map(p => p.name),
+  }
+}
+
+/**
+ * BAR — Re-rating setup.
+ *
+ * Separate from the technical bar because it answers a different question. The
+ * technical bar reads where price IS; this reads conditions that have tended to
+ * precede a change in what the market will pay. Blending them would let a
+ * coincident reading dilute a leading one, or the reverse.
+ *
+ * Level rises with the number and strength of setups pointing the same way, and
+ * sits at the middle when they disagree — because signals pointing opposite ways
+ * genuinely are no signal, and a midpoint is the honest representation of that.
+ */
+export function rerateBar(setupResult, rerating) {
+  const setups = setupResult?.setups || []
+  if (setups.length === 0 && !rerating?.detected) {
+    return NA('No setup conditions present')
+  }
+
+  let level = 2
+  const parts = []
+
+  // A confirmed re-rating outranks any setup: it has already happened.
+  if (rerating?.detected) {
+    level += rerating.direction === 'de-rated' ? -2 : 2
+    parts.push(rerating.direction === 'de-rated' ? 'has de-rated' : 'has re-rated up')
+  }
+
+  const strongWeight = s => (s.strength === 'strong' ? 1 : 0.5)
+  for (const s of setups) {
+    if (s.direction === 'bullish') level += strongWeight(s)
+    else if (s.direction === 'bearish') level -= strongWeight(s)
+    parts.push(s.label.toLowerCase())
+  }
+
+  // When directional setups point both ways the arithmetic still resolves to a
+  // number — three bullish against one bearish nets out bullish — but that is a
+  // vote count, not a reading. Genuinely mixed evidence is no signal, and the
+  // bar should say so rather than let the majority manufacture one.
+  const lean = setupResult?.lean
+  const mixed = setups.some(x => x.direction === 'bullish') &&
+                setups.some(x => x.direction === 'bearish')
+  if (mixed && !rerating?.detected) {
+    return {
+      available: true, level: 2,
+      direction: 'mixed',
+      label: 'signals pointing both ways',
+      detail: parts.join(' · '),
+      lean: null, setups, mixed: true,
+      caveat: 'These conditions contradict each other — taken together they say nothing.',
+    }
+  }
+
+  // Direction rather than only a strength level. A setup reading is
+  // fundamentally directional — "bullish" or "bearish" — and forcing it onto a
+  // 0-4 scale loses exactly the part that matters, while making a neutral
+  // reading indistinguishable from a weak one.
+  const direction = rerating?.detected
+    ? (rerating.direction === 'de-rated' ? 'down' : 'up')
+    : lean === 'bullish' ? 'up'
+    : lean === 'bearish' ? 'down'
+    : setups.length > 0 ? 'neutral' : null
+
+  return {
+    available: true,
+    level: clamp(Math.round(level), 0, 4),
+    direction,
+    label: parts[0] || 'conditions present',
+    detail: parts.join(' · '),
+    lean,
+    setups,
+    // Stated plainly wherever this is shown: these raise the odds of a move,
+    // they do not forecast one, and the directionless ones say nothing at all
+    // about which way.
+    caveat: setups.length > 0
+      ? 'Conditions that often precede a re-rating — not a prediction that one is coming.'
+      : null,
   }
 }
 
@@ -199,6 +314,7 @@ export function positionHealth(position, ctx = {}) {
     estimate:    estimateBar(position, ctx.currentEstimate, ctx.currentPrice),
     fundamental: fundamentalBar(position, ctx),
     technical:   technicalBar(ctx.technicals),
+    rerate:      rerateBar(ctx.setups, ctx.rerating),
     regime:      regimeBar(ctx.regime || {}),
     // True when the financials came from a saved analysis rather than a live
     // load. The price is still current (batch quote), but the statements are as

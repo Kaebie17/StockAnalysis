@@ -21,6 +21,8 @@
  * identical is how someone trusts a number they'd otherwise have questioned.
  */
 
+import { targetMultiple } from './targetMultiple.js'
+
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
@@ -165,7 +167,14 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
   const payout = ratioResult?.ratios?.dividendPayout?.value
   if (!(bps > 0)) return null
 
-  const retention = (payout != null && payout >= 0 && payout <= 100) ? 1 - payout / 100 : 0.8
+  // Retention from the payout actually reported. Where the latest year is
+  // missing it, the company's own historical average payout is used — the
+  // flat 80% it used to fall back to was a number I chose, and it fires on
+  // exactly the companies whose data is thinnest.
+  const histPayout = averagePayout(opts.incomeHistory)
+  const payoutPct = (payout != null && payout >= 0 && payout <= 100) ? payout : histPayout
+  if (payoutPct == null) return null           // no basis → no estimate
+  const retention = 1 - payoutPct / 100
   const growth = growthOverride != null ? growthOverride
     : (roe > 0 ? (roe / 100) * retention : null)
   if (growth == null) return null
@@ -205,7 +214,8 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
   const degraded = []
   if (multipleBasis !== 'observed' && multipleBasis !== 'revision')
     degraded.push(`Multiple from ${multipleLabel}`)
-  if (payout == null) degraded.push('Payout unknown — retention assumed 80%')
+  if (payout == null && histPayout != null)
+    degraded.push(`Payout from the ${round(histPayout, 0)}% average this company has paid, not the latest year`)
 
   return {
     ok: true, model: 'lender',
@@ -222,6 +232,354 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
     target, upside, degraded,
     epsPath: 'book × (ROE × retention) × P/B',
     basisSummary: `Book compounding at ${round(growth * 100, 1)}% (${round(roe, 1)}% ROE × ${round(retention * 100, 0)}% retained) · Multiple: ${multipleLabel}`,
+  }
+}
+
+/**
+ * Compound growth of any reported series, across every year available.
+ *
+ * Returns null rather than a number when the history won't support one — every
+ * caller then declines to produce an estimate, which is the honest outcome. A
+ * default here would be a figure of mine wearing the company's clothes.
+ */
+export function seriesCagr(history = [], field = 'revenue', label = null) {
+  const vals = (history || [])
+    .map(r => ({ year: yearOf(r), v: val(r?.[field]) }))
+    .filter(r => r.year != null && r.v > 0)
+    .sort((a, b) => a.year - b.year)
+  if (vals.length < 3) return null            // two points is a line, not a trend
+
+  const first = vals[0], last = vals[vals.length - 1]
+  const years = last.year - first.year
+  if (years < 2) return null
+  const growth = Math.pow(last.v / first.v, 1 / years) - 1
+  if (!isFinite(growth)) return null
+
+  // A CAGR outside this band is a recovery from a collapsed base or a one-off,
+  // not a rate to project forward.
+  if (growth > 0.6 || growth < -0.3) return null
+
+  return { growth, label: label || `${field} CAGR`, years, from: first.year, to: last.year }
+}
+
+/**
+ * How widely this stock's own multiple has ranged, as a proportion of its
+ * median. Used for the width of an estimate range so a steadily-rated business
+ * gets a narrow one and a volatile business a wide one — a fixed percentage
+ * says the same thing about every company, which is never true.
+ */
+export function multipleSpread(priceHistory = [], incomeHistory = [], field = 'eps') {
+  const closes = (priceHistory || [])
+    .filter(p => p?.date && p.close > 0)
+    .map(p => ({ t: Date.parse(p.date), close: p.close }))
+    .filter(p => isFinite(p.t))
+  if (closes.length < 100) return null
+
+  const ratios = []
+  for (const row of incomeHistory || []) {
+    const y = yearOf(row)
+    const denom = val(row?.[field])
+    if (y == null || !(denom > 0)) continue
+    const start = Date.UTC(y - 1, 3, 1), end = Date.UTC(y, 3, 0)
+    for (const c of closes) {
+      if (c.t < start || c.t > end) continue
+      ratios.push(c.close / denom)
+    }
+  }
+  if (ratios.length < 60) return null
+
+  ratios.sort((a, b) => a - b)
+  const q = p => ratios[Math.min(ratios.length - 1, Math.floor(p * ratios.length))]
+  const median = q(0.5)
+  if (!(median > 0)) return null
+  const lo = q(0.15) / median, hi = q(0.85) / median
+  // A degenerate spread (all observations identical) would collapse the range.
+  if (!(lo > 0.3) || !(hi < 3) || hi <= lo) return null
+  return { lo, hi, samples: ratios.length }
+}
+
+export function revenueCagr(history = [], { label } = {}) {
+  const r = seriesCagr(history, 'revenue', label)
+  if (r) return { ...r, label: `${r.label} (${r.from}–${r.to})` }
+  return null
+}
+
+/** Average dividend payout the company has actually paid. */
+export function averagePayout(history = []) {
+  const rates = []
+  for (const row of history || []) {
+    const np = val(row?.netProfit)
+    const div = val(row?.dividendPaid) ?? val(row?.dividend)
+    if (np > 0 && div >= 0) {
+      const pct = (div / np) * 100
+      if (pct >= 0 && pct <= 100) rates.push(pct)
+    }
+  }
+  if (rates.length === 0) return null
+  rates.sort((a, b) => a - b)
+  return rates[Math.floor(rates.length / 2)]
+}
+
+/**
+ * CYCLICAL — normalised earnings, not this year's.
+ *
+ * A commodity business earns what the commodity price allows, and the latest
+ * year records where the cycle is rather than what the business earns through
+ * one. Applying a through-cycle multiple to peak earnings double-counts the
+ * peak; at a trough it double-counts the trough. The standard correction is to
+ * apply a mid-cycle MARGIN to current revenue — revenue is far less
+ * cycle-sensitive than margin, so this keeps the company's actual scale while
+ * removing the swing.
+ */
+export function buildCyclicalEstimate(ratioResult, opts = {}) {
+  const { incomeHistory = [], priceHistory = [], balanceHistory = [], years = 1,
+          multipleOverride = null, growthOverride = null, peerBand = null } = opts
+  const price = ratioResult?.price
+  const revenue = ratioResult?.revenue
+  const eps = ratioResult?.eps
+  const netProfit = ratioResult?.netProfit
+  if (!(revenue > 0) || !(eps > 0) || !(netProfit > 0)) return null
+
+  // Mid-cycle margin: the median across every year available, which spans more
+  // of a cycle than any average of the last two or three.
+  const margins = []
+  for (const row of incomeHistory) {
+    const rev = val(row?.revenue), np = val(row?.netProfit)
+    if (rev > 0 && np != null) margins.push(np / rev)
+  }
+  if (margins.length < 4) return null          // too short to contain a cycle
+  const sorted = [...margins].sort((a, b) => a - b)
+  const midCycleMargin = sorted[Math.floor(sorted.length / 2)]
+  const currentMargin = netProfit / revenue
+  if (!(midCycleMargin > 0)) return null
+
+  const shares = netProfit / eps
+
+  // Revenue growth from this company's OWN record, not a default. A fixed 6%
+  // was firing for every commodity company regardless of history — the number
+  // was mine, not the business's. Measured across the full span available,
+  // because a commodity company's recent growth is a cycle position too.
+  const growthInfo = growthOverride != null
+    ? { growth: growthOverride, label: 'your revision' }
+    : revenueCagr(incomeHistory, { label: 'revenue CAGR over the cycle' })
+  if (growthInfo?.growth == null) return null      // no history → no estimate
+  const growth = growthInfo.growth
+  const projRevenue = revenue * Math.pow(1 + growth, years)
+  const normalisedProfit = projRevenue * midCycleMargin
+  const normalisedEps = normalisedProfit / shares
+
+  // The multiple is applied to NORMALISED earnings, so it must be a
+  // through-cycle multiple too — the median of what the market paid across the
+  // same span, not today's.
+  const band = forwardPeBand(priceHistory, incomeHistory)
+  let multiples, multipleBasis, multipleLabel
+  if (multipleOverride > 0) {
+    multiples = { low: multipleOverride * 0.85, base: multipleOverride, high: multipleOverride * 1.15 }
+    multipleBasis = 'revision'; multipleLabel = `your re-rating (${round(multipleOverride, 1)}×)`
+  } else if (band) {
+    multiples = { low: band.low, base: band.median, high: band.high }
+    multipleBasis = 'observed'; multipleLabel = `through-cycle P/E (${band.samples} days)`
+  } else if (peerBand?.median > 0) {
+    multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
+    multipleBasis = 'peer'; multipleLabel = 'peer multiples'
+  } else return null
+
+  // A band is only usable if it is actually a band: low < base < high, spanning
+  // a sensible width. The real failure mode here isn't width — it's a DEGENERATE
+  // band, where two of the three percentiles collapse onto the same value
+  // because the sample was too thin or the prices too flat. That renders as
+  // "69.85 – 69.85 – 201.94", which looks like a range and isn't one.
+  const degenerate = !(multiples.base > 0)
+    || multiples.low >= multiples.base
+    || multiples.high <= multiples.base
+  if (degenerate) return null
+  const target = {
+    low:  round(normalisedEps * multiples.low),
+    base: round(normalisedEps * multiples.base),
+    high: round(normalisedEps * multiples.high),
+  }
+  const upside = price > 0 ? {
+    low:  round(((target.low - price) / price) * 100, 1),
+    base: round(((target.base - price) / price) * 100, 1),
+    high: round(((target.high - price) / price) * 100, 1),
+  } : null
+
+  const cyclePosition = currentMargin > midCycleMargin * 1.25 ? 'above mid-cycle'
+    : currentMargin < midCycleMargin * 0.75 ? 'below mid-cycle' : 'near mid-cycle'
+
+  return {
+    ok: true, model: 'cyclical',
+    createdAt: Date.now(), horizonYears: years,
+    priceAtEstimate: round(price),
+    eps: round(eps), forwardEps: round(normalisedEps),
+    epsPath: 'revenue × mid-cycle margin ÷ shares',
+    marginPct: round(midCycleMargin * 100, 1),
+    marginLabel: `mid-cycle margin (median of ${margins.length} years)`,
+    marginSource: 'normalised',
+    currentMarginPct: round(currentMargin * 100, 1),
+    cyclePosition,
+    growth, growthPct: round(growth * 100, 1),
+    growthSource: growthOverride != null ? 'revision' : 'cagr',
+    growthLabel: `${growthInfo.label} — margin normalised separately`,
+    dilutionPct: 0, dilutionLabel: 'not modelled for a cyclical',
+    multiples, multipleBasis, multipleLabel,
+    target, upside,
+    degraded: [],
+    basisSummary: `Mid-cycle margin ${round(midCycleMargin * 100, 1)}% (currently ${round(currentMargin * 100, 1)}%, ${cyclePosition}) · ${multipleLabel}`,
+  }
+}
+
+/**
+ * CAPITAL-INTENSIVE — EV/EBITDA.
+ *
+ * Telecom, airports, toll roads: depreciation on a huge asset base swamps net
+ * profit, so net margin describes the accounting rather than the business, and
+ * P/E on a near-zero or negative EPS is meaningless. EBITDA before that
+ * depreciation is what these are actually valued on, and enterprise value is the
+ * matching numerator because the debt funding those assets is part of the price.
+ */
+export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
+  const { years = 1, multipleOverride = null, growthOverride = null, peerBand = null } = opts
+  const price = ratioResult?.price
+  const ebitda = ratioResult?.ebitda ?? ratioResult?.ratios?.ebitda?.value
+  const ev = ratioResult?.ev ?? ratioResult?.ratios?.ev?.value
+  const netDebt = (ratioResult?.totalDebt ?? 0) - (ratioResult?.cash ?? 0)
+  const eps = ratioResult?.eps
+  const netProfit = ratioResult?.netProfit
+  const shares = (netProfit > 0 && eps > 0) ? netProfit / eps : ratioResult?.shares
+  if (!(ebitda > 0) || !(shares > 0) || !(price > 0)) return null
+
+  const currentEvEbitda = ev > 0 ? ev / ebitda : null
+
+  // EBITDA growth measured from reported EBITDA where the history carries it,
+  // falling back to revenue growth — for a capital-intensive business with a
+  // stable cost base the two track closely, and that substitution is stated
+  // rather than silent. No default: without either, there is no estimate.
+  const growthInfo = growthOverride != null
+    ? { growth: growthOverride, label: 'your revision' }
+    : (seriesCagr(opts.incomeHistory, 'ebitda', 'EBITDA CAGR')
+       ?? revenueCagr(opts.incomeHistory, { label: 'revenue CAGR (EBITDA history unavailable)' }))
+  if (growthInfo?.growth == null) return null
+  const growth = growthInfo.growth
+  const forwardEbitda = ebitda * Math.pow(1 + growth, years)
+
+  let multiple, multipleBasis, multipleLabel
+  if (multipleOverride > 0) {
+    multiple = multipleOverride
+    multipleBasis = 'revision'; multipleLabel = `your re-rating (${round(multiple, 1)}× EBITDA)`
+  } else if (currentEvEbitda > 0) {
+    multiple = currentEvEbitda
+    multipleBasis = 'current'; multipleLabel = `current EV/EBITDA (${round(currentEvEbitda, 1)}×)`
+  } else if (peerBand?.median > 0) {
+    multiple = peerBand.median
+    multipleBasis = 'peer'; multipleLabel = 'peer EV/EBITDA'
+  } else return null
+
+  // EV → equity: subtract the net debt, because that part of the enterprise
+  // belongs to lenders rather than shareholders.
+  const toEquity = (m) => {
+    const impliedEv = forwardEbitda * m
+    return (impliedEv - netDebt) / shares
+  }
+  // Range width from how much this company's OWN multiple has actually varied,
+  // not a fixed ±15%. A steadily-rated business gets a tight range and a
+  // volatile one a wide range, which is the information a fixed spread erases.
+  const sp = multipleSpread(opts.priceHistory, opts.incomeHistory, 'ebitda') || { lo: 0.85, hi: 1.15 }
+  const target = {
+    low:  round(toEquity(multiple * sp.lo)),
+    base: round(toEquity(multiple)),
+    high: round(toEquity(multiple * sp.hi)),
+  }
+  if (!(target.base > 0)) return null
+
+  const upside = {
+    low:  round(((target.low - price) / price) * 100, 1),
+    base: round(((target.base - price) / price) * 100, 1),
+    high: round(((target.high - price) / price) * 100, 1),
+  }
+
+  return {
+    ok: true, model: 'ev-ebitda',
+    createdAt: Date.now(), horizonYears: years,
+    priceAtEstimate: round(price),
+    ebitda: round(ebitda), forwardEbitda: round(forwardEbitda),
+    netDebt: round(netDebt),
+    epsPath: 'EBITDA × EV/EBITDA, less net debt, ÷ shares',
+    marginPct: null, marginLabel: 'EBITDA-based — net margin not used', marginSource: 'n/a',
+    growth, growthPct: round(growth * 100, 1),
+    growthSource: growthOverride != null ? 'revision' : 'cagr',
+    growthLabel: growthInfo.label,
+    dilutionPct: 0, dilutionLabel: 'not modelled',
+    multiples: { low: round(multiple * sp.lo, 1), base: round(multiple, 1), high: round(multiple * sp.hi, 1) },
+    multipleBasis, multipleLabel,
+    target, upside, degraded: [],
+    basisSummary: `EBITDA ${round(forwardEbitda)} × ${round(multiple, 1)}× less net debt ${round(netDebt)} · ${multipleLabel}`,
+  }
+}
+
+/**
+ * LOSS-MAKING — EV/Sales.
+ *
+ * With no positive EPS every earnings-based method returns nothing, which is how
+ * the app has been treating these: silence. Revenue still exists and the market
+ * still prices it, so EV/Sales is the honest fallback — weak, and labelled as
+ * weak, but a number with a stated basis beats no number at all.
+ */
+export function buildEvSalesEstimate(ratioResult, opts = {}) {
+  const { years = 1, peerBand = null, multipleOverride = null, growthOverride = null } = opts
+  const price = ratioResult?.price
+  const revenue = ratioResult?.revenue
+  const ev = ratioResult?.ev ?? ratioResult?.ratios?.ev?.value
+  const netDebt = (ratioResult?.totalDebt ?? 0) - (ratioResult?.cash ?? 0)
+  const marketCap = ratioResult?.marketCap
+  const shares = marketCap > 0 && price > 0 ? marketCap / price : ratioResult?.shares
+  if (!(revenue > 0) || !(shares > 0) || !(price > 0)) return null
+
+  const currentEvSales = ev > 0 ? ev / revenue : null
+  const multiple = multipleOverride > 0 ? multipleOverride
+    : currentEvSales > 0 ? currentEvSales
+    : peerBand?.median > 0 ? peerBand.median : null
+  if (!(multiple > 0)) return null
+
+  const growthInfo = growthOverride != null
+    ? { growth: growthOverride, label: 'your revision' }
+    : revenueCagr(opts.incomeHistory, { label: 'revenue CAGR' })
+  if (growthInfo?.growth == null) return null
+  const growth = growthInfo.growth
+  const forwardRevenue = revenue * Math.pow(1 + growth, years)
+  const toEquity = m => ((forwardRevenue * m) - netDebt) / shares
+
+  const sp = multipleSpread(opts.priceHistory, opts.incomeHistory, 'revenue') || { lo: 0.75, hi: 1.25 }
+  const target = {
+    low:  round(toEquity(multiple * sp.lo)),
+    base: round(toEquity(multiple)),
+    high: round(toEquity(multiple * sp.hi)),
+  }
+  if (!(target.base > 0)) return null
+
+  return {
+    ok: true, model: 'ev-sales',
+    createdAt: Date.now(), horizonYears: years,
+    priceAtEstimate: round(price),
+    epsPath: 'revenue × EV/Sales, less net debt, ÷ shares',
+    marginPct: null, marginLabel: 'no profit to apply a margin to', marginSource: 'n/a',
+    growth, growthPct: round(growth * 100, 1),
+    growthSource: growthOverride != null ? 'revision' : 'cagr',
+    growthLabel: growthInfo.label,
+    dilutionPct: 0, dilutionLabel: 'not modelled',
+    multiples: { low: round(multiple * sp.lo, 2), base: round(multiple, 2), high: round(multiple * sp.hi, 2) },
+    multipleBasis: multipleOverride > 0 ? 'revision' : currentEvSales > 0 ? 'current' : 'peer',
+    multipleLabel: `EV/Sales ${round(multiple, 2)}×`,
+    target,
+    upside: {
+      low:  round(((target.low - price) / price) * 100, 1),
+      base: round(((target.base - price) / price) * 100, 1),
+      high: round(((target.high - price) / price) * 100, 1),
+    },
+    // Stated rather than implied: this is the weakest method here, used because
+    // the company has no earnings to value.
+    degraded: ['No profit — valued on sales, which ignores whether they convert to cash'],
+    basisSummary: `Revenue ${round(forwardRevenue)} × ${round(multiple, 2)}× sales, less net debt`,
   }
 }
 
@@ -359,12 +717,52 @@ export function buildEstimate(ratioResult, opts = {}) {
   // Lenders take the book-and-ROE path. The margin chain below describes a
   // manufacturer's P&L and produces a badly low number for a bank, whose
   // "revenue" is interest income.
-  if (opts.sectorType === 'bank' || opts.sectorType === 'nbfc') {
+  // ── Method selection ──────────────────────────────────────────────────────
+  // The sector-appropriate method is PREFERRED; the revenue-margin-P/E chain
+  // below is the fallback when the preferred one can't be computed (too little
+  // history, a missing input). Choosing the method is the first decision in a
+  // valuation, not an afterthought — running one model over every business is
+  // what produced a target five times the price for LIC and half fair value for
+  // SBIN.
+  //
+  // Each returns null rather than a wrong number when its inputs are absent, so
+  // falling through is always to a weaker method, never to a broken one.
+  const st = opts.sectorType
+
+  if (st === 'bank' || st === 'nbfc' || st === 'insurance' || st === 'financial') {
     const lender = buildLenderEstimate(ratioResult, opts)
     if (lender) return lender
-    // No book value — fall through rather than return nothing.
   }
 
+  if (st === 'cyclical') {
+    const cyc = buildCyclicalEstimate(ratioResult, opts)
+    if (cyc) return cyc
+  }
+
+  if (st === 'capital-intensive' || st === 'yield') {
+    const ev = buildEvEbitdaEstimate(ratioResult, opts)
+    if (ev) return ev
+  }
+
+  // Realty and holding companies need NAV or stake data the app doesn't hold.
+  // Rather than produce a number from a method that doesn't apply, they get the
+  // standard chain WITH the mismatch stated — an estimate carrying its own
+  // caveat is more useful than either silence or false confidence.
+  const methodCaveat = (st === 'realty')
+    ? 'Real estate is normally valued on the net asset value of the land bank; this is an earnings-based approximation.'
+    : (st === 'holding')
+    ? 'A holding company is normally valued as the sum of its stakes less a discount; this is an earnings-based approximation.'
+    : null
+
+  // No positive earnings — every method above needs them, so sales is what's
+  // left. Previously this returned nothing at all.
+  if (!(ratioResult?.eps > 0)) {
+    const sales = buildEvSalesEstimate(ratioResult, opts)
+    if (sales) return methodCaveat
+      ? { ...sales, degraded: [...sales.degraded, methodCaveat] } : sales
+  }
+
+  const degradedExtra = []
   const price     = ratioResult?.price
   const eps       = ratioResult?.eps
   const revenue   = ratioResult?.revenue
@@ -382,6 +780,7 @@ export function buildEstimate(ratioResult, opts = {}) {
   if (growthBasis.growth == null) {
     return blank('No guidance and no usable growth history — nothing to project from.', { price })
   }
+  if (methodCaveat) degradedExtra.push(methodCaveat)
 
   // ── margin ────────────────────────────────────────────────────────────────
   const marginBasis = marginOverride != null
@@ -415,6 +814,8 @@ export function buildEstimate(ratioResult, opts = {}) {
     projRevenue = null; projProfit = null
   }
 
+  let fittedSteps = null
+
   // ── multiple ──────────────────────────────────────────────────────────────
   // A re-rating is the one thing in this chain nothing mechanical can detect.
   // Growth and margin changes eventually show up in reported numbers; a
@@ -423,7 +824,39 @@ export function buildEstimate(ratioResult, opts = {}) {
   // while it de-rated. Only a human reading the reason (a rule change, a lost
   // advantage) can say so, which is why this override outranks every measured
   // basis below it rather than being blended with them.
-  const own = forwardPeBand(priceHistory, incomeHistory)
+  // Fitted target multiple: the stock's own historical anchor, adjusted by a
+  // premium or discount REGRESSED from its own record of how the market has
+  // priced its returns and growth. This is what analysts do — the flat median
+  // below gives a company earning materially better returns than its history
+  // exactly its history's multiple, which is the step that was missing.
+  const fitted = targetMultiple({
+    basis: 'pe', priceHistory, incomeHistory, balanceHistory,
+    forwardRoe: ratioResult?.ratios?.roe?.value ?? null,
+    forwardGrowth: growthBasis.growth != null ? growthBasis.growth * 100 : null,
+    peerBand,
+  })
+
+  let own = forwardPeBand(priceHistory, incomeHistory)
+
+  // A measured band should bracket, or at least neighbour, the multiple the
+  // stock trades at today. When it sits several times away, the band is not
+  // describing the current business: a company whose EPS jumped between the
+  // early years in the sample (a recent listing, a loss year, a demerger)
+  // produces historic ratios that have no bearing on what a forward multiple
+  // should be. LIC's band came out at 60-75x against a stock trading near 14x,
+  // and multiplying forward EPS by that gave a target five times the price.
+  //
+  // Rejecting it falls through to peers, then to today's multiple widened —
+  // both weaker bases, but weak and roughly right beats precise and absurd.
+  if (own && currentPe > 0) {
+    const ratio = own.median / currentPe
+    if (ratio > 2.5 || ratio < 0.4) {
+      console.info(`[estimate] discarding P/E band ${own.low}-${own.high}x — ` +
+                   `current multiple is ${round(currentPe, 1)}x, so the history isn't comparable`)
+      own = null
+    }
+  }
+
   let multiples, multipleBasis, multipleLabel
   if (multipleOverride != null && multipleOverride > 0) {
     const c = clamp(multipleOverride, PE_FLOOR, PE_CAP)
@@ -435,10 +868,20 @@ export function buildEstimate(ratioResult, opts = {}) {
     multiples = { low: round(c * spread.lo, 1), base: round(c, 1), high: round(c * spread.hi, 1) }
     multipleBasis = 'revision'
     multipleLabel = `your re-rating (${round(c, 1)}×)`
+  } else if (fitted && fitted.source === 'fitted') {
+    multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
+    multipleBasis = 'fitted'
+    multipleLabel = `${fitted.anchor}× historical anchor, adjusted for returns and growth`
+    fittedSteps = fitted.steps
   } else if (own) {
     multiples = { low: own.low, base: own.median, high: own.high }
     multipleBasis = 'observed'
     multipleLabel = `its own forward P/E range (${own.samples} days)`
+  } else if (fitted?.multiple > 0) {
+    multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
+    multipleBasis = 'historical-median'
+    multipleLabel = `its own median multiple over ${fitted.observations} years`
+    fittedSteps = fitted.steps
   } else if (peerBand?.median > 0) {
     multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
     multipleBasis = 'peer'
@@ -451,6 +894,18 @@ export function buildEstimate(ratioResult, opts = {}) {
     multipleLabel = "today's P/E ±25% (no usable history)"
   } else {
     return blank('No usable P/E — nothing to anchor a multiple on.', { price })
+  }
+
+  // Same degeneracy check as the sector paths: a band whose percentiles have
+  // collapsed onto each other renders as a range while being a single number
+  // with noise on one side. Widening to the observed spread is the honest
+  // repair — the multiple is still measured, only its dispersion is unknown.
+  if (multiples.low >= multiples.base || multiples.high <= multiples.base) {
+    const sp = multipleSpread(priceHistory, incomeHistory, 'eps')
+    multiples = sp
+      ? { low: round(multiples.base * sp.lo, 1), base: multiples.base, high: round(multiples.base * sp.hi, 1) }
+      : { low: round(multiples.base * 0.85, 1), base: multiples.base, high: round(multiples.base * 1.15, 1) }
+    multipleLabel += ' (dispersion from the wider price history)'
   }
 
   const target = {
@@ -467,7 +922,7 @@ export function buildEstimate(ratioResult, opts = {}) {
   // Which inputs are NOT on their best rung. The dashboard shows one small dot
   // when this is non-empty and nothing at all when it's empty — a warning that
   // shows constantly gets ignored, so silence has to be the normal state.
-  const degraded = []
+  const degraded = [...degradedExtra]
   if (growthBasis.rung !== 'best') degraded.push(`Growth from ${growthBasis.label}, not guidance`)
   if (marginBasis.rung === 'fallback' || marginBasis.rung === 'none')
     degraded.push(`Margin from ${marginBasis.label}`)
@@ -502,11 +957,82 @@ export function buildEstimate(ratioResult, opts = {}) {
     dilutionLabel: dilution.label,
 
     multiples, multipleBasis, multipleLabel,
+    multipleSteps: fittedSteps,        // the working behind the adjustment
     target, upside,
 
     financeability: financeabilityNote(ratioResult, g),
     degraded,                     // [] when everything is on its best basis
     basisSummary: `Growth: ${growthBasis.label} · Margin: ${marginBasis.label} · Multiple: ${multipleLabel}`,
+  }
+}
+
+/**
+ * Does this estimate survive contact with the other two opinions in the app?
+ *
+ * The point of a standing check rather than another sector special-case: every
+ * failure so far (LIC at 5x price, SBIN at half) was a MODEL-CHOICE error, and
+ * each was obvious the moment the number was set beside fair value and analyst
+ * consensus. Waiting for a person to notice is not a control.
+ *
+ * A wide divergence does not mean the market is wrong. It means one of three
+ * things is wrong, and the estimate is the one to suspect — it is the newest and
+ * the least corroborated. This does not silently correct anything; it marks the
+ * number as unreliable so it is read that way.
+ *
+ * @param estimate  from buildEstimate
+ * @param context   { price, fairValue: {low,high}, analystTarget: {low,high} }
+ */
+export function sanityCheck(estimate, context = {}) {
+  if (!estimate?.ok || !(estimate.target?.base > 0)) return null
+  const mid = estimate.target.base
+  const { price, fairValue, analystTarget } = context
+  const issues = []
+
+  // 1 — against the traded price. An estimate several times the price is a
+  // modelling error far more often than a genuine multi-bagger call.
+  if (price > 0) {
+    const r = mid / price
+    if (r > 3) issues.push({ severity: 'high',
+      note: `${round(r, 1)}× the traded price — a gap that size usually means the wrong model, not a mispricing.` })
+    else if (r < 0.33) issues.push({ severity: 'high',
+      note: `${round(r, 2)}× the traded price — the estimate is far below where the stock actually trades.` })
+    else if (r > 2 || r < 0.5) issues.push({ severity: 'medium',
+      note: `${round(r, 2)}× the traded price — worth checking the inputs before relying on it.` })
+  }
+
+  // 2 — against fair value, which uses a different method on the same data.
+  // Two independent routes disagreeing by this much means one of them is broken.
+  if (fairValue?.low > 0 && fairValue?.high > 0) {
+    const fvMid = (fairValue.low + fairValue.high) / 2
+    const r = mid / fvMid
+    // Tighter than the price check on purpose. Fair value and the estimate run
+    // different methods over the SAME statements, so they should broadly agree;
+    // price can legitimately sit far from both. SBIN sat at 0.60 of fair value
+    // — inside a 0.4 threshold and still plainly wrong — which is what set this.
+    if (r > 2 || r < 0.65) issues.push({ severity: r > 2.5 || r < 0.5 ? 'high' : 'medium',
+      note: `Fair value puts this near ${Math.round(fvMid)}; this estimate says ${Math.round(mid)}. Two methods on the same numbers should not disagree by ${r > 1 ? round(r, 1) + '×' : round(1 / r, 1) + '×'}.` })
+  }
+
+  // 3 — against consensus. Analysts can be wrong together, but being outside
+  // their whole range by a multiple is a signal about our arithmetic.
+  if (analystTarget?.low > 0 && analystTarget?.high > 0) {
+    if (mid > analystTarget.high * 2) issues.push({ severity: 'medium',
+      note: `Above the entire analyst range (${Math.round(analystTarget.low)}–${Math.round(analystTarget.high)}) by more than double.` })
+    else if (mid < analystTarget.low * 0.5) issues.push({ severity: 'medium',
+      note: `Below the entire analyst range (${Math.round(analystTarget.low)}–${Math.round(analystTarget.high)}) by more than half.` })
+  }
+
+  if (issues.length === 0) return null
+  const high = issues.some(i => i.severity === 'high')
+  return {
+    reliable: !high,
+    severity: high ? 'high' : 'medium',
+    issues: issues.map(i => i.note),
+    // What to say when the number is shown. Suppressing it entirely would hide
+    // the evidence that something is wrong; presenting it unmarked is worse.
+    banner: high
+      ? "This estimate doesn't hold up against the price or the other methods — treat it as unreliable."
+      : 'This estimate sits well outside the other readings — check the inputs.',
   }
 }
 

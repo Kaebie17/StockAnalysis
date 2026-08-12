@@ -10,6 +10,9 @@ import { getCached } from '../../utils/db.js'
 import { fetchQuotes } from '../../api/quotesClient.js'
 import { analyzeMany } from '../../store/analyzeTicker.js'
 import { evaluateTriggers, suggestLevels } from '../../engine/exitTriggers.js'
+import { detectSetups } from '../../engine/setups.js'
+import { forwardPeBand } from '../../engine/estimate.js'
+import { yearlyObservations } from '../../engine/targetMultiple.js'
 import { benchmarkReturn } from '../../engine/snapshotRebuild.js'
 import { aggregateLots, holdingMath, summaryLevel } from '../../engine/positionAggregate.js'
 
@@ -221,7 +224,24 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue,
       modelGrowth: est?.growth ?? null,
       incomeHistory: analysis.data?.incomeHistory || [],
     })
+    // Leading conditions, from data already fetched — volume, the multiple's
+    // position in its own band, the earnings-vs-multiple gap, sector divergence.
+    const band = forwardPeBand(analysis.data?.priceHistory || [], analysis.data?.incomeHistory || [])
+    const obs = yearlyObservations({
+      priceHistory: analysis.data?.priceHistory || [],
+      incomeHistory: analysis.data?.incomeHistory || [],
+      balanceHistory: analysis.data?.balanceHistory || [], basis: 'pe' })
+    const epsTrend = obs.length >= 2
+      ? (obs[obs.length - 1].eps > obs[obs.length - 2].eps ? 'improving' : 'deteriorating') : null
+    const setups = detectSetups({
+      priceHistory: analysis.data?.priceHistory || [],
+      currentMultiple: rr.ratios?.pe?.value ?? (rr.price / rr.eps),
+      band, observations: obs, earningsTrend: epsTrend,
+      relative: null,
+    })
+
     const h = positionHealth(agg, {
+      setups,
       currentEstimate: est, currentPrice: price,
       qualityScore: analysis.quality?.score ?? null,
       marginTrendPct: est?.marginTrendPct ?? null,
@@ -251,7 +271,8 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue,
   return (
     <div className="bg-navy-800/40 rounded-lg overflow-hidden">
       {/* Collapsed row — the whole portfolio should read in one screen. */}
-      <button onClick={onToggle} className="w-full flex items-center gap-3 px-3 py-2.5 text-left">
+      <button onClick={onToggle}
+        className="w-full flex items-center gap-3 px-3 py-2.5 text-left min-w-0">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-white">
             {agg.ticker.replace(/\.(NS|BO)$/, '')}
@@ -262,7 +283,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue,
           </div>
         </div>
         <Bars level={level} />
-        <div className="text-right w-24 shrink-0">
+        <div className="text-right w-24 shrink-0 tabular-nums">
           <div className="text-[13px] text-slate-200">{price > 0 ? money(price, c) : '—'}</div>
           {m?.pnl != null && (
             <div className={`text-[11px] ${m.pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
@@ -300,7 +321,10 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue,
             <div className="space-y-1">
               <BarRow label="Fundamentals" bar={health.fundamental} />
               <BarRow label="Technical" bar={health.technical} />
-              <BarRow label="vs your entry" bar={health.estimate} />
+              {health.rerate?.available && (
+                <BarRow label="Re-rating" bar={health.rerate} mode="direction" />
+              )}
+              <BarRow label="vs your entry" bar={health.estimate} mode="direction" />
             </div>
           )}
           {health?.stale && (
@@ -325,15 +349,53 @@ function quotesChange(analysis) {
   return analysis?.data?.meta?.change1d ?? null
 }
 
-function BarRow({ label, bar }) {
+/**
+ * One reading. Bars where the measure is a LEVEL (how strong), arrows where it
+ * is a DIRECTION (which way).
+ *
+ * Fundamentals and Technical describe a state — "quality steady", "below both
+ * moving averages" — and forcing an arrow onto those means inventing a direction
+ * for something that genuinely has none. Re-rating and estimate-drift are the
+ * opposite: they resolve to up, down or contradictory, and a 0-4 level buries
+ * exactly the part that matters. Neither notation suits both, so each row uses
+ * the one that fits it.
+ */
+function BarRow({ label, bar, mode = 'level' }) {
   return (
-    <div className="flex items-center gap-2 text-[11px]">
+    <div className="flex items-center gap-2 text-[11px] min-w-0">
       <span className="text-slate-500 w-24 shrink-0">{label}</span>
-      <Bars level={bar?.available ? bar.level : null} />
-      <span className={`truncate ${bar?.available ? 'text-slate-400' : 'text-slate-600'}`}>
+      {mode === 'direction'
+        ? <Arrow direction={bar?.available ? bar.direction : null}
+                 magnitude={bar?.magnitudePct} />
+        : <Bars level={bar?.available ? bar.level : null} />}
+      {/* min-w-0 is what makes truncate work at all inside a flex row — without
+          it the span refuses to shrink and pushes the row wider than its card. */}
+      <span className={`truncate min-w-0 ${bar?.available ? 'text-slate-400' : 'text-slate-600'}`}>
         {bar?.available ? bar.label : bar?.reason}
       </span>
     </div>
+  )
+}
+
+/**
+ * Direction glyph. `←→` for mixed, which is the one state bars cannot express
+ * at all — a contradictory reading rendered as a mid-level bar is
+ * indistinguishable from a weak but coherent one.
+ */
+function Arrow({ direction, magnitude }) {
+  const map = {
+    up:      { glyph: '↑',  cls: 'text-bull' },
+    down:    { glyph: '↓',  cls: 'text-bear' },
+    mixed:   { glyph: '←→', cls: 'text-neutral' },
+    neutral: { glyph: '→',  cls: 'text-slate-500' },
+  }
+  const d = map[direction] || { glyph: '·', cls: 'text-navy-700' }
+  return (
+    <span className={`inline-flex items-center gap-0.5 shrink-0 ${d.cls}`}
+          style={{ minWidth: 26 }}>
+      <span className="text-xs leading-none">{d.glyph}</span>
+      {magnitude > 0 && <span className="text-[10px] tabular-nums">{magnitude}%</span>}
+    </span>
   )
 }
 
@@ -368,8 +430,8 @@ function LotLedger({ agg, price, currency, indexNow, onSell, onRefresh }) {
         const lm = positionMath(p, price)
         return (
           <div key={p.id} className="space-y-1">
-            <div className="flex items-center justify-between text-[11px]">
-              <div className="min-w-0">
+            <div className="flex items-center justify-between gap-2 text-[11px] min-w-0">
+              <div className="min-w-0 truncate">
                 <button onClick={() => setEditing(editing === p.id ? null : p.id)}
                   className="text-slate-400 hover:text-accent">
                   {dstr(p.buyDate)} ✎

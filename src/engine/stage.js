@@ -22,8 +22,35 @@ export const SECTOR_TYPES = {
   STANDARD:  'standard',
   BANK:      'bank',
   NBFC:      'nbfc',
-  INSURANCE: 'insurance'
+  INSURANCE: 'insurance',
+  // Businesses whose earnings or asset base make a P/E-on-current-earnings
+  // valuation structurally wrong rather than merely imprecise.
+  CYCLICAL:  'cyclical',    // commodity-linked: current EPS is a cycle position
+  CAPITAL_INTENSIVE: 'capital-intensive',  // heavy D&A distorts net margin
+  REALTY:    'realty',      // lumpy project revenue; value sits in the asset base
+  HOLDING:   'holding',     // value is the sum of stakes, not consolidated EPS
+  YIELD:     'yield',       // REITs/InvITs: valued on distributions
 }
+
+// Commodity and commodity-linked: earnings swing with a price the company
+// doesn't set, so the latest year says where the cycle is, not what the business
+// earns through one.
+const CYCLICAL_KEYWORDS = [
+  'metal', 'steel', 'aluminium', 'aluminum', 'copper', 'zinc', 'mining', 'iron ore',
+  'cement', 'commodity chemical', 'fertiliser', 'fertilizer', 'sugar', 'paper',
+  'shipping', 'petrochemical', 'refin', 'crude',
+]
+
+// Heavy depreciation makes net margin a poor guide; these are conventionally
+// valued on EV/EBITDA.
+const CAPITAL_INTENSIVE_KEYWORDS = [
+  'telecom', 'telecommunication', 'wireless', 'tower', 'data center', 'data centre',
+  'airline', 'airport', 'port', 'toll', 'highway', 'infrastructure', 'pipeline',
+]
+
+const REALTY_KEYWORDS = ['real estate', 'realty', 'property developer', 'housing development']
+const HOLDING_KEYWORDS = ['holding compan', 'investment compan', 'conglomerate']
+const YIELD_KEYWORDS = ['reit', 'invit', 'infrastructure trust', 'real estate investment trust']
 
 // Known insurance tickers on NSE/Yahoo
 const INSURANCE_TICKERS = new Set([
@@ -58,6 +85,16 @@ export function detectSectorType(data) {
   // "Cholamandalam Investment and Finance", "Shriram Finance" etc. all say so
   // directly even when Yahoo's industry bucket doesn't.
   if (NBFC_KEYWORDS.some(k => industry.includes(k) || name.includes(k)))     return SECTOR_TYPES.NBFC
+
+  // Checked after the financial types (a housing-finance company is an NBFC
+  // first) and before STANDARD, since each needs a different valuation method.
+  const hay = `${industry} ${sector} ${name}`
+  if (YIELD_KEYWORDS.some(k => hay.includes(k)))   return SECTOR_TYPES.YIELD
+  if (HOLDING_KEYWORDS.some(k => hay.includes(k))) return SECTOR_TYPES.HOLDING
+  if (REALTY_KEYWORDS.some(k => hay.includes(k)))  return SECTOR_TYPES.REALTY
+  if (CYCLICAL_KEYWORDS.some(k => hay.includes(k))) return SECTOR_TYPES.CYCLICAL
+  if (CAPITAL_INTENSIVE_KEYWORDS.some(k => hay.includes(k))) return SECTOR_TYPES.CAPITAL_INTENSIVE
+
   return SECTOR_TYPES.STANDARD
 }
 

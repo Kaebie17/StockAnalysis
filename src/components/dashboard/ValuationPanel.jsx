@@ -7,6 +7,7 @@ import { useEstimate } from '../../store/useEstimate.js'
 import FactInputModal from './FactInputModal.jsx'
 import { useNewsFacts, keyOf, leverOf } from '../../store/useNewsFacts.js'
 import { computeFact } from '../../engine/factImpact.js'
+import { extractSegmentShares } from '../../engine/segmentShare.js'
 
 // Dot bar: 5 dots, filled based on upside magnitude
 // Green dots = upside, red dots = downside
@@ -411,6 +412,14 @@ function EstimateRevisions({ state }) {
     netMargin: r.ratios?.netMargin?.value != null ? r.ratios.netMargin.value / 100 : null,
     opMargin:  r.ratios?.operatingMargin?.value != null ? r.ratios.operatingMargin.value / 100 : null,
     nim: r.ratios?.nim?.value ?? null,
+    // For deriving a segment's share of revenue rather than asking for it.
+    incomeHistory: state.data?.incomeHistory || [],
+    // Segment percentages named in the annual report text — step 2 of the
+    // precedence chain. Parsed here rather than stored, since the AR text is
+    // already in state and the parse is cheap.
+    arSegments: React.useMemo(
+      () => extractSegmentShares(arTextOf(state.arData)), [state.arData]),
+    userShares: state.guidance?.segmentShares || {},
     currency: state.data?.currency,
     // From state, not state.data: computeAll returns sectorType at the top
     // level and normalize never writes it onto `data`. Reading the wrong one
@@ -730,3 +739,18 @@ function ConflictFact({ a, onUse, onKeep }) {
 }
 
 const sign = v => (v == null ? '—' : (v >= 0 ? '+' : '') + v)
+
+/** Whatever AR text is available, flattened for segment extraction. */
+function arTextOf(arData) {
+  if (!arData) return ''
+  if (typeof arData === 'string') return arData
+  const parts = []
+  if (arData.text) parts.push(arData.text)
+  if (Array.isArray(arData.blocks)) {
+    for (const b of arData.blocks) parts.push(typeof b === 'string' ? b : (b?.text || ''))
+  }
+  for (const v of Object.values(arData)) {
+    if (typeof v === 'string' && v.length > 200) parts.push(v)
+  }
+  return parts.join('\n')
+}

@@ -24,8 +24,13 @@
 const round = (v, d = 1) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const DAY = 86400000
 
-// Below this the deviation is noise or a drawdown, not a regime change.
-const MIN_MONTHS = 3
+// How long a deviation must persist before it counts as a re-rating — but ONLY
+// when nothing explains it. Time is a substitute for evidence: with no visible
+// cause, duration is the only way to tell a bad month from a permanent change.
+// Where a cause exists — a result, a policy change, a news item the user has
+// acted on — the cause IS the evidence and waiting is just delay. See
+// `opts.cause` below.
+const MIN_MONTHS_UNEXPLAINED = 3
 // How far outside the band counts as "outside" at all — a multiple grazing the
 // edge of its own historical range is unremarkable.
 const MIN_DEVIATION = 0.08
@@ -93,9 +98,15 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   const heldDays = sinceMs ? Math.round((Date.now() - sinceMs) / DAY)
                            : Math.round((Date.now() - recent[0].t) / DAY)
   const heldMonths = heldDays / 30
-  if (heldMonths < MIN_MONTHS) {
+
+  // A known cause removes the waiting period entirely. Requiring 90 days after a
+  // regulator restricts a business line, or after results reset what the company
+  // earns, is waiting for confirmation of something already confirmed.
+  const cause = opts.cause || null
+  if (!cause && heldMonths < MIN_MONTHS_UNEXPLAINED) {
     return { detected: false, current: round(median), band, heldDays,
-             reason: `Outside its range for ${Math.round(heldDays)} days — too soon to call it a re-rating` }
+             reason: `Outside its range for ${Math.round(heldDays)} days with nothing explaining it — ` +
+                     `too soon to tell a drawdown from a re-rating` }
   }
 
   // Sector index. Peers give a snapshot of what comparable companies trade at;
@@ -142,13 +153,17 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
     band,
     deviationPct: round(deviation * 100),
     heldDays, heldMonths: round(heldMonths, 0),
+    cause,
     peerContext, sectorContext,
     proposal: {
       multiple: round(median, 1),
       label: `Adopt ${round(median, 1)}× as the base multiple`,
     },
-    summary: `The market has paid about ${round(median, 1)}× for ${Math.round(heldMonths)} months, ` +
-             `${below ? 'below' : 'above'} the ${band.low}–${band.high}× range this stock used to trade in.`,
+    summary: cause
+      ? `The market has repriced this to about ${round(median, 1)}×, ${below ? 'below' : 'above'} its usual ` +
+        `${band.low}–${band.high}× range — following ${cause.label}.`
+      : `The market has paid about ${round(median, 1)}× for ${Math.round(heldMonths)} months, ` +
+        `${below ? 'below' : 'above'} the ${band.low}–${band.high}× range this stock used to trade in.`,
   }
 }
 

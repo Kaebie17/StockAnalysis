@@ -111,7 +111,7 @@ export function holdingMath(agg, price) {
  * behind a tap is what keeps it honest.
  */
 export function summaryLevel(health) {
-  const parts = ['fundamental', 'technical', 'estimate']
+  const parts = ['fundamental', 'technical', 'estimate', 'rerate']
     .map(k => health?.[k])
     .filter(b => b?.available && b.level != null)
   if (parts.length === 0) return null

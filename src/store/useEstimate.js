@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { listRevisions, appendRevision, saveEstimate, currentEstimate } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
-import { buildEstimate, scoreEstimate } from '../engine/estimate.js'
+import { buildEstimate, scoreEstimate, sanityCheck } from '../engine/estimate.js'
 import { assessFromQuarterly, growthDriftSuggestion } from '../engine/quarterlyBridge.js'
 import { fetchPeers } from '../api/peersClient.js'
 import { relativePerformance } from '../api/marketRegime.js'
@@ -118,16 +118,44 @@ export function useEstimate(state) {
   // Re-rating check runs against the same band the estimate uses, so a proposal
   // and the number it would replace are always talking about the same thing.
   const band = forwardPeBand(state?.data?.priceHistory || [], state?.data?.incomeHistory || [])
+  // Does anything explain the current deviation? A revision applied in the last
+  // couple of months, or a quarterly verdict, is a cause — and a cause makes the
+  // waiting period pointless, because it's the confirmation the wait was
+  // substituting for.
+  const RECENT_MS = 75 * 86400000
+  const recentRevision = revisions.find(r =>
+    r.disposition === 'revised' && (Date.now() - r.createdAt) < RECENT_MS)
+  const cause = recentRevision
+    ? { type: recentRevision.trigger || 'revision',
+        label: recentRevision.reason || 'a revision you applied',
+        at: recentRevision.createdAt }
+    : (guidanceAssessment?.verdict === 'miss' || guidanceAssessment?.verdict === 'beat')
+    ? { type: 'results',
+        label: `results that ${guidanceAssessment.verdict === 'beat' ? 'beat' : 'missed'} the plan`,
+        at: Date.now() }
+    : null
+
   const rerating = (!overrides.multiple && band)
     ? detectRerating(state?.data?.priceHistory || [], state?.data?.incomeHistory || [], band,
         // growth passed so the current reading is put on the same FORWARD basis
         // as the band; without it the comparison is trailing-vs-forward.
         { peerBand, currentEps: state?.ratioResult?.eps, growth: estimate?.growth ?? null,
-          relative })
+          relative, cause })
     : { detected: false, reason: overrides.multiple ? 'You have already set a multiple' : 'No band yet' }
 
   // How the last frozen estimate has fared. 'in-range' / 'above' / 'below',
   // plus whether its horizon has run out.
+  // Standing check against the price, fair value and consensus. Every failure
+  // so far was a model-choice error that was obvious once the number sat beside
+  // the other two — this makes that comparison automatic rather than dependent
+  // on someone noticing.
+  const sanity = sanityCheck(estimate, {
+    price: state?.ratioResult?.price,
+    fairValue: state?.valuation?.fvRangeLow > 0
+      ? { low: state.valuation.fvRangeLow, high: state.valuation.fvRangeHigh } : null,
+    analystTarget: state?.analystTarget || null,
+  })
+
   const score = (stored?.estimate && state?.ratioResult?.price)
     ? scoreEstimate(stored.estimate, state.ratioResult.price) : null
 
@@ -164,7 +192,7 @@ export function useEstimate(state) {
 
   return {
     estimate, overrides, revisions, peers, peerBand, rerating,
-    guidanceAssessment, quarterlySuggestion, score, stored, relative,
+    guidanceAssessment, quarterlySuggestion, score, stored, relative, sanity,
     handledKeys, deferredLevers,
     commit, freeze, reload,
   }

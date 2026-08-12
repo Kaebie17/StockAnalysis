@@ -17,6 +17,8 @@
  * the point of asking for facts at all.
  */
 
+import { resolveSegmentShare } from './segmentShare.js'
+
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const pct = (v, d = 1) => (v == null || !isFinite(v) ? null : +(v * 100).toFixed(d))
 
@@ -320,7 +322,28 @@ export const FACT_TYPES = [
       // the rest of the business weighs. With the segment's share of revenue the
       // blend is arithmetic; without it, that share is the one fact to ask for.
       if (f.scope === 'segment') {
-        const share = (+f.segmentShare) / 100
+        // Derive the share before asking for it. For a lender the split between
+        // interest income and other income is in the P&L, so asking would be
+        // asking for something the app can compute; for a diversified company it
+        // may be in the annual report. Only when neither reaches it is the user
+        // the right source.
+        let share = (+f.segmentShare) / 100
+        let shareNote = null
+        if (!(share > 0)) {
+          const resolved = resolveSegmentShare({
+            segmentText: f.sourceText || f.segmentName || '',
+            sectorType: ctx.sectorType,
+            incomeHistory: ctx.incomeHistory || [],
+            arSegments: ctx.arSegments || [],
+            userShares: ctx.userShares || {},
+          })
+          if (resolved?.pct > 0) {
+            share = resolved.pct / 100
+            shareNote = `${resolved.pct}% share ${resolved.source === 'derived' ? 'computed from the statements'
+              : resolved.source === 'annual-report' ? 'from the annual report' : 'you entered earlier'}` +
+              (resolved.conflict ? ` — ${resolved.conflict}` : '')
+          }
+        }
         if (!(share > 0)) {
           return fail(`This is growth for one part of the business (loans, AUM, a division), not the ` +
                       `whole company. Give that segment's share of revenue and the overall rate follows.`,
@@ -333,6 +356,7 @@ export const FACT_TYPES = [
         const speakerNote = f.speaker === 'third-party'
           ? ' (a third-party forecast, not company guidance)' : ''
         return apply('growth', ctx.growth, blended, [
+          ...(shareNote ? [shareNote] : []),
           `${round(segRate * 100, 1)}% on the ${round(share * 100, 0)}% of revenue that segment represents${speakerNote}`,
           `rest of the business assumed to continue at ${round(rest * 100, 1)}%`,
           `→ blended ${round(blended * 100, 1)}% overall`,
