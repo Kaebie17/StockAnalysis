@@ -55,6 +55,106 @@ export async function fetchMarketRegime({ indian = true } = {}) {
 export function clearRegimeCache() { cache = null }
 
 /**
+ * Sector index for a company, from its sector/industry labels.
+ *
+ * A de-rating measured only against a stock's own history can't tell "the market
+ * changed its mind about this company" from "…about this whole industry" — and
+ * those have very different odds of reverting. The sector index is what
+ * separates them.
+ */
+const SECTOR_INDICES = [
+  [/bank/i,                                    '^NSEBANK',   'Nifty Bank'],
+  [/financial|nbfc|credit|insurance|finance/i, '^CNXFIN',    'Nifty Financial Services'],
+  [/software|information technology|\bit\b/i,  '^CNXIT',     'Nifty IT'],
+  [/auto|vehicle|tyre/i,                       '^CNXAUTO',   'Nifty Auto'],
+  [/pharma|drug|healthcare|hospital/i,         '^CNXPHARMA', 'Nifty Pharma'],
+  [/metal|steel|mining|aluminium/i,            '^CNXMETAL',  'Nifty Metal'],
+  [/fmcg|consumer|food|beverage|personal/i,    '^CNXFMCG',   'Nifty FMCG'],
+  [/energy|oil|gas|petroleum|power|utility/i,  '^CNXENERGY', 'Nifty Energy'],
+  [/realty|real estate|construction|cement/i,  '^CNXREALTY', 'Nifty Realty'],
+  [/media|entertainment|broadcast/i,           '^CNXMEDIA',  'Nifty Media'],
+]
+
+export function sectorIndexFor(meta = {}, sectorType = null) {
+  const hay = `${meta?.industry || ''} ${meta?.sector || ''} ${sectorType || ''}`
+  for (const [re, symbol, name] of SECTOR_INDICES) {
+    if (re.test(hay)) return { symbol, name }
+  }
+  return null
+}
+
+const relCache = new Map()   // `${symbol}:${days}` -> { change, from }
+
+/**
+ * How an index has moved over a window. Used to place a stock's move in context:
+ * the same −8% means opposite things depending on whether the sector fell 12% or
+ * rose 3%.
+ */
+export async function indexMove(symbol, days = 180) {
+  if (!symbol) return null
+  const key = `${symbol}:${days}`
+  const hit = relCache.get(key)
+  if (hit && Date.now() - hit.at < TTL_MS) return hit.value
+
+  let value = null
+  try {
+    const from = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10)
+    const to = new Date().toISOString().slice(0, 10)
+    const r = await fetch(`/api/yahoo?endpoint=history&ticker=${encodeURIComponent(symbol)}` +
+                          `&from=${from}&to=${to}`)
+    if (r.ok) {
+      const j = await r.json().catch(() => null)
+      const rows = (j?.history || []).filter(x => x?.close > 0)
+        .sort((a, b) => Date.parse(a.date) - Date.parse(b.date))
+      if (rows.length >= 2) {
+        const first = rows[0].close, last = rows[rows.length - 1].close
+        value = { changePct: ((last - first) / first) * 100, from: rows[0].date, level: last }
+      }
+    }
+  } catch { /* absent rather than wrong */ }
+
+  relCache.set(key, { at: Date.now(), value })
+  return value
+}
+
+/**
+ * Stock against its sector and against the market.
+ *
+ * Three numbers rather than one, because they answer different questions: how
+ * the holding did, whether the sector explains it, and whether the sector itself
+ * moved with the market.
+ */
+export async function relativePerformance({ priceHistory = [], meta, sectorType, days = 180 } = {}) {
+  const rows = (priceHistory || []).filter(p => p?.date && p.close > 0)
+    .map(p => ({ t: Date.parse(p.date), close: p.close }))
+    .filter(p => isFinite(p.t) && p.t >= Date.now() - days * 86400000)
+    .sort((a, b) => a.t - b.t)
+  if (rows.length < 2) return null
+
+  const stockPct = ((rows[rows.length - 1].close - rows[0].close) / rows[0].close) * 100
+  const sector = sectorIndexFor(meta, sectorType)
+
+  const [mkt, sec] = await Promise.all([
+    indexMove('^NSEI', days),
+    sector ? indexMove(sector.symbol, days) : Promise.resolve(null),
+  ])
+
+  const r = v => (v == null || !isFinite(v) ? null : +v.toFixed(1))
+  return {
+    days,
+    stockPct: r(stockPct),
+    marketPct: r(mkt?.changePct),
+    sectorPct: r(sec?.changePct),
+    sectorName: sector?.name || null,
+    vsMarket: mkt ? r(stockPct - mkt.changePct) : null,
+    vsSector: sec ? r(stockPct - sec.changePct) : null,
+    // Whether the sector itself moved, which is what separates a company story
+    // from an industry one.
+    sectorVsMarket: (sec && mkt) ? r(sec.changePct - mkt.changePct) : null,
+  }
+}
+
+/**
  * VIX and index level as they stood on a past date, for reconstructing the
  * market conditions a position was entered in.
  *

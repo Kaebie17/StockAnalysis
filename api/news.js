@@ -110,21 +110,53 @@ const STOP = new Set([
 // brand in Indian names: "Reliance Industries" → reliance, "Bajaj Finance" →
 // bajaj). Also keep the ticker base if it's alphabetic (skip numeric BSE codes).
 function relevanceTokens(company, ticker) {
-  const tokens = []
   const words = String(company || '')
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length >= 3 && !STOP.has(w))
-  if (words[0]) tokens.push(words[0])
+
+  // The FULL name, and the first two words as a phrase — not the first word
+  // alone. Indian company names are overwhelmingly family names ("Bajaj",
+  // "Birla", "Tata", "Godrej", "Adani"), so a single-word match pulls in
+  // obituaries, weddings, politics and every unrelated group company. Requiring
+  // two adjacent words is what separates "Bajaj Finance posts results" from
+  // "Rahul Bajaj passes away".
+  const phrases = []
+  if (words.length >= 2) phrases.push(`${words[0]} ${words[1]}`)
+  if (words.length >= 1) phrases.push(words.join(' '))
+
   const base = String(ticker || '').replace(/\.(NS|BO)$/i, '').toLowerCase()
-  if (base && /[a-z]/.test(base) && base.length >= 3) tokens.push(base)
-  return [...new Set(tokens)]
+  const tickerToken = (base && /[a-z]/.test(base) && base.length >= 4) ? base : null
+
+  return { phrases: [...new Set(phrases)], single: words[0] || null, ticker: tickerToken }
 }
+
+// Names that are people first and companies second. A headline carrying one of
+// these plus a person-shaped verb is about a person, whatever else it contains.
+const PERSON_CONTEXT = /\b(passes away|passed away|dies|died|death|obituary|funeral|condolence|born|birthday|wedding|marries|married|daughter|son of|widow|memoir|biography|arrested|bail|summoned|acquitted)\b/i
 
 function titleMentionsCompany(title, tokens) {
   const t = String(title || '').toLowerCase()
-  return tokens.some(tok => t.includes(tok))
+  // A two-word phrase or the ticker is a real match.
+  if (tokens.phrases?.some(p => t.includes(p))) return true
+  if (tokens.ticker && t.includes(tokens.ticker)) return true
+  return false
+}
+
+/**
+ * Is this about a PERSON who shares the company's name? Checked before anything
+ * else, because no amount of relevance scoring downstream can rescue an
+ * obituary that was let in at the top.
+ */
+function looksPersonal(title, tokens) {
+  const t = String(title || '')
+  if (!PERSON_CONTEXT.test(t)) return false
+  // Only when the sole connection is the family name, not the full company name.
+  const lower = t.toLowerCase()
+  const hasPhrase = tokens.phrases?.some(p => lower.includes(p))
+  const hasTicker = tokens.ticker && lower.includes(tokens.ticker)
+  return !hasPhrase && !hasTicker
 }
 
 // Does the headline read like a generic market-research report?
@@ -145,7 +177,13 @@ function isMarketReport(title) {
 // the headline. Everything else (incl. company-mentioning market reports, and
 // company news that happens not to use the exact token) stays 'primary'.
 function classify(title, tokens) {
+  // A person sharing the company's family name is not company news. Dropped
+  // rather than demoted: an obituary in a stock feed is noise however it's
+  // labelled, and letting it through cost the whole feed credibility.
+  if (looksPersonal(title, tokens)) return 'excluded'
   if (isMarketReport(title) && !titleMentionsCompany(title, tokens)) return 'sector'
+  // Nothing tying it to this company at all — a name collision or a stray match.
+  if (!titleMentionsCompany(title, tokens) && !isMarketReport(title)) return 'unrelated'
   return 'primary'
 }
 
@@ -281,7 +319,9 @@ module.exports = async function handler(req, res) {
     const k = normTitle(item.title)
     if (!k || seen.has(k)) continue
     seen.add(k)
-    merged.push({ ...item, tier: classify(item.title, tokens) })
+    const tier = classify(item.title, tokens)
+    if (tier === 'excluded' || tier === 'unrelated') continue   // never surfaced
+    merged.push({ ...item, tier })
   }
 
   // Sort: primary tier first, sector last; newest-first within each tier.

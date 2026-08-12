@@ -91,6 +91,140 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
            samples: ratios.length }
 }
 
+/**
+ * Historical P/B band, from actual dated prices and reported book value.
+ *
+ * Banks and NBFCs are valued on book and ROE, not on a margin applied to
+ * "revenue" — for a lender, revenue IS interest income and the margin chain
+ * borrowed from a manufacturer's P&L doesn't describe the business. Running the
+ * standard path on SBIN produced a target far below both fair value and analyst
+ * consensus, and the outlier was the estimate.
+ *
+ * `getApplicableModels` already excludes P/E-style models for lenders in the
+ * valuation layer; this brings the estimate into line.
+ */
+export function pbBand(priceHistory = [], balanceHistory = [], incomeHistory = [], opts = {}) {
+  const { fyEndMonth = 3 } = opts
+  const closes = (priceHistory || [])
+    .filter(p => p?.date && p.close > 0)
+    .map(p => ({ t: Date.parse(p.date), close: p.close }))
+    .filter(p => isFinite(p.t))
+    .sort((a, b) => a.t - b.t)
+  if (closes.length === 0) return null
+
+  // Book per share by fiscal year. Share count comes from profit ÷ EPS, the
+  // weighted average the company itself used for that year.
+  const bpsByYear = new Map()
+  for (const bRow of balanceHistory || []) {
+    const y = yearOf(bRow)
+    const eq = val(bRow?.totalEquity)
+    if (y == null || !(eq > 0)) continue
+    const iRow = (incomeHistory || []).find(r => yearOf(r) === y)
+    const np = val(iRow?.netProfit), eps = val(iRow?.eps)
+    const sharesThen = (np > 0 && eps > 0) ? np / eps : null
+    if (sharesThen > 0) bpsByYear.set(y, eq / sharesThen)
+  }
+  if (bpsByYear.size === 0) return null
+
+  const ratios = []
+  for (const [y, bps] of bpsByYear) {
+    if (!(bps > 0)) continue
+    const end = Date.UTC(y, fyEndMonth, 0)
+    const start = Date.UTC(y - 1, fyEndMonth, 1)
+    for (const c of closes) {
+      if (c.t < start || c.t > end) continue
+      const pb = c.close / bps
+      if (pb > 0.2 && pb < 12) ratios.push(pb)
+    }
+  }
+  if (ratios.length < 20) return null
+
+  ratios.sort((a, b) => a - b)
+  const q = p => ratios[Math.min(ratios.length - 1, Math.floor(p * ratios.length))]
+  return { low: round(q(0.15), 2), median: round(q(0.50), 2), high: round(q(0.85), 2),
+           samples: ratios.length }
+}
+
+/**
+ * Lender estimate: grow book value by retained earnings, apply the P/B the
+ * market has actually paid.
+ *
+ *   book per share × (1 + ROE × retention)  → next year's book
+ *   × observed P/B band                     → price range
+ *
+ * Retention rather than the revenue growth rate, because a bank's book compounds
+ * at the profit it keeps — that IS the growth mechanism, not an assumption
+ * layered on top of one.
+ */
+export function buildLenderEstimate(ratioResult, opts = {}) {
+  const { priceHistory = [], incomeHistory = [], balanceHistory = [], years = 1,
+          multipleOverride = null, growthOverride = null } = opts
+  const price = ratioResult?.price
+  const bps = ratioResult?.ratios?.bookPerShare?.value ?? ratioResult?.bookPerShare
+  const roe = ratioResult?.ratios?.roe?.value
+  const payout = ratioResult?.ratios?.dividendPayout?.value
+  if (!(bps > 0)) return null
+
+  const retention = (payout != null && payout >= 0 && payout <= 100) ? 1 - payout / 100 : 0.8
+  const growth = growthOverride != null ? growthOverride
+    : (roe > 0 ? (roe / 100) * retention : null)
+  if (growth == null) return null
+
+  const forwardBook = bps * Math.pow(1 + growth, years)
+
+  const band = pbBand(priceHistory, balanceHistory, incomeHistory)
+  const currentPb = ratioResult?.ratios?.pb?.value ?? (price > 0 ? price / bps : null)
+  let multiples, multipleBasis, multipleLabel
+  if (multipleOverride > 0) {
+    const spread = band && band.median > 0
+      ? { lo: band.low / band.median, hi: band.high / band.median }
+      : { lo: 0.75, hi: 1.25 }
+    multiples = { low: round(multipleOverride * spread.lo, 2), base: round(multipleOverride, 2),
+                  high: round(multipleOverride * spread.hi, 2) }
+    multipleBasis = 'revision'; multipleLabel = `your re-rating (${round(multipleOverride, 2)}× book)`
+  } else if (band) {
+    multiples = { low: band.low, base: band.median, high: band.high }
+    multipleBasis = 'observed'
+    multipleLabel = `its own P/B range (${band.samples} days)`
+  } else if (currentPb > 0) {
+    multiples = { low: round(currentPb * 0.75, 2), base: round(currentPb, 2), high: round(currentPb * 1.25, 2) }
+    multipleBasis = 'current'; multipleLabel = "today's P/B ±25% (no usable history)"
+  } else return null
+
+  const target = {
+    low:  round(forwardBook * multiples.low),
+    base: round(forwardBook * multiples.base),
+    high: round(forwardBook * multiples.high),
+  }
+  const upside = price > 0 ? {
+    low:  round(((target.low  - price) / price) * 100, 1),
+    base: round(((target.base - price) / price) * 100, 1),
+    high: round(((target.high - price) / price) * 100, 1),
+  } : null
+
+  const degraded = []
+  if (multipleBasis !== 'observed' && multipleBasis !== 'revision')
+    degraded.push(`Multiple from ${multipleLabel}`)
+  if (payout == null) degraded.push('Payout unknown — retention assumed 80%')
+
+  return {
+    ok: true, model: 'lender',
+    createdAt: Date.now(), horizonYears: years,
+    priceAtEstimate: round(price),
+    bookPerShare: round(bps), forwardBook: round(forwardBook),
+    growth, growthPct: round(growth * 100, 1),
+    growthSource: growthOverride != null ? 'revision' : 'roe-retention',
+    growthLabel: growthOverride != null ? 'your revision'
+      : `${round(roe, 1)}% ROE × ${round(retention * 100, 0)}% retained`,
+    marginPct: null, marginLabel: 'not applicable to a lender', marginSource: 'n/a',
+    dilutionPct: 0, dilutionLabel: 'book already net of issuance',
+    multiples, multipleBasis, multipleLabel,
+    target, upside, degraded,
+    epsPath: 'book × (ROE × retention) × P/B',
+    basisSummary: `Book compounding at ${round(growth * 100, 1)}% (${round(roe, 1)}% ROE × ${round(retention * 100, 0)}% retained) · Multiple: ${multipleLabel}`,
+  }
+}
+
 /** Growth ladder: guidance → 5y CAGR → recent median → any CAGR → nothing. */
 export function resolveGrowthBasis(ratioResult, opts = {}) {
   const { guidedGrowth = null, guidanceFiscalYear = null, guidanceExpired = false } = opts
@@ -221,6 +355,15 @@ export function buildEstimate(ratioResult, opts = {}) {
     priceHistory = [], incomeHistory = [], balanceHistory = [],
     peerBand = null, years = 1,
   } = opts
+
+  // Lenders take the book-and-ROE path. The margin chain below describes a
+  // manufacturer's P&L and produces a badly low number for a bank, whose
+  // "revenue" is interest income.
+  if (opts.sectorType === 'bank' || opts.sectorType === 'nbfc') {
+    const lender = buildLenderEstimate(ratioResult, opts)
+    if (lender) return lender
+    // No book value — fall through rather than return nothing.
+  }
 
   const price     = ratioResult?.price
   const eps       = ratioResult?.eps

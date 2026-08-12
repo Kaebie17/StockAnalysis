@@ -231,17 +231,62 @@ export const FACT_TYPES = [
     hint: "Management's own margin target.",
     fields: [
       { key: 'targetPct', label: 'Guided margin', unit: 'percent', required: true },
+      { key: 'marginKind', label: 'Which margin', unit: 'choice',
+        options: [['net', 'Net'], ['operating', 'Operating / EBITDA'], ['gross', 'Gross']] },
       { key: 'fiscalYear', label: 'For which year', unit: 'text', placeholder: 'FY27' },
     ],
     compute(f, ctx) {
       if (!(f.targetPct > 0)) return fail('Enter the guided margin.')
-      const to = (+f.targetPct) / 100
-      return apply('margin', ctx.margin, to, [
-        `Management guides ${f.targetPct}%${f.fiscalYear ? ` for ${f.fiscalYear}` : ''}`,
-        ctx.margin != null
-          ? `vs ${pct(ctx.margin)}% currently → ${to > ctx.margin ? '+' : ''}${pct(to - ctx.margin)} pts`
-          : 'no current margin to compare',
-      ])
+      const guided = (+f.targetPct) / 100
+
+      // Convert to the NET margin this model runs on, instead of assuming the
+      // quoted figure already is one. "Operating margin of 26%" on an insurer
+      // earning 4.7% net is not a 5.5x profit uplift — it's a different line of
+      // the same P&L, and the ratio between them is observable in this company's
+      // own numbers. Reading the qualifier and doing the conversion is the app's
+      // job; asking the user which margin they meant was pushing our mistake
+      // onto them.
+      const kind = f.marginKind || null
+      if (!kind) {
+        return fail('The text doesn\'t say which margin this is. Pick Net, Operating or Gross — ' +
+                    'they sit on different lines and are not interchangeable.')
+      }
+
+      let to = guided
+      const steps = []
+      if (kind === 'net') {
+        steps.push(`Management guides ${f.targetPct}% net margin${f.fiscalYear ? ` for ${f.fiscalYear}` : ''}`)
+      } else {
+        // How much of this company's operating (or gross) profit survives to the
+        // bottom line, measured from what it actually reports. A guided margin
+        // at the higher line scales by that same ratio.
+        const conv = ctx.netMargin > 0 && ctx.opMargin > 0 ? ctx.netMargin / ctx.opMargin : null
+        if (!(conv > 0)) {
+          return fail(`Can't convert a ${kind} margin to a net margin for this company — ` +
+                      `its operating and net margins aren't both available.`)
+        }
+        to = guided * conv
+        steps.push(
+          `Management guides ${f.targetPct}% ${kind} margin${f.fiscalYear ? ` for ${f.fiscalYear}` : ''}`,
+          `This company converts ${pct(ctx.opMargin)}% operating → ${pct(ctx.netMargin)}% net ` +
+            `(${(conv * 100).toFixed(0)}% carries through)`,
+          `→ ${f.targetPct}% ${kind} ≈ ${pct(to)}% net`)
+      }
+
+      // Last-resort guard. With the conversion above this should rarely fire; if
+      // it does, something in the reading is wrong and the number shouldn't land.
+      if (ctx.margin > 0) {
+        const ratio = to / ctx.margin
+        if (ratio > 3 || ratio < 0.33) {
+          return fail(`That works out to ${pct(to)}% net margin, ${ratio > 1 ? 'far above' : 'far below'} ` +
+                      `this company's current ${pct(ctx.margin)}%. Check the figure before applying it.`)
+        }
+      }
+
+      steps.push(ctx.margin != null
+        ? `vs ${pct(ctx.margin)}% currently → ${to > ctx.margin ? '+' : ''}${pct(to - ctx.margin)} pts`
+        : 'no current margin to compare')
+      return apply('margin', ctx.margin, to, steps)
     },
   },
 
@@ -255,11 +300,73 @@ export const FACT_TYPES = [
       { key: 'mode', label: 'Given as', unit: 'choice',
         options: [['growth', 'Growth %'], ['target', 'Revenue target']], default: 'growth' },
       { key: 'growthPct', label: 'Guided growth', unit: 'percent' },
+      { key: 'segmentShare', label: "That segment's share of revenue", unit: 'percent',
+        hint: 'only when the rate is for one part of the business' },
       { key: 'targetRevenue', label: 'Revenue target', unit: 'money' },
       { key: 'years', label: 'Over', unit: 'years', default: 1 },
       { key: 'fiscalYear', label: 'For which year', unit: 'text', placeholder: 'FY27' },
     ],
     compute(f, ctx) {
+      // A macro forecast is not company guidance. GDP growth has some
+      // relationship to a bank's book, but no computable one — applying it as a
+      // revenue growth rate is a category error, not an approximation.
+      if (f.scope === 'macro') {
+        return fail('This is a macro forecast (GDP, inflation or similar), not company guidance. ' +
+                    'It may inform your own view, but there is no defensible way to turn it into ' +
+                    "this company's revenue growth.")
+      }
+
+      // A segment rate applied to the whole company overstates it by whatever
+      // the rest of the business weighs. With the segment's share of revenue the
+      // blend is arithmetic; without it, that share is the one fact to ask for.
+      if (f.scope === 'segment') {
+        const share = (+f.segmentShare) / 100
+        if (!(share > 0)) {
+          return fail(`This is growth for one part of the business (loans, AUM, a division), not the ` +
+                      `whole company. Give that segment's share of revenue and the overall rate follows.`,
+                      { needs: 'segmentShare' })
+        }
+        const segRate = f.mode === 'growth' ? (+f.growthPct) / 100 : null
+        if (segRate == null) return fail('Enter the segment growth rate.')
+        const rest = ctx.growth ?? 0
+        const blended = segRate * share + rest * (1 - share)
+        const speakerNote = f.speaker === 'third-party'
+          ? ' (a third-party forecast, not company guidance)' : ''
+        return apply('growth', ctx.growth, blended, [
+          `${round(segRate * 100, 1)}% on the ${round(share * 100, 0)}% of revenue that segment represents${speakerNote}`,
+          `rest of the business assumed to continue at ${round(rest * 100, 1)}%`,
+          `→ blended ${round(blended * 100, 1)}% overall`,
+        ])
+      }
+
+      // A company-level forecast from someone other than management competes
+      // directly with the standing assumption: both claim to describe the same
+      // thing. Neither wins on principle — the assumption is measured history
+      // and therefore stale by construction; the forecast is forward-looking but
+      // from a party with no accountability for it. So the conflict is surfaced
+      // with both provenances and the choice is one tap, rather than the app
+      // silently ranking a broker above the record.
+      if (f.speaker === 'third-party' && f.scope === 'company' && ctx.growth != null
+          && f.mode === 'growth' && isFinite(+f.growthPct)) {
+        const proposed = (+f.growthPct) / 100
+        if (Math.abs(proposed - ctx.growth) >= 0.03) {
+          return {
+            lever: 'growth', from: ctx.growth, to: proposed,
+            conflict: {
+              currentPct: round(ctx.growth * 100, 1),
+              currentLabel: ctx.growthLabel || 'your current assumption',
+              proposedPct: round(proposed * 100, 1),
+              proposedLabel: 'third-party forecast',
+            },
+            steps: [
+              `Your assumption: ${round(ctx.growth * 100, 1)}% (${ctx.growthLabel || 'measured history'})`,
+              `This forecast: ${f.growthPct}%${f.fiscalYear ? ` for ${f.fiscalYear}` : ''}, from a third party`,
+              'Measured history against a forward view — neither settles it, so this is your call.',
+            ],
+          }
+        }
+      }
+
       let to
       if (f.mode === 'target') {
         if (!(f.targetRevenue > 0) || !(ctx.revenue > 0)) return fail('Enter the revenue target.')
@@ -272,8 +379,13 @@ export const FACT_TYPES = [
       }
       if (!(f.growthPct !== '' && isFinite(+f.growthPct))) return fail('Enter the guided growth.')
       to = (+f.growthPct) / 100
+      const who = f.speaker === 'third-party' ? 'A broker forecast of'
+        : f.speaker === 'management' ? 'Management guides'
+        : 'Guidance of'
       return apply('growth', ctx.growth, to, [
-        `Management guides ${f.growthPct}%${f.fiscalYear ? ` for ${f.fiscalYear}` : ''}`,
+        `${who} ${f.growthPct}%${f.fiscalYear ? ` for ${f.fiscalYear}` : ''}`,
+        ...(f.speaker === 'third-party'
+          ? ['Third-party estimate — weaker than the company committing to a number itself.'] : []),
       ])
     },
   },

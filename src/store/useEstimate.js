@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { listRevisions, appendRevision, saveEstimate, currentEstimate } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
 import { buildEstimate, scoreEstimate } from '../engine/estimate.js'
 import { assessFromQuarterly, growthDriftSuggestion } from '../engine/quarterlyBridge.js'
 import { fetchPeers } from '../api/peersClient.js'
+import { relativePerformance } from '../api/marketRegime.js'
 import { peerBandFrom, detectRerating } from '../engine/rerating.js'
 import { forwardPeBand } from '../engine/estimate.js'
 
@@ -20,11 +21,36 @@ import { forwardPeBand } from '../engine/estimate.js'
  * than storing "current overrides" separately means the two can't disagree, and
  * the reasoning behind today's number is always one query away.
  */
+/**
+ * Cross-instance revision counter.
+ *
+ * useEstimate is called from more than one component (the dashboard line and the
+ * valuation detail), and each call has its own useState. Without a shared signal,
+ * committing a revision in one of them reloaded ONLY that copy: the detail screen
+ * showed the new estimate while the dashboard kept the old number until a page
+ * refresh made both re-read the database. Same data, two answers on screen.
+ *
+ * Every commit bumps this counter and every instance is subscribed, so they all
+ * reload together.
+ */
+let revisionVersion = 0
+const versionListeners = new Set()
+function bumpRevisionVersion() {
+  revisionVersion++
+  for (const fn of versionListeners) fn()
+}
+function subscribeVersion(fn) {
+  versionListeners.add(fn)
+  return () => versionListeners.delete(fn)
+}
+const getVersion = () => revisionVersion
+
 export function useEstimate(state) {
   const [overrides, setOverrides] = useState({})
   const [peers, setPeers] = useState([])
   const [revisions, setRevisions] = useState([])
   const [stored, setStored] = useState(null)      // last frozen estimate, for scoring
+  const version = useSyncExternalStore(subscribeVersion, getVersion, getVersion)
 
   const ticker = state?.ticker
 
@@ -39,7 +65,8 @@ export function useEstimate(state) {
     // actually did. Without this the estimate has no track record at all —
     // scoreEstimate existed but nothing ever called it.
     try { setStored(await currentEstimate(ticker)) } catch { setStored(null) }
-  }, [ticker])
+    // `version` participates so a commit anywhere re-runs this everywhere.
+  }, [ticker, version])
 
   useEffect(() => { reload() }, [reload])
 
@@ -49,6 +76,19 @@ export function useEstimate(state) {
     fetchPeers(ticker).then(p => { if (!dead) setPeers(p) })
     return () => { dead = true }
   }, [ticker])
+
+  // Stock against its sector and the market — the reading that separates an
+  // industry-wide de-rating from a company-specific one.
+  const [relative, setRelative] = useState(null)
+  useEffect(() => {
+    if (!ticker || !state?.data?.priceHistory?.length) return
+    let dead = false
+    relativePerformance({
+      priceHistory: state.data.priceHistory,
+      meta: state.data.meta, sectorType: state.sectorType,
+    }).then(r => { if (!dead) setRelative(r) }).catch(() => {})
+    return () => { dead = true }
+  }, [ticker, state?.data?.priceHistory, state?.sectorType])
 
   const peerBand = peerBandFrom(peers)
 
@@ -80,7 +120,10 @@ export function useEstimate(state) {
   const band = forwardPeBand(state?.data?.priceHistory || [], state?.data?.incomeHistory || [])
   const rerating = (!overrides.multiple && band)
     ? detectRerating(state?.data?.priceHistory || [], state?.data?.incomeHistory || [], band,
-        { peerBand, currentEps: state?.ratioResult?.eps })
+        // growth passed so the current reading is put on the same FORWARD basis
+        // as the band; without it the comparison is trailing-vs-forward.
+        { peerBand, currentEps: state?.ratioResult?.eps, growth: estimate?.growth ?? null,
+          relative })
     : { detected: false, reason: overrides.multiple ? 'You have already set a multiple' : 'No band yet' }
 
   // How the last frozen estimate has fared. 'in-range' / 'above' / 'below',
@@ -103,6 +146,7 @@ export function useEstimate(state) {
     const rec = await appendRevision({ ...entry, ticker })
     queuePush(`revisions:${rec.id}`, rec)
     await reload()
+    bumpRevisionVersion()      // every other instance reloads too
     return rec
   }, [ticker, reload])
 
@@ -120,7 +164,7 @@ export function useEstimate(state) {
 
   return {
     estimate, overrides, revisions, peers, peerBand, rerating,
-    guidanceAssessment, quarterlySuggestion, score, stored,
+    guidanceAssessment, quarterlySuggestion, score, stored, relative,
     handledKeys, deferredLevers,
     commit, freeze, reload,
   }

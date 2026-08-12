@@ -73,7 +73,7 @@ export function buildSnapshot({ state, buyDate, regime }) {
     marketImpliedGrowth: valuation?.impliedGrowth
       ?? marketExpectation?.variants?.sales?.impliedGrowth
       ?? marketExpectation?.variants?.earnings?.impliedGrowth ?? null,
-    sectorType: data?.sectorType ?? null,
+    sectorType: state?.sectorType ?? null,
     currency: data?.currency ?? null,
     // Market conditions entered in. Without these a holding's return can't be
     // separated from the market's — up 18% in a market that rose 11% is a very

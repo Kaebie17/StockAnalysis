@@ -397,7 +397,7 @@ function EstimateRevisions({ state }) {
   const [seedItem, setSeedItem] = useState(null)
   const {
     estimate, overrides, revisions, rerating, commit, peerBand,
-    guidanceAssessment, quarterlySuggestion, score, handledKeys, deferredLevers,
+    guidanceAssessment, quarterlySuggestion, score, handledKeys, deferredLevers, relative,
   } = useEstimate(state)
 
   const r = state.ratioResult
@@ -405,8 +405,18 @@ function EstimateRevisions({ state }) {
     revenue: r.revenue, netProfit: r.netProfit, totalAssets: r.totalAssets,
     growth: estimate?.growth ?? null,
     margin: estimate?.marginPct != null ? estimate.marginPct / 100 : null,
+    // Both lines, so a guided operating or gross margin can be converted to the
+    // net figure the model runs on using this company's own ratio — rather than
+    // being applied as if it were already net.
+    netMargin: r.ratios?.netMargin?.value != null ? r.ratios.netMargin.value / 100 : null,
+    opMargin:  r.ratios?.operatingMargin?.value != null ? r.ratios.operatingMargin.value / 100 : null,
     nim: r.ratios?.nim?.value ?? null,
-    currency: state.data?.currency, sectorType: state.data?.sectorType,
+    currency: state.data?.currency,
+    // From state, not state.data: computeAll returns sectorType at the top
+    // level and normalize never writes it onto `data`. Reading the wrong one
+    // silently made every company look STANDARD — which hid the NIM fact type
+    // for banks and let lender-specific classification fall through.
+    sectorType: state.sectorType,
   } : null
 
   // News is read for facts automatically — this is the main path, not the paste
@@ -419,18 +429,63 @@ function EstimateRevisions({ state }) {
   const levers = Object.keys(overrides)
   const pending = actionable.length + incomplete.length
 
-  const applyItem = async (a) => {
+  // A conflicting forecast is presented, not applied. Keeping the current
+  // assumption is recorded too — "someone looked and stayed" is a different fact
+  // from "nobody looked", and only the log can tell them apart later.
+  const keepCurrent = (a) => commit({
+    lever: 'growth', disposition: 'dismissed', trigger: 'news',
+    factType: a.parsed.typeId, reason: `Kept current assumption over: ${a.item.title}`,
+    sourceKey: a.key,
+  })
+
+  const applyItem = React.useCallback(async (a, auto = false) => {
     const entries = [a.impact, a.impact.second].filter(Boolean)
     for (const imp of entries) {
       await commit({
         lever: imp.lever, oldValue: imp.from ?? null, newValue: imp.to,
-        disposition: 'revised', trigger: 'news',
+        disposition: 'revised', trigger: auto ? 'news-auto' : 'news',
         factType: a.parsed.typeId, factFields: a.parsed.fields, steps: imp.steps,
         reason: a.item.title, sourceKey: a.key,
         sourceItem: { title: a.item.title, url: a.item.url, date: a.item.date },
       })
     }
-  }
+  }, [commit])
+
+  // An item that states everything needed is applied WITHOUT asking. Holding a
+  // fully-specified fact behind a tap makes the user re-derive a decision the
+  // arithmetic already made; the estimate is meant to keep itself current, not
+  // wait to be told what it can already work out.
+  //
+  // What makes this safe is the guards, not the prompt: factImpact refuses
+  // inputs that don't survive a sanity check against the company's own numbers
+  // (a 26% "margin" on a 4.7% net-margin insurer is rejected, not applied), and
+  // every auto-application is logged with an undo.
+  //
+  // `handledKeys` comes from the revision log, so a committed item drops out of
+  // `actionable` on the next read — that's what stops this re-firing each poll.
+  React.useEffect(() => {
+    if (actionable.length === 0) return
+    let cancelled = false
+    ;(async () => {
+      for (const a of actionable) {
+        if (cancelled) return
+        // A conflict has no defensible automatic answer — it's the one case
+        // where the app has done all it legitimately can and the choice is real.
+        if (a.impact?.conflict) continue
+        await applyItem(a, true)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [actionable, applyItem])
+
+  // Undo appends a reverting entry rather than deleting: the log is append-only,
+  // and "this was applied then undone" is worth keeping.
+  const undo = (x) => commit({
+    lever: x.lever, oldValue: x.newValue, newValue: x.oldValue,
+    disposition: 'revised', trigger: 'undo',
+    reason: `Undone: ${x.reason || 'auto-applied revision'}`,
+    sourceKey: x.sourceKey ? `${x.sourceKey}:undone` : undefined,
+  })
 
   // Dismiss and defer are logged, not just hidden. "Someone looked and judged it
   // immaterial" is a different fact from "nobody looked", and only the log can
@@ -441,12 +496,26 @@ function EstimateRevisions({ state }) {
     sourceItem: { title: a.item.title, url: a.item.url, date: a.item.date },
   })
 
-  const applySuggestion = () => commit({
-    lever: quarterlySuggestion.lever,
-    oldValue: quarterlySuggestion.from, newValue: quarterlySuggestion.to,
-    disposition: 'revised', trigger: 'quarterly',
-    steps: quarterlySuggestion.steps, reason: quarterlySuggestion.reason,
-  })
+  // Reported results are the most mechanical input there is — actual revenue
+  // against a standing assumption, no interpretation anywhere in it. Asking
+  // permission to act on arithmetic the app has already done, from numbers the
+  // user pasted themselves, is the same mistake as the news prompt was.
+  React.useEffect(() => {
+    if (!quarterlySuggestion) return
+    let cancelled = false
+    ;(async () => {
+      if (cancelled) return
+      await commit({
+        lever: quarterlySuggestion.lever,
+        oldValue: quarterlySuggestion.from, newValue: quarterlySuggestion.to,
+        disposition: 'revised', trigger: 'quarterly-auto',
+        steps: quarterlySuggestion.steps, reason: quarterlySuggestion.reason,
+      })
+    })()
+    return () => { cancelled = true }
+    // Once committed, the override exists and growthDriftSuggestion returns null
+    // (it is gated on !overrides.growth), so this cannot re-fire.
+  }, [quarterlySuggestion, commit])
 
   return (
     <div className="bg-navy-800/40 rounded-lg overflow-hidden">
@@ -477,16 +546,16 @@ function EstimateRevisions({ state }) {
             </div>
           )}
 
-          {/* Reported results — mechanical, so it proposes a number. */}
+          {/* Reported results — applied on arrival, shown here only in passing. */}
           {quarterlySuggestion && (
-            <div className="border border-accent/40 rounded-lg p-2.5 space-y-1.5">
+            <div className="border border-accent/40 rounded-lg p-2.5 space-y-1">
               <div className="text-[11px] text-slate-300">📊 {quarterlySuggestion.reason}</div>
               {quarterlySuggestion.steps.map((x, i) => (
                 <div key={i} className="text-[11px] text-slate-500">{x}</div>
               ))}
-              <button onClick={applySuggestion} className="btn-primary text-[11px] w-full py-1">
-                Apply — growth {(quarterlySuggestion.from * 100).toFixed(1)}% → {(quarterlySuggestion.to * 100).toFixed(1)}%
-              </button>
+              <div className="text-[11px] text-slate-500">
+                applying — growth {(quarterlySuggestion.from * 100).toFixed(1)}% → {(quarterlySuggestion.to * 100).toFixed(1)}%
+              </div>
             </div>
           )}
 
@@ -494,11 +563,15 @@ function EstimateRevisions({ state }) {
             <div className="text-[11px] text-slate-500">📊 {guidanceAssessment.note}</div>
           )}
 
-          {/* Items the feed carried enough detail to price. */}
+          {/* Complete items are applied on arrival; this is only ever a brief
+              flash before they move into the log below. */}
           {actionable.map(a => (
-            <NewsFact key={a.key} a={a} onApply={() => applyItem(a)}
-              onDefer={() => disposeItem(a, 'deferred')}
-              onDismiss={() => disposeItem(a, 'dismissed')} />
+            a.impact?.conflict
+              ? <ConflictFact key={a.key} a={a}
+                  onUse={() => applyItem(a)} onKeep={() => keepCurrent(a)} />
+              : <NewsFact key={a.key} a={a} applying
+                  onDefer={() => disposeItem(a, 'deferred')}
+                  onDismiss={() => disposeItem(a, 'dismissed')} />
           ))}
 
           {/* Items that matter but don't state their size — these hold a bar open. */}
@@ -511,9 +584,25 @@ function EstimateRevisions({ state }) {
 
           {loading && pending === 0 && <p className="text-[11px] text-slate-600">Checking news…</p>}
 
+          {relative?.sectorPct != null && (
+            <div className="text-[11px] text-slate-500">
+              Over {Math.round(relative.days / 30)} months: this stock {sign(relative.stockPct)}%
+              {relative.sectorName && <> · {relative.sectorName} {sign(relative.sectorPct)}%</>}
+              {relative.marketPct != null && <> · Nifty {sign(relative.marketPct)}%</>}
+              {relative.vsSector != null && Math.abs(relative.vsSector) >= 3 && (
+                <span className={relative.vsSector >= 0 ? 'text-bull' : 'text-bear'}>
+                  {' '}({sign(relative.vsSector)}% vs its sector)
+                </span>
+              )}
+            </div>
+          )}
+
           {rerating?.detected && (
             <div className="text-[11px] text-neutral bg-neutral/10 rounded px-2 py-1.5">
               ⚑ {rerating.summary}
+              {rerating.sectorContext && (
+                <div className="text-slate-400 mt-0.5">{rerating.sectorContext.label}</div>
+              )}
               <button onClick={() => setFactOpen(true)}
                 className="text-accent hover:text-accent-light ml-1">review</button>
             </div>
@@ -543,6 +632,13 @@ function EstimateRevisions({ state }) {
                     </span>
                   </div>
                   {x.reason && <div className="text-slate-600 truncate">{x.reason}</div>}
+                  {(x.trigger === 'news-auto' || x.trigger === 'quarterly-auto') && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-600">applied automatically</span>
+                      <button onClick={() => undo(x)}
+                        className="text-[10px] text-slate-500 hover:text-bear">undo</button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -561,7 +657,7 @@ function EstimateRevisions({ state }) {
  * One news-derived item. Actionable ones show the computed change and apply in a
  * tap; incomplete ones name the missing fact and open the form to supply it.
  */
-function NewsFact({ a, onApply, onOpen, onDefer, onDismiss }) {
+function NewsFact({ a, applying, onOpen, onDefer, onDismiss }) {
   const high = a.severity === 'high'
   return (
     <div className={`rounded-lg p-2.5 space-y-1.5 border ${
@@ -588,7 +684,7 @@ function NewsFact({ a, onApply, onOpen, onDefer, onDismiss }) {
 
       <div className="flex items-center gap-3 pt-0.5">
         {a.impact?.lever
-          ? <button onClick={onApply} className="text-[11px] text-accent hover:text-accent-light">Apply</button>
+          ? <span className="text-[11px] text-slate-500">applying…</span>
           : <button onClick={onOpen} className="text-[11px] text-accent hover:text-accent-light">Add the missing bit</button>}
         <button onClick={onDefer} className="text-[11px] text-slate-500 hover:text-slate-300">Defer</button>
         <button onClick={onDismiss} className="text-[11px] text-slate-600 hover:text-bear ml-auto">Not material</button>
@@ -601,3 +697,36 @@ function fmtLever(lever, v) {
   if (v == null) return '—'
   return lever === 'multiple' ? `${(+v).toFixed(1)}×` : `${(v * 100).toFixed(1)}%`
 }
+
+/**
+ * A forecast that contradicts the standing assumption.
+ *
+ * Shown rather than applied, because neither side wins on principle: the
+ * assumption is measured history and stale by construction, the forecast is
+ * forward-looking but from a party with no accountability. The app has extracted
+ * both, identified that they collide, and computed what either would mean — the
+ * remaining step is a judgement, and one tap either way records it.
+ */
+function ConflictFact({ a, onUse, onKeep }) {
+  const cf = a.impact.conflict
+  return (
+    <div className="rounded-lg p-2.5 space-y-2 border border-neutral/40 bg-neutral/5">
+      <div className="text-[11px] text-slate-300">{a.item.title}</div>
+      <div className="grid grid-cols-2 gap-2">
+        <button onClick={onKeep}
+          className="text-left rounded px-2 py-1.5 border border-navy-700 hover:border-slate-500 transition-colors">
+          <div className="text-[11px] text-slate-300">Keep {cf.currentPct}%</div>
+          <div className="text-[10px] text-slate-600">{cf.currentLabel}</div>
+        </button>
+        <button onClick={onUse}
+          className="text-left rounded px-2 py-1.5 border border-accent/50 hover:border-accent transition-colors">
+          <div className="text-[11px] text-accent">Use {cf.proposedPct}%</div>
+          <div className="text-[10px] text-slate-600">{cf.proposedLabel}</div>
+        </button>
+      </div>
+      <div className="text-[10px] text-slate-600">{a.impact.steps[2]}</div>
+    </div>
+  )
+}
+
+const sign = v => (v == null ? '—' : (v >= 0 ? '+' : '') + v)

@@ -42,11 +42,21 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
     return { detected: false, reason: 'No historical multiple band to compare against' }
   }
 
-  // Recent multiples: each close over the latest known EPS. Trailing here is
-  // fine because we're measuring the CURRENT regime, not building a forward
-  // projection — what matters is the level the market has settled at.
-  const eps = currentEps ?? latestEps(incomeHistory)
-  if (!(eps > 0)) return { detected: false, reason: 'No EPS to measure the current multiple' }
+  // The band this is compared against is a FORWARD one (price over NEXT year's
+  // earnings), so the current reading has to be forward too. Measuring today's
+  // price against today's EPS produces a trailing multiple, and the gap between
+  // trailing and forward is roughly the growth rate — so a growing company would
+  // read as permanently "re-rated upward" and the detector would fire on
+  // arithmetic rather than on anything the market did.
+  const trailingEps = currentEps ?? latestEps(incomeHistory)
+  if (!(trailingEps > 0)) return { detected: false, reason: 'No EPS to measure the current multiple' }
+  const g = opts.growth
+  const eps = (g != null && isFinite(g) && g > -0.5) ? trailingEps * (1 + g) : trailingEps
+  if (g == null) {
+    // Without a growth rate the two aren't comparable at all; saying so beats
+    // reporting a re-rating that is really just the growth gap.
+    return { detected: false, reason: 'No growth rate available to compare like with like' }
+  }
 
   const cutoff = Date.now() - monthsWindow * 30 * DAY
   const recent = (priceHistory || [])
@@ -88,6 +98,25 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
              reason: `Outside its range for ${Math.round(heldDays)} days — too soon to call it a re-rating` }
   }
 
+  // Sector index. Peers give a snapshot of what comparable companies trade at;
+  // the index says whether the whole sector actually MOVED. A stock that
+  // de-rated alongside its industry is in a different situation from one that
+  // de-rated alone, and only the index distinguishes them.
+  let sectorContext = null
+  if (opts.relative?.sectorPct != null) {
+    const { sectorPct, marketPct, vsSector, sectorName } = opts.relative
+    const sectorFell = sectorPct <= -5
+    sectorContext = {
+      sectorName, sectorPct, marketPct, vsSector,
+      sectorWide: below ? sectorFell : sectorPct >= 5,
+      label: below
+        ? (sectorFell
+            ? `${sectorName || 'The sector'} is down ${Math.abs(round(sectorPct))}% too — this looks industry-wide`
+            : `${sectorName || 'The sector'} is ${sectorPct >= 0 ? 'up' : 'down'} ${Math.abs(round(sectorPct))}% — the de-rating is specific to this company`)
+        : `${sectorName || 'The sector'} is ${sectorPct >= 0 ? 'up' : 'down'} ${Math.abs(round(sectorPct))}% over the same period`,
+    }
+  }
+
   // Peer context. A sector-wide move is more likely to persist; a lone one is
   // more likely to mean-revert. The detector reports which, and doesn't pretend
   // to know the odds beyond that.
@@ -113,7 +142,7 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
     band,
     deviationPct: round(deviation * 100),
     heldDays, heldMonths: round(heldMonths, 0),
-    peerContext,
+    peerContext, sectorContext,
     proposal: {
       multiple: round(median, 1),
       label: `Adopt ${round(median, 1)}× as the base multiple`,

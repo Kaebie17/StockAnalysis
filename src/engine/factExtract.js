@@ -96,6 +96,55 @@ export function extractDuration(text) {
  * Which kind of event this is. Ordered by specificity — a capex announcement
  * often also contains the word "expansion", so the more specific patterns win.
  */
+/**
+ * Which margin a sentence is talking about. Returns null when the text doesn't
+ * say — an unqualified "margin of 26%" is genuinely ambiguous, and guessing is
+ * exactly what caused the damage. Null makes it a MISSING fact the caller asks
+ * about, rather than a silent assumption of "net".
+ */
+export function marginKind(text) {
+  const t = String(text || '').toLowerCase()
+  if (/\b(net\s*(profit\s*)?margin|pat\s*margin|net\s*profit\s*ratio)\b/.test(t)) return 'net'
+  if (/\b(ebitda\s*margin|operating\s*profit\s*margin|opm\b|operating\s*margin|ebit\s*margin)\b/.test(t)) return 'operating'
+  if (/\b(gross\s*margin|gross\s*profit\s*margin)\b/.test(t)) return 'gross'
+  if (/\b(underwriting\s*margin|vnb\s*margin|contribution\s*margin|segment\s*margin)\b/.test(t)) return 'other'
+  return null
+}
+
+/**
+ * Who is speaking, and about what.
+ *
+ * A guidance fact is supposed to mean MANAGEMENT committing to a number for THIS
+ * company's overall growth. Neither half was checked, so "Motilal Oswal expects
+ * 14-15% loan growth" and "SBI Research sees GDP at 8%" both parsed as company
+ * guidance — one is a broker forecasting a single segment, the other a macro
+ * projection with no direct link to company revenue at all.
+ */
+const THIRD_PARTY = /\b(motilal|jefferies|goldman|morgan stanley|citi|nomura|clsa|macquarie|ubs|hsbc|kotak institutional|icici securities|axis capital|emkay|sharekhan|angel one|anand rathi|prabhudas|nuvama|elara|incred|bernstein|jm financial|systematix|dolat|geojit|ventura|research|brokerage|analysts?|crisil|icra|care ratings|india ratings|moody|fitch|s&p)\b/i
+
+const MANAGEMENT = /\b(management|md\b|managing director|ceo|cfo|chairman|board|company (?:said|says|guided|guides|expects|targets)|earnings call|analyst call|investor call|concall|guidance issued)\b/i
+
+// Macro indicators — never a company's own growth, however the sentence reads.
+const MACRO = /\b(gdp|inflation|cpi|wpi|iip\b|repo rate|fiscal deficit|current account|forex reserves|monsoon|crude price|india(?:'s)? econom|economic growth|per capita)\b/i
+
+// A part of the business, not the whole. Applying a segment rate to total
+// revenue overstates it by however much the rest of the book weighs.
+const SEGMENT_SCOPE = /\b(loan (?:book|growth)|advances|deposits?|aum\b|nim\b|casa|retail (?:book|segment|growth)|corporate (?:book|segment)|export|division|vertical)\b/i
+
+export function speakerOf(text) {
+  const t = String(text || '')
+  if (MANAGEMENT.test(t)) return 'management'
+  if (THIRD_PARTY.test(t)) return 'third-party'
+  return 'unclear'
+}
+
+export function scopeOf(text) {
+  const t = String(text || '')
+  if (MACRO.test(t)) return 'macro'
+  if (SEGMENT_SCOPE.test(t)) return 'segment'
+  return 'company'
+}
+
 const CLASSIFIERS = [
   { id: 'nim_change',      lendersOnly: true,
     re: /\b(nim|net interest margin|repo|rate hike|rate cut|cost of funds|lending rate)\b/i },
@@ -136,7 +185,8 @@ const REQUIRED = {
   subsidy:         [['amount', 'the annual benefit']],
   input_cost:      [['changePct', 'the cost change %'], ['shareOfCost', 'that input as a % of total costs']],
   nim_change:      [['bps', 'the expected NIM impact in bps']],
-  margin_guidance: [['targetPct', 'the guided margin %']],
+  margin_guidance: [['targetPct', 'the guided margin %'],
+                    ['marginKind', 'which margin this is (net, operating, gross or EBITDA)']],
   growth_guidance: [['growthPct', 'the guided growth %, or a revenue target']],
 }
 
@@ -235,12 +285,23 @@ export function extractFacts(text, ctx = {}) {
       break
     }
     case 'margin_guidance': {
+      fields.speaker = speakerOf(t)
+      fields.scope = scopeOf(t)
+      // WHICH margin? "Operating margin of 26%" and "net margin of 26%" are
+      // different facts, and the qualifier is sitting in the sentence. Reading
+      // the percentage without it and feeding it to a NET margin field is how a
+      // 26% operating margin became a 5.5x profit multiplier on an insurer
+      // earning 4.7% net. The app chose the field, so the app reads the word.
       takePct('targetPct', 'Guided margin', p => /margin/.test(p.before + p.after))
+      const kind = marginKind(t)
+      fields.marginKind = kind
       if (dur.fiscalYear) fields.fiscalYear = dur.fiscalYear
       break
     }
     case 'growth_guidance': {
       fields.mode = 'growth'
+      fields.speaker = speakerOf(t)
+      fields.scope = scopeOf(t)
       takePct('growthPct', 'Guided growth',
         p => /(growth|grow|revenue|increase|topline)/.test(p.before + p.after), { fallback: true })
       if (fields.growthPct == null && money.length) {
