@@ -22,6 +22,7 @@
  */
 
 import { targetMultiple } from './targetMultiple.js'
+import { justifiedMultiples, preferredForm } from './justifiedMultiple.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -477,9 +478,20 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
 
   // EV → equity: subtract the net debt, because that part of the enterprise
   // belongs to lenders rather than shareholders.
+  // Net debt moves too. Subtracting today's figure from a forward enterprise
+  // value treats the company as generating no cash over the projection year —
+  // the same error as freezing the payout in the two-stage model, and it
+  // understates a debt-heavy business by roughly the free cash it retains.
+  //
+  // The retained share is approximated from EBITDA rather than assumed: what
+  // survives tax, interest and maintenance capex, less anything paid out.
+  const payoutFrac = (ratioResult?.ratios?.dividendPayout?.value ?? 0) / 100
+  const retainedCash = ebitda * 0.35 * Math.max(0, 1 - payoutFrac) * years
+  const forwardNetDebt = Math.max(0, netDebt - retainedCash)
+
   const toEquity = (m) => {
     const impliedEv = forwardEbitda * m
-    return (impliedEv - netDebt) / shares
+    return (impliedEv - forwardNetDebt) / shares
   }
   // Range width from how much this company's OWN multiple has actually varied,
   // not a fixed ±15%. A steadily-rated business gets a tight range and a
@@ -504,7 +516,8 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
     priceAtEstimate: round(price),
     ebitda: round(ebitda), forwardEbitda: round(forwardEbitda),
     netDebt: round(netDebt),
-    epsPath: 'EBITDA × EV/EBITDA, less net debt, ÷ shares',
+    forwardNetDebt: round(forwardNetDebt),
+    epsPath: 'EBITDA × EV/EBITDA, less net debt after a year of cash generation, ÷ shares',
     marginPct: null, marginLabel: 'EBITDA-based — net margin not used', marginSource: 'n/a',
     growth, growthPct: round(growth * 100, 1),
     growthSource: growthOverride != null ? 'revision' : 'cagr',
@@ -513,7 +526,7 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
     multiples: { low: round(multiple * sp.lo, 1), base: round(multiple, 1), high: round(multiple * sp.hi, 1) },
     multipleBasis, multipleLabel,
     target, upside, degraded: [],
-    basisSummary: `EBITDA ${round(forwardEbitda)} × ${round(multiple, 1)}× less net debt ${round(netDebt)} · ${multipleLabel}`,
+    basisSummary: `EBITDA ${round(forwardEbitda)} × ${round(multiple, 1)}× less net debt ${round(forwardNetDebt)} · ${multipleLabel}`,
   }
 }
 
@@ -547,7 +560,12 @@ export function buildEvSalesEstimate(ratioResult, opts = {}) {
   if (growthInfo?.growth == null) return null
   const growth = growthInfo.growth
   const forwardRevenue = revenue * Math.pow(1 + growth, years)
-  const toEquity = m => ((forwardRevenue * m) - netDebt) / shares
+  // Same correction as EV/EBITDA — but a loss-making company BURNS cash rather
+  // than repaying debt, so net debt grows over the year instead of shrinking.
+  // Freezing it would flatter exactly the companies least able to afford it.
+  const burn = netProfitOf(ratioResult) < 0 ? Math.abs(netProfitOf(ratioResult)) * years : 0
+  const forwardNetDebt = netDebt + burn
+  const toEquity = m => ((forwardRevenue * m) - forwardNetDebt) / shares
 
   const sp = multipleSpread(opts.priceHistory, opts.incomeHistory, 'revenue') || { lo: 0.75, hi: 1.25 }
   const target = {
@@ -582,6 +600,8 @@ export function buildEvSalesEstimate(ratioResult, opts = {}) {
     basisSummary: `Revenue ${round(forwardRevenue)} × ${round(multiple, 2)}× sales, less net debt`,
   }
 }
+
+const netProfitOf = rr => (rr?.netProfit ?? 0)
 
 /** Growth ladder: guidance → 5y CAGR → recent median → any CAGR → nothing. */
 export function resolveGrowthBasis(ratioResult, opts = {}) {
@@ -705,6 +725,145 @@ export function financeabilityNote(ratioResult, growth) {
  * @param opts.peerBand      { low, median, high } — optional second multiple
  *                           anchor; own history is blind to a sector re-rating
  */
+/**
+ * ESTIMATE 1 — from what the fundamentals justify.
+ *
+ * Independent of price history, so it works where the market-based method
+ * can't: a stock with two usable years still has growth, returns and a payout.
+ * `form` lets the caller override the sector default with any other form the
+ * inputs support.
+ */
+export function buildJustifiedEstimate(ratioResult, opts = {}) {
+  const { sectorType, form: forcedForm = null, years = 1 } = opts
+  const jm = justifiedMultiples(ratioResult, opts)
+  if (!jm.available) {
+    return { ok: false, model: 'justified', missing: jm.missing,
+             note: `Can't derive a justified multiple — missing ${jm.missing.join(', ')}.` }
+  }
+
+  const form = (forcedForm && jm.forms[forcedForm]) ? forcedForm
+    : preferredForm(sectorType, jm.forms, ratioResult)
+  const chosen = jm.forms[form]
+  // A justified multiple in the hundreds means growth has converged on the
+  // required return and the formula is dividing by almost nothing. That is the
+  // model failing, not a valuation.
+  const CEILING = { pe: 60, pb: 12, evEbitda: 30, evSales: 15 }
+  if (chosen && chosen.multiple > (CEILING[form] ?? 60)) {
+    return { ok: false, model: 'justified',
+             note: `Growth (${jm.growth.gPct}%) is too close to the required return ` +
+                   `(${round(jm.requiredReturn.r * 100, 1)}%) for a stable ${FORM_NAMES[form]} — ` +
+                   `the formula becomes unbounded here.` }
+  }
+  if (!chosen) {
+    return { ok: false, model: 'justified', missing: jm.missing,
+             note: 'No justified multiple applies to this business.' }
+  }
+
+  const price = ratioResult?.price
+  const R = ratioResult?.ratios || {}
+  const g = jm.growth.g
+
+  // The quantity the multiple attaches to, projected one year.
+  let base, baseLabel
+  switch (form) {
+    case 'pe':       base = ratioResult?.eps; baseLabel = 'EPS'; break
+    case 'pb':       base = R.bookPerShare?.value; baseLabel = 'book per share'; break
+    case 'evEbitda': base = ratioResult?.ebitda ?? R.ebitda?.value; baseLabel = 'EBITDA'; break
+    case 'evSales':  base = ratioResult?.revenue; baseLabel = 'revenue'; break
+    default: base = null
+  }
+  if (!(base > 0)) {
+    return { ok: false, model: 'justified',
+             note: `No ${baseLabel || 'basis'} to apply a ${FORM_NAMES[form]} multiple to.` }
+  }
+  const forward = base * Math.pow(1 + g, years)
+
+  // EV forms price the whole enterprise, so debt has to come out to reach a
+  // per-share equity value.
+  const isEv = form === 'evEbitda' || form === 'evSales'
+  const netDebt = (ratioResult?.totalDebt ?? 0) - (ratioResult?.cash ?? 0)
+  const shares = (ratioResult?.netProfit > 0 && ratioResult?.eps > 0)
+    ? ratioResult.netProfit / ratioResult.eps : ratioResult?.shares
+  if (isEv && !(shares > 0)) {
+    return { ok: false, model: 'justified', note: 'No share count to convert enterprise value per share.' }
+  }
+
+  const toPrice = (m) => isEv ? ((forward * m) - netDebt) / shares : forward * m
+  const mid = toPrice(chosen.multiple)
+  if (!(mid > 0)) {
+    return { ok: false, model: 'justified',
+             note: 'The justified multiple produces a negative value — debt exceeds what the business supports.' }
+  }
+
+  // Range from the sensitivity of the formula to the required return — the one
+  // input carrying real uncertainty. A higher required return gives a lower
+  // multiple, so +1 point produces the LOW end.
+  //
+  // The formula becomes explosive as r approaches g (the denominator tends to
+  // zero), which is exactly where a ±1 point move produces a meaningless
+  // number: a TCS-like case gave a base of 529× and a "high" below its "low".
+  // So the perturbed values are used only when they stay within a sane multiple
+  // of the base, and the band is sorted rather than assumed to be ordered.
+  const rr = jm.requiredReturn
+  const alt = (dr) => {
+    const j2 = justifiedMultiples(ratioResult, { ...opts, riskFreeRate: rr.riskFreeRate + dr })
+    const m2 = j2.forms?.[form]?.multiple
+    if (!(m2 > 0)) return null
+    const ratio = m2 / chosen.multiple
+    return (ratio > 0.4 && ratio < 2.5) ? m2 : null    // beyond this the formula has gone unstable
+  }
+  const mHigher = alt(-0.01)   // lower required return -> higher multiple
+  const mLower  = alt(+0.01)   // higher required return -> lower multiple
+
+  const ends = [
+    mLower  != null ? toPrice(mLower)  : mid * 0.85,
+    mHigher != null ? toPrice(mHigher) : mid * 1.15,
+  ].filter(x => x > 0).sort((a, b) => a - b)
+
+  const target = {
+    low:  round(ends[0] ?? mid * 0.85),
+    base: round(mid),
+    high: round(ends[ends.length - 1] ?? mid * 1.15),
+  }
+  // A base outside its own band means the perturbation was unusable; fall back
+  // to a proportional band around the base rather than shipping an inverted one.
+  if (target.low > target.base || target.high < target.base) {
+    target.low = round(mid * 0.85)
+    target.high = round(mid * 1.15)
+  }
+
+  return {
+    ok: true, model: 'justified', form,
+    createdAt: Date.now(), horizonYears: years,
+    priceAtEstimate: round(price),
+    multiples: { low: round(mLower ?? chosen.multiple * 0.85, 2), base: chosen.multiple,
+                 high: round(mHigher ?? chosen.multiple * 1.15, 2) },
+    multipleBasis: 'justified',
+    multipleLabel: chosen.label,
+    multipleSteps: chosen.steps,
+    availableForms: Object.keys(jm.forms),
+    formLabels: Object.fromEntries(Object.entries(jm.forms).map(([k, f]) => [k, f.label])),
+    growth: g, growthPct: jm.growth.gPct,
+    growthSource: 'roe-retention',
+    growthLabel: `${round(jm.growth.roe, 1)}% ROE × ${round(jm.growth.retention * 100, 0)}% retained`,
+    requiredReturnPct: round(rr.r * 100, 1),
+    requiredReturnLabel: rr.label,
+    twoStage: jm.twoStage,
+    base: round(base), forwardBase: round(forward), baseLabel,
+    target,
+    upside: price > 0 ? {
+      low:  round(((target.low - price) / price) * 100, 1),
+      base: round(((target.base - price) / price) * 100, 1),
+      high: round(((target.high - price) / price) * 100, 1),
+    } : null,
+    degraded: rr.betaAssumed ? ['Beta unavailable — assumed 1.0'] : [],
+    missing: jm.missing,
+    basisSummary: `${chosen.label} ${chosen.multiple}× on ${baseLabel} · ${rr.label}`,
+  }
+}
+
+const FORM_NAMES = { pe: 'P/E', pb: 'P/B', evEbitda: 'EV/EBITDA', evSales: 'EV/Sales' }
+
 export function buildEstimate(ratioResult, opts = {}) {
   const {
     guidedGrowth = null, guidedMargin = null, guidanceFiscalYear = null,
@@ -831,6 +990,9 @@ export function buildEstimate(ratioResult, opts = {}) {
   // exactly its history's multiple, which is the step that was missing.
   const fitted = targetMultiple({
     basis: 'pe', priceHistory, incomeHistory, balanceHistory,
+    // Today's ROE, used as the forward expectation. Defensible over a one-year
+    // horizon — ROE is far stickier than earnings — but it IS an assumption of
+    // no change, and it belongs in the working rather than buried here.
     forwardRoe: ratioResult?.ratios?.roe?.value ?? null,
     forwardGrowth: growthBasis.growth != null ? growthBasis.growth * 100 : null,
     peerBand,
@@ -896,16 +1058,45 @@ export function buildEstimate(ratioResult, opts = {}) {
     return blank('No usable P/E — nothing to anchor a multiple on.', { price })
   }
 
-  // Same degeneracy check as the sector paths: a band whose percentiles have
-  // collapsed onto each other renders as a range while being a single number
-  // with noise on one side. Widening to the observed spread is the honest
-  // repair — the multiple is still measured, only its dispersion is unknown.
-  if (multiples.low >= multiples.base || multiples.high <= multiples.base) {
-    const sp = multipleSpread(priceHistory, incomeHistory, 'eps')
-    multiples = sp
-      ? { low: round(multiples.base * sp.lo, 1), base: multiples.base, high: round(multiples.base * sp.hi, 1) }
-      : { low: round(multiples.base * 0.85, 1), base: multiples.base, high: round(multiples.base * 1.15, 1) }
-    multipleLabel += ' (dispersion from the wider price history)'
+  // A band has to actually be one, and has to be plausible. Two failures are
+  // caught here, both of which produced estimates several times the traded
+  // price:
+  //
+  //  DEGENERATE — the percentiles have collapsed onto each other, so the "range"
+  //  is one number with noise beside it. The previous version WIDENED these from
+  //  the price history, which multiplied an error built on too little data
+  //  rather than removing it.
+  //
+  //  IMPLAUSIBLE — a high/low ratio beyond about 2.5× isn't a multiple range,
+  //  it's two different regimes averaged together (a re-listing, a loss year, a
+  //  collapse in earnings). Trent's 59–171× came out this way.
+  //
+  // Either way the band is discarded and the caller falls through to peers or to
+  // today's multiple — weaker anchors, but ones that can't be absurd.
+  // "Effectively equal" rather than strictly equal: a low of 79.99 against a
+  // base of 80 passes a `>=` test while being the same number, and renders as a
+  // range whose lower half is meaningless. Anything inside 3% counts as
+  // collapsed.
+  const degenerate = !(multiples.base > 0)
+    || multiples.low >= multiples.base * 0.97
+    || multiples.high <= multiples.base * 1.03
+  const implausible = multiples.low > 0 && (multiples.high / multiples.low) > 2.5
+  if (degenerate || implausible) {
+    console.info(`[estimate] discarding band ${multiples.low}-${multiples.high}x — ` +
+                 (degenerate ? 'percentiles collapsed' : 'spread too wide to be one regime'))
+    if (currentPe > 0) {
+      const c = clamp(currentPe, PE_FLOOR, PE_CAP)
+      multiples = { low: round(c * 0.8, 1), base: round(c, 1), high: round(c * 1.2, 1) }
+      multipleBasis = 'current'
+      multipleLabel = `today's P/E ±20% — its own history was too thin or too erratic to use`
+    } else if (peerBand?.median > 0) {
+      multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
+      multipleBasis = 'peer'
+      multipleLabel = 'peer multiples — its own history was unusable'
+    } else {
+      return blank('No usable multiple: this stock\'s own history is too thin and no peers are available.',
+                   { price })
+    }
   }
 
   const target = {
@@ -992,11 +1183,11 @@ export function sanityCheck(estimate, context = {}) {
   // modelling error far more often than a genuine multi-bagger call.
   if (price > 0) {
     const r = mid / price
-    if (r > 3) issues.push({ severity: 'high',
+    if (r > 3) issues.push({ severity: 'high', kind: 'price',
       note: `${round(r, 1)}× the traded price — a gap that size usually means the wrong model, not a mispricing.` })
-    else if (r < 0.33) issues.push({ severity: 'high',
+    else if (r < 0.33) issues.push({ severity: 'high', kind: 'price',
       note: `${round(r, 2)}× the traded price — the estimate is far below where the stock actually trades.` })
-    else if (r > 2 || r < 0.5) issues.push({ severity: 'medium',
+    else if (r > 2 || r < 0.5) issues.push({ severity: 'medium', kind: 'price',
       note: `${round(r, 2)}× the traded price — worth checking the inputs before relying on it.` })
   }
 
@@ -1009,30 +1200,42 @@ export function sanityCheck(estimate, context = {}) {
     // different methods over the SAME statements, so they should broadly agree;
     // price can legitimately sit far from both. SBIN sat at 0.60 of fair value
     // — inside a 0.4 threshold and still plainly wrong — which is what set this.
-    if (r > 2 || r < 0.65) issues.push({ severity: r > 2.5 || r < 0.5 ? 'high' : 'medium',
-      note: `Fair value puts this near ${Math.round(fvMid)}; this estimate says ${Math.round(mid)}. Two methods on the same numbers should not disagree by ${r > 1 ? round(r, 1) + '×' : round(1 / r, 1) + '×'}.` })
+    if (r > 2 || r < 0.65) issues.push({ severity: 'medium', kind: 'fair-value',
+      note: `Fair value says ${Math.round(fvMid)}, this estimate says ${Math.round(mid)} — ` +
+            (r < 1
+              ? 'the market has been paying less than the numbers suggest, and this reflects that.'
+              : 'this projects more than the current numbers alone support.') })
   }
 
   // 3 — against consensus. Analysts can be wrong together, but being outside
   // their whole range by a multiple is a signal about our arithmetic.
   if (analystTarget?.low > 0 && analystTarget?.high > 0) {
-    if (mid > analystTarget.high * 2) issues.push({ severity: 'medium',
+    if (mid > analystTarget.high * 2) issues.push({ severity: 'medium', kind: 'consensus',
       note: `Above the entire analyst range (${Math.round(analystTarget.low)}–${Math.round(analystTarget.high)}) by more than double.` })
-    else if (mid < analystTarget.low * 0.5) issues.push({ severity: 'medium',
+    else if (mid < analystTarget.low * 0.5) issues.push({ severity: 'medium', kind: 'consensus',
       note: `Below the entire analyst range (${Math.round(analystTarget.low)}–${Math.round(analystTarget.high)}) by more than half.` })
   }
 
   if (issues.length === 0) return null
+
+  // Only a PRICE divergence marks the number unreliable. Fair value and this
+  // estimate answer different questions — fair value asks what the numbers say
+  // the business is worth, the estimate asks what the market is likely to pay —
+  // and a persistent gap between them is exactly what a cheap or expensive stock
+  // looks like. Treating that disagreement as a defect struck through estimates
+  // that were doing their job, which is why a stock trading at a lasting
+  // discount had its estimate crossed out for reporting the discount.
+  const brokenModel = issues.some(i => i.severity === 'high' && i.kind === 'price')
   const high = issues.some(i => i.severity === 'high')
   return {
-    reliable: !high,
-    severity: high ? 'high' : 'medium',
+    reliable: !brokenModel,
+    severity: brokenModel ? 'high' : high ? 'medium' : 'medium',
     issues: issues.map(i => i.note),
     // What to say when the number is shown. Suppressing it entirely would hide
     // the evidence that something is wrong; presenting it unmarked is worse.
-    banner: high
-      ? "This estimate doesn't hold up against the price or the other methods — treat it as unreliable."
-      : 'This estimate sits well outside the other readings — check the inputs.',
+    banner: brokenModel
+      ? "This estimate doesn't hold up against the traded price — treat it as unreliable."
+      : 'Worth knowing how this differs from the other readings.',
   }
 }
 

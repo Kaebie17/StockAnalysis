@@ -10,7 +10,7 @@
  */
 import { assessMoatQuality } from './moatQuality.js'
 
-export function buildBlockSummary(state) {
+export function buildBlockSummary(state, extra = {}) {
   if (!state?.valuation || !state?.ratioResult) return null
   const { valuation: v, quality: q, technicals: t, marketExpectation: me, ratioResult: r, data } = state
   const num = x => (x == null || isNaN(x) ? null : +(+x).toFixed(2))
@@ -46,6 +46,41 @@ export function buildBlockSummary(state) {
       peRatio: num(r.ratios?.pe?.value),
       evEbitda: num(r.ratios?.evEbitda?.value),
     },
+
+    // ── THE OTHER PRICE RANGES ──
+    // Four ranges now appear on screen and the verdict previously saw only fair
+    // value, so it reasoned about one number while the user compared four.
+    // Their agreement or disagreement is the most useful thing on the page:
+    // fair value asks what the numbers say the business is worth, Estimate 1
+    // what the fundamentals justify paying, Estimate 2 what the market has
+    // actually been paying, and consensus what the Street expects.
+    estimate1: extra.justified?.ok ? {
+      range: [num(extra.justified.target.low), num(extra.justified.target.high)],
+      basis: extra.justified.multipleLabel,
+      multiple: extra.justified.multiples?.base,
+      form: extra.justified.form,
+      requiredReturnPct: extra.justified.requiredReturnPct,
+      growthPct: extra.justified.growthPct,
+      description: 'What the fundamentals justify — derived from growth, returns and payout, independent of price history.',
+    } : (extra.justified ? { unavailable: extra.justified.note } : null),
+
+    estimate2: extra.estimate?.ok ? {
+      range: [num(extra.estimate.target.low), num(extra.estimate.target.high)],
+      basis: extra.estimate.multipleLabel,
+      multiple: extra.estimate.multiples?.base,
+      model: extra.estimate.model || 'standard',
+      growthPct: extra.estimate.growthPct,
+      marginPct: extra.estimate.marginPct,
+      reliable: extra.sanity?.reliable !== false,
+      caution: extra.sanity?.issues?.[0] ?? null,
+      description: "What the market has been paying — this stock's own multiple applied to projected earnings.",
+    } : (extra.estimate ? { unavailable: extra.estimate.note } : null),
+
+    analystConsensus: extra.analystTarget?.low > 0 ? {
+      range: [num(extra.analystTarget.low), num(extra.analystTarget.high)],
+      count: extra.analystTarget.count ?? null,
+      description: 'Published analyst targets, for comparison only.',
+    } : null,
 
     // ── FUNDAMENTALS highlight ──
     fundamentals: q ? {

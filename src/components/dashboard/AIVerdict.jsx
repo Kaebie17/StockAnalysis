@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { buildBlockSummary } from '../../engine/buildBlockSummary.js'
+import { useEstimate } from '../../store/useEstimate.js'
 import { expectationInsight } from '../../engine/valuation.js'
 import { getAiKey, setAiKey, clearAiKey, isKeyRemembered } from '../../utils/aiKey.js'
 import { getAiVerdict, setAiVerdict } from '../../utils/db.js'
@@ -43,7 +44,17 @@ export default function AIVerdict() {
   const [showKey, setShowKey] = useState(false)
   const [modelVal, setModelVal] = useState('gemini-2.5-flash')
 
-  const summary = valuation ? buildBlockSummary(state) : null
+  // The estimates and consensus are part of the payload, so the fingerprint
+  // below covers them too: a re-rating, a revision that moves an estimate, or a
+  // moat/quality change all alter the summary and therefore re-run the verdict
+  // on their own. No separate trigger wiring is needed.
+  const { estimate, justified, sanity } = useEstimate(state)
+  const summary = valuation
+    ? buildBlockSummary(state, {
+        estimate, justified, sanity,
+        analystTarget: state.analystTarget || null,
+      })
+    : null
   // Fingerprint the summary so ANY change (data breadth, valuation, expectation,
   // guidance) produces a new key and re-runs the analysis.
   const fp = summary ? hashStr(JSON.stringify(summary)) : ''
@@ -188,4 +199,3 @@ export default function AIVerdict() {
     </div>
   )
 }
-

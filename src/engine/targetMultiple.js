@@ -133,10 +133,18 @@ export function targetMultiple(opts = {}) {
   const { basis = 'pe', forwardRoe = null, forwardGrowth = null, peerBand = null } = opts
   const obs = yearlyObservations(opts)
 
-  if (obs.length === 0) {
+  // A median needs a distribution behind it. Two annual observations give a
+  // midpoint between two numbers, and a 15th/85th percentile band over two
+  // points is just those two points — which is how a "59–171×" band reached a
+  // Trent estimate of 4,441–12,886 against a fair value near 887. Three years is
+  // the minimum that can describe a range at all.
+  const MIN_YEARS_FOR_BAND = 3
+  if (obs.length < MIN_YEARS_FOR_BAND) {
     return peerBand?.median > 0
       ? { multiple: peerBand.median, low: peerBand.low, high: peerBand.high,
-          basis, source: 'peers', steps: ['No usable history for this stock — using the peer median.'] }
+          basis, source: 'peers', observations: obs.length,
+          steps: [`Only ${obs.length} year${obs.length === 1 ? '' : 's'} of multiple history — ` +
+                  `too few to describe a range, so peers are used instead.`] }
       : null
   }
 

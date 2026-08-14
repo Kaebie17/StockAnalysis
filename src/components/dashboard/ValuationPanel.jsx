@@ -84,6 +84,8 @@ export default function ValuationPanel({ open, onClose }) {
           occupy, and someone who has opened the valuation detail is the person
           who actually wants it. Collapsed by default so it doesn't push the
           model table down the page. */}
+      <TwoEstimates state={state} />
+
       <EstimateExplainer ratioResult={state.ratioResult} data={state.data} assumptions={state.assumptions} />
 
       {/* Revisions live next to the working, not in a separate screen: the
@@ -754,3 +756,94 @@ function arTextOf(arData) {
   }
   return parts.join('\n')
 }
+
+/**
+ * Both estimates, side by side.
+ *
+ * Estimate 1 asks what the fundamentals justify; Estimate 2 asks what the market
+ * has been paying. They answer different questions, so they are shown rather
+ * than reconciled — a persistent gap is the cheap/expensive reading arrived at
+ * two independent ways, not an error in either.
+ *
+ * The form picker sits under Estimate 1 because several forms can be
+ * simultaneously valid for one company. The sector default is a rule rather than
+ * a score, so it can be inspected and overridden; switching it recomputes
+ * locally and triggers nothing else.
+ */
+function TwoEstimates({ state }) {
+  const { estimate, justified, form, setForm, sanity, riskFree } = useEstimate(state)
+  const cur = state.data?.currency === 'INR' ? '₹' : '$'
+  const n = v => (v == null ? '—' : Math.round(v).toLocaleString('en-IN'))
+
+  if (!estimate && !justified) return null
+
+  return (
+    <div className="bg-navy-800/40 rounded-lg p-3 space-y-2.5 text-xs">
+      {/* Estimate 1 */}
+      <div>
+        <div className="flex items-baseline justify-between gap-2 min-w-0">
+          <span className="text-slate-500 shrink-0">Estimate 1</span>
+          {justified?.ok ? (
+            <span className="font-mono text-slate-200 text-right">
+              {cur}{n(justified.target.low)} – {cur}{n(justified.target.high)}
+              {justified.upside?.base != null && (
+                <span className={`ml-1.5 text-[11px] ${justified.upside.base >= 0 ? 'text-bull' : 'text-bear'}`}>
+                  {justified.upside.base >= 0 ? '+' : ''}{justified.upside.base}%
+                </span>
+              )}
+            </span>
+          ) : <span className="text-slate-600 text-[11px] text-right">not available</span>}
+        </div>
+        <div className="text-[10px] text-slate-600 mt-0.5">
+          {justified?.ok
+            ? `${justified.multipleLabel} ${justified.multiples.base}× · ${justified.requiredReturnLabel}`
+            : (justified?.note || 'Fundamentals-based')}
+          {riskFree?.asOf && justified?.ok && (
+            <span className="text-slate-700"> · rate as of {riskFree.asOf}</span>
+          )}
+        </div>
+        {riskFree?.stale && (
+          <div className="text-[10px] text-neutral mt-0.5">{riskFree.note}</div>
+        )}
+
+        {/* Form picker — only where more than one form applies. */}
+        {justified?.ok && justified.availableForms?.length > 1 && (
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {justified.availableForms.map(f => (
+              <button key={f} onClick={() => setForm(f === form ? null : f)}
+                className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                  justified.form === f
+                    ? 'border-accent/60 text-accent bg-navy-800'
+                    : 'border-navy-700 text-slate-500 hover:text-slate-300'}`}>
+                {FORM_SHORT[f] || f}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Estimate 2 */}
+      <div className="pt-2 border-t border-navy-800">
+        <div className="flex items-baseline justify-between gap-2 min-w-0">
+          <span className="text-slate-500 shrink-0">Estimate 2</span>
+          {estimate?.ok ? (
+            <span className={`font-mono text-right ${
+              sanity?.reliable === false ? 'text-slate-500 line-through decoration-neutral/60' : 'text-slate-200'}`}>
+              {cur}{n(estimate.target.low)} – {cur}{n(estimate.target.high)}
+              {estimate.upside?.base != null && (
+                <span className={`ml-1.5 text-[11px] ${estimate.upside.base >= 0 ? 'text-bull' : 'text-bear'}`}>
+                  {estimate.upside.base >= 0 ? '+' : ''}{estimate.upside.base}%
+                </span>
+              )}
+            </span>
+          ) : <span className="text-slate-600 text-[11px] text-right">not available</span>}
+        </div>
+        <div className="text-[10px] text-slate-600 mt-0.5">
+          {estimate?.ok ? `Market-based · ${estimate.multipleLabel}` : (estimate?.note || 'Market-based')}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const FORM_SHORT = { pe: 'P/E', pb: 'P/B', evEbitda: 'EV/EBITDA', evSales: 'EV/Sales' }

@@ -22,6 +22,20 @@
 import { buildEstimate } from './estimate.js'
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
+/** Revenue CAGR over whatever years had been published by the rebuild date. */
+function cagrOf(rows = []) {
+  const pts = rows
+    .map(r => ({ y: yearOf(r), v: val(r?.revenue) }))
+    .filter(p => p.y != null && p.v > 0)
+    .sort((a, b) => a.y - b.y)
+  if (pts.length < 3) return null
+  const years = pts[pts.length - 1].y - pts[0].y
+  if (years < 2) return null
+  const g = Math.pow(pts[pts.length - 1].v / pts[0].v, 1 / years) - 1
+  if (!isFinite(g) || g > 0.6 || g < -0.3) return null
+  return g * 100
+}
+
 const yearOf = row => {
   const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
   return m ? Number(m[0]) : null
@@ -97,15 +111,52 @@ export function rebuildSnapshot(analysis, asOfMs, regimeOn = null) {
 
   if (incAsOf.length === 0) missing.push('financials as of that date')
 
+  // Ratios AS OF that date, not today's.
+  //
+  // Spreading the current `ratios` object through recomputed price/EPS/revenue
+  // left ROE, margin, book value and payout at their present-day values while
+  // everything around them described the past — and those four drive the
+  // estimate. A company whose ROE has since improved got its improved ROE
+  // applied to a two-year-old price, which is the same error as freezing a
+  // payout: a quantity held still while the things it belongs with moved.
+  const bRow = (analysis.data?.balanceHistory || []).find(b => yearOf(b) === yearOf(lastRow))
+  const equityThen = val(bRow?.totalEquity)
+  const sharesThen = (npThen > 0 && epsThen > 0) ? npThen / epsThen : null
+  const bpsThen = (equityThen > 0 && sharesThen > 0) ? equityThen / sharesThen : null
+  const divThen = val(lastRow?.dividendPaid) ?? val(lastRow?.dividend)
+
   const ratioThen = {
     ...analysis.ratioResult,
     price, eps: epsThen, revenue: revThen, netProfit: npThen,
     ratios: {
       ...analysis.ratioResult.ratios,
-      // P/E must be of the time — it's price over the earnings then known.
-      pe: (epsThen > 0) ? { value: price / epsThen } : analysis.ratioResult.ratios?.pe,
+      // Each recomputed from the figures of that year where they exist; where
+      // they don't, today's is kept and the gap is named in `missing` below.
+      pe:  (epsThen > 0) ? { value: price / epsThen } : analysis.ratioResult.ratios?.pe,
+      roe: (equityThen > 0 && npThen > 0)
+        ? { value: (npThen / equityThen) * 100 } : analysis.ratioResult.ratios?.roe,
+      netMargin: (revThen > 0 && npThen != null)
+        ? { value: (npThen / revThen) * 100 } : analysis.ratioResult.ratios?.netMargin,
+      bookPerShare: bpsThen > 0 ? { value: bpsThen } : analysis.ratioResult.ratios?.bookPerShare,
+      pb: (bpsThen > 0) ? { value: price / bpsThen } : analysis.ratioResult.ratios?.pb,
+      dividendPayout: (divThen >= 0 && npThen > 0)
+        ? { value: (divThen / npThen) * 100 } : analysis.ratioResult.ratios?.dividendPayout,
     },
   }
+
+  // Growth as of that date too. The ratios above were recomputed but the CAGR
+  // fields were still today's — so a rebuild used the growth rate measured over
+  // years that hadn't happened yet at the date being rebuilt. Recomputed from
+  // the years actually published by then; where there are too few, the field is
+  // dropped so the estimate declines rather than borrowing a future number.
+  const cagrThen = cagrOf(incAsOf)
+  for (const k of ['revCagr5y', 'revGrowthRecent', 'revCagr', 'revGrowthLongRun']) {
+    if (cagrThen != null) ratioThen.ratios[k] = { value: cagrThen }
+    else delete ratioThen.ratios[k]
+  }
+
+  if (!(equityThen > 0)) missing.push('book value as of that date')
+  if (cagrThen == null) missing.push('growth history as of that date')
 
   const est = buildEstimate(ratioThen, {
     priceHistory:   priceHistoryAsOf(priceHistory, asOfMs),

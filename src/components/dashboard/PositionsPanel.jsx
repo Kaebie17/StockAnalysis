@@ -559,17 +559,33 @@ function DateEditor({ current, onSet, onCancel }) {
  * save step only obscured that anything was being watched.
  */
 function ExitPlan({ agg, triggers, price, currency, onSave }) {
-  const [open, setOpen] = useState(false)
   const fired = triggers?.fired || []
   const plan = agg.lots[0]?.plan
+  const stops = triggers?.suggestions?.stops || []
+  const targets = triggers?.suggestions?.targets || []
+  // Open by default once you've expanded the holding. It used to start
+  // collapsed behind an 11px grey line, so the suggested levels — the part with
+  // the most work behind them — were two taps deep and effectively invisible.
+  // Anyone who has opened a position wants to see where to get out of it.
+  const [open, setOpen] = useState(true)
+
+  if (fired.length === 0 && stops.length === 0 && targets.length === 0) return null
 
   return (
     <div className="pt-1 border-t border-navy-800">
       <button onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 text-[11px] text-slate-500 hover:text-slate-300">
-        <span>Exit plan</span>
-        {fired.length > 0 && <span className="text-neutral">{fired.length} to look at</span>}
-        {plan?.stopPrice > 0 && <span className="text-slate-600">alert {money(plan.stopPrice, currency)}</span>}
+        className="w-full flex items-center gap-2 text-[11px] text-slate-400 hover:text-slate-200">
+        <span className="font-medium">Exit plan</span>
+        {/* Say what's inside, so the row is worth opening even when nothing has
+            fired. It previously read just "Exit plan" on a healthy holding,
+            which gave no reason to look. */}
+        {fired.length > 0
+          ? <span className="text-neutral">{fired.length} to look at</span>
+          : (stops.length + targets.length) > 0 &&
+            <span className="text-slate-600">
+              {stops.length} stop{stops.length === 1 ? '' : 's'} · {targets.length} booking level{targets.length === 1 ? '' : 's'}
+            </span>}
+        {plan?.stopPrice > 0 && <span className="text-accent">alert {money(plan.stopPrice, currency)}</span>}
         <span className="ml-auto">{open ? '▲' : '▼'}</span>
       </button>
 

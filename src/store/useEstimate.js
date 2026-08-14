@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import { listRevisions, appendRevision, saveEstimate, currentEstimate } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
-import { buildEstimate, scoreEstimate, sanityCheck } from '../engine/estimate.js'
+import { buildEstimate, buildJustifiedEstimate, scoreEstimate, sanityCheck } from '../engine/estimate.js'
 import { assessFromQuarterly, growthDriftSuggestion } from '../engine/quarterlyBridge.js'
 import { fetchPeers } from '../api/peersClient.js'
 import { relativePerformance } from '../api/marketRegime.js'
+import { getRiskFreeRate } from '../api/riskFreeClient.js'
 import { peerBandFrom, detectRerating } from '../engine/rerating.js'
 import { forwardPeBand } from '../engine/estimate.js'
 
@@ -45,11 +46,18 @@ function subscribeVersion(fn) {
 }
 const getVersion = () => revisionVersion
 
-export function useEstimate(state) {
+export function useEstimate(state, opts = {}) {
   const [overrides, setOverrides] = useState({})
   const [peers, setPeers] = useState([])
   const [revisions, setRevisions] = useState([])
   const [stored, setStored] = useState(null)      // last frozen estimate, for scoring
+  // Which justified form the user has chosen, if they've overridden the sector
+  // default. Session-level: a preference about how to read a number, not data.
+  const [form, setForm] = useState(null)
+  // Risk-free rate for the justified multiple. Null until fetched, and null is a
+  // valid outcome — Estimate 1 declines rather than falling back to a made-up
+  // rate, since every justified multiple is sensitive to it.
+  const [riskFree, setRiskFree] = useState(null)
   const version = useSyncExternalStore(subscribeVersion, getVersion, getVersion)
 
   const ticker = state?.ticker
@@ -90,6 +98,15 @@ export function useEstimate(state) {
     return () => { dead = true }
   }, [ticker, state?.data?.priceHistory, state?.sectorType])
 
+  useEffect(() => {
+    let dead = false
+    const indian = /\.(NS|BO)$/i.test(ticker || '')
+    getRiskFreeRate({ market: indian ? 'IN' : 'US', userKey: opts?.userKey })
+      .then(r => { if (!dead) setRiskFree(r) })
+      .catch(() => {})
+    return () => { dead = true }
+  }, [ticker, opts?.userKey])
+
   const peerBand = peerBandFrom(peers)
 
   // Quarterly results → guidance verdict. Both halves of this were built and
@@ -101,6 +118,17 @@ export function useEstimate(state) {
     incomeHistory: state?.data?.incomeHistory || [],
   })
 
+  // ESTIMATE 1 — what the fundamentals justify. Independent of price history,
+  // so it stands where the market-based one can't.
+  const justified = state?.ratioResult ? buildJustifiedEstimate(state.ratioResult, {
+    sectorType: state.sectorType,
+    form,
+    riskFreeRate: opts?.riskFreeRate ?? riskFree?.rate ?? null,
+    beta: state.data?.meta?.beta ?? state.technicals?.beta ?? null,
+    incomeHistory: state.data?.incomeHistory || [],
+  }) : null
+
+  // ESTIMATE 2 — what the market has been paying.
   const estimate = state?.ratioResult ? buildEstimate(state.ratioResult, {
     guidedGrowth: guidedGrowthOf(state),
     guidedMargin: guidedMarginOf(state),
@@ -193,6 +221,7 @@ export function useEstimate(state) {
   return {
     estimate, overrides, revisions, peers, peerBand, rerating,
     guidanceAssessment, quarterlySuggestion, score, stored, relative, sanity,
+    justified, form, setForm, riskFree,
     handledKeys, deferredLevers,
     commit, freeze, reload,
   }

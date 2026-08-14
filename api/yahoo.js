@@ -170,7 +170,7 @@ module.exports = async function handler(req, res) {
       //     transform of its processResponse().
 
       const sixYearsAgo = new Date()
-      sixYearsAgo.setFullYear(sixYearsAgo.getFullYear() - 6)
+      sixYearsAgo.setFullYear(sixYearsAgo.getFullYear() - 10)
 
       const [quoteResult, summaryResult, historyResult, ftsResult] = await Promise.allSettled([
 
@@ -196,8 +196,17 @@ module.exports = async function handler(req, res) {
         // NOTE: historical() is deprecated AND currently fails Yahoo's own
         // options validation (period2 schema) because Yahoo removed its backend.
         // chart() is the supported replacement and returns { quotes: [...] }.
+        // Ten years, matched to the fundamentals window below.
+        //
+        // This was two years, which quietly capped every downstream calculation
+        // that pairs prices with fiscal years: a multiple band could never have
+        // more than two annual observations FOR ANY STOCK, however long it had
+        // been listed. Trent's "median multiple over 2 years" — which produced a
+        // 59-171x band and an absurd estimate — was this limit, not a young
+        // company. Ten years spans a full cycle for a cyclical and gives a
+        // percentile band something to be a percentile OF.
         yf.chart(ticker, {
-          period1: new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000),
+          period1: new Date(Date.now() - 10 * 365 * 24 * 60 * 60 * 1000),
           period2: new Date(),
           interval: '1d'
         }, yfOpts),
@@ -261,7 +270,7 @@ module.exports = async function handler(req, res) {
           console.warn(`[yf2] ${ticker}: ${history.length} bars but only ${usableBars} have full OHLC — refetching`)
         }
         try {
-          const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=2y&interval=1d&includePrePost=false`
+          const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=10y&interval=1d&includePrePost=false`
           const chartRes = await fetch(chartUrl, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36' }
           })
