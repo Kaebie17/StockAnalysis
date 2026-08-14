@@ -7,6 +7,20 @@
     @apply bg-navy-950 text-slate-100 font-sans antialiased;
   }
   * { box-sizing: border-box; }
+
+  /* Flex and grid children default to min-width:auto, which means a long
+     unbroken string (a ticker, a URL, a monospace number) refuses to shrink and
+     pushes its siblings out of the row instead. This is the single most common
+     cause of a flex row overflowing its container, and every `truncate` in the
+     app silently depends on it. */
+  .min-w-0-default > * { min-width: 0; }
+
+  /* Long words and pasted identifiers break rather than escaping their box. */
+  p, span, div, td, th, li { overflow-wrap: anywhere; }
+
+  /* Tabular numbers so columns of figures line up instead of jittering as
+     digits change width. */
+  .font-mono, table, .tabular { font-variant-numeric: tabular-nums; }
 }
 
 @layer components {
@@ -29,19 +43,59 @@
   .signal-overvalued  { @apply text-bear font-semibold; }
   .signal-fair        { @apply text-neutral font-semibold; }
   .badge {
-    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium;
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium
+           whitespace-nowrap;
   }
   .badge-bull  { @apply badge bg-bull/20 text-bull; }
   .badge-bear  { @apply badge bg-bear/20 text-bear; }
   .badge-neutral { @apply badge bg-neutral/20 text-neutral; }
+
+  /* NO w-full here.
+     It was baked in, so every `flex-1`, `w-28` or grid placement on an input was
+     fighting a component-layer rule of equal specificity — the field would take
+     the full row and shove whatever sat beside it onto the next line. Width now
+     belongs to the caller: `w-full` where a field should fill, `flex-1` in a
+     row, `w-28` where it's fixed. min-w-0 lets it shrink rather than overflow. */
   .input-field {
-    @apply bg-navy-800 border border-navy-700 rounded-lg px-4 py-2.5 text-white
+    @apply bg-navy-800 border border-navy-700 rounded-lg px-3 py-2 text-white
            placeholder-slate-500 focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent
-           transition-colors w-full;
+           transition-colors min-w-0;
   }
+  /* Opt-in full width, for the common single-field case. */
+  .input-block { @apply input-field w-full; }
+
+  /* A row of label + value that must never overflow: the label holds its width,
+     the value takes the rest and truncates. */
+  .kv-row { @apply flex items-baseline gap-2 min-w-0; }
+  .kv-label { @apply text-slate-500 shrink-0; }
+  .kv-value { @apply text-slate-300 min-w-0 truncate; }
+
+  /* Numbers aligned right in a fixed gutter, so P/L columns line up down a list
+     regardless of digit count. */
+  .num-cell { @apply text-right shrink-0 tabular-nums; }
 }
+
+/* A horizontally scrolled row shouldn't carry a visible bar on desktop — it
+   reads as a defect rather than an affordance. The row still scrolls by wheel,
+   trackpad, touch and keyboard. */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: #1e293b; }
 ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+
+/* Modal sheets: cap by dynamic viewport height so a collapsing mobile URL bar
+   doesn't crop the footer, and never let a sheet exceed the screen. */
+.sheet { max-height: 90dvh; }
+
+/* Touch targets. A 10px text button is legible but not reliably tappable; this
+   grows the hit area without changing the visual size. */
+@media (pointer: coarse) {
+  button, a[role="button"], [role="tab"] { min-height: 32px; }
+  .tap-sm { position: relative; }
+  .tap-sm::after {
+    content: ''; position: absolute; inset: -8px; /* invisible padding */
+  }
+}

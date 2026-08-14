@@ -87,16 +87,20 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
 
   return (
     <div className="flex flex-col gap-3 lg:gap-4">
-      {/* ── SCENARIOS ── mobile: first · desktop: third ── */}
-      <div className="order-1 lg:order-3">
+      {/* ── SCENARIOS ── mobile first, desktop last ── */}
+      <div className="order-1 lg:order-4">
         <DCFScenarioPanel compact />
       </div>
 
-      {/* ── TILES ── mobile: swipeable carousel · desktop: 4-col grid ── */}
+      {/* ── TILES ── a horizontally scrolled row at every width ──
+          A grid at sm and above forced five tiles to share one row, so each got
+          a fifth of the width and its contents wrapped and collided. Scrolling
+          lets every tile keep a readable width on any screen; the tradeoff is
+          that not all five are visible at once, which is the right way round —
+          a tile you must scroll to beats one you cannot read. */}
       <div className="order-2 lg:order-1">
-      <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-1
-                      sm:grid sm:grid-cols-2 sm:overflow-visible sm:pb-0
-                      lg:grid-cols-5">
+      <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 no-scrollbar
+                      -mx-4 px-4 sm:mx-0 sm:px-0">
 
         {/* ── VALUATION ──────────────────────────────────────────────────────── */}
         <PillarCard
@@ -249,11 +253,15 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
       </div>
       </div>
 
-      {/* ── DETAIL (expanded panel + banner) ── mobile: below tiles · desktop: last ── */}
-      {detail && <div className="order-3 lg:order-4">{detail}</div>}
+      {/* ── DETAIL (expanded panel + banner) ──
+          Directly beneath the tiles at every width. On desktop this sat after
+          the verdict, so tapping "see more" opened a panel further down the page
+          with an unrelated block in between — the user had to go looking for
+          what they had just opened. */}
+      {detail && <div className="order-3 lg:order-2">{detail}</div>}
 
-      {/* ── VERDICT ── mobile: last · desktop: second ── */}
-      <div className="order-4 lg:order-2">
+      {/* ── VERDICT ── after the detail it may relate to ── */}
+      <div className="order-4 lg:order-3">
         <div className="card border-navy-700 bg-navy-900/60 py-3 px-4">
           <div className="flex items-start gap-3">
             <span className="text-xl mt-0.5">💡</span>
@@ -292,7 +300,8 @@ function PillarCard({ title, badge, children, onExpand, isExpanded }) {
     <div
       onClick={onExpand}
       className={`card flex flex-col gap-2 cursor-pointer transition-all
-        snap-start shrink-0 w-[80%] sm:w-auto sm:shrink min-w-0 overflow-hidden
+        snap-start shrink-0 overflow-hidden
+        w-[82%] sm:w-[300px] lg:w-[320px]
         ${isExpanded ? 'border-accent/50 bg-accent/5' : 'hover:border-navy-600'}`}>
       <div className="flex items-center justify-between gap-2 min-w-0">
         <span className="text-xs font-semibold text-slate-300 truncate">{title}</span>
