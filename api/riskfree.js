@@ -32,16 +32,22 @@ let cached = null      // { rate, asOf, market, fetchedAt }
 const TTL_MS = 30 * 24 * 60 * 60 * 1000   // a month; the rate moves slowly
 
 export default async function handler(req, res) {
-  const market = (req.query?.market || 'IN').toUpperCase()
+  // Accepts POST (key in the body) or GET (server-key only). The key must never
+  // travel in a query string on a cacheable GET — the URL is logged upstream and
+  // the response gets cached against it.
+  const q = req.method === 'POST' ? (req.body || {}) : (req.query || {})
+  const market = String(q.market || 'IN').toUpperCase()
   const bounds = BOUNDS[market] || BOUNDS.IN
-  const force = req.query?.force === '1'
+  const force = q.force === '1' || q.force === true
 
   if (!force && cached?.market === market && Date.now() - cached.fetchedAt < TTL_MS) {
-    res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=604800')
+    // Never cached at the CDN: the response depends on whether a key was sent,
+    // so a shared cache would serve one caller's outcome to another.
+    res.setHeader('Cache-Control', 'no-store')
     return res.status(200).json({ ...cached, source: 'cache' })
   }
 
-  const key = req.body?.userKey || req.query?.userKey || process.env.GEMINI_API_KEY
+  const key = q.userKey || process.env.GEMINI_API_KEY
   if (!key) {
     return res.status(200).json(cached
       ? { ...cached, source: 'stale', note: 'No API key — showing the last value fetched.' }
@@ -49,7 +55,7 @@ export default async function handler(req, res) {
           note: 'No API key configured, so the risk-free rate cannot be fetched.' })
   }
 
-  const MODEL = req.query?.model || DEFAULT_MODEL
+  const MODEL = q.model || DEFAULT_MODEL
 
   try {
     const r = await fetch(
@@ -97,7 +103,7 @@ export default async function handler(req, res) {
       fetchedAt: Date.now(),
       name: bounds.name,
     }
-    res.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=604800')
+    res.setHeader('Cache-Control', 'no-store')
     return res.status(200).json({ ...cached, source: 'fetched' })
   } catch (e) {
     console.warn('[riskfree] failed:', e?.message)

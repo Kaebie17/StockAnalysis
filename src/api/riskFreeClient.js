@@ -29,6 +29,20 @@ function save(v) {
 }
 
 /**
+ * Has a key appeared since the stored rate was fetched?
+ *
+ * The stored value carries no record of whether a key was used, so a rate
+ * fetched keylessly (which always fails) looked identical to a real one and was
+ * reused for a month. Recording it means entering a key later triggers a refetch
+ * immediately, which is what a user expects after adding one.
+ */
+function shouldRefetch(stored, userKey) {
+  if (!stored) return true
+  if (userKey && !stored.hadKey) return true
+  return false
+}
+
+/**
  * @returns { rate, ratePct, asOf, ageDays, stale, note } — `rate` as a decimal
  * for the engines, `ratePct` for display. `rate` is null when nothing usable
  * exists, which is a valid state the caller must handle.
@@ -37,19 +51,36 @@ export async function getRiskFreeRate({ market = 'IN', userKey = null, force = f
   const stored = load()
   const age = stored?.fetchedAt ? Date.now() - stored.fetchedAt : Infinity
 
-  if (!force && stored?.rate > 0 && age < REFRESH_AFTER_MS) return shape(stored)
+  // A stored rate is only reused if it was fetched WITH a key. The first load
+  // after install has no key, stores nothing, and the earlier version then kept
+  // returning that empty result — so entering a key later changed nothing until
+  // storage was cleared by hand.
+  if (!force && stored?.rate > 0 && age < REFRESH_AFTER_MS && !shouldRefetch(stored, userKey)) {
+    return shape(stored)
+  }
+
+  // No key means the request cannot succeed, so it isn't made. Returning
+  // immediately also avoids poisoning the CDN with a keyless response that a
+  // later keyed request would then be served from.
+  if (!userKey) {
+    return stored?.rate > 0 ? shape(stored) : shape(null)
+  }
 
   // One fetch at a time — several components ask for this on the same render.
   if (!inflight) {
     inflight = (async () => {
       try {
-        const qs = new URLSearchParams({ market })
-        if (force) qs.set('force', '1')
-        if (userKey) qs.set('userKey', userKey)
-        const r = await fetch(`/api/riskfree?${qs}`)
+        // POST, not GET. The key was a query parameter on a cacheable GET, so
+        // it travelled in the URL and Vercel cached the response against it —
+        // an earlier keyless answer could be replayed for a keyed request.
+        const r = await fetch('/api/riskfree', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ market, force, userKey }),
+        })
         if (!r.ok) return null
         const j = await r.json().catch(() => null)
-        if (j?.rate > 0) { save(j); return j }
+        if (j?.rate > 0) { const rec = { ...j, hadKey: true }; save(rec); return rec }
         return null
       } catch { return null }
       finally { inflight = null }
