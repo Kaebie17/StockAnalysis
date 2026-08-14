@@ -16,6 +16,7 @@ const REFRESH_AFTER_MS = 30 * 24 * 60 * 60 * 1000     // a month
 const STALE_AFTER_MS = 180 * 24 * 60 * 60 * 1000      // six months — say so loudly
 
 let inflight = null
+let lastError = null
 
 function load() {
   try {
@@ -81,6 +82,10 @@ export async function getRiskFreeRate({ market = 'IN', userKey = null, force = f
         if (!r.ok) return null
         const j = await r.json().catch(() => null)
         if (j?.rate > 0) { const rec = { ...j, hadKey: true }; save(rec); return rec }
+        // Carry the reason forward so the UI can say WHY rather than only that
+        // no rate is available — a wrong model name and a restricted key look
+        // identical otherwise.
+        lastError = j?.detail || j?.error || 'no rate returned'
         return null
       } catch { return null }
       finally { inflight = null }
@@ -96,7 +101,10 @@ export async function getRiskFreeRate({ market = 'IN', userKey = null, force = f
 function shape(v) {
   if (!(v?.rate > 0)) {
     return { rate: null, ratePct: null, asOf: null, ageDays: null, stale: true,
-             note: 'No risk-free rate available — fundamentals-based estimates need one.' }
+             error: lastError,
+             note: lastError
+               ? `Risk-free rate unavailable: ${lastError}`
+               : 'No risk-free rate available — fundamentals-based estimates need one.' }
   }
   const ageDays = v.fetchedAt ? Math.round((Date.now() - v.fetchedAt) / 86400000) : null
   const stale = ageDays != null && (Date.now() - v.fetchedAt) > STALE_AFTER_MS

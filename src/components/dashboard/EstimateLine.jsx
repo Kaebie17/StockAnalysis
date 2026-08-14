@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useEstimate } from '../../store/useEstimate.js'
 
 /**
@@ -49,7 +50,9 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
           </span>
           {isJustified && riskFree?.rate == null && (
             <span className="block text-[11px] text-slate-500 mt-1">
-              The risk-free rate needs an AI key — set one in the AI verdict panel.
+              {riskFree?.error
+                ? riskFree.note
+                : 'The risk-free rate needs an AI key — set one in the AI verdict panel.'}
             </span>
           )}
         </Dot>
@@ -134,12 +137,52 @@ function BasisRow({ label, value, pct }) {
  * Opens on hover for a mouse and on tap for touch — hover-only would make this
  * unreachable on a phone, which is where the app mostly gets used.
  */
+/**
+ * The ⓘ and its popover.
+ *
+ * Rendered into a portal with fixed positioning rather than absolutely inside
+ * the line. An absolutely-positioned child is clipped by any ancestor with
+ * `overflow-hidden` — which the dashboard tiles have — so the popover was cut
+ * off at the tile edge and the text was unreadable.
+ *
+ * A portal escapes that entirely: the popover is a child of <body>, positioned
+ * from the button's measured screen coordinates, and clamped to stay on screen.
+ */
 function Dot({ open, setOpen, degraded, children }) {
+  const btnRef = React.useRef(null)
+  const [pos, setPos] = React.useState(null)
+
+  const place = React.useCallback(() => {
+    const el = btnRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const width = Math.min(260, window.innerWidth - 24)
+    // Centred on the button, then pulled back inside whichever edge it crosses.
+    let left = r.left + r.width / 2 - width / 2
+    left = Math.max(12, Math.min(left, window.innerWidth - width - 12))
+    // Below the button unless that would run off the bottom, in which case above.
+    const below = r.bottom + 8
+    const flip = below + 200 > window.innerHeight && r.top > 220
+    setPos({ left, top: flip ? undefined : below, bottom: flip ? window.innerHeight - r.top + 8 : undefined, width })
+  }, [])
+
+  React.useLayoutEffect(() => {
+    if (!open) return
+    place()
+    // Reposition rather than drift: the page can scroll under an open popover.
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [open, place])
+
   return (
     <span className="relative inline-flex"
           onMouseEnter={() => setOpen(true)}
           onMouseLeave={() => setOpen(false)}>
-      <button type="button"
+      <button type="button" ref={btnRef}
         title={degraded ? 'Built on a weaker basis — tap for detail' : 'What this is based on'}
         aria-label={degraded ? 'Built on a weaker basis' : 'What this is based on'}
         onClick={e => { e.stopPropagation(); setOpen(o => !o) }}
@@ -149,14 +192,21 @@ function Dot({ open, setOpen, degraded, children }) {
                    : 'border-navy-600 text-slate-400 hover:text-accent hover:border-accent/60'}`}>
         {degraded ? '!' : 'i'}
       </button>
-      {open && (
-        <span className="absolute z-50 left-1/2 -translate-x-1/2 top-5 w-64 max-w-[80vw]
-                         bg-navy-900 border border-navy-700 rounded-lg shadow-2xl p-2.5
-                         text-left font-normal normal-case cursor-default"
-              onClick={e => e.stopPropagation()}>
-          {children}
-        </span>
-      )}
+
+      {open && pos && typeof document !== 'undefined' && createPortal(
+        <>
+          {/* Tap-away layer. On touch there is no mouse-leave, so without this
+              an opened popover had no way to close. */}
+          <div className="fixed inset-0 z-[60]" onClick={() => setOpen(false)} />
+          <div style={{ left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width }}
+               className="fixed z-[61] bg-navy-900 border border-navy-700 rounded-lg shadow-2xl p-2.5
+                          text-left font-normal normal-case cursor-default text-xs
+                          max-h-[60vh] overflow-y-auto"
+               onClick={e => e.stopPropagation()}>
+            {children}
+          </div>
+        </>,
+        document.body)}
     </span>
   )
 }

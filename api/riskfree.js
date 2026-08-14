@@ -77,15 +77,23 @@ export default async function handler(req, res) {
 
     const data = await r.json().catch(() => null)
     if (!r.ok) {
-      console.warn('[riskfree] gemini error', r.status)
-      return res.status(200).json(fallback(cached, 'fetch_failed'))
+      // The status and message, not just "failed" — a 400 from a bad model name
+      // and a 403 from a restricted key need completely different fixes, and the
+      // client was showing the same nothing for both.
+      const detail = data?.error?.message || `HTTP ${r.status}`
+      console.warn('[riskfree] gemini error', r.status, detail)
+      return res.status(200).json({ ...fallback(cached, 'fetch_failed'), detail })
     }
 
     const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') ?? ''
     const parsed = parseRate(text)
 
     if (parsed == null) {
-      return res.status(200).json(fallback(cached, 'unparseable'))
+      // Include what came back, so an unexpected shape is diagnosable rather
+      // than silent. Truncated — this reaches the browser.
+      const raw = String(text).slice(0, 200)
+      console.warn('[riskfree] could not parse:', raw)
+      return res.status(200).json({ ...fallback(cached, 'unparseable'), detail: raw })
     }
 
     // The bound check. This is the safeguard that matters — a confidently
@@ -93,7 +101,8 @@ export default async function handler(req, res) {
     // an out-of-band figure is the only signature of it available here.
     if (parsed.rate < bounds.min || parsed.rate > bounds.max) {
       console.warn(`[riskfree] ${market} rate ${parsed.rate}% outside ${bounds.min}-${bounds.max}% — rejected`)
-      return res.status(200).json(fallback(cached, 'out_of_range'))
+      return res.status(200).json({ ...fallback(cached, 'out_of_range'),
+        detail: `Returned ${parsed.rate}%, outside the ${bounds.min}-${bounds.max}% range for ${bounds.name}` })
     }
 
     cached = {
@@ -107,7 +116,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ ...cached, source: 'fetched' })
   } catch (e) {
     console.warn('[riskfree] failed:', e?.message)
-    return res.status(200).json(fallback(cached, 'exception'))
+    return res.status(200).json({ ...fallback(cached, 'exception'), detail: e?.message || 'unknown' })
   }
 }
 
