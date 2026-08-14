@@ -27,13 +27,69 @@ import { justifiedMultiples, preferredForm } from './justifiedMultiple.js'
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
-const PE_FLOOR = 5
-const PE_CAP   = 60
-const FALLBACK_SPREAD = 0.25     // current P/E ±25% when there's no usable band
+// Sanity bounds on an OBSERVED daily ratio, not on what a company may trade at.
+//
+// These were a fixed 5-60x, which threw away real observations: Trent trades
+// near 117x, so every legitimate day of its history was discarded and the
+// distorted ones kept. A ceiling on what the market is allowed to pay is a
+// judgement I have no basis for.
+//
+// What remains is only an outlier filter, and it is measured from the stock's
+// own distribution rather than chosen: a ratio more than 4x the median, or less
+// than a quarter of it, is a data artefact (a mid-year EPS restatement, a stub
+// year) rather than a price anyone paid.
+const OUTLIER_MULTIPLE = 4
+// Range width when no measured band exists.
+//
+// A fixed ±25% says the same thing about every company, which is never true: a
+// steadily-rated business and a volatile one deserve different widths. So the
+// width is taken from how much the stock's own PRICE has actually varied, which
+// exists even when a multiple band doesn't — that only needs closes, not the
+// paired annual earnings a band requires.
+//
+// There is no last-resort width. A stock with no usable price history has
+// nothing from which to measure one, and inventing a figure produces a range
+// that looks measured and isn't — the same fault as every other fixed number
+// removed from this file. Where dispersion can't be measured, the market-based
+// estimate simply isn't produced; Estimate 1 needs no price history and carries
+// that case.
 
-// Dilution is real but bounded: one historic 40% share-count jump (a merger, a
-// big QIP) must not be projected forward as if it recurs every year.
-const MAX_DILUTION = 0.10
+/**
+ * Half-width for a fallback range, from the stock's own price dispersion.
+ * Returns null when there isn't enough history to measure one.
+ */
+function priceDispersion(priceHistory = [], days = 500) {
+  const cutoff = Date.now() - days * 86400000
+  const closes = (priceHistory || [])
+    .filter(p => p?.date && p.close > 0 && Date.parse(p.date) >= cutoff)
+    .map(p => p.close)
+  if (closes.length < 100) return null
+  const sorted = [...closes].sort((a, b) => a - b)
+  const q = f => sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))]
+  const med = q(0.5)
+  if (!(med > 0)) return null
+  // The 15th-85th band as a fraction of the median, halved to a ± figure.
+  const half = ((q(0.85) - q(0.15)) / med) / 2
+
+  // A steadily-priced stock genuinely has a narrow dispersion, and rejecting it
+  // for being small was the same mistake as capping a high P/E — it discarded
+  // the correct reading. Only a truly degenerate value (a flat series, or one
+  // so wide the sample must span two regimes) is refused; the rest is used, with
+  // a small floor so a range never collapses to a single number.
+  if (!(half > 0) || half > 1) return null
+  return Math.max(half, 0.03)
+}
+
+// A one-off share-count jump — a merger, a large QIP — must not be projected
+// forward as if it recurs annually. The previous version clamped the RESULT at
+// 10%/yr, which both understated a company genuinely issuing 15% a year and
+// still let a single merger drag the rate up to the cap.
+//
+// Excluding the one-off is the correct treatment: a year whose share count
+// jumps far more than the company's own norm is a discrete event, not a rate,
+// so it is dropped from the series rather than capping what the series yields.
+// The threshold is relative to the stock's own median annual change.
+const ONE_OFF_MULTIPLE = 4
 
 const yearOf = row => {
   const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
@@ -73,18 +129,49 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   }
 
   const ratios = []
+  let pairedYears = 0
   for (const [y] of epsByYear) {
     const nextEps = epsByYear.get(y + 1)
     if (!(nextEps > 0)) continue                  // no forward year to price against
     const end   = Date.UTC(y, fyEndMonth, 0)
     const start = Date.UTC(y - 1, fyEndMonth, 1)
+    let any = false
     for (const c of closes) {
       if (c.t < start || c.t > end) continue
       const pe = c.close / nextEps
-      if (pe >= PE_FLOOR && pe <= PE_CAP) ratios.push(pe)
+      if (pe > 0) { ratios.push(pe); any = true }
     }
+    if (any) pairedYears++
   }
-  if (ratios.length < 20) return null
+
+  // Diagnose WHY a band can't be built, because the two causes need different
+  // fixes and the UI has been reporting the wrong one. Extending the price
+  // fetch to ten years did nothing for a stock whose incomeHistory carries four
+  // annual rows: this pairs each year's prices with the NEXT year's EPS, so N
+  // years of earnings yield at most N-1 usable pairs however many prices exist.
+  // Six paired years, not three.
+  //
+  // Three years passed the old bar and produced a band from roughly three years
+  // of recent prices — which measures the current regime rather than a range,
+  // and gave 57-65x where eight years of the same data gave 28-33x. A band that
+  // narrow in span is a trend wearing a band's clothes, and it inflated an
+  // estimate to 3,016-5,027 against a fair value of 887.
+  //
+  // Below six, the caller falls back to today's multiple widened by the stock's
+  // own measured dispersion, which is weaker but not misleading.
+  const MIN_PAIRED_YEARS = 6
+  if (ratios.length < 20 || pairedYears < MIN_PAIRED_YEARS) {
+    return { insufficient: true, pairedYears, samples: ratios.length,
+             earningsYears: epsByYear.size, priceDays: closes.length,
+             // Name the fix, not the shortfall. "Only 4 years of reported
+             // earnings" tells the user what is wrong without telling them what
+             // to do — and the remedy is concrete: Yahoo returns four or five
+             // annual periods, Screener carries ten or more, and pasting them
+             // widens the band immediately.
+             reason: epsByYear.size < MIN_PAIRED_YEARS + 1
+               ? `built on ${epsByYear.size} year${epsByYear.size === 1 ? '' : 's'} of earnings, too few to measure a multiple range — paste the Screener tables for a fuller history`
+               : `prices and earnings only overlap for ${pairedYears} year${pairedYears === 1 ? '' : 's'} — paste the Screener tables to extend it` }
+  }
 
   ratios.sort((a, b) => a - b)
   const q = p => ratios[Math.min(ratios.length - 1, Math.floor(p * ratios.length))]
@@ -198,7 +285,7 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
     multipleLabel = `its own P/B range (${band.samples} days)`
   } else if (currentPb > 0) {
     multiples = { low: round(currentPb * 0.75, 2), base: round(currentPb, 2), high: round(currentPb * 1.25, 2) }
-    multipleBasis = 'current'; multipleLabel = "today's P/B ±25% (no usable history)"
+    multipleBasis = 'current'; multipleLabel = "today's P/B ±25% (no usable price history)"
   } else return null
 
   const target = {
@@ -225,7 +312,7 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
     bookPerShare: round(bps), forwardBook: round(forwardBook),
     growth, growthPct: round(growth * 100, 1),
     growthSource: growthOverride != null ? 'revision' : 'roe-retention',
-    growthLabel: growthOverride != null ? 'your revision'
+    growthLabel: growthOverride != null ? (opts.overrideLabel || 'an applied revision')
       : `${round(roe, 1)}% ROE × ${round(retention * 100, 0)}% retained`,
     marginPct: null, marginLabel: 'not applicable to a lender', marginSource: 'n/a',
     dilutionPct: 0, dilutionLabel: 'book already net of issuance',
@@ -361,7 +448,7 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
   // was mine, not the business's. Measured across the full span available,
   // because a commodity company's recent growth is a cycle position too.
   const growthInfo = growthOverride != null
-    ? { growth: growthOverride, label: 'your revision' }
+    ? { growth: growthOverride, label: (opts.overrideLabel || 'an applied revision') }
     : revenueCagr(incomeHistory, { label: 'revenue CAGR over the cycle' })
   if (growthInfo?.growth == null) return null      // no history → no estimate
   const growth = growthInfo.growth
@@ -372,7 +459,8 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
   // The multiple is applied to NORMALISED earnings, so it must be a
   // through-cycle multiple too — the median of what the market paid across the
   // same span, not today's.
-  const band = forwardPeBand(priceHistory, incomeHistory)
+  const bandRaw = forwardPeBand(priceHistory, incomeHistory)
+  const band = bandRaw?.insufficient ? null : bandRaw
   let multiples, multipleBasis, multipleLabel
   if (multipleOverride > 0) {
     multiples = { low: multipleOverride * 0.85, base: multipleOverride, high: multipleOverride * 1.15 }
@@ -457,7 +545,7 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
   // stable cost base the two track closely, and that substitution is stated
   // rather than silent. No default: without either, there is no estimate.
   const growthInfo = growthOverride != null
-    ? { growth: growthOverride, label: 'your revision' }
+    ? { growth: growthOverride, label: (opts.overrideLabel || 'an applied revision') }
     : (seriesCagr(opts.incomeHistory, 'ebitda', 'EBITDA CAGR')
        ?? revenueCagr(opts.incomeHistory, { label: 'revenue CAGR (EBITDA history unavailable)' }))
   if (growthInfo?.growth == null) return null
@@ -555,7 +643,7 @@ export function buildEvSalesEstimate(ratioResult, opts = {}) {
   if (!(multiple > 0)) return null
 
   const growthInfo = growthOverride != null
-    ? { growth: growthOverride, label: 'your revision' }
+    ? { growth: growthOverride, label: (opts.overrideLabel || 'an applied revision') }
     : revenueCagr(opts.incomeHistory, { label: 'revenue CAGR' })
   if (growthInfo?.growth == null) return null
   const growth = growthInfo.growth
@@ -604,26 +692,52 @@ export function buildEvSalesEstimate(ratioResult, opts = {}) {
 const netProfitOf = rr => (rr?.netProfit ?? 0)
 
 /** Growth ladder: guidance → 5y CAGR → recent median → any CAGR → nothing. */
+/**
+ * Growth for the projection: which rate is applied, and what the alternatives
+ * said.
+ *
+ * A ladder that returns on the first match discards everything below it, so the
+ * app could never report that the applied rate disagreed with the others. Every
+ * available basis is computed; precedence decides which one is USED, and the
+ * rest are returned as `alternatives` so the spread can be shown.
+ */
 export function resolveGrowthBasis(ratioResult, opts = {}) {
-  const { guidedGrowth = null, guidanceFiscalYear = null, guidanceExpired = false } = opts
-  if (guidedGrowth != null && isFinite(guidedGrowth)) {
-    return { growth: guidedGrowth, source: 'guidance', rung: 'best',
-             label: `guidance${guidanceFiscalYear ? ` (${guidanceFiscalYear})` : ''}` }
-  }
+  const { guidedGrowth = null, guidanceFiscalYear = null, guidanceExpired = false,
+          overrideLabel = null } = opts
   const r = ratioResult?.ratios || {}
-  const candidates = [
-    [r.revCagr5y?.value,        '5-yr revenue CAGR'],
-    [r.revGrowthRecent?.value,  'recent revenue growth (median)'],
-    [r.revCagr?.value,          'revenue CAGR'],
-    [r.revGrowthLongRun?.value, '10-yr revenue CAGR'],
-  ]
-  for (const [pct, label] of candidates) {
+
+  const all = []
+  if (guidedGrowth != null && isFinite(guidedGrowth)) {
+    all.push({ growth: guidedGrowth, source: 'guidance', rung: 'best',
+               label: overrideLabel || `guidance${guidanceFiscalYear ? ` (${guidanceFiscalYear})` : ''}` })
+  }
+  for (const [pct, label, source] of [
+    [r.revCagr5y?.value,        '5-yr revenue CAGR',              'cagr'],
+    [r.revGrowthRecent?.value,  'recent revenue growth (median)', 'recent'],
+    [r.revCagr?.value,          'revenue CAGR',                   'cagr'],
+    [r.revGrowthLongRun?.value, '10-yr revenue CAGR',             'longrun'],
+  ]) {
     if (pct != null && isFinite(pct)) {
-      return { growth: pct / 100, source: 'cagr', rung: 'fallback', label,
-               expiredGuidance: guidanceExpired }
+      all.push({ growth: pct / 100, source, rung: 'fallback', label })
     }
   }
-  return { growth: null, source: 'none', rung: 'none', label: 'no growth basis' }
+
+  if (all.length === 0) {
+    return { growth: null, source: 'none', rung: 'none', label: 'no growth basis', alternatives: [] }
+  }
+
+  const chosen = all[0]
+  const alternatives = all.slice(1)
+
+  // Widest disagreement among the bases, so the caller can say when the applied
+  // rate is an outlier rather than a consensus.
+  let spreadPts = null
+  if (all.length > 1) {
+    const vals = all.map(a => a.growth * 100)
+    spreadPts = round(Math.max(...vals) - Math.min(...vals), 1)
+  }
+
+  return { ...chosen, alternatives, spreadPts, expiredGuidance: guidanceExpired }
 }
 
 /**
@@ -681,15 +795,33 @@ export function resolveDilution(incomeHistory = []) {
   if (counts.length < 2) {
     return { rate: 0, source: 'assumed-flat', rung: 'fallback', label: 'no share-count history' }
   }
-  const first = counts[0], last = counts[counts.length - 1]
-  if (!(first > 0) || !(last > 0)) {
+  // Year-on-year changes, so a single discrete event can be identified and
+  // removed rather than being smeared across the whole span by a CAGR.
+  const steps = []
+  for (let i = 1; i < counts.length; i++) {
+    if (counts[i - 1] > 0 && counts[i] > 0) steps.push(counts[i] / counts[i - 1] - 1)
+  }
+  if (steps.length === 0) {
     return { rate: 0, source: 'assumed-flat', rung: 'fallback', label: 'no share-count history' }
   }
-  let rate = Math.pow(last / first, 1 / (counts.length - 1)) - 1
-  if (!isFinite(rate)) rate = 0
-  rate = Math.max(0, Math.min(MAX_DILUTION, rate))   // buybacks aren't projected forward either
-  return { rate, source: 'observed', rung: 'good',
-           label: rate > 0.001 ? `${round(rate * 100, 1)}%/yr dilution` : 'no material dilution' }
+
+  const sorted = [...steps].sort((a, b) => a - b)
+  const median = sorted[Math.floor(sorted.length / 2)]
+  const scale = Math.max(Math.abs(median), 0.01)      // a floor, so a flat history still has a scale
+  const ordinary = steps.filter(x => Math.abs(x) <= scale * ONE_OFF_MULTIPLE)
+  const excluded = steps.length - ordinary.length
+
+  const used = ordinary.length > 0 ? ordinary : steps
+  const rate = Math.max(0, used.reduce((t, x) => t + x, 0) / used.length)
+
+  return {
+    rate, source: 'observed', rung: 'good',
+    excludedYears: excluded,
+    label: rate > 0.001
+      ? `${round(rate * 100, 1)}%/yr dilution` +
+        (excluded > 0 ? ` (${excluded} one-off issuance${excluded > 1 ? 's' : ''} excluded)` : '')
+      : 'no material dilution',
+  }
 }
 
 /**
@@ -726,12 +858,20 @@ export function financeabilityNote(ratioResult, growth) {
  *                           anchor; own history is blind to a sector re-rating
  */
 /**
- * ESTIMATE 1 — from what the fundamentals justify.
+ * JUSTIFIED MULTIPLES — a second fair value, not a projection.
  *
- * Independent of price history, so it works where the market-based method
- * can't: a stock with two usable years still has growth, returns and a payout.
- * `form` lets the caller override the sector default with any other form the
- * inputs support.
+ * `payout / (r - g)` is a present-value formula: it says what a stream of
+ * earnings is worth TODAY. Multiplying its output by next year's earnings, as an
+ * earlier version did, mixes a valuation multiple with a projected base and
+ * produces neither one thing nor the other.
+ *
+ * So this applies the justified multiple to CURRENT earnings and stands beside
+ * the app's fair value — the same question answered a different way, which is
+ * what makes the comparison worth having. Growth still enters, but through the
+ * multiple where it belongs: a faster-growing company earns a higher one.
+ *
+ * Needs no price history, which is why it holds where the market-based estimate
+ * cannot.
  */
 export function buildJustifiedEstimate(ratioResult, opts = {}) {
   const { sectorType, form: forcedForm = null, years = 1 } = opts
@@ -776,7 +916,9 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
     return { ok: false, model: 'justified',
              note: `No ${baseLabel || 'basis'} to apply a ${FORM_NAMES[form]} multiple to.` }
   }
-  const forward = base * Math.pow(1 + g, years)
+  // CURRENT base, not projected. The multiple already embeds the growth
+  // expectation; projecting the base as well would count it twice.
+  const forward = base
 
   // EV forms price the whole enterprise, so debt has to come out to reach a
   // per-share equity value.
@@ -834,7 +976,8 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
 
   return {
     ok: true, model: 'justified', form,
-    createdAt: Date.now(), horizonYears: years,
+    kind: 'valuation',              // not a projection — no horizon
+    createdAt: Date.now(),
     priceAtEstimate: round(price),
     multiples: { low: round(mLower ?? chosen.multiple * 0.85, 2), base: chosen.multiple,
                  high: round(mHigher ?? chosen.multiple * 1.15, 2) },
@@ -849,7 +992,7 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
     requiredReturnPct: round(rr.r * 100, 1),
     requiredReturnLabel: rr.label,
     twoStage: jm.twoStage,
-    base: round(base), forwardBase: round(forward), baseLabel,
+    base: round(base), baseLabel,
     target,
     upside: price > 0 ? {
       low:  round(((target.low - price) / price) * 100, 1),
@@ -934,7 +1077,7 @@ export function buildEstimate(ratioResult, opts = {}) {
 
   // ── growth ────────────────────────────────────────────────────────────────
   const growthBasis = growthOverride != null
-    ? { growth: growthOverride, source: 'revision', rung: 'best', label: 'your revision' }
+    ? { growth: growthOverride, source: 'revision', rung: 'best', label: (opts.overrideLabel || 'an applied revision') }
     : resolveGrowthBasis(ratioResult, { guidedGrowth, guidanceFiscalYear, guidanceExpired })
   if (growthBasis.growth == null) {
     return blank('No guidance and no usable growth history — nothing to project from.', { price })
@@ -943,7 +1086,7 @@ export function buildEstimate(ratioResult, opts = {}) {
 
   // ── margin ────────────────────────────────────────────────────────────────
   const marginBasis = marginOverride != null
-    ? { margin: marginOverride, source: 'revision', rung: 'best', label: 'your revision' }
+    ? { margin: marginOverride, source: 'revision', rung: 'best', label: (opts.overrideLabel || 'an applied revision') }
     : resolveMarginBasis(incomeHistory, { guidedMargin })
 
   // ── dilution ──────────────────────────────────────────────────────────────
@@ -998,7 +1141,9 @@ export function buildEstimate(ratioResult, opts = {}) {
     peerBand,
   })
 
-  let own = forwardPeBand(priceHistory, incomeHistory)
+  const ownRaw = forwardPeBand(priceHistory, incomeHistory)
+  const bandReason = ownRaw?.insufficient ? ownRaw.reason : null
+  let own = ownRaw?.insufficient ? null : ownRaw
 
   // A measured band should bracket, or at least neighbour, the multiple the
   // stock trades at today. When it sits several times away, the band is not
@@ -1021,12 +1166,13 @@ export function buildEstimate(ratioResult, opts = {}) {
 
   let multiples, multipleBasis, multipleLabel
   if (multipleOverride != null && multipleOverride > 0) {
-    const c = clamp(multipleOverride, PE_FLOOR, PE_CAP)
+    const c = multipleOverride
     // Keep whatever spread the measured band had, so a re-rating moves the
     // CENTRE of the range without also pretending the future got more certain.
     const spread = own && own.median > 0
       ? { lo: own.low / own.median, hi: own.high / own.median }
-      : { lo: 1 - FALLBACK_SPREAD, hi: 1 + FALLBACK_SPREAD }
+      : (() => { const d = priceDispersion(priceHistory)
+                 return d != null ? { lo: 1 - d, hi: 1 + d } : null })()
     multiples = { low: round(c * spread.lo, 1), base: round(c, 1), high: round(c * spread.hi, 1) }
     multipleBasis = 'revision'
     multipleLabel = `your re-rating (${round(c, 1)}×)`
@@ -1049,11 +1195,23 @@ export function buildEstimate(ratioResult, opts = {}) {
     multipleBasis = 'peer'
     multipleLabel = 'peer multiples (no usable history for this stock)'
   } else if (currentPe > 0) {
-    const c = clamp(currentPe, PE_FLOOR, PE_CAP)
-    multiples = { low: round(c * (1 - FALLBACK_SPREAD), 1), base: round(c, 1),
-                  high: round(c * (1 + FALLBACK_SPREAD), 1) }
+    const c = currentPe
+    const sp = priceDispersion(priceHistory)
+    if (sp == null) {
+      return blank(
+        'No price history for this stock, so there is no way to measure how wide a range should be. ' +
+        'The fundamentals-based estimate does not need price history and is shown instead.',
+        { price })
+    }
+    multiples = { low: round(c * (1 - sp), 1), base: round(c, 1),
+                  high: round(c * (1 + sp), 1) }
     multipleBasis = 'current'
-    multipleLabel = "today's P/E ±25% (no usable history)"
+    // Label built from the width actually used, and it names where the width
+    // came from — measured dispersion or the last-resort figure.
+    // Name the ACTUAL cause. "No usable history" was reported on stocks with a
+    // decade of prices, because the shortfall was in reported earnings.
+    multipleLabel = `today's P/E ±${Math.round(sp * 100)}%, the range this stock's price has moved in` +
+      (bandReason ? ` — ${bandReason}` : '')
   } else {
     return blank('No usable P/E — nothing to anchor a multiple on.', { price })
   }
@@ -1085,10 +1243,17 @@ export function buildEstimate(ratioResult, opts = {}) {
     console.info(`[estimate] discarding band ${multiples.low}-${multiples.high}x — ` +
                  (degenerate ? 'percentiles collapsed' : 'spread too wide to be one regime'))
     if (currentPe > 0) {
-      const c = clamp(currentPe, PE_FLOOR, PE_CAP)
-      multiples = { low: round(c * 0.8, 1), base: round(c, 1), high: round(c * 1.2, 1) }
+      const c = currentPe
+      const sp = priceDispersion(priceHistory)
+      if (sp == null) {
+        return blank(
+          'Its multiple history is unusable and there is no price history to measure a range from. ' +
+          'The fundamentals-based estimate covers this case.',
+          { price })
+      }
+      multiples = { low: round(c * (1 - sp), 1), base: round(c, 1), high: round(c * (1 + sp), 1) }
       multipleBasis = 'current'
-      multipleLabel = `today's P/E ±20% — its own history was too thin or too erratic to use`
+      multipleLabel = `today's P/E ±${Math.round(sp * 100)}% — its own history was too thin or too erratic to use`
     } else if (peerBand?.median > 0) {
       multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
       multipleBasis = 'peer'
@@ -1138,6 +1303,12 @@ export function buildEstimate(ratioResult, opts = {}) {
     growthPct: round(g * 100, 1),
     growthSource: growthBasis.source,
     growthLabel: growthBasis.label,
+    // What the bases that weren't applied said. Precedence picks one to use;
+    // returning the rest is the only way a disagreement between them can be
+    // seen — a ladder that stops at the first match hides it entirely.
+    growthAlternatives: (growthBasis.alternatives || []).map(a => ({
+      pct: round(a.growth * 100, 1), label: a.label })),
+    growthSpreadPts: growthBasis.spreadPts ?? null,
 
     marginPct: marginBasis.margin != null ? round(marginBasis.margin * 100, 1) : null,
     marginSource: marginBasis.source,

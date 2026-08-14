@@ -6,6 +6,7 @@ import { assessFromQuarterly, growthDriftSuggestion } from '../engine/quarterlyB
 import { fetchPeers } from '../api/peersClient.js'
 import { relativePerformance } from '../api/marketRegime.js'
 import { getRiskFreeRate } from '../api/riskFreeClient.js'
+import { getAiKey } from '../utils/aiKey.js'
 import { peerBandFrom, detectRerating } from '../engine/rerating.js'
 import { forwardPeBand } from '../engine/estimate.js'
 
@@ -101,7 +102,10 @@ export function useEstimate(state, opts = {}) {
   useEffect(() => {
     let dead = false
     const indian = /\.(NS|BO)$/i.test(ticker || '')
-    getRiskFreeRate({ market: indian ? 'IN' : 'US', userKey: opts?.userKey })
+    // The key the user already entered for the AI verdict. Nothing was supplying
+    // opts.userKey, so every fetch went out keyless and returned "no risk-free
+    // rate" — which then blocked Estimate 1 entirely.
+    getRiskFreeRate({ market: indian ? 'IN' : 'US', userKey: opts?.userKey || getAiKey() })
       .then(r => { if (!dead) setRiskFree(r) })
       .catch(() => {})
     return () => { dead = true }
@@ -126,6 +130,7 @@ export function useEstimate(state, opts = {}) {
     riskFreeRate: opts?.riskFreeRate ?? riskFree?.rate ?? null,
     beta: state.data?.meta?.beta ?? state.technicals?.beta ?? null,
     incomeHistory: state.data?.incomeHistory || [],
+    cashflowHistory: state.data?.cashflowHistory || [],
   }) : null
 
   // ESTIMATE 2 — what the market has been paying.
@@ -135,6 +140,10 @@ export function useEstimate(state, opts = {}) {
     guidanceFiscalYear: state.guidance?.revenueGuidance?.fiscalYear || null,
     guidanceExpired: state.guidance?.revenueGuidance?.status === 'resolved',
     growthOverride:   overrides.growth   ?? null,
+    // Where the override came from. "Your revision" was shown even for a change
+    // the app applied automatically from a news item, which reads as though the
+    // user had typed it.
+    overrideLabel: overrideSourceLabel(revisions, 'growth'),
     marginOverride:   overrides.margin   ?? null,
     multipleOverride: overrides.multiple ?? null,
     priceHistory:   state.data?.priceHistory   || [],
@@ -145,7 +154,10 @@ export function useEstimate(state, opts = {}) {
 
   // Re-rating check runs against the same band the estimate uses, so a proposal
   // and the number it would replace are always talking about the same thing.
-  const band = forwardPeBand(state?.data?.priceHistory || [], state?.data?.incomeHistory || [])
+  const bandRaw = forwardPeBand(state?.data?.priceHistory || [], state?.data?.incomeHistory || [])
+  // forwardPeBand now returns a diagnostic object when it can't build a band;
+  // treating that as a band would compare a multiple against undefined edges.
+  const band = bandRaw?.insufficient ? null : bandRaw
   // Does anything explain the current deviation? A revision applied in the last
   // couple of months, or a quarterly verdict, is a cause — and a cause makes the
   // waiting period pointless, because it's the confirmation the wait was
@@ -233,6 +245,22 @@ export function useEstimate(state, opts = {}) {
  * and a dismissal is itself worth keeping ("someone looked and judged it
  * immaterial" is different from "nobody looked").
  */
+/** How an applied override should be described, from the log entry that set it. */
+export function overrideSourceLabel(revisions = [], lever = 'growth') {
+  const r = [...revisions]
+    .filter(x => x.disposition === 'revised' && x.lever === lever)
+    .sort((a, b) => b.createdAt - a.createdAt)[0]
+  if (!r) return null
+  switch (r.trigger) {
+    case 'news-auto':      return 'applied automatically from news'
+    case 'quarterly-auto': return 'applied automatically from results'
+    case 'news':           return 'from a news item you applied'
+    case 'quarterly':      return 'from quarterly results'
+    case 'rerating':       return 'from a re-rating you accepted'
+    default:               return 'set by you'
+  }
+}
+
 export function activeOverrides(revisions = []) {
   const out = {}
   const sorted = [...revisions].sort((a, b) => b.createdAt - a.createdAt)

@@ -109,26 +109,31 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
               <div className={`text-xl font-bold font-mono ${signalColor(valuation.signal)}`}>
                 {valuation.signal.replace('_', ' ')}
               </div>
-              <div className="text-xs text-slate-400">
-                Fair value: <span className="text-white font-mono">
+              <div className="text-xs text-slate-400 break-words">
+                Fair value: <span className="text-white font-mono whitespace-nowrap">
                   {cur}{Math.round(valuation.fvRangeLow).toLocaleString('en-IN')}
                   {valuation.fvRangeHigh !== valuation.fvRangeLow
                     ? ` – ${cur}${Math.round(valuation.fvRangeHigh).toLocaleString('en-IN')}` : ''}
                 </span>
               </div>
-              {/* Three comparable ranges stacked — ours, and the Street's —
-                  each from a different method, so they read against each other.
-                  Ours carries a ⓘ describing what it rests on; theirs stays a
-                  plain line, since there's no working of theirs to show. */}
+              {/* Four ranges, ordered by the question they answer: two
+                  valuations (what the business is worth) then two projections
+                  (where the price may go). Each carries its own method directly
+                  beneath it. */}
+              {valuation.topModels?.length > 0 && (
+                <div className="text-[11px] text-slate-500 -mt-0.5">
+                  via {valuation.topModels.map(t => t.name).join(' & ')}
+                </div>
+              )}
               <div className="text-xs text-slate-400">
-                <EstimateLine currency={state.data?.currency} state={state} />
+                <EstimateLine currency={state.data?.currency} state={state} which="justified" />
+              </div>
+              <div className="text-xs text-slate-400">
+                <EstimateLine currency={state.data?.currency} state={state} which="market" />
               </div>
               <div className="text-xs text-slate-400">
                 <AnalystTargetLine ticker={state.ticker} currency={state.data?.currency} />
               </div>
-              {valuation.topModels?.length > 0 && (
-                <div className="text-xs text-slate-500">via {valuation.topModels.map(t => t.name).join(' & ')}</div>
-              )}
               <div className="text-xs text-slate-500">CMP: {cur}{Math.round(price).toLocaleString('en-IN')}</div>
               {ratios?.pe?.value != null && <div className="text-xs text-slate-500">P/E: {ratios.pe.value.toFixed(1)}×</div>}
               {ratios?.evEbitda?.value != null && <div className="text-xs text-slate-500">EV/EBITDA: {ratios.evEbitda.value.toFixed(1)}×</div>}
@@ -287,10 +292,10 @@ function PillarCard({ title, badge, children, onExpand, isExpanded }) {
     <div
       onClick={onExpand}
       className={`card flex flex-col gap-2 cursor-pointer transition-all
-        snap-start shrink-0 w-[80%] sm:w-auto sm:shrink
+        snap-start shrink-0 w-[80%] sm:w-auto sm:shrink min-w-0 overflow-hidden
         ${isExpanded ? 'border-accent/50 bg-accent/5' : 'hover:border-navy-600'}`}>
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-slate-300">{title}</span>
+      <div className="flex items-center justify-between gap-2 min-w-0">
+        <span className="text-xs font-semibold text-slate-300 truncate">{title}</span>
         {badge && (
           <span className={`badge text-xs ${
             ['EXCELLENT','HEALTHY','BULLISH','UNDERVALUED','Very Wide','Wide'].includes(badge) ? 'badge-bull' :

@@ -1,3 +1,4 @@
+
 /**
  * src/engine/peg.js
  *
@@ -22,8 +23,15 @@
  */
 
 const MIN_GROWTH = 1        // percent; below this PEG is not meaningful
-const FAIR_PE_CAP = 25      // cap on Lynch fair P/E so a freak growth year can't blow up FV
-const FAIR_PE_FLOOR = 5
+// Lynch's rule is that a fair P/E roughly equals the growth rate. It was clamped
+// to 5-25x here, which silently rewrote the rule: a company growing 40% got a
+// 25x fair P/E rather than 40x, and the "fair value" was then a third lower than
+// the method actually says.
+//
+// The genuine risk the cap was aimed at is a freak growth year — a recovery off
+// a collapsed base showing 300% — and that is better handled by refusing to
+// apply the rule at all than by silently substituting a different number.
+const MAX_MEANINGFUL_GROWTH = 60   // percent; beyond this the growth figure is a base effect
 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x))
 
@@ -90,9 +98,11 @@ export function computePeg(r, opts = {}) {
   else if (peg <= 2) { band = 'fair'; rating = 'Fairly valued vs growth' }
   else { band = 'rich'; rating = 'Rich vs growth (common for quality compounders)' }
 
-  // Peter Lynch fair value: fair P/E ≈ growth rate, capped.
-  const fairPE = clamp(growthPct, FAIR_PE_FLOOR, FAIR_PE_CAP)
-  const fairValue = eps * fairPE
+  // Peter Lynch fair value: fair P/E ~= the growth rate, applied as stated.
+  // Beyond MAX_MEANINGFUL_GROWTH the growth figure is a base effect rather than
+  // a rate anyone would capitalise, so the rule is withheld rather than bent.
+  const fairPE = growthPct <= MAX_MEANINGFUL_GROWTH ? growthPct : null
+  const fairValue = fairPE != null ? eps * fairPE : null
 
   return {
     applicable: true,

@@ -341,10 +341,23 @@ function EstimateExplainer({ ratioResult, data, assumptions }) {
                   the only kind that can fairly be applied to a projection.
                 </p>
               )}
+              {/* This message named the wrong cause and the wrong number: it
+                  said "not enough price history" and "25%", but a 'current'
+                  basis now comes from the band-rejection guard and widens by
+                  20%. The engine already writes the accurate reason into
+                  multipleLabel, so it is shown rather than re-described here —
+                  a hardcoded explanation of a computed state goes stale the
+                  moment the computation changes, which is what happened. */}
               {est.multipleBasis === 'current' && (
                 <p className="text-neutral">
-                  ⚠ Not enough price history for this stock, so the range is today's P/E widened
-                  25% either way. Weaker basis than a measured one.
+                  ⚠ {est.multipleLabel}. A weaker basis than a measured band, so the range is
+                  wider and less certain.
+                </p>
+              )}
+              {est.multipleBasis === 'peer' && (
+                <p className="text-neutral">
+                  ⚠ {est.multipleLabel}. Peers are a reasonable stand-in, but they are other
+                  companies — this stock may deserve a different multiple.
                 </p>
               )}
               {est.financeability && (
@@ -758,14 +771,15 @@ function arTextOf(arData) {
 }
 
 /**
- * Both estimates, side by side.
+ * Justified multiples and the app's own estimate.
  *
- * Estimate 1 asks what the fundamentals justify; Estimate 2 asks what the market
- * has been paying. They answer different questions, so they are shown rather
- * than reconciled — a persistent gap is the cheap/expensive reading arrived at
- * two independent ways, not an error in either.
+ * They answer different questions and are not two versions of one number:
+ * justified multiples are a VALUATION — what the fundamentals say the business
+ * is worth now, sitting alongside fair value as a second route to the same
+ * question. The app target is a PROJECTION — where the price may go, from
+ * what the market has paid applied to projected earnings.
  *
- * The form picker sits under Estimate 1 because several forms can be
+ * The form picker belongs to the valuation, because several forms can be
  * simultaneously valid for one company. The sector default is a rule rather than
  * a score, so it can be inspected and overridden; switching it recomputes
  * locally and triggers nothing else.
@@ -782,7 +796,7 @@ function TwoEstimates({ state }) {
       {/* Estimate 1 */}
       <div>
         <div className="flex items-baseline justify-between gap-2 min-w-0">
-          <span className="text-slate-500 shrink-0">Estimate 1</span>
+          <span className="text-slate-500 shrink-0">Justified Multiples</span>
           {justified?.ok ? (
             <span className="font-mono text-slate-200 text-right">
               {cur}{n(justified.target.low)} – {cur}{n(justified.target.high)}
@@ -796,7 +810,7 @@ function TwoEstimates({ state }) {
         </div>
         <div className="text-[10px] text-slate-600 mt-0.5">
           {justified?.ok
-            ? `${justified.multipleLabel} ${justified.multiples.base}× · ${justified.requiredReturnLabel}`
+            ? `${justified.multipleLabel} ${justified.multiples.base}× on current ${justified.baseLabel} · ${justified.requiredReturnLabel}`
             : (justified?.note || 'Fundamentals-based')}
           {riskFree?.asOf && justified?.ok && (
             <span className="text-slate-700"> · rate as of {riskFree.asOf}</span>
@@ -825,7 +839,7 @@ function TwoEstimates({ state }) {
       {/* Estimate 2 */}
       <div className="pt-2 border-t border-navy-800">
         <div className="flex items-baseline justify-between gap-2 min-w-0">
-          <span className="text-slate-500 shrink-0">Estimate 2</span>
+          <span className="text-slate-500 shrink-0">App Target</span>
           {estimate?.ok ? (
             <span className={`font-mono text-right ${
               sanity?.reliable === false ? 'text-slate-500 line-through decoration-neutral/60' : 'text-slate-200'}`}>

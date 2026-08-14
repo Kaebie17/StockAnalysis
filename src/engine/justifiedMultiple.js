@@ -103,7 +103,11 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   const R = ratioResult?.ratios || {}
 
   const roe = R.roe?.value
-  const payoutPct = R.dividendPayout?.value ?? averagePayoutPct(incomeHistory)
+  const payoutPct = R.dividendPayout?.value ?? averagePayoutPct(incomeHistory, {
+    cashflowHistory: opts.cashflowHistory || [],
+    dividendYield: R.dividendYield?.value ?? null,
+    pe: R.pe?.value ?? null,
+  })
   const rr = requiredReturn({ riskFreeRate, beta, equityRiskPremium })
   const sg = sustainableGrowth({ roe, payoutPct })
 
@@ -244,16 +248,58 @@ function firstOf(forms) {
   return k.length ? k[0] : null
 }
 
-function averagePayoutPct(history = []) {
+/**
+ * Payout from whatever the statements actually carry.
+ *
+ * The first version read only `dividendPaid` on the income rows, which most
+ * sources don't provide — so a company with a perfectly visible dividend
+ * reported "missing dividend payout history" and Estimate 1 declined. Every
+ * route to the same figure is tried before giving up:
+ *
+ *   1. dividend paid, from the income statement
+ *   2. dividend paid, from the cash flow statement (where it usually lives)
+ *   3. dividend per share ÷ EPS, which needs no absolute figures at all
+ *   4. the trailing dividend yield against the P/E, the last resort
+ */
+function averagePayoutPct(history = [], opts = {}) {
   const rates = []
   for (const row of history || []) {
     const np = val(row?.netProfit)
-    const div = val(row?.dividendPaid) ?? val(row?.dividend)
+    const div = val(row?.dividendPaid) ?? val(row?.dividend) ?? val(row?.dividendsPaid)
     if (np > 0 && div >= 0) {
-      const pct = (div / np) * 100
+      const pct = (Math.abs(div) / np) * 100
+      if (pct >= 0 && pct <= 100) rates.push(pct)
+    }
+    // Per-share route — often present where absolutes aren't.
+    const dps = val(row?.dps) ?? val(row?.dividendPerShare)
+    const eps = val(row?.eps)
+    if (rates.length === 0 && dps >= 0 && eps > 0) {
+      const pct = (dps / eps) * 100
       if (pct >= 0 && pct <= 100) rates.push(pct)
     }
   }
+
+  // Cash-flow statement, where dividends paid are normally reported.
+  if (rates.length === 0) {
+    for (const row of opts.cashflowHistory || []) {
+      const div = Math.abs(val(row?.dividendsPaid) ?? val(row?.dividendPaid) ?? 0)
+      const y = String(row?.year ?? '')
+      const inc = (history || []).find(r => String(r?.year ?? '') === y)
+      const np = val(inc?.netProfit)
+      if (div > 0 && np > 0) {
+        const pct = (div / np) * 100
+        if (pct >= 0 && pct <= 100) rates.push(pct)
+      }
+    }
+  }
+
+  // Yield × P/E is the payout ratio, arithmetically — usable when the
+  // statements carry neither figure but the quote does.
+  if (rates.length === 0 && opts.dividendYield > 0 && opts.pe > 0) {
+    const pct = opts.dividendYield * opts.pe
+    if (pct > 0 && pct <= 100) rates.push(pct)
+  }
+
   if (rates.length === 0) return null
   rates.sort((a, b) => a - b)
   return rates[Math.floor(rates.length / 2)]

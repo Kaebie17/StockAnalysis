@@ -226,7 +226,8 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue,
     })
     // Leading conditions, from data already fetched — volume, the multiple's
     // position in its own band, the earnings-vs-multiple gap, sector divergence.
-    const band = forwardPeBand(analysis.data?.priceHistory || [], analysis.data?.incomeHistory || [])
+    const bandRaw = forwardPeBand(analysis.data?.priceHistory || [], analysis.data?.incomeHistory || [])
+    const band = bandRaw?.insufficient ? null : bandRaw
     const obs = yearlyObservations({
       priceHistory: analysis.data?.priceHistory || [],
       incomeHistory: analysis.data?.incomeHistory || [],

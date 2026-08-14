@@ -18,25 +18,40 @@ import { useEstimate } from '../../store/useEstimate.js'
  * always on gets ignored, so silence is the normal state and the dot means
  * something specific: an input degraded.
  */
-export default function EstimateLine({ currency, state }) {
+export default function EstimateLine({ currency, state, which = 'market' }) {
   const [open, setOpen] = useState(false)
 
   // One source of truth with ValuationPanel: the same hook resolves guidance,
   // applies stored revisions and fetches peers, so the dashboard line and the
   // detail screen can never disagree about what the estimate currently is.
-  const { estimate: est, overrides, sanity } = useEstimate(state)
+  const { estimate, justified, overrides, sanity, riskFree } = useEstimate(state)
+
+  // Which of the two this line shows. They answer different questions —
+  // Estimate 1 what the fundamentals justify, Estimate 2 what the market has
+  // been paying — so both belong on the dashboard rather than one being
+  // reachable only through the detail panel.
+  // Two different questions, so two different names. "Estimate 1 / 2" implied a
+  // ranking of the same thing; these are a valuation and a projection.
+  const isJustified = which === 'justified'
+  const est = isJustified ? justified : estimate
+  const label = isJustified ? 'Justified Multiples' : 'App Target'
 
   const cur = symbolFor(currency)
 
   if (!est?.ok) {
     return (
       <span className="inline-flex items-center gap-1">
-        <span>Estimate: </span>
+        <span>{label}: </span>
         <span className="font-mono font-bold text-slate-500 ml-1">—</span>
         <Dot open={open} setOpen={setOpen} degraded>
           <span className="block text-[11px] text-slate-400">
             {est?.note || 'Not enough data to build an estimate.'}
           </span>
+          {isJustified && riskFree?.rate == null && (
+            <span className="block text-[11px] text-slate-500 mt-1">
+              The risk-free rate needs an AI key — set one in the AI verdict panel.
+            </span>
+          )}
         </Dot>
       </span>
     )
@@ -47,9 +62,12 @@ export default function EstimateLine({ currency, state }) {
 
   return (
     <span className="inline-flex items-center gap-1 flex-wrap min-w-0">
-      <span>Estimate: </span>
+      <span>{label}: </span>
       <span className={`font-mono font-bold ml-1 ${
-        sanity?.severity === 'high' ? 'text-slate-500 line-through decoration-neutral/60' : 'text-white'}`}>
+        // sanityCheck only evaluates the market-based estimate, so its verdict
+        // must not strike through Estimate 1, which it never examined.
+        (!isJustified && sanity?.severity === 'high')
+          ? 'text-slate-500 line-through decoration-neutral/60' : 'text-white'}`}>
         {cur}{fmt(target.low)} – {cur}{fmt(target.high)}
       </span>
       {upside?.base != null && (
@@ -73,12 +91,17 @@ export default function EstimateLine({ currency, state }) {
                     pct={est.marginPct != null ? `${est.marginPct}%` : null} />
           <BasisRow label="Multiple" value={est.multipleLabel}
                     pct={`${est.multiples.low}–${est.multiples.high}×`} />
+          {est.growthAlternatives?.length > 0 && est.growthSpreadPts >= 5 && (
+            <span className="block text-[11px] text-slate-500">
+              Other bases: {est.growthAlternatives.map(a => `${a.pct}% ${a.label}`).join(' · ')}
+            </span>
+          )}
           {est.dilutionPct > 0.1 && (
             <BasisRow label="Dilution" value={est.dilutionLabel} pct={null} />
           )}
           {Object.keys(overrides || {}).length > 0 && (
             <BasisRow label="Revised" pct={null}
-              value={`${Object.keys(overrides).join(', ')} set by you`} />
+              value={`${Object.keys(overrides).join(', ')} — ${est.growthLabel || 'revised'}`} />
           )}
           {isDegraded && (
             <span className="block border-t border-navy-800 pt-1 mt-1 text-neutral">
