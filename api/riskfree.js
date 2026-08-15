@@ -71,7 +71,17 @@ export default async function handler(req, res) {
             `confident of a current figure, reply {"rate": null}.` }] },
           contents: [{ role: 'user', parts: [{ text:
             `What is the current yield on the ${bounds.name}?` }] }],
-          generationConfig: { temperature: 0, maxOutputTokens: 100 },
+          generationConfig: {
+            temperature: 0,
+            // 2.5-flash is a thinking model: it spends output tokens reasoning
+            // before answering, so a 100-token cap was consumed before the JSON
+            // closed and the response arrived truncated at `{"rate":`. Thinking
+            // is disabled outright — this is a lookup, not a problem to reason
+            // about — and the ceiling raised so the answer can't be clipped.
+            maxOutputTokens: 512,
+            thinkingConfig: { thinkingBudget: 0 },
+            responseMimeType: 'application/json',
+          },
         }),
       })
 
@@ -85,15 +95,29 @@ export default async function handler(req, res) {
       return res.status(200).json({ ...fallback(cached, 'fetch_failed'), detail })
     }
 
-    const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') ?? ''
+    const cand = data?.candidates?.[0]
+    const text = cand?.content?.parts?.map(p => p.text).filter(Boolean).join('') ?? ''
     const parsed = parseRate(text)
+
+    // A truncated or empty completion has a distinct finishReason, and saying
+    // which one it was turns "unparseable" into something actionable.
+    if (parsed == null && cand?.finishReason && cand.finishReason !== 'STOP') {
+      console.warn('[riskfree] incomplete completion:', cand.finishReason)
+      return res.status(200).json({ ...fallback(cached, 'incomplete'),
+        detail: cand.finishReason === 'MAX_TOKENS'
+          ? 'the model ran out of output tokens before answering'
+          : `the model stopped early (${cand.finishReason})` })
+    }
 
     if (parsed == null) {
       // Include what came back, so an unexpected shape is diagnosable rather
       // than silent. Truncated — this reaches the browser.
-      const raw = String(text).slice(0, 200)
-      console.warn('[riskfree] could not parse:', raw)
-      return res.status(200).json({ ...fallback(cached, 'unparseable'), detail: raw })
+      // Raw text is logged, not returned — a truncated JSON fragment shown as
+      // an error message ("Risk-free rate unavailable: {\"rate\":") tells the
+      // user nothing they can act on.
+      console.warn('[riskfree] could not parse:', String(text).slice(0, 300))
+      return res.status(200).json({ ...fallback(cached, 'unparseable'),
+        detail: 'the model did not return a usable figure' })
     }
 
     // The bound check. This is the safeguard that matters — a confidently

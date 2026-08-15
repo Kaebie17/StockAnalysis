@@ -3,6 +3,7 @@ import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip as RTooltip,
          ResponsiveContainer, CartesianGrid } from 'recharts'
 import { useApp } from '../../store/AppContext.jsx'
 import { useEstimate } from '../../store/useEstimate.js'
+import { windowedCagr } from '../../engine/estimate.js'
 import { fmtPctPlain, fmtMultiple, fmtCurrency, resolutionBadge, fmtTagged } from '../../utils/format.js'
 
 // Small tooltip showing formula/resolution on hover
@@ -300,7 +301,20 @@ function GrowthWindowPicker() {
   if (years - 1 > 10) options.push(years - 1)
   if (options.length < 2) return null
 
-  const activeRate = estimate?.growthPct
+  // What the CHOSEN WINDOW yields, not what the estimate currently applies.
+  //
+  // The picker was showing estimate.growthPct — the rate actually in force,
+  // which an applied revision outranks. So selecting a window changed nothing
+  // visible and the label read "applied automatically from news", which had
+  // nothing to do with the control the user was operating.
+  const windowRate = growthWindow
+    ? windowedCagr(state.data?.incomeHistory || [], growthWindow)
+    : null
+
+  // A revision outranks any window, so the control is inert until it's cleared.
+  // Saying so beats letting the user click through four options that do nothing.
+  const blockedBy = estimate?.growthSource === 'revision' || estimate?.growthSource === 'guidance'
+    ? estimate.growthLabel : null
 
   return (
     <div className="mt-3 pt-3 border-t border-navy-800">
@@ -320,16 +334,26 @@ function GrowthWindowPicker() {
           <button onClick={() => setGrowthWindow(null)}
             className="text-[10px] text-slate-600 hover:text-slate-400">default</button>
         )}
-        {activeRate != null && (
-          <span className="text-[11px] text-slate-400 ml-auto">
-            {activeRate}% {estimate?.growthLabel ? `· ${estimate.growthLabel}` : ''}
+        {windowRate && (
+          <span className="text-[11px] text-slate-300 ml-auto">
+            {(windowRate.growth * 100).toFixed(1)}%
+            {windowRate.truncated && (
+              <span className="text-slate-600"> · only {windowRate.years}yr available</span>
+            )}
           </span>
         )}
       </div>
-      <p className="text-[10px] text-slate-600 mt-1">
-        Changes both estimates, the health bars and the exit levels. Where the history is
-        shorter than the window, everything available is used and the label says so.
-      </p>
+
+      {blockedBy ? (
+        <p className="text-[10px] text-neutral mt-1">
+          Not in use — growth is currently {estimate.growthPct}% from {blockedBy}. Clear that
+          under Events &amp; revisions for this window to take effect.
+        </p>
+      ) : (
+        <p className="text-[10px] text-slate-600 mt-1">
+          Changes both estimates, the health bars and the exit levels.
+        </p>
+      )}
     </div>
   )
 }

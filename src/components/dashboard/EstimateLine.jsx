@@ -50,9 +50,9 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
           </span>
           {isJustified && riskFree?.rate == null && (
             <span className="block text-[11px] text-slate-500 mt-1">
-              {riskFree?.error
-                ? riskFree.note
-                : 'The risk-free rate needs an AI key — set one in the AI verdict panel.'}
+              {riskFree?.rate == null && !riskFree?.error
+                ? 'The risk-free rate needs an AI key — set one in the AI verdict panel.'
+                : riskFree?.note}
               {/* Manual retry rather than an automatic one. A failed fetch is
                   not retried on a timer: the rate moves a few basis points a
                   month, so repeated attempts spend API calls without improving
