@@ -98,18 +98,23 @@ export function useEstimate(state, opts = {}) {
   const ticker = state?.ticker
 
   const reload = useCallback(async () => {
-    if (!ticker) { setOverrides({}); setRevisions([]); return }
+    if (!ticker) { setOverrides({}); setRevisions([]); setGrowthWindowState(null); return }
+
+    // Declared outside the try so the growth-window lookup below can see it —
+    // it was scoped to the block and referenced after, which throws.
+    let rows = []
     try {
-      const rows = await listRevisions({ ticker })
+      rows = await listRevisions({ ticker })
       setRevisions(rows)
       setOverrides(activeOverrides(rows))
     } catch { setOverrides({}) }
+
     // The dated claim made earlier, so it can be checked against what the price
-    // actually did. Without this the estimate has no track record at all —
-    // scoreEstimate existed but nothing ever called it.
+    // actually did.
     try { setStored(await currentEstimate(ticker)) } catch { setStored(null) }
-    // Latest pinned window, if the user has chosen one.
-    const win = [...rows]
+
+    // Latest pinned growth window, if the user has chosen one.
+    const win = rows
       .filter(r => r.lever === 'growth-window' && r.disposition === 'revised')
       .sort((a, b) => b.createdAt - a.createdAt)[0]
     setGrowthWindowState(win?.windowYears ?? null)
@@ -172,7 +177,10 @@ export function useEstimate(state, opts = {}) {
   const justified = state?.ratioResult ? buildJustifiedEstimate(state.ratioResult, {
     sectorType: state.sectorType,
     form,
-    riskFreeRate: opts?.riskFreeRate ?? riskFree?.rate ?? null,
+    // riskFreeShared, not riskFree — the per-hook state was replaced by shared
+    // module state and this reference was left behind, so Estimate 1 received
+    // null for the rate and reported a missing key even when one was set.
+    riskFreeRate: opts?.riskFreeRate ?? riskFreeShared?.rate ?? null,
     beta: state.data?.meta?.beta ?? state.technicals?.beta ?? null,
     incomeHistory: state.data?.incomeHistory || [],
     cashflowHistory: state.data?.cashflowHistory || [],

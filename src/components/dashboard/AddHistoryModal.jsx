@@ -47,7 +47,7 @@ const pasteScale = (currency, ticker) =>
  * all, review, and one confirm routes each to where it belongs: financials extend
  * the history series, promoter holding is saved to the store (Block-5 gate input).
  */
-export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
+export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, focusTable = null }) {
   const { state: appState, setQualInputs } = useApp()
   const currency = appState?.data?.currency
   const [pasteText, setPasteText] = useState({ income: '', quarterly: '', balance: '', cashflow: '', holdings: '' })
