@@ -112,6 +112,19 @@ const yearOf = row => {
  * arrived yet. That is the multiple a forward EPS can legitimately be multiplied
  * by.
  */
+/**
+ * What buyers have paid for a year of FORWARD earnings.
+ *
+ * Uses REPORTED earnings, not normalised ones. The market set those prices while
+ * looking at the reported figures — including whatever exceptional item was in
+ * them — so dividing historical prices by a normalised EPS measures a multiple
+ * nobody ever paid. The projection this band is applied to uses normalised
+ * earnings, correctly: one describes past market behaviour, the other forecasts
+ * the underlying business.
+ *
+ * Callers pass `reportedIncomeHistory` where it exists; where it doesn't, the
+ * two are identical and nothing changes.
+ */
 export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) {
   const { fyEndMonth = 3 } = opts
 
@@ -149,17 +162,14 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   // fetch to ten years did nothing for a stock whose incomeHistory carries four
   // annual rows: this pairs each year's prices with the NEXT year's EPS, so N
   // years of earnings yield at most N-1 usable pairs however many prices exist.
-  // Six paired years, not three.
+  // Two paired years — the arithmetic minimum, not a judgement.
   //
-  // Three years passed the old bar and produced a band from roughly three years
-  // of recent prices — which measures the current regime rather than a range,
-  // and gave 57-65x where eight years of the same data gave 28-33x. A band that
-  // narrow in span is a trend wearing a band's clothes, and it inflated an
-  // estimate to 3,016-5,027 against a fair value of 887.
-  //
-  // Below six, the caller falls back to today's multiple widened by the stock's
-  // own measured dispersion, which is weaker but not misleading.
-  const MIN_PAIRED_YEARS = 6
+  // A percentile needs a distribution; one year gives a single point with no
+  // low and no high. Every threshold above that was me deciding what counts as
+  // "enough" history, which is a call the user is better placed to make: the
+  // span travels with the band, so a two-year window is visible as one and can
+  // be weighed accordingly.
+  const MIN_PAIRED_YEARS = 2
   if (ratios.length < 20 || pairedYears < MIN_PAIRED_YEARS) {
     return { insufficient: true, pairedYears, samples: ratios.length,
              earningsYears: epsByYear.size, priceDays: closes.length,
@@ -169,8 +179,8 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
              // annual periods, Screener carries ten or more, and pasting them
              // widens the band immediately.
              reason: epsByYear.size < MIN_PAIRED_YEARS + 1
-               ? `built on ${epsByYear.size} year${epsByYear.size === 1 ? '' : 's'} of earnings, too few to measure a multiple range — paste the Screener tables for a fuller history`
-               : `prices and earnings only overlap for ${pairedYears} year${pairedYears === 1 ? '' : 's'} — paste the Screener tables to extend it` }
+               ? `${epsByYear.size} year${epsByYear.size === 1 ? '' : 's'} of earnings gives no range to measure — paste the Screener tables for a fuller history`
+               : `prices and earnings overlap for ${pairedYears} year${pairedYears === 1 ? '' : 's'} — paste the Screener tables to extend it` }
   }
 
   ratios.sort((a, b) => a - b)
@@ -178,7 +188,10 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   // Percentiles, not min/max: one panic day or one melt-up shouldn't define the
   // band the whole projection hangs off.
   return { low: round(q(0.15), 1), median: round(q(0.50), 1), high: round(q(0.85), 1),
-           samples: ratios.length }
+           samples: ratios.length,
+           // How many years the band actually spans, so a three-year window and
+           // a nine-year one can be told apart downstream.
+           spanYears: pairedYears }
 }
 
 /**
@@ -269,7 +282,8 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
 
   const forwardBook = bps * Math.pow(1 + growth, years)
 
-  const band = pbBand(priceHistory, balanceHistory, incomeHistory)
+  const band = pbBand(priceHistory, balanceHistory,
+    opts.reportedIncomeHistory?.length ? opts.reportedIncomeHistory : incomeHistory)
   const currentPb = ratioResult?.ratios?.pb?.value ?? (price > 0 ? price / bps : null)
   let multiples, multipleBasis, multipleLabel
   if (multipleOverride > 0) {
@@ -330,6 +344,44 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
  * caller then declines to produce an estimate, which is the honest outcome. A
  * default here would be a figure of mine wearing the company's clothes.
  */
+/**
+ * CAGR over an explicit number of years, from the end of the series backwards.
+ *
+ * The window is a preference the user sets, so it has to be a real year count
+ * rather than a label like "long run" — which means eight years on one stock and
+ * twelve on another, and shifts as data arrives. Where the requested window
+ * exceeds the history, everything available is used and the ACTUAL span is
+ * returned, so the caller can say "you asked for 10 years, this stock has 6"
+ * instead of labelling a 6-year figure as a 10-year one.
+ */
+export function windowedCagr(history = [], years, field = 'revenue') {
+  const pts = (history || [])
+    .map(r => ({ y: yearOf(r), v: val(r?.[field]) }))
+    .filter(p => p.y != null && p.v > 0)
+    .sort((a, b) => a.y - b.y)
+  if (pts.length < 2) return null
+
+  const span = Math.min(years, pts.length - 1)
+  if (span < 1) return null
+  const start = pts[pts.length - 1 - span]
+  const end = pts[pts.length - 1]
+  if (!(start.v > 0) || !(end.v > 0)) return null
+
+  const growth = Math.pow(end.v / start.v, 1 / span) - 1
+  if (!isFinite(growth) || growth > 0.6 || growth < -0.3) return null
+
+  return {
+    growth,
+    years: span,                       // what was ACTUALLY used
+    requested: years,
+    truncated: span < years,
+    from: start.y, to: end.y,
+    label: span === years
+      ? `${span}-yr revenue CAGR`
+      : `${span}-yr revenue CAGR (asked for ${years}, history has ${pts.length})`,
+  }
+}
+
 export function seriesCagr(history = [], field = 'revenue', label = null) {
   const vals = (history || [])
     .map(r => ({ year: yearOf(r), v: val(r?.[field]) }))
@@ -459,7 +511,8 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
   // The multiple is applied to NORMALISED earnings, so it must be a
   // through-cycle multiple too — the median of what the market paid across the
   // same span, not today's.
-  const bandRaw = forwardPeBand(priceHistory, incomeHistory)
+  const bandHistory = opts.reportedIncomeHistory?.length ? opts.reportedIncomeHistory : incomeHistory
+  const bandRaw = forwardPeBand(priceHistory, bandHistory)
   const band = bandRaw?.insufficient ? null : bandRaw
   let multiples, multipleBasis, multipleLabel
   if (multipleOverride > 0) {
@@ -707,10 +760,34 @@ export function resolveGrowthBasis(ratioResult, opts = {}) {
   const r = ratioResult?.ratios || {}
 
   const all = []
+
+  // A pinned window outranks everything except an explicit revision: the user
+  // said which history to trust, and that is a standing preference rather than
+  // a one-off claim, so it is re-derived from current data each time instead of
+  // freezing the rate it produced on the day it was chosen.
+  if (opts.growthWindowYears > 0) {
+    const w = windowedCagr(opts.incomeHistory || [], opts.growthWindowYears)
+    if (w) {
+      all.push({ growth: w.growth, source: 'window', rung: 'best',
+                 label: `${w.label} — your chosen window`, windowYears: w.years,
+                 truncated: w.truncated })
+    }
+  }
+
   if (guidedGrowth != null && isFinite(guidedGrowth)) {
     all.push({ growth: guidedGrowth, source: 'guidance', rung: 'best',
                label: overrideLabel || `guidance${guidanceFiscalYear ? ` (${guidanceFiscalYear})` : ''}` })
   }
+  // Five years first, then the others as alternatives.
+  //
+  // The 5-year window was a guard against "the business may have changed", which
+  // dataQuality now handles directly by flagging the years where it did. The
+  // window stays as the DEFAULT because it is the analyst convention, not
+  // because longer histories are untrustworthy — and every other window is
+  // returned alongside, so a user who sees a wide spread between them can act
+  // on it. Which is the honest treatment: the app cannot know whether this
+  // company's tenth year is comparable, and the flags say when it probably
+  // isn't.
   for (const [pct, label, source] of [
     [r.revCagr5y?.value,        '5-yr revenue CAGR',              'cagr'],
     [r.revGrowthRecent?.value,  'recent revenue growth (median)', 'recent'],
@@ -1078,7 +1155,11 @@ export function buildEstimate(ratioResult, opts = {}) {
   // ── growth ────────────────────────────────────────────────────────────────
   const growthBasis = growthOverride != null
     ? { growth: growthOverride, source: 'revision', rung: 'best', label: (opts.overrideLabel || 'an applied revision') }
-    : resolveGrowthBasis(ratioResult, { guidedGrowth, guidanceFiscalYear, guidanceExpired })
+    // The full opts, not a hand-picked three. A pinned growth window needs
+    // incomeHistory to compute over, and passing a subset meant the window was
+    // silently ignored — the estimate looked identical whichever one was chosen.
+    : resolveGrowthBasis(ratioResult, {
+        ...opts, guidedGrowth, guidanceFiscalYear, guidanceExpired })
   if (growthBasis.growth == null) {
     return blank('No guidance and no usable growth history — nothing to project from.', { price })
   }
@@ -1141,7 +1222,10 @@ export function buildEstimate(ratioResult, opts = {}) {
     peerBand,
   })
 
-  const ownRaw = forwardPeBand(priceHistory, incomeHistory)
+  // Reported series for the band; normalised for the projection. See the note
+  // on forwardPeBand.
+  const bandHistory = opts.reportedIncomeHistory?.length ? opts.reportedIncomeHistory : incomeHistory
+  const ownRaw = forwardPeBand(priceHistory, bandHistory)
   const bandReason = ownRaw?.insufficient ? ownRaw.reason : null
   let own = ownRaw?.insufficient ? null : ownRaw
 
@@ -1184,7 +1268,13 @@ export function buildEstimate(ratioResult, opts = {}) {
   } else if (own) {
     multiples = { low: own.low, base: own.median, high: own.high }
     multipleBasis = 'observed'
-    multipleLabel = `its own forward P/E range (${own.samples} days)`
+    // Name the span, not just the sample count. A band from three years and one
+    // from nine both looked identical as "its own forward P/E range"; the first
+    // describes a recent regime and the second a genuine range.
+    // The span is stated either way; the prompt appears while a longer history
+    // is still available to fetch, without implying the shorter one is invalid.
+    multipleLabel = `its own forward P/E over ${own.spanYears} year${own.spanYears === 1 ? '' : 's'}` +
+      (own.spanYears < 5 ? ' — paste the Screener tables for a longer range' : '')
   } else if (fitted?.multiple > 0) {
     multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
     multipleBasis = 'historical-median'

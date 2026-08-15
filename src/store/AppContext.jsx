@@ -6,6 +6,7 @@ import { normalize, applyDocFacts, migrateStoredData } from '../engine/normalize
 import { calcRatios } from '../engine/ratios.js'
 import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
+import { assessDataQuality } from '../engine/dataQuality.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -108,6 +109,15 @@ function reducer(s, a) {
  * this pipeline there would guarantee the two drift apart.
  */
 export function computeAll(data, assumptions, meAssumptions, weights, arData = null) {
+  // Normalise reported one-off items out of the income history before anything
+  // reads it. A year carrying a disclosed exceptional gain otherwise inflates
+  // the margin, the CAGR, the multiple band and every ratio derived from them —
+  // and this is ordinary practice, not a correction the user should have to ask
+  // for. The reported figures stay available on each row as `reportedNetProfit`.
+  const dq = assessDataQuality(data?.incomeHistory || [])
+  if (dq.adjustments.length > 0) {
+    data = { ...data, incomeHistory: dq.rows, reportedIncomeHistory: data.incomeHistory }
+  }
   data = applyDocFacts(migrateStoredData(data), arData)
   const ratioResult = calcRatios(data)
   const sectorType  = detectSectorType(data)

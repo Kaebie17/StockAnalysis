@@ -5,7 +5,7 @@ import { buildEstimate, buildJustifiedEstimate, scoreEstimate, sanityCheck } fro
 import { assessFromQuarterly, growthDriftSuggestion } from '../engine/quarterlyBridge.js'
 import { fetchPeers } from '../api/peersClient.js'
 import { relativePerformance } from '../api/marketRegime.js'
-import { getRiskFreeRate } from '../api/riskFreeClient.js'
+import { getRiskFreeRate, refreshRiskFreeRate } from '../api/riskFreeClient.js'
 import { getAiKey } from '../utils/aiKey.js'
 import { peerBandFrom, detectRerating } from '../engine/rerating.js'
 import { forwardPeBand } from '../engine/estimate.js'
@@ -47,6 +47,36 @@ function subscribeVersion(fn) {
 }
 const getVersion = () => revisionVersion
 
+/**
+ * Module-level risk-free state, shared by every useEstimate instance.
+ *
+ * The rate is a property of the market, not of a ticker, and it changes monthly.
+ * Holding it per-hook meant five components each fetching it — which is what
+ * produced repeated API calls on a single page view.
+ */
+let rfState = null
+let rfMarket = null
+let rfPending = false
+const rfListeners = new Set()
+
+function subscribeRiskFree(fn) { rfListeners.add(fn); return () => rfListeners.delete(fn) }
+function getRiskFreeSnapshot() { return rfState }
+function emitRiskFree(v) { rfState = v; for (const fn of rfListeners) fn() }
+
+async function ensureRiskFree(market, userKey, { force = false } = {}) {
+  // Already have it for this market, and not an explicit refresh.
+  if (!force && rfState?.rate > 0 && rfMarket === market) return
+  if (rfPending) return
+  rfPending = true
+  try {
+    const r = force
+      ? await refreshRiskFreeRate({ market, userKey })
+      : await getRiskFreeRate({ market, userKey })
+    rfMarket = market
+    emitRiskFree(r)
+  } finally { rfPending = false }
+}
+
 export function useEstimate(state, opts = {}) {
   const [overrides, setOverrides] = useState({})
   const [peers, setPeers] = useState([])
@@ -55,10 +85,14 @@ export function useEstimate(state, opts = {}) {
   // Which justified form the user has chosen, if they've overridden the sector
   // default. Session-level: a preference about how to read a number, not data.
   const [form, setForm] = useState(null)
+  // The growth window the user pinned, if any. Stored as a revision so it
+  // survives reload and appears in the log — it is a decision about the company
+  // like any other, and one that changes every derived number.
+  const [growthWindow, setGrowthWindowState] = useState(null)
   // Risk-free rate for the justified multiple. Null until fetched, and null is a
   // valid outcome — Estimate 1 declines rather than falling back to a made-up
   // rate, since every justified multiple is sensitive to it.
-  const [riskFree, setRiskFree] = useState(null)
+
   const version = useSyncExternalStore(subscribeVersion, getVersion, getVersion)
 
   const ticker = state?.ticker
@@ -74,6 +108,11 @@ export function useEstimate(state, opts = {}) {
     // actually did. Without this the estimate has no track record at all —
     // scoreEstimate existed but nothing ever called it.
     try { setStored(await currentEstimate(ticker)) } catch { setStored(null) }
+    // Latest pinned window, if the user has chosen one.
+    const win = [...rows]
+      .filter(r => r.lever === 'growth-window' && r.disposition === 'revised')
+      .sort((a, b) => b.createdAt - a.createdAt)[0]
+    setGrowthWindowState(win?.windowYears ?? null)
     // `version` participates so a commit anywhere re-runs this everywhere.
   }, [ticker, version])
 
@@ -99,17 +138,23 @@ export function useEstimate(state, opts = {}) {
     return () => { dead = true }
   }, [ticker, state?.data?.priceHistory, state?.sectorType])
 
+  // One rate for the whole app, shared across every hook instance.
+  //
+  // useEstimate is mounted by five components, and each previously ran its own
+  // effect — five requests a minute for a number that moves a few basis points
+  // a month. The rate is also market-wide, so per-ticker fetching was wrong in
+  // principle as well as wasteful: it only depends on whether the market is
+  // Indian or US.
+  const market = /\.(NS|BO)$/i.test(ticker || '') ? 'IN' : 'US'
+  const riskFreeShared = useSyncExternalStore(subscribeRiskFree, getRiskFreeSnapshot, getRiskFreeSnapshot)
+
   useEffect(() => {
-    let dead = false
-    const indian = /\.(NS|BO)$/i.test(ticker || '')
-    // The key the user already entered for the AI verdict. Nothing was supplying
-    // opts.userKey, so every fetch went out keyless and returned "no risk-free
-    // rate" — which then blocked Estimate 1 entirely.
-    getRiskFreeRate({ market: indian ? 'IN' : 'US', userKey: opts?.userKey || getAiKey() })
-      .then(r => { if (!dead) setRiskFree(r) })
-      .catch(() => {})
-    return () => { dead = true }
-  }, [ticker, opts?.userKey])
+    ensureRiskFree(market, opts?.userKey || getAiKey())
+  }, [market, opts?.userKey])
+
+  const refreshRate = useCallback(async () => {
+    await ensureRiskFree(market, opts?.userKey || getAiKey(), { force: true })
+  }, [market, opts?.userKey])
 
   const peerBand = peerBandFrom(peers)
 
@@ -139,6 +184,7 @@ export function useEstimate(state, opts = {}) {
     guidedMargin: guidedMarginOf(state),
     guidanceFiscalYear: state.guidance?.revenueGuidance?.fiscalYear || null,
     guidanceExpired: state.guidance?.revenueGuidance?.status === 'resolved',
+    growthWindowYears: growthWindow,
     growthOverride:   overrides.growth   ?? null,
     // Where the override came from. "Your revision" was shown even for a change
     // the app applied automatically from a news item, which reads as though the
@@ -148,6 +194,9 @@ export function useEstimate(state, opts = {}) {
     multipleOverride: overrides.multiple ?? null,
     priceHistory:   state.data?.priceHistory   || [],
     incomeHistory:  state.data?.incomeHistory  || [],
+    // The pre-normalisation series, so the multiple band is measured against
+    // the figures the market actually saw.
+    reportedIncomeHistory: state.data?.reportedIncomeHistory || [],
     balanceHistory: state.data?.balanceHistory || [],
     peerBand,
   }) : null
@@ -208,6 +257,26 @@ export function useEstimate(state, opts = {}) {
   // resurface on the next poll.
   const handledKeys = new Set(revisions.map(r => r.sourceKey).filter(Boolean))
 
+  /**
+   * Pin a growth window. Stores the YEAR COUNT, not the rate it currently
+   * produces — the rate is re-derived from whatever data exists at the time, so
+   * a pinned window stays current as new years arrive rather than freezing a
+   * number that silently goes stale.
+   */
+  const setGrowthWindow = useCallback(async (years) => {
+    if (!ticker) return
+    await appendRevision({
+      ticker, lever: 'growth-window',
+      disposition: years == null ? 'dismissed' : 'revised',
+      windowYears: years,
+      trigger: 'manual',
+      reason: years == null ? 'Reverted to the default growth window'
+                            : `Growth measured over ${years} years, your choice`,
+    })
+    await reload()
+    bumpRevisionVersion()
+  }, [ticker, reload])
+
   /** Record a revision and re-apply. `disposition` is 'revised' | 'dismissed' | 'deferred'. */
   const commit = useCallback(async (entry) => {
     if (!ticker) return null
@@ -233,7 +302,9 @@ export function useEstimate(state, opts = {}) {
   return {
     estimate, overrides, revisions, peers, peerBand, rerating,
     guidanceAssessment, quarterlySuggestion, score, stored, relative, sanity,
-    justified, form, setForm, riskFree,
+    justified, form, setForm,
+    growthWindow, setGrowthWindow,
+    riskFree: riskFreeShared, refreshRate,
     handledKeys, deferredLevers,
     commit, freeze, reload,
   }

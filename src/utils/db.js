@@ -329,6 +329,35 @@ export async function appendRevision(entry) {
   return rec
 }
 
+/**
+ * Data-quality resolutions — what the user decided about a flagged year.
+ *
+ * Keyed by (ticker, year, kind), because a year flagged for a margin spike and
+ * the same year previously resolved for a revenue step are different problems;
+ * matching on year alone would offer one as a fix for the other.
+ *
+ * These persist across data refreshes. A fact about a past year — "FY24 included
+ * an 800 Cr land sale" — stays true when FY27 arrives, and the app cannot
+ * re-derive it. The flag itself is re-detected from scratch on every paste; the
+ * resolution returns as a suggestion rather than reapplying itself, so a
+ * restated year doesn't silently keep an adjustment that no longer fits.
+ */
+export async function saveDataResolution(entry) {
+  const rec = {
+    ...entry,
+    id: `${String(entry.ticker || '').toUpperCase()}:${entry.year}:${entry.kind}`,
+    ticker: String(entry.ticker || '').toUpperCase(),
+    updatedAt: Date.now(),
+  }
+  await txPut('revisions', { ...rec, lever: 'data-quality', disposition: entry.disposition })
+  return rec
+}
+
+export async function listDataResolutions(ticker) {
+  const rows = await listRevisions({ ticker })
+  return rows.filter(r => r.lever === 'data-quality')
+}
+
 export async function listRevisions({ ticker, positionId } = {}) {
   let recs = await txGetAll('revisions')
   if (ticker) {

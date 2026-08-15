@@ -25,6 +25,8 @@ function Dashboard() {
   const [csvModal, setCsvModal] = useState(false)  // 'upload' | 'gap-fill' | false
   const [gapFillOpen, setGapFillOpen] = useState(false)
   const [addHistoryOpen, setAddHistoryOpen] = useState(false)
+  // Which paste table to scroll to, when a data-quality flag points at one.
+  const [focusTable, setFocusTable] = useState(null)
   const fileRef = useRef()
 
   const handleExpand = (panel) => {
@@ -79,7 +81,7 @@ function Dashboard() {
 
   return (
     <div className="min-h-screen bg-navy-950 overflow-x-hidden">
-      <Header />
+      <Header onOpenTable={t => { setFocusTable(t); setAddHistoryOpen(true) }} />
 
       <main className="max-w-5xl mx-auto px-4 py-5 space-y-4">
         {!showDashboard
@@ -184,8 +186,9 @@ function Dashboard() {
       />
 
       <AddHistoryModal
+        focusTable={focusTable}
         open={addHistoryOpen}
-        onClose={() => setAddHistoryOpen(false)}
+        onClose={() => { setAddHistoryOpen(false); setFocusTable(null) }}
         ticker={state.ticker}
         onApplyAll={applyPastedTable}
       />

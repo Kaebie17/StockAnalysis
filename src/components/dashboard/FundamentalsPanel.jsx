@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip as RTooltip,
          ResponsiveContainer, CartesianGrid } from 'recharts'
 import { useApp } from '../../store/AppContext.jsx'
+import { useEstimate } from '../../store/useEstimate.js'
 import { fmtPctPlain, fmtMultiple, fmtCurrency, resolutionBadge, fmtTagged } from '../../utils/format.js'
 
 // Small tooltip showing formula/resolution on hover
@@ -101,6 +102,9 @@ export default function FundamentalsPanel({ open, onClose }) {
   const resetWeights = () => recalc({}, Object.fromEntries(FUNDAMENTAL_WEIGHTS.map(w => [w.key, w.defaultW])))
 
   const cur     = data.currency === 'INR' ? '₹' : '$'
+  // The 5-year CAGR uses min(5, available), so on a short history it spans
+  // fewer years than its name suggests. The label follows the actual span.
+  const cagrYears = Math.min(5, Math.max(1, (data.incomeHistory || []).length - 1))
   const div     = data.currency === 'INR' ? 1e7 : 1e6
   const unit    = data.currency === 'INR' ? 'Cr' : 'M'
 
@@ -248,15 +252,84 @@ export default function FundamentalsPanel({ open, onClose }) {
             <RatioCard label="Op. Margin"      tagged={ratios.operatingMargin} fmt={v => fmtPctPlain(v)} />
             <RatioCard label="EBITDA Margin"   tagged={ratios.ebitdaMargin} fmt={v => fmtPctPlain(v)} />
             <RatioCard label="Net Margin"      tagged={ratios.netMargin}    fmt={v => fmtPctPlain(v)} />
-            <RatioCard label="Rev CAGR (5Y)"   tagged={ratios.revCagr5y}    fmt={v => fmtPctPlain(v)} />
+            {/* The underlying calculation uses min(5, available), so on a short
+                history this is a 2- or 3-year figure. Labelling it "5Y"
+                regardless states something untrue about the data. */}
+            <RatioCard label={`Rev CAGR (${cagrYears}Y)`} tagged={ratios.revCagr5y} fmt={v => fmtPctPlain(v)} />
             <RatioCard label="Debt / Equity"   tagged={ratios.de}           fmt={v => fmtMultiple(v)} />
             <RatioCard label="Interest Cover"  tagged={ratios.icr}          fmt={v => fmtMultiple(v)} />
             <RatioCard label="FCF Conversion"  tagged={ratios.fcfConversion} fmt={v => fmtPctPlain(v)} />
             <RatioCard label="EPS"             tagged={ratios.eps}          fmt={v => `${cur}${v.toFixed(2)}`} />
             <RatioCard label="Book Value/Sh"   tagged={ratios.bookPerShare}  fmt={v => `${cur}${v.toFixed(2)}`} />
           </div>
+
+          {/* Growth window. Placed here rather than in an estimate's popover
+              because it drives far more than one number — both estimates, the
+              health bars, the exit triggers and market expectation all read this
+              rate. The choice belongs with the evidence it's made from. */}
+          <GrowthWindowPicker />
         </div>
       )}
+    </div>
+  )
+}
+
+
+/**
+ * Which stretch of history the growth rate is measured over.
+ *
+ * Stores the YEAR COUNT, not the rate. A window is a standing preference about
+ * which history to trust, so it is re-derived from current data each time —
+ * pinning the rate instead would freeze a number that silently goes stale as new
+ * years arrive.
+ *
+ * Options come from what this stock actually has, since "long run" means eight
+ * years on one company and twelve on another.
+ */
+function GrowthWindowPicker() {
+  const { state } = useApp()
+  const { growthWindow, setGrowthWindow, estimate } = useEstimate(state)
+
+  const years = (state.data?.incomeHistory || [])
+    .map(r => String(r?.year ?? '').match(/(?:19|20)\d{2}/)?.[0])
+    .filter(Boolean).length
+  if (years < 3) return null
+
+  // Only windows the history can actually support, plus the full span.
+  const options = [3, 5, 7, 10].filter(y => y <= years - 1)
+  if (years - 1 > 10) options.push(years - 1)
+  if (options.length < 2) return null
+
+  const activeRate = estimate?.growthPct
+
+  return (
+    <div className="mt-3 pt-3 border-t border-navy-800">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-[11px] text-slate-500">Growth measured over</span>
+        {options.map(y => (
+          <button key={y}
+            onClick={() => setGrowthWindow(growthWindow === y ? null : y)}
+            className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
+              growthWindow === y
+                ? 'border-accent/60 text-accent bg-navy-800'
+                : 'border-navy-700 text-slate-500 hover:text-slate-300'}`}>
+            {y}yr
+          </button>
+        ))}
+        {growthWindow && (
+          <button onClick={() => setGrowthWindow(null)}
+            className="text-[10px] text-slate-600 hover:text-slate-400">default</button>
+        )}
+        {activeRate != null && (
+          <span className="text-[11px] text-slate-400 ml-auto">
+            {activeRate}% {estimate?.growthLabel ? `· ${estimate.growthLabel}` : ''}
+          </span>
+        )}
+      </div>
+      <p className="text-[10px] text-slate-600 mt-1">
+        Changes both estimates, the health bars and the exit levels. Where the history is
+        shorter than the window, everything available is used and the label says so.
+      </p>
     </div>
   )
 }

@@ -785,7 +785,7 @@ function arTextOf(arData) {
  * locally and triggers nothing else.
  */
 function TwoEstimates({ state }) {
-  const { estimate, justified, form, setForm, sanity, riskFree } = useEstimate(state)
+  const { estimate, justified, form, setForm, sanity, riskFree, refreshRate } = useEstimate(state)
   const cur = state.data?.currency === 'INR' ? '₹' : '$'
   const n = v => (v == null ? '—' : Math.round(v).toLocaleString('en-IN'))
 
@@ -816,8 +816,12 @@ function TwoEstimates({ state }) {
             <span className="text-slate-700"> · rate as of {riskFree.asOf}</span>
           )}
         </div>
-        {riskFree?.stale && (
-          <div className="text-[10px] text-neutral mt-0.5">{riskFree.note}</div>
+        {(riskFree?.stale || riskFree?.rate == null) && (
+          <div className="text-[10px] text-neutral mt-0.5">
+            {riskFree?.note}
+            <button onClick={() => refreshRate?.()}
+              className="text-accent hover:text-accent-light ml-1.5">↻ refresh</button>
+          </div>
         )}
 
         {/* Form picker — only where more than one form applies. */}

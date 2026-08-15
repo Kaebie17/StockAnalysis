@@ -25,7 +25,7 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
   // One source of truth with ValuationPanel: the same hook resolves guidance,
   // applies stored revisions and fetches peers, so the dashboard line and the
   // detail screen can never disagree about what the estimate currently is.
-  const { estimate, justified, overrides, sanity, riskFree } = useEstimate(state)
+  const { estimate, justified, overrides, sanity, riskFree, refreshRate } = useEstimate(state)
 
   // Which of the two this line shows. They answer different questions —
   // Estimate 1 what the fundamentals justify, Estimate 2 what the market has
@@ -53,6 +53,14 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
               {riskFree?.error
                 ? riskFree.note
                 : 'The risk-free rate needs an AI key — set one in the AI verdict panel.'}
+              {/* Manual retry rather than an automatic one. A failed fetch is
+                  not retried on a timer: the rate moves a few basis points a
+                  month, so repeated attempts spend API calls without improving
+                  anything. */}
+              <button onClick={e => { e.stopPropagation(); refreshRate?.() }}
+                className="text-accent hover:text-accent-light ml-1.5">
+                ↻ retry
+              </button>
             </span>
           )}
         </Dot>
@@ -178,10 +186,26 @@ function Dot({ open, setOpen, degraded, children }) {
     }
   }, [open, place])
 
+  // Hover close, with a short grace period.
+  //
+  // The popover is portalled to <body>, so it is not a DOM descendant of the
+  // trigger — moving the pointer onto it fired mouseleave on the trigger and
+  // the panel closed underneath the cursor. Worse, moving away from the panel
+  // fired nothing at all, because the trigger had already been left, so it
+  // stayed open indefinitely. Both halves report here, and a delay bridges the
+  // gap the pointer crosses between them.
+  const closeTimer = React.useRef(null)
+  const cancelClose = () => { if (closeTimer.current) clearTimeout(closeTimer.current) }
+  const scheduleClose = () => {
+    cancelClose()
+    closeTimer.current = setTimeout(() => setOpen(false), 120)
+  }
+  React.useEffect(() => cancelClose, [])
+
   return (
     <span className="relative inline-flex"
-          onMouseEnter={() => setOpen(true)}
-          onMouseLeave={() => setOpen(false)}>
+          onMouseEnter={() => { cancelClose(); setOpen(true) }}
+          onMouseLeave={scheduleClose}>
       <button type="button" ref={btnRef}
         title={degraded ? 'Built on a weaker basis — tap for detail' : 'What this is based on'}
         aria-label={degraded ? 'Built on a weaker basis' : 'What this is based on'}
@@ -202,6 +226,8 @@ function Dot({ open, setOpen, degraded, children }) {
                className="fixed z-[61] bg-navy-900 border border-navy-700 rounded-lg shadow-2xl p-2.5
                           text-left font-normal normal-case cursor-default text-xs
                           max-h-[60vh] overflow-y-auto"
+               onMouseEnter={cancelClose}
+               onMouseLeave={scheduleClose}
                onClick={e => e.stopPropagation()}>
             {children}
           </div>

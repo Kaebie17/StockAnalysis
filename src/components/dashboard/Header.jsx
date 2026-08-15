@@ -2,6 +2,8 @@
 
 import React, { useState } from 'react'
 import { usePositions } from '../../store/usePositions.js'
+import { assessDataQuality } from '../../engine/dataQuality.js'
+import { saveDataResolution, listDataResolutions } from '../../utils/db.js'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
@@ -10,7 +12,7 @@ import SyncControls from '../../sync/SyncControls.jsx'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
 
-export default function Header() {
+export default function Header({ onOpenTable }) {
   const { state, load, reset } = useApp()
   const [input, setInput] = useState('')
   const [fxOpen, setFxOpen] = useState(false)
@@ -46,7 +48,7 @@ export default function Header() {
           <form onSubmit={submit} className="flex-1 flex gap-2">
             <div className="relative flex-1">
               <input
-                className="input-field uppercase pr-10 text-sm"
+                className="input-field w-full uppercase pr-10 text-sm"
                 placeholder="Enter ticker — RELIANCE, TCS, LICI, AAPL…"
                 value={input}
                 onChange={e => setInput(e.target.value.toUpperCase())}
@@ -101,7 +103,7 @@ export default function Header() {
         )}
 
         {/* Stock identity bar — CMP, Market Cap, Sector, Stage */}
-        {state.status === 'success' && state.data && <IdentityBar />}
+        {state.status === 'success' && state.data && <IdentityBar onOpenTable={onOpenTable} />}
 
         {/* Example tickers */}
         {state.status === 'idle' && (
@@ -122,7 +124,7 @@ export default function Header() {
   )
 }
 
-function IdentityBar() {
+function IdentityBar({ onOpenTable }) {
   const { state, overrideStage } = useApp()
   const { data, ratioResult, stage } = state
   const [refreshing, setRefreshing] = React.useState(false)
@@ -210,7 +212,7 @@ function IdentityBar() {
         )}
         {mcapStr && <span className="text-xs text-slate-400">Mkt Cap: {mcapStr}</span>}
         {data.meta?.sector && <span className="text-xs text-slate-500">Sector: {data.meta.sector}</span>}
-        <DataVintageBadge data={data} />
+        <DataVintageBadge data={data} state={state} onOpenTable={onOpenTable} />
       </div>
 
       {/* Right: stage. Buy/sell moved to the floating action button — this row
@@ -297,7 +299,7 @@ function DividendLine({ data, ratioResult, cur }) {
  * the company has almost certainly reported a newer year that data
  * providers (including Yahoo) simply haven't ingested yet.
  */
-function DataVintageBadge({ data }) {
+function DataVintageBadge({ data, state, onOpenTable }) {
   const years = (data.incomeHistory || []).map(r => r.year).filter(Boolean).sort()
   if (years.length === 0) {
     return <span className="text-xs text-slate-600">📡 No annual data available</span>
@@ -313,14 +315,151 @@ function DataVintageBadge({ data }) {
   const monthsStale = (Date.now() - fyEnd.getTime()) / (1000 * 60 * 60 * 24 * 30.44)
   const isStale     = monthsStale > 14
 
+  // Everything the app knows about the quality of this history — adjustments it
+  // applied, years it can't explain, breaks in comparability. Gathered in one
+  // place rather than surfacing wherever a metric happens to look odd.
+  const quality = assessDataQuality(data.incomeHistory || [])
+
   return (
-    <span
-      className={`text-xs flex items-center gap-1 ${isStale ? 'text-neutral' : 'text-slate-600'}`}
-      title={isStale
+    <span className={`text-xs flex items-center gap-1 ${isStale ? 'text-neutral' : 'text-slate-600'}`}>
+      <span title={isStale
         ? `Latest annual data is FY${latestYear} — the company has likely reported a newer fiscal year that hasn't been ingested by the data source yet.`
         : `${yearCount} years of annual data, through FY${latestYear}`}>
-      📡 {sourceLabel} · {yearCount}yr · through FY{latestYear}
+        📡 {sourceLabel} · {yearCount}yr · through FY{latestYear}
+      </span>
       {isStale && <span>⚠️</span>}
+      {quality.hasIssues && (
+        <DataQualityDot quality={quality} ticker={state.ticker} onOpenTable={onOpenTable} />
+      )}
+    </span>
+  )
+}
+
+/**
+ * The data-quality ⓘ.
+ *
+ * Adjustments the app made silently are shown alongside what it could not fix,
+ * because a user reading a margin needs to know both — that FY24 has had an
+ * exceptional item removed is as material as that FY26 looks odd.
+ */
+function DataQualityDot({ quality, ticker, onOpenTable }) {
+  const [open, setOpen] = React.useState(false)
+  const [resolutions, setResolutions] = React.useState([])
+
+  // Past decisions, matched to current flags by (year, kind). A year flagged for
+  // a margin spike and the same year previously resolved for a revenue step are
+  // different problems — matching on year alone would offer one as a fix for
+  // the other.
+  React.useEffect(() => {
+    if (!ticker) return
+    let dead = false
+    listDataResolutions(ticker)
+      .then(r => { if (!dead) setResolutions(r) })
+      .catch(() => {})
+    return () => { dead = true }
+  }, [ticker, open])
+
+  const priorFor = (f) => resolutions.find(r => r.year === f.year && r.kind === f.kind)
+
+  const resolve = async (f, disposition) => {
+    await saveDataResolution({ ticker, year: f.year, kind: f.kind, disposition,
+                               note: f.note, source: 'manual' })
+    setResolutions(await listDataResolutions(ticker))
+  }
+
+  // A flag the user has already judged is shown as settled rather than hidden —
+  // the reading is still unusual, and concealing that would misrepresent the
+  // history.
+  const open_ = quality.flags.filter(f => priorFor(f)?.disposition !== 'accepted')
+  const hasWarning = open_.length > 0 || quality.gaps.length > 0
+
+  return (
+    <span className="relative inline-flex"
+          onMouseEnter={() => setOpen(true)}
+          onMouseLeave={() => setOpen(false)}>
+      <button type="button"
+        onClick={e => { e.stopPropagation(); setOpen(o => !o) }}
+        aria-label="Data quality notes"
+        className={`w-4 h-4 rounded-full border text-[10px] leading-none flex items-center
+                    justify-center shrink-0 transition-colors ${
+          hasWarning ? 'border-neutral/60 text-neutral hover:border-neutral'
+                     : 'border-navy-600 text-slate-500 hover:text-accent hover:border-accent/60'}`}>
+        {hasWarning ? '!' : 'i'}
+      </button>
+
+      {open && (
+        <>
+          <span className="fixed inset-0 z-[60]" onClick={() => setOpen(false)} />
+          <span className="absolute z-[61] left-0 top-5 w-72 max-w-[86vw]
+                           bg-navy-900 border border-navy-700 rounded-lg shadow-2xl p-3
+                           text-left font-normal normal-case cursor-default space-y-2"
+                onClick={e => e.stopPropagation()}>
+
+            {quality.adjustments.length > 0 && (
+              <span className="block">
+                <span className="block text-[11px] text-slate-300 mb-1">Adjusted</span>
+                {quality.adjustments.map(a => (
+                  <span key={a.year} className="block text-[11px] text-slate-500">
+                    FY{a.year}: {a.note} ({a.impactPct}% of profit)
+                  </span>
+                ))}
+              </span>
+            )}
+
+            {quality.flags.length > 0 && (
+              <span className="block">
+                <span className="block text-[11px] text-neutral mb-1">Unusual years</span>
+                {quality.flags.map(f => {
+                  const prior = priorFor(f)
+                  const settled = prior?.disposition === 'accepted'
+                  return (
+                    <span key={`${f.kind}-${f.year}`}
+                          className="block text-[11px] mb-1.5 pb-1.5 border-b border-navy-800 last:border-0">
+                      <span className={settled ? 'text-slate-600' : 'text-slate-400'}>
+                        FY{f.year}: {f.note}
+                        {settled && <span className="text-slate-600"> · you marked this as real</span>}
+                      </span>
+                      {!settled && (
+                        <span className="flex items-center gap-3 mt-1">
+                          {/* Routes to where the answer lives. A one-off is
+                              usually inside Other income or an expense sub-line,
+                              which Screener keeps collapsed — so a normal copy
+                              misses it and re-pasting with those rows expanded
+                              resolves it without anyone typing a figure. */}
+                          <button onClick={() => { setOpen(false); onOpenTable?.(f.resolveHint || 'income') }}
+                            className="text-accent hover:text-accent-light">
+                            re-paste P&amp;L with sub-rows expanded
+                          </button>
+                          <button onClick={() => resolve(f, 'accepted')}
+                            className="text-slate-500 hover:text-slate-300">
+                            it's real
+                          </button>
+                        </span>
+                      )}
+                      {prior && prior.disposition !== 'accepted' && (
+                        <span className="block text-[10px] text-slate-600 mt-0.5">
+                          Previously: {prior.note}
+                        </span>
+                      )}
+                    </span>
+                  )
+                })}
+              </span>
+            )}
+
+            {quality.gaps.length > 0 && (
+              <span className="block text-[11px] text-slate-500">
+                Missing: FY{quality.gaps.join(', FY')}
+              </span>
+            )}
+
+            <span className="block text-[10px] text-slate-600 pt-1 border-t border-navy-800">
+              Adjustments are applied to every calculation. Unusual years are left exactly as
+              reported — nothing is altered on a guess.
+            </span>
+          </span>
+        </>
+      )}
     </span>
   )
 }

@@ -54,6 +54,18 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
   const [results, setResults] = useState(null)      // { income:{…}, …, holdings:{ok,…} }
   const [applied, setApplied] = useState(false)
 
+  // Scroll to the table the caller asked for. A data-quality flag names where
+  // the answer lives, and dropping the user at the top of a five-table modal
+  // makes them hunt for it.
+  useEffect(() => {
+    if (!open || !focusTable) return
+    const id = setTimeout(() => {
+      document.getElementById(`paste-table-${focusTable}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 120)
+    return () => clearTimeout(id)
+  }, [open, focusTable])
+
   useEffect(() => {
     if (!open) return
     setPasteText({ income: '', quarterly: '', balance: '', cashflow: '', holdings: '' })
@@ -169,7 +181,9 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll }) {
 
             <div className="space-y-3">
               {TABLES.map(t => (
-                <div key={t.key} className="space-y-1">
+                <div key={t.key} id={`paste-table-${t.key}`}
+                     className={`space-y-1 scroll-mt-4 rounded-lg transition-colors ${
+                       focusTable === t.key ? 'ring-1 ring-accent/50 p-2 -m-2' : ''}`}>
                   <div className="flex items-center gap-2 text-xs">
                     <span>{t.icon}</span>
                     <span className="font-medium text-slate-300">{t.label}</span>

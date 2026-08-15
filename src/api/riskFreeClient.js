@@ -18,6 +18,13 @@ const STALE_AFTER_MS = 180 * 24 * 60 * 60 * 1000      // six months — say so l
 let inflight = null
 let lastError = null
 
+// Failures are not retried on a timer. useEstimate is mounted by five separate
+// components, each of which ran its own fetch — so a single page produced five
+// calls a minute against a rate that changes a few basis points a month. After a
+// failure the rate is simply absent until the user asks for it again.
+let failedAt = 0
+const RETRY_LOCKOUT_MS = 60 * 60 * 1000
+
 function load() {
   try {
     const raw = localStorage.getItem(KEY)
@@ -67,6 +74,13 @@ export async function getRiskFreeRate({ market = 'IN', userKey = null, force = f
     return stored?.rate > 0 ? shape(stored) : shape(null)
   }
 
+  // A recent failure blocks further attempts until the user explicitly refreshes.
+  // Without this, every component mount retried a call that had just failed —
+  // hammering the API for a value that is monthly by nature.
+  if (!force && failedAt && Date.now() - failedAt < RETRY_LOCKOUT_MS) {
+    return stored?.rate > 0 ? shape(stored) : shape(null)
+  }
+
   // One fetch at a time — several components ask for this on the same render.
   if (!inflight) {
     inflight = (async () => {
@@ -81,13 +95,18 @@ export async function getRiskFreeRate({ market = 'IN', userKey = null, force = f
         })
         if (!r.ok) return null
         const j = await r.json().catch(() => null)
-        if (j?.rate > 0) { const rec = { ...j, hadKey: true }; save(rec); return rec }
+        if (j?.rate > 0) {
+          const rec = { ...j, hadKey: true }
+          save(rec); failedAt = 0; lastError = null
+          return rec
+        }
         // Carry the reason forward so the UI can say WHY rather than only that
         // no rate is available — a wrong model name and a restricted key look
         // identical otherwise.
         lastError = j?.detail || j?.error || 'no rate returned'
+        failedAt = Date.now()
         return null
-      } catch { return null }
+      } catch (e) { lastError = e?.message || 'request failed'; failedAt = Date.now(); return null }
       finally { inflight = null }
     })()
   }
@@ -122,4 +141,12 @@ function shape(v) {
 
 export function clearRiskFreeCache() {
   try { localStorage.removeItem(KEY) } catch { /* ignore */ }
+  failedAt = 0
+  lastError = null
+}
+
+/** Explicit user-triggered refresh — bypasses the lockout. */
+export function refreshRiskFreeRate({ market = 'IN', userKey = null } = {}) {
+  failedAt = 0
+  return getRiskFreeRate({ market, userKey, force: true })
 }
