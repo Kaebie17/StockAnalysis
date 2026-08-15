@@ -370,7 +370,16 @@ export const FACT_TYPES = [
       // from a party with no accountability for it. So the conflict is surfaced
       // with both provenances and the choice is one tap, rather than the app
       // silently ranking a broker above the record.
-      if (f.speaker === 'third-party' && f.scope === 'company' && ctx.growth != null
+      // Anything that isn't management stating a number for its own company
+      // competes with the standing rate rather than replacing it.
+      //
+      // This previously required speaker === 'third-party', so an item whose
+      // speaker couldn't be identified — the default when no pattern matches —
+      // fell through and was applied automatically as though management had
+      // said it. A headline reporting someone's growth forecast is a competing
+      // ESTIMATE of the same rate, not an event with a magnitude, and the whole
+      // point of the conflict card is that neither side wins on principle.
+      if (f.speaker !== 'management' && f.scope === 'company' && ctx.growth != null
           && f.mode === 'growth' && isFinite(+f.growthPct)) {
         const proposed = (+f.growthPct) / 100
         if (Math.abs(proposed - ctx.growth) >= 0.03) {

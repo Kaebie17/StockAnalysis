@@ -288,8 +288,16 @@ export default function FundamentalsPanel({ open, onClose }) {
  * years on one company and twelve on another.
  */
 function GrowthWindowPicker() {
-  const { state } = useApp()
+  const { state, setGrowthWindowYears } = useApp()
   const { growthWindow, setGrowthWindow, estimate } = useEstimate(state)
+
+  // Two effects, deliberately: the app-state change recomputes every ratio that
+  // reads the window (stage, fair value, market expectation, the dashboard card)
+  // and the revision persists the choice across reloads.
+  const choose = async (years) => {
+    setGrowthWindowYears(years)
+    await setGrowthWindow(years)
+  }
 
   const years = (state.data?.incomeHistory || [])
     .map(r => String(r?.year ?? '').match(/(?:19|20)\d{2}/)?.[0])
@@ -322,7 +330,7 @@ function GrowthWindowPicker() {
         <span className="text-[11px] text-slate-500">Growth measured over</span>
         {options.map(y => (
           <button key={y}
-            onClick={() => setGrowthWindow(growthWindow === y ? null : y)}
+            onClick={() => choose(growthWindow === y ? null : y)}
             className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
               growthWindow === y
                 ? 'border-accent/60 text-accent bg-navy-800'
@@ -331,7 +339,7 @@ function GrowthWindowPicker() {
           </button>
         ))}
         {growthWindow && (
-          <button onClick={() => setGrowthWindow(null)}
+          <button onClick={() => choose(null)}
             className="text-[10px] text-slate-600 hover:text-slate-400">default</button>
         )}
         {windowRate && (

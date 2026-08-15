@@ -118,6 +118,9 @@ export function useEstimate(state, opts = {}) {
       .filter(r => r.lever === 'growth-window' && r.disposition === 'revised')
       .sort((a, b) => b.createdAt - a.createdAt)[0]
     setGrowthWindowState(win?.windowYears ?? null)
+    // Push the persisted choice into app state so every ratio consumer picks it
+    // up after a reload, not just the estimate.
+    if (opts?.onGrowthWindowLoaded) opts.onGrowthWindowLoaded(win?.windowYears ?? null)
     // `version` participates so a commit anywhere re-runs this everywhere.
   }, [ticker, version])
 

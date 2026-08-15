@@ -31,7 +31,7 @@ export function grossProfitOf(row) {
   return (rev != null && cogs != null) ? rev - cogs : null
 }
 
-export function calcRatios(data) {
+export function calcRatios(data, opts = {}) {
   const { price, marketCap: marketCapRaw, shares: sharesRaw, incomeHistory,
           balanceHistory, cashflowHistory, ttm, meta } = data
 
@@ -174,10 +174,16 @@ export function calcRatios(data) {
   const fixedAssets = val(latestB.fixedAssets)
 
   // Shares <-> Market Cap: price x shares = marketCap. Any two give the third.
-  // Only the shares<-marketCap direction existed, so a ticker with price+shares
-  // but no marketCap silently lost EV, P/S, EV/EBITDA, EV/Revenue and FCF yield.
-  const shares    = sharesRaw ?? (marketCap && price ? marketCap / price : null)
-  const marketCap = marketCapRaw ?? (price != null && shares != null ? price * shares : null)
+  //
+  // Derived from the RAW inputs, not from each other. The previous version had
+  // `shares` read `marketCap` on the line above its own declaration — a const is
+  // hoisted but unusable until its line executes, so that threw
+  // "Cannot access 'marketCap' before initialization" whenever sharesRaw was
+  // absent. It never surfaced because `??` short-circuits when shares ARE
+  // present, which is the common case, so the crash waited for a ticker whose
+  // share count the source didn't supply.
+  const shares    = sharesRaw ?? ((marketCapRaw && price) ? marketCapRaw / price : null)
+  const marketCap = marketCapRaw ?? ((price != null && shares != null) ? price * shares : null)
 
   // EPS: statement → TTM → derive
   const epsRaw = val(latestI.eps) ?? val(ttm?.eps)
@@ -232,11 +238,18 @@ export function calcRatios(data) {
     const end   = revSeries[revSeries.length - 1]
     if (start > 0 && end > 0) revGrowthLongRun = (Math.pow(end / start, 1 / win) - 1) * 100
   }
-  // 5-year endpoint CAGR — the headline growth figure shown on the dashboard
-  // (comparable to the other current-window metrics, unlike the full-span CAGR).
+  // Headline revenue CAGR — the figure the dashboard shows and that stage
+  // classification, fair value, market expectation and the AI verdict all read.
+  //
+  // The window is settable. It defaults to five years (the analyst convention)
+  // but a user who picks a different one is making a statement about which
+  // history describes this company, and that statement has to reach every
+  // consumer — not just the estimate. Changing it in one place while five others
+  // kept using five years produced a dashboard that disagreed with itself.
   let revCagr5y = null
   if (revSeries.length >= 2) {
-    const win = Math.min(5, revSeries.length - 1)
+    const requested = opts?.growthWindowYears > 0 ? opts.growthWindowYears : 5
+    const win = Math.min(requested, revSeries.length - 1)
     const start = revSeries[revSeries.length - 1 - win]
     const end   = revSeries[revSeries.length - 1]
     if (start > 0 && end > 0) revCagr5y = (Math.pow(end / start, 1 / win) - 1) * 100
@@ -386,7 +399,8 @@ export function calcRatios(data) {
       grahamNumber:    tag(grahamNumber,    'calculated', '√(22.5 × EPS × Book Value per Share)'),
       // Growth
       revCagr:         tag(revCagr,         'calculated', `Revenue CAGR over ${n} years`),
-      revCagr5y:       tag(revCagr5y,       'calculated', 'Revenue CAGR over the last 5 years'),
+      revCagr5y:       tag(revCagr5y,       'calculated',
+        `Revenue CAGR over the last ${Math.min(opts?.growthWindowYears > 0 ? opts.growthWindowYears : 5, Math.max(1, revSeries.length - 1))} years`),
       revGrowthRecent: tag(revGrowthRecent, 'calculated', 'Median of last 5 annual revenue growth rates'),
       revGrowthLongRun:tag(revGrowthLongRun,'calculated', 'Revenue CAGR over the last 10 years (bounded window)'),
       revGrowthYoY:    tag(revGrowthYoY,    'calculated', 'Revenue YoY growth'),

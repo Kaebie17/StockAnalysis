@@ -33,6 +33,7 @@ const initial = {
   swapState: {},
   // Qualitative / governance inputs (Block 5)
   holdingsData: null, arData: null, quarterlyData: null,
+  growthWindowYears: null,   // user's chosen CAGR window; null = the 5-year default
 }
 
 function reducer(s, a) {
@@ -70,14 +71,25 @@ function reducer(s, a) {
       }
       const newHistory = Object.values(merged).sort((x, y) => x.year.localeCompare(y.year))
       const data = { ...s.data, [histKey]: newHistory, source: 'merged' }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData)
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears })
       return { ...s, data, ...computed }
     }
     case 'PRICE_UPDATE': {
       if (!s.data || a.price == null) return s
       const data = { ...s.data, price: a.price, marketCap: a.marketCap ?? s.data.marketCap }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData)
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears })
       return { ...s, data, ...computed }
+    }
+    case 'SET_GROWTH_WINDOW': {
+      // Recompute rather than store-and-hope. The window feeds calcRatios, so
+      // stage classification, fair value, market expectation and the dashboard
+      // card all shift with it — updating the field without recomputing would
+      // leave five consumers on the old figure.
+      if (!s.data) return { ...s, growthWindowYears: a.years }
+      const next = { ...s, growthWindowYears: a.years }
+      const computed = computeAll(s.data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: a.years })
+      return { ...next, ...computed }
     }
     case 'SWAP_FIELD':    return { ...s, ...a.payload }
     case 'RESET':          return { ...initial, folderHandle: s.folderHandle }  // keep CSV folder connection
@@ -108,7 +120,7 @@ function reducer(s, a) {
  * pages need an analysis for stocks the user has never opened, and duplicating
  * this pipeline there would guarantee the two drift apart.
  */
-export function computeAll(data, assumptions, meAssumptions, weights, arData = null) {
+export function computeAll(data, assumptions, meAssumptions, weights, arData = null, opts = {}) {
   // Normalise reported one-off items out of the income history before anything
   // reads it. A year carrying a disclosed exceptional gain otherwise inflates
   // the margin, the CAGR, the multiple band and every ratio derived from them —
@@ -119,7 +131,10 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
     data = { ...data, incomeHistory: dq.rows, reportedIncomeHistory: data.incomeHistory }
   }
   data = applyDocFacts(migrateStoredData(data), arData)
-  const ratioResult = calcRatios(data)
+  // The growth window reaches ratios, so every consumer — stage classification,
+  // fair value, market expectation, the AI verdict and the dashboard card — uses
+  // the same figure the user chose.
+  const ratioResult = calcRatios(data, { growthWindowYears: opts.growthWindowYears })
   const sectorType  = detectSectorType(data)
   const stage       = detectStage(data, ratioResult)
   const valuation   = runValuation(data, ratioResult, stage, sectorType, assumptions)
@@ -355,6 +370,16 @@ export function AppProvider({ children }) {
     dispatch({ type: 'RESET' })
   }, [])
 
+  /**
+   * Set the CAGR window and recompute everything that reads it.
+   *
+   * Persisted as a revision by useEstimate so it survives reload; this is the
+   * in-memory half that makes the change visible immediately.
+   */
+  const setGrowthWindowYears = useCallback((years) => {
+    dispatch({ type: 'SET_GROWTH_WINDOW', years: years ?? null })
+  }, [])
+
   // Reset the whole app: wipe all cached financials.
   const clearAllData = useCallback(async () => {
     await clearAllCached()
@@ -372,7 +397,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap 
+      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears 
     }}>
       {children}
     </AppContext.Provider>
