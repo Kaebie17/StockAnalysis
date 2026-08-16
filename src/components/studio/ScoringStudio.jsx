@@ -70,7 +70,7 @@ export default function ScoringStudio({ open, onClose }) {
   const marketImplied = state.valuation?.impliedGrowth
     ?? state.marketExpectation?.variants?.sales?.impliedGrowth
     ?? state.marketExpectation?.variants?.earnings?.impliedGrowth
-  const recentGrowth = r?.ratios?.revGrowthRecent?.value
+  const recentGrowth = r?.ratios?.revCagr?.value
 
   const effPct = guidedGrowth != null ? (guidedGrowth * 100) : null
 

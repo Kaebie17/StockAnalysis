@@ -150,9 +150,9 @@ export function rebuildSnapshot(analysis, asOfMs, regimeOn = null) {
   // the years actually published by then; where there are too few, the field is
   // dropped so the estimate declines rather than borrowing a future number.
   const cagrThen = cagrOf(incAsOf)
-  for (const k of ['revCagr5y', 'revGrowthRecent', 'revCagr', 'revGrowthLongRun']) {
-    if (cagrThen != null) ratioThen.ratios[k] = { value: cagrThen }
-    else delete ratioThen.ratios[k]
+  for (const k of ['revCagr']) {
+    if (cagrThen != null) ratioThen.ratios.revCagr = { value: cagrThen }
+  else delete ratioThen.ratios.revCagr
   }
 
   if (!(equityThen > 0)) missing.push('book value as of that date')

@@ -181,62 +181,66 @@ function marginOf(row) {
  * while an acquisition is not restated and the break is real. Cutting history
  * would be wrong half the time.
  */
-export function structuralBreaks(incomeHistory = []) {
-  const pts = (incomeHistory || [])
-    .map(r => ({ year: yearOf(r), revenue: val(r?.revenue) }))
-    .filter(p => p.year != null && p.revenue > 0)
-    .sort((a, b) => a.year - b.year)
-  if (pts.length < 4) return []
+// Watch only INDEPENDENT source lines. operatingProfit/ebitda are derived, so a
+// revenue or depreciation spike already propagates into them — watching them too
+// would double-report. otherIncome is the usual hiding place for a buried one-off.
+const SPIKE_FIELDS = [
+  ['revenue',      'Revenue'],
+  ['otherIncome',  'Other income'],
+  ['interest',     'Interest'],
+  ['depreciation', 'Depreciation'],
+  ['netProfit',    'Net profit'],
+]
 
-  const steps = []
-  for (let i = 1; i < pts.length; i++) steps.push(pts[i].revenue / pts[i - 1].revenue - 1)
-  const sorted = [...steps].sort((a, b) => a - b)
-  const median = sorted[Math.floor(sorted.length / 2)]
-  const scale = Math.max(Math.abs(median), 0.02)
-
+/**
+ * Flag any major year-over-year spike on any P&L line — reverting or not.
+ * Detection only. User acts by choosing the CAGR window. "Major" = >4x the line's
+ * own usual (median) year-to-year change.
+ */
+export function pnlSpikes(incomeHistory = []) {
+  const rows = (incomeHistory || []).slice().sort((a, b) => (yearOf(a) - yearOf(b)))
   const out = []
-  for (let i = 0; i < steps.length; i++) {
-    if (Math.abs(steps[i]) < scale * 4) continue
-    const after = steps.slice(i + 1)
-    const reverted = after.length > 0 && Math.sign(after[0]) === -Math.sign(steps[i])
-                     && Math.abs(after[0]) > Math.abs(steps[i]) * 0.6
-    if (reverted) continue
-    out.push({
-      year: pts[i + 1].year, kind: 'scale-step',
-      changePct: round(steps[i] * 100, 0),
-      // Describe what the numbers show, not a cause. An acquisition, demerger,
-      // disposal and genuine step-change look identical here.
-      note: `Revenue ${steps[i] > 0 ? 'stepped up' : 'stepped down'} ${Math.abs(round(steps[i] * 100, 0))}% in ${pts[i + 1].year}, well beyond its usual year-to-year change`,
-      resolveHint: 'income',
-    })
+  for (const [field, label] of SPIKE_FIELDS) {
+    const pts = rows
+      .map(r => ({ year: yearOf(r), v: val(r?.[field]) }))
+      .filter(p => p.year != null && p.v != null && p.v > 0)
+    if (pts.length < 4) continue
+    const steps = []
+    for (let i = 1; i < pts.length; i++) steps.push(pts[i].v / pts[i - 1].v - 1)
+    const sorted = [...steps].sort((a, b) => a - b)
+    const median = sorted[Math.floor(sorted.length / 2)]
+    const scale  = Math.max(Math.abs(median), 0.02)
+    for (let i = 0; i < steps.length; i++) {
+      if (Math.abs(steps[i]) < scale * 4) continue
+      out.push({
+        year: pts[i + 1].year,
+        kind: 'pnl-spike',
+        field,
+        note: `${label} ${steps[i] > 0 ? 'jumped' : 'dropped'} ${Math.abs(round(steps[i] * 100, 0))}% in ${pts[i + 1].year}, well beyond its usual year-to-year change`,
+        resolveHint: 'window',
+      })
+    }
   }
-  return out
+  return out.sort((a, b) => (b.year || 0) - (a.year || 0))
 }
 
 export function assessDataQuality(incomeHistory = [], opts = {}) {
-  const { rows: reportedAdjusted, adjustments } = normaliseIncome(incomeHistory)
+  // Reported basis: rows are never silently adjusted. One-offs are flagged;
+  // correction is manual via the reconstruction modal (separate normalized table).
+  const rows = incomeHistory
 
-  // Overrides the user (or the annual-report extraction) has recorded for years
-  // whose one-off items the statements don't separate. Shaped like the reported
-  // adjustments so everything downstream treats them identically — the app
-  // doesn't need to know which came from a line item and which from a person.
-  const { rows, adjustments: manual } = applyOverrides(reportedAdjusted, opts.overrides || {})
+  // normaliseIncome is still called for its adjustments list only (disclosed
+  // exceptionals, surfaced as information). Its mutated rows are discarded.
+  const { adjustments } = normaliseIncome(incomeHistory)
 
-  // Detected flags plus any the user recorded. Detection stays even though the
-  // app never acts on it: an unusual year is information, and withholding it
-  // because the cause can't be determined leaves the user with a distorted
-  // history and no reason to doubt it.
   const detected = [
-    ...suspectYears(rows, { alreadyAdjusted: [...adjustments, ...manual].map(a => a.year) }),
-    ...structuralBreaks(rows),
+    ...suspectYears(rows, { alreadyAdjusted: adjustments.map(a => a.year) }),
+    ...pnlSpikes(rows),
   ]
   const userFlags = Object.entries(opts.flags || {})
     .map(([year, note]) => ({ year: Number(year), kind: 'user-flagged', note, resolveHint: 'income' }))
   const flags = [...detected, ...userFlags].sort((a, b) => (b.year || 0) - (a.year || 0))
 
-  // Missing years, which is the other thing a user needs to know about a
-  // history — a four-year series and a ten-year one support very different
-  // conclusions.
   const years = rows.map(yearOf).filter(y => y != null).sort((a, b) => a - b)
   const gaps = []
   for (let i = 1; i < years.length; i++) {
@@ -245,7 +249,7 @@ export function assessDataQuality(incomeHistory = [], opts = {}) {
     }
   }
 
-  const allAdjustments = [...adjustments, ...manual].sort((a, b) => (b.year || 0) - (a.year || 0))
+  const allAdjustments = [...adjustments].sort((a, b) => (b.year || 0) - (a.year || 0))
 
   return {
     rows, adjustments: allAdjustments, flags,
@@ -259,46 +263,4 @@ export function assessDataQuality(incomeHistory = [], opts = {}) {
       missing: gaps.length,
     },
   }
-}
-
-/**
- * Apply user-recorded one-off amounts to years the statements don't separate.
- *
- * @param overrides { [year]: { amount, note } } — amount in the same units as
- *        netProfit, positive for a gain to remove, negative for a charge.
- */
-export function applyOverrides(incomeHistory = [], overrides = {}) {
-  const adjustments = []
-  const rows = (incomeHistory || []).map(row => {
-    const y = yearOf(row)
-    const ov = y != null ? overrides[y] || overrides[String(y)] : null
-    const amount = Number(ov?.amount)
-    const np = val(row?.netProfit)
-    if (!ov || !isFinite(amount) || amount === 0 || !(np > 0)) return row
-
-    const adjusted = np - amount
-    if (!(adjusted > 0)) return row
-
-    const eps = val(row?.eps)
-    const shares = (eps > 0) ? np / eps : null
-
-    adjustments.push({
-      year: y,
-      kind: 'user-adjusted',
-      removed: round(amount, 0),
-      reportedProfit: round(np, 0),
-      adjustedProfit: round(adjusted, 0),
-      impactPct: round((amount / np) * 100, 1),
-      note: ov.note || `${amount > 0 ? 'A gain of' : 'A charge of'} ${Math.abs(round(amount, 0))} you recorded as one-time`,
-      source: ov.source || 'manual',
-    })
-
-    return {
-      ...row,
-      netProfit: { value: adjusted, adjusted: true },
-      eps: shares > 0 ? { value: adjusted / shares, adjusted: true } : row.eps,
-      reportedNetProfit: row.reportedNetProfit ?? np,
-    }
-  })
-  return { rows, adjustments }
 }

@@ -105,7 +105,7 @@ export function detectStage(data, ratioResult) {
   if (!rev || rev <= 0) return 'PRE_REVENUE'
 
   // Use the recent 5-yr CAGR (stable), not the full-span one.
-  const cagr = ratioResult?.ratios?.revCagr5y?.value ?? ratioResult?.ratios?.revCagr?.value
+  const cagr = ratioResult?.ratios?.revCagr?.value
   const netMargin = ratioResult?.ratios?.netMargin?.value
   const roe = ratioResult?.ratios?.roe?.value
 

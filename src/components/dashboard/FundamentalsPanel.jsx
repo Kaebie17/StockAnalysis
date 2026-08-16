@@ -3,7 +3,6 @@ import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip as RTooltip,
          ResponsiveContainer, CartesianGrid } from 'recharts'
 import { useApp } from '../../store/AppContext.jsx'
 import { useEstimate } from '../../store/useEstimate.js'
-import { windowedCagr } from '../../engine/estimate.js'
 import { fmtPctPlain, fmtMultiple, fmtCurrency, resolutionBadge, fmtTagged } from '../../utils/format.js'
 
 // Small tooltip showing formula/resolution on hover
@@ -103,9 +102,9 @@ export default function FundamentalsPanel({ open, onClose }) {
   const resetWeights = () => recalc({}, Object.fromEntries(FUNDAMENTAL_WEIGHTS.map(w => [w.key, w.defaultW])))
 
   const cur     = data.currency === 'INR' ? '₹' : '$'
-  // The 5-year CAGR uses min(5, available), so on a short history it spans
-  // fewer years than its name suggests. The label follows the actual span.
-  const cagrYears = Math.min(5, Math.max(1, (data.incomeHistory || []).length - 1))
+  // Label follows the ACTUAL window the engine used.
+  const cagrYears = ratios?.revCagrWindowYears
+    ?? Math.min(state.growthWindowYears || 5, Math.max(1, (data.incomeHistory || []).length - 1))
   const div     = data.currency === 'INR' ? 1e7 : 1e6
   const unit    = data.currency === 'INR' ? 'Cr' : 'M'
 
@@ -256,7 +255,7 @@ export default function FundamentalsPanel({ open, onClose }) {
             {/* The underlying calculation uses min(5, available), so on a short
                 history this is a 2- or 3-year figure. Labelling it "5Y"
                 regardless states something untrue about the data. */}
-            <RatioCard label={`Rev CAGR (${cagrYears}Y)`} tagged={ratios.revCagr5y} fmt={v => fmtPctPlain(v)} />
+            <RatioCard label={`Rev CAGR (${cagrYears}Y)`} tagged={ratios.revCagr} fmt={v => fmtPctPlain(v)} />
             <RatioCard label="Debt / Equity"   tagged={ratios.de}           fmt={v => fmtMultiple(v)} />
             <RatioCard label="Interest Cover"  tagged={ratios.icr}          fmt={v => fmtMultiple(v)} />
             <RatioCard label="FCF Conversion"  tagged={ratios.fcfConversion} fmt={v => fmtPctPlain(v)} />
@@ -315,9 +314,7 @@ function GrowthWindowPicker() {
   // which an applied revision outranks. So selecting a window changed nothing
   // visible and the label read "applied automatically from news", which had
   // nothing to do with the control the user was operating.
-  const windowRate = growthWindow
-    ? windowedCagr(state.data?.incomeHistory || [], growthWindow)
-    : null
+  const windowRate = state.ratioResult?.ratios?.revCagr?.value ?? null
 
   // A revision outranks any window, so the control is inert until it's cleared.
   // Saying so beats letting the user click through four options that do nothing.

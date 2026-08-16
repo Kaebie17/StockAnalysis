@@ -758,62 +758,30 @@ export function resolveGrowthBasis(ratioResult, opts = {}) {
   const { guidedGrowth = null, guidanceFiscalYear = null, guidanceExpired = false,
           overrideLabel = null } = opts
   const r = ratioResult?.ratios || {}
-
   const all = []
 
-  // A pinned window outranks everything except an explicit revision: the user
-  // said which history to trust, and that is a standing preference rather than
-  // a one-off claim, so it is re-derived from current data each time instead of
-  // freezing the rate it produced on the day it was chosen.
-  if (opts.growthWindowYears > 0) {
-    const w = windowedCagr(opts.incomeHistory || [], opts.growthWindowYears)
-    if (w) {
-      all.push({ growth: w.growth, source: 'window', rung: 'best',
-                 label: `${w.label} — your chosen window`, windowYears: w.years,
-                 truncated: w.truncated })
-    }
-  }
-
+  // 1. Guidance, if entered. (An applied revision outranks this and is handled by
+  //    the caller via growthOverride, so it never reaches here.)
   if (guidedGrowth != null && isFinite(guidedGrowth)) {
     all.push({ growth: guidedGrowth, source: 'guidance', rung: 'best',
                label: overrideLabel || `guidance${guidanceFiscalYear ? ` (${guidanceFiscalYear})` : ''}` })
   }
-  // Five years first, then the others as alternatives.
-  //
-  // The 5-year window was a guard against "the business may have changed", which
-  // dataQuality now handles directly by flagging the years where it did. The
-  // window stays as the DEFAULT because it is the analyst convention, not
-  // because longer histories are untrustworthy — and every other window is
-  // returned alongside, so a user who sees a wide spread between them can act
-  // on it. Which is the honest treatment: the app cannot know whether this
-  // company's tenth year is comparable, and the flags say when it probably
-  // isn't.
-  for (const [pct, label, source] of [
-    [r.revCagr5y?.value,        '5-yr revenue CAGR',              'cagr'],
-    [r.revGrowthRecent?.value,  'recent revenue growth (median)', 'recent'],
-    [r.revCagr?.value,          'revenue CAGR',                   'cagr'],
-    [r.revGrowthLongRun?.value, '10-yr revenue CAGR',             'longrun'],
-  ]) {
-    if (pct != null && isFinite(pct)) {
-      all.push({ growth: pct / 100, source, rung: 'fallback', label })
-    }
+  // 2. The single dynamic CAGR — identical to every other consumer.
+  if (r.revCagr?.value != null && isFinite(r.revCagr.value)) {
+    all.push({ growth: r.revCagr.value / 100, source: 'cagr', rung: 'fallback',
+               label: `${r.revCagrWindowYears || 5}-yr revenue CAGR (your window)` })
   }
 
   if (all.length === 0) {
     return { growth: null, source: 'none', rung: 'none', label: 'no growth basis', alternatives: [] }
   }
-
   const chosen = all[0]
   const alternatives = all.slice(1)
-
-  // Widest disagreement among the bases, so the caller can say when the applied
-  // rate is an outlier rather than a consensus.
   let spreadPts = null
   if (all.length > 1) {
     const vals = all.map(a => a.growth * 100)
     spreadPts = round(Math.max(...vals) - Math.min(...vals), 1)
   }
-
   return { ...chosen, alternatives, spreadPts, expiredGuidance: guidanceExpired }
 }
 

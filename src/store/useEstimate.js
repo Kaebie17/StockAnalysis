@@ -365,7 +365,7 @@ function guidedGrowthOf(state) {
 /** Trailing growth, for the model-basis comparison when nobody has guided. */
 function cagrOf(state) {
   const r = state?.ratioResult?.ratios || {}
-  const pct = r.revCagr5y?.value ?? r.revGrowthRecent?.value ?? r.revCagr?.value
+  const pct = r.revCagr?.value
   return pct != null && isFinite(pct) ? pct / 100 : null
 }
 

@@ -199,7 +199,7 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
   const opCF      = null   // was `r.opCF * 0.7` — an invented capex assumption
                            // dressed up as a fair-value input. FCF or nothing.
 
-  const historicalRevGrowth = r?.ratios?.revCagr5y?.value ?? r?.ratios?.revCagr?.value
+  const historicalRevGrowth = r?.ratios?.revCagr?.value
   // EV target for the EV/Sales variant (equity market cap ignores net debt, which
   // overstates sales-implied growth for levered firms). Earnings uses P/E → equity.
   const evTarget = (marketCap != null && r?.netDebt != null) ? marketCap + r.netDebt : null

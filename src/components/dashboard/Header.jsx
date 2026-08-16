@@ -9,6 +9,7 @@ import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
 import FormulasPanel from '../FormulasPanel.jsx'
 import SyncControls from '../../sync/SyncControls.jsx'
+import NormalizeModal from './NormalizeModal.jsx'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
 
@@ -125,8 +126,11 @@ export default function Header({ onOpenTable }) {
 }
 
 function IdentityBar({ onOpenTable }) {
-  const { state, overrideStage } = useApp()
+  const { state, overrideStage, setBasis } = useApp()
   const { data, ratioResult, stage } = state
+  const [normOpen, setNormOpen] = React.useState(false)
+  const basis = data?.basis || 'reported'
+  const hasNorm = (data?.normalizedIncomeHistory?.length || 0) > 0
   const [refreshing, setRefreshing] = React.useState(false)
   // Just the held-lots label; the actions themselves live in PositionFab.
   const { positions } = usePositions(state.ticker)
@@ -234,8 +238,26 @@ function IdentityBar({ onOpenTable }) {
           <option value="TRANSITION">🔄 Transition</option>
           <option value="ESTABLISHED">🏛️ Established</option>
         </select>
+        {/* Basis: reported (as-filed) vs normalized (user-reconstructed one-offs).
+            The toggle only appears once at least one year has been normalized;
+            the ⚖ button always opens the reconstruction modal. */}
+        <button onClick={() => setNormOpen(true)} title="Normalize a one-off"
+          className="text-xs px-2 py-0.5 rounded border border-navy-700 text-slate-400 hover:text-accent hover:border-accent/50 transition-colors">
+          ⚖ Normalize
+        </button>
+        {hasNorm && (
+          <button onClick={() => setBasis(basis === 'normalized' ? 'reported' : 'normalized')}
+            title="Switch between as-reported and normalized figures"
+            className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+              basis === 'normalized'
+                ? 'border-accent bg-navy-800 text-white'
+                : 'border-navy-700 text-slate-400 hover:text-accent'}`}>
+            {basis === 'normalized' ? 'Normalized' : 'Reported'}
+          </button>
+        )}
         <DividendLine data={data} ratioResult={ratioResult} cur={cur} />
       </div>
+      <NormalizeModal open={normOpen} onClose={() => setNormOpen(false)} />
     </div>
   )
 }

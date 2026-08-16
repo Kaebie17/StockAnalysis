@@ -85,6 +85,16 @@ export function calcRatios(data, opts = {}) {
   const depreciation= val(latestI.depreciation)
   const interest    = val(latestI.interest)
   const netProfit   = val(latestI.netProfit)   ?? val(ttm?.netProfit)
+  const otherIncome = val(latestI.otherIncome)
+  let pbt = val(latestI.profitBeforeTax) ?? val(latestI.pbt)
+  let tax = val(latestI.tax)
+  // Derive-if-missing via the P&L identity — only when absent, never over source.
+  if (pbt == null && opProfit != null) {
+    pbt = opProfit + (otherIncome || 0) - (interest || 0) - (depreciation || 0)
+  }
+  if (tax == null && pbt != null && netProfit != null) {
+    tax = pbt - netProfit
+  }
   // totalEquity: statement → derive from TTM D/E ratio → derive from TTM ROE
   const rawEquity = val(latestB.totalEquity)
   const ttmDebt2  = val(latestB.totalDebt) ?? val(ttm?.totalDebt) ?? 0
@@ -206,53 +216,32 @@ export function calcRatios(data, opts = {}) {
     : opProfit     != null ? 'Operating Profit (Depreciation unavailable)'
     : null
 
-  // ── Revenue CAGR ───────────────────────────────────────────────────────────
-  const revOldest = val(oldestI.revenue)
-  const revLatest = val(latestI.revenue)
-  const revCagr   = n > 0 && revOldest > 0 && revLatest > 0
-    ? (Math.pow(revLatest / revOldest, 1 / n) - 1) * 100 : null
+  // ── Revenue CAGR (single, window-driven) ─────────────────────────────────────
+  // ONE growth figure, read by every consumer. Window defaults to 5y, fully
+  // settable; supports an optional start-year to exclude a structural break.
+  const revSeries = incomeReal
+    .map(r => ({ year: yearOf(r), rev: val(r.revenue) }))
+    .filter(p => p.year != null && p.rev > 0)
+    .sort((a, b) => a.year - b.year)
 
-  // ── Growth for valuation (professional practice) ────────────────────────────
-  // Full-span CAGR swings with how many years are loaded, so it's a poor DCF
-  // input. Instead expose:
-  //   revGrowthRecent  – MEDIAN of the last ~5 annual YoY growth rates (robust to
-  //                      one freak year; reflects the company as it is now)
-  //   revGrowthLongRun – CAGR over the last min(10, n) years (a bounded window,
-  //                      not the entire uploaded history)
-  const revSeries = incomeReal.map(r => val(r.revenue)).filter(v => v != null && v > 0)
-  const yoySeries = []
-  for (let i = 1; i < revSeries.length; i++) {
-    yoySeries.push((revSeries[i] / revSeries[i - 1] - 1) * 100)
-  }
-  const median = arr => {
-    if (!arr.length) return null
-    const s = [...arr].sort((a, b) => a - b)
-    const m = Math.floor(s.length / 2)
-    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
-  }
-  const revGrowthRecent = median(yoySeries.slice(-5))
-  let revGrowthLongRun = null
+  let revCagr = null
+  let revCagrWindowYears = null
   if (revSeries.length >= 2) {
-    const win = Math.min(10, revSeries.length - 1)      // last 10-year window at most
-    const start = revSeries[revSeries.length - 1 - win]
-    const end   = revSeries[revSeries.length - 1]
-    if (start > 0 && end > 0) revGrowthLongRun = (Math.pow(end / start, 1 / win) - 1) * 100
-  }
-  // Headline revenue CAGR — the figure the dashboard shows and that stage
-  // classification, fair value, market expectation and the AI verdict all read.
-  //
-  // The window is settable. It defaults to five years (the analyst convention)
-  // but a user who picks a different one is making a statement about which
-  // history describes this company, and that statement has to reach every
-  // consumer — not just the estimate. Changing it in one place while five others
-  // kept using five years produced a dashboard that disagreed with itself.
-  let revCagr5y = null
-  if (revSeries.length >= 2) {
+    const nYrs = revSeries.length - 1
     const requested = opts?.growthWindowYears > 0 ? opts.growthWindowYears : 5
-    const win = Math.min(requested, revSeries.length - 1)
-    const start = revSeries[revSeries.length - 1 - win]
-    const end   = revSeries[revSeries.length - 1]
-    if (start > 0 && end > 0) revCagr5y = (Math.pow(end / start, 1 / win) - 1) * 100
+    let win
+    if (opts?.growthWindowFromYear != null) {
+      const idx = revSeries.findIndex(p => p.year >= opts.growthWindowFromYear)
+      win = idx >= 0 ? Math.max(1, (revSeries.length - 1) - idx) : Math.min(requested, nYrs)
+    } else {
+      win = Math.min(requested, nYrs)
+    }
+    const start = revSeries[revSeries.length - 1 - win].rev
+    const end   = revSeries[revSeries.length - 1].rev
+    if (start > 0 && end > 0) {
+      revCagr = (Math.pow(end / start, 1 / win) - 1) * 100
+      revCagrWindowYears = win
+    }
   }
 
   // ── EV ─────────────────────────────────────────────────────────────────────
@@ -398,11 +387,9 @@ export function calcRatios(data, opts = {}) {
       evRevenue:       tagBs(evRevenue,       'calculated', 'EV ÷ Revenue'),
       grahamNumber:    tag(grahamNumber,    'calculated', '√(22.5 × EPS × Book Value per Share)'),
       // Growth
-      revCagr:         tag(revCagr,         'calculated', `Revenue CAGR over ${n} years`),
-      revCagr5y:       tag(revCagr5y,       'calculated',
-        `Revenue CAGR over the last ${Math.min(opts?.growthWindowYears > 0 ? opts.growthWindowYears : 5, Math.max(1, revSeries.length - 1))} years`),
-      revGrowthRecent: tag(revGrowthRecent, 'calculated', 'Median of last 5 annual revenue growth rates'),
-      revGrowthLongRun:tag(revGrowthLongRun,'calculated', 'Revenue CAGR over the last 10 years (bounded window)'),
+      revCagr:            tag(revCagr, 'calculated',
+        revCagrWindowYears ? `Revenue CAGR over the last ${revCagrWindowYears} years` : 'Revenue CAGR'),
+      revCagrWindowYears: revCagrWindowYears,
       revGrowthYoY:    tag(revGrowthYoY,    'calculated', 'Revenue YoY growth'),
       npGrowthYoY:     tag(npGrowthYoY,     'calculated', 'Net Profit YoY growth'),
       // FCF

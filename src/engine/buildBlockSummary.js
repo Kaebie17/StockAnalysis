@@ -115,8 +115,7 @@ export function buildBlockSummary(state, extra = {}) {
 
     // Context for the implied numbers above.
     recentActualGrowth: {
-      revenueRecentPct: num(r.ratios?.revGrowthRecent?.value),
-      revenue5yCagrPct: num(r.ratios?.revCagr5y?.value),
+      revenueCagrPct: num(r.ratios?.revCagr?.value),
       earningsYoYPct: num(r.ratios?.npGrowthYoY?.value),
     },
 

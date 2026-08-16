@@ -14,6 +14,7 @@ import { getCached, setCached, deleteCached, clearAllCached, loadFolderHandle, s
          loadSwapState, saveSwapState, saveGuidance, loadGuidance } from '../utils/db.js'
 import { applyCSVOverrides, swapField, autoLoadOverride } from '../utils/csv.js'
 import { queuePush } from '../sync/sync.js'
+import { mergeByYear } from '../engine/reconstruct.js'
 
 const AppContext = createContext(null)
 
@@ -34,6 +35,7 @@ const initial = {
   // Qualitative / governance inputs (Block 5)
   holdingsData: null, arData: null, quarterlyData: null,
   growthWindowYears: null,   // user's chosen CAGR window; null = the 5-year default
+  normalizedIncomeHistory: null,   // reconstructed rows; only years the user restated
 }
 
 function reducer(s, a) {
@@ -71,13 +73,13 @@ function reducer(s, a) {
       }
       const newHistory = Object.values(merged).sort((x, y) => x.year.localeCompare(y.year))
       const data = { ...s.data, [histKey]: newHistory, source: 'merged' }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears })
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: s.basis })
       return { ...s, data, ...computed }
     }
     case 'PRICE_UPDATE': {
       if (!s.data || a.price == null) return s
       const data = { ...s.data, price: a.price, marketCap: a.marketCap ?? s.data.marketCap }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears })
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: s.basis })
       return { ...s, data, ...computed }
     }
     case 'SET_GROWTH_WINDOW': {
@@ -88,11 +90,27 @@ function reducer(s, a) {
       if (!s.data) return { ...s, growthWindowYears: a.years }
       const next = { ...s, growthWindowYears: a.years }
       const computed = computeAll(s.data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: a.years })
+                                  { growthWindowYears: a.years, basis: s.basis })
       return { ...next, ...computed }
     }
     case 'SWAP_FIELD':    return { ...s, ...a.payload }
     case 'RESET':          return { ...initial, folderHandle: s.folderHandle }  // keep CSV folder connection
+    case 'APPLY_NORMALIZATION': {
+      if (!s.data) return s
+      // a.rows: full reconstructed rows (already validated, ok:true). Years not in
+      // a.rows fall back to reported at compute time.
+      const data = { ...s.data, normalizedIncomeHistory: a.rows }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      return { ...s, data, ...computed }
+    }
+    case 'SET_BASIS': {
+      if (!s.data) return s
+      const data = { ...s.data, basis: a.basis }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: a.basis })
+      return { ...s, data, ...computed }
+    }
     default:              return s
   }
 }
@@ -121,15 +139,17 @@ function reducer(s, a) {
  * this pipeline there would guarantee the two drift apart.
  */
 export function computeAll(data, assumptions, meAssumptions, weights, arData = null, opts = {}) {
-  // Normalise reported one-off items out of the income history before anything
-  // reads it. A year carrying a disclosed exceptional gain otherwise inflates
-  // the margin, the CAGR, the multiple band and every ratio derived from them —
-  // and this is ordinary practice, not a correction the user should have to ask
-  // for. The reported figures stay available on each row as `reportedNetProfit`.
+// Reported basis by default; normalized only when the user has restated years
+  // AND toggled to it. One-offs are never silently adjusted — assessDataQuality
+  // now only flags them (dq.flags); correction is manual via reconstruction.
   const dq = assessDataQuality(data?.incomeHistory || [])
-  if (dq.adjustments.length > 0) {
-    data = { ...data, incomeHistory: dq.rows, reportedIncomeHistory: data.incomeHistory }
-  }
+  const useNorm = opts.basis === 'normalized' && data.normalizedIncomeHistory?.length > 0
+  const income = useNorm
+    ? mergeByYear(data.incomeHistory, data.normalizedIncomeHistory)  // normalized row wins per year
+    : data.incomeHistory
+  // reportedIncomeHistory stays reported so estimate.js band-history readers
+  // (which fall back to incomeHistory anyway) are unaffected.
+  data = { ...data, incomeHistory: income, reportedIncomeHistory: data.incomeHistory }
   data = applyDocFacts(migrateStoredData(data), arData)
   // The growth window reaches ratios, so every consumer — stage classification,
   // fair value, market expectation, the AI verdict and the dashboard card — uses
@@ -151,7 +171,7 @@ export function AppProvider({ children }) {
   // pasted-history merge — not just the initial fetch — survives a reload.
   useEffect(() => {
     if (state.status !== 'success' || !state.ticker || !state.data || state.csvActive) return
-    const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData) }
+    const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { basis: state.data.basis }) }
     try { setCached(state.ticker, payload) } catch {}
     // Sync merged financials (they hold pasted Screener history the user built).
     // Pure Yahoo data is re-fetchable, so it isn't synced. Shape must match what
@@ -380,6 +400,14 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_GROWTH_WINDOW', years: years ?? null })
   }, [])
 
+  const setBasis = useCallback((basis) => {
+    dispatch({ type: 'SET_BASIS', basis })
+  }, [])
+
+  const applyNormalization = useCallback((rows) => {
+    dispatch({ type: 'APPLY_NORMALIZATION', rows })
+  }, [])
+
   // Reset the whole app: wipe all cached financials.
   const clearAllData = useCallback(async () => {
     await clearAllCached()
@@ -397,7 +425,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears 
+      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBasis, applyNormalization 
     }}>
       {children}
     </AppContext.Provider>
@@ -408,4 +436,10 @@ export function useApp() {
   const ctx = useContext(AppContext)
   if (!ctx) throw new Error('useApp must be within AppProvider')
   return ctx
+}
+
+function mergeByYear(reported, normalized) {
+  const byYear = Object.fromEntries((reported || []).map(r => [r.year, r]))
+  for (const r of (normalized || [])) byYear[r.year] = r   // normalized row wins whole
+  return Object.values(byYear).sort((a, b) => String(a.year).localeCompare(String(b.year)))
 }

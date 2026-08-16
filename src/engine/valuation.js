@@ -302,7 +302,7 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
 
   // Recent actual growth to compare against (basis-appropriate).
   const recent = (basis === 'earnings') ? g.npGrowthYoY?.value
-                                        : (g.revGrowthRecent?.value ?? g.revCagr5y?.value)
+                                        : (g.revCagr?.value)
   const recentLabel = (basis === 'earnings') ? 'earnings' : 'sales'
   const basisLabel  = basis === 'reverse-DCF' ? ' (reverse-DCF)' : ` (${basis}-based)`
 
@@ -341,17 +341,9 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
 }
 
 function estimateGrowth(r) {
-  // Professional practice: anchor the explicit-stage growth on RECENT sustainable
-  // growth, not a full-history CAGR (which swings with how many years are loaded).
-  // Prefer the median of the last ~5 annual growth rates (robust to one freak
-  // year), then a bounded 10-year CAGR, then last YoY, then a neutral default.
-  // The DCF loop fades this toward the terminal rate, so we cap the explicit rate
-  // at a sane ceiling — no mature company sustains >~20% for a decade.
-  const recent  = r.ratios?.revGrowthRecent?.value
-  const longRun = r.ratios?.revGrowthLongRun?.value
-  const yoy     = r.ratios?.revGrowthYoY?.value
-  const cagr    = r.ratios?.revCagr?.value
-  const g = (recent ?? longRun ?? yoy ?? cagr ?? 8) / 100
+  // The single dynamic windowed CAGR — same figure every consumer uses, so the
+  // user's window now reaches the DCF. Clamp is a sanity bound, not a source.
+  const g = (r.ratios?.revCagr?.value ?? 8) / 100
   return clamp(g, 0.02, 0.20)
 }
 

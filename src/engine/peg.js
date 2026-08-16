@@ -36,7 +36,7 @@ const MAX_MEANINGFUL_GROWTH = 60   // percent; beyond this the growth figure is 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x))
 
 /**
- * @param {object} r  ratioResult (has r.eps, r.ratios.pe/npGrowthYoY/revGrowthRecent…)
+ * @param {object} r  ratioResult (has r.eps, r.ratios.pe/npGrowthYoY/revCagr…)
  * @param {object} opts
  *   @param {number|null} opts.forwardGrowthPct  analyst forward growth in PERCENT (optional)
  *   @param {'blend'|'forward'|'trailing'} opts.mode  growth selection (default 'blend')
@@ -57,7 +57,7 @@ export function computePeg(r, opts = {}) {
   const trailing =
     r?.ratios?.npGrowthYoY?.value ??
     r?.ratios?.epsGrowthYoY?.value ??
-    r?.ratios?.revGrowthRecent?.value ??
+    r?.ratios?.revCagr?.value ??
     null
   const forward = forwardGrowthPct
 
