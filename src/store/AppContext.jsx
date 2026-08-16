@@ -190,7 +190,7 @@ export function AppProvider({ children }) {
   // pasted-history merge — not just the initial fetch — survives a reload.
   useEffect(() => {
     if (state.status !== 'success' || !state.ticker || !state.data || state.csvActive) return
-    const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { basis: state.data.basis }) }
+    const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data.basis }) }
     try { setCached(state.ticker, payload) } catch {}
     // Sync merged financials (they hold pasted Screener history the user built).
     // Pure Yahoo data is re-fetchable, so it isn't synced. Shape must match what
@@ -255,7 +255,7 @@ export function AppProvider({ children }) {
           const csvData = await autoLoadOverride(ticker, state.folderHandle)
           if (csvData) {
             const withCSV = applyCSVOverrides(cached.data, csvData)
-            const computed = computeAll(withCSV, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow })
+            const computed = computeAll(withCSV, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data?.basis })
             dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, data: withCSV, csvData, csvActive: true, growthWindowYears: pinnedWindow } })
             return
           }
@@ -374,7 +374,7 @@ export function AppProvider({ children }) {
   const swap = useCallback(async (historyType, year, field) => {
     if (!state.data) return
     const updated  = swapField(state.data, year, historyType, field)
-    const computed = computeAll(updated, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData)
+    const computed = computeAll(updated, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data?.basis })
 
     // Track swap state
     const newSwaps = { ...state.swapState }
