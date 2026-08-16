@@ -18,6 +18,10 @@ export default function GrowthWindowPicker() {
   const years = (state.data?.incomeHistory || [])
     .map(r => String(r?.year ?? '').match(/(?:19|20)\d{2}/)?.[0])
     .filter(Boolean).length
+    console.log('picker years:', years,
+  '| maxWin:', years - 1,
+  '| revCagrWindowYears:', state.ratioResult?.ratios?.revCagrWindowYears?.value,
+  '| incomeHistory.length:', state.data?.incomeHistory?.length)
   if (years < 3) return null
 
   const maxWin = years - 1                 // full span

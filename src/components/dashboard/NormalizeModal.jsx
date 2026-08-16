@@ -5,24 +5,21 @@ import { reconstructRow } from '../../engine/reconstruct.js'
 /**
  * NormalizeModal — manual normalization via P&L reconstruction.
  *
- * Unlike AddHistoryModal (which extends the reported history), this produces the
- * NORMALIZED basis: the user restates a line for a year (a one-off stripped out
- * of Other Income, a corrected figure from the annual report), the app rebuilds
- * that year via the P&L identity, and it's stored in a SEPARATE table
- * (normalizedIncomeHistory) that the basis toggle switches to. Reported is never
- * overwritten.
+ * Produces the NORMALIZED basis: the user restates a line for a year (a one-off
+ * stripped out of Other Income, a corrected figure from the annual report), the
+ * app rebuilds that year via the P&L identity, and it's stored in a SEPARATE
+ * table (normalizedIncomeHistory) that the basis toggle switches to. Reported is
+ * never overwritten.
  *
- * Scope: below-operating lines where the identity is unambiguous (otherIncome,
- * tax) plus expenses. Revenue is not restated here — a revenue one-off is handled
- * by the CAGR window, not reconstruction.
+ * HOOKS RULE: every hook (useState/useMemo/useEffect) is declared ABOVE the
+ * `if (!open) return null` early return, so the hook count is identical whether
+ * the modal is open or closed. A hook after the return causes React error #310.
  */
 
 const cur = c => (c === 'INR' ? '₹' : '$')
 const num = f => (f && typeof f === 'object' ? f.value : f)
 const yr  = row => String(row?.year ?? '')
 
-// Lines the user may restate, with labels. Kept below operating profit where the
-// identity is clean; expenses included (cascades correctly through the identity).
 const EDITABLE = [
   ['otherIncome', 'Other income'],
   ['expenses',    'Expenses'],
@@ -46,13 +43,14 @@ export default function NormalizeModal({ open, onClose }) {
     [income]
   )
 
-  const [year, setYear]       = useState('')
-  const [line, setLine]       = useState('otherIncome')
-  const [newValue, setNewValue] = useState('')   // in display units (Cr/M)
-  const [taxed, setTaxed]     = useState(true)
-  const [preview, setPreview] = useState(null)   // { ok, row } | { ok:false, reason }
-  const [applied, setApplied] = useState(false)
+  const [year, setYear]         = useState('')
+  const [line, setLine]         = useState('otherIncome')
+  const [newValue, setNewValue] = useState('')
+  const [taxed, setTaxed]       = useState(true)
+  const [preview, setPreview]   = useState(null)
+  const [applied, setApplied]   = useState(false)
 
+  // Reset on open.
   useEffect(() => {
     if (!open) return
     setYear(years[0] || '')
@@ -60,37 +58,32 @@ export default function NormalizeModal({ open, onClose }) {
     setPreview(null); setApplied(false)
   }, [open, years])
 
-  if (!open) return null
-
   const reportedRow = income.find(r => yr(r) === year) || null
 
-  const runPreview = () => {
+  // Live preview — declared ABOVE the early return so hook count stays constant.
+  useEffect(() => {
+    if (!open) return
     if (!reportedRow || newValue === '' || isNaN(+newValue)) { setPreview(null); return }
-    const abs = +newValue * div            // display units → base units
-    const res = reconstructRow(reportedRow, [{ line, newValue: abs, taxed }])
-    setPreview(res)
-  }
+    const abs = +newValue * div
+    setPreview(reconstructRow(reportedRow, [{ line, newValue: abs, taxed }]))
+  }, [open, year, line, newValue, taxed, reportedRow, div])
 
-  // Re-preview whenever inputs change.
-  useEffect(() => { runPreview() /* eslint-disable-next-line */ }, [year, line, newValue, taxed])
+  // ── Early return AFTER all hooks ──
+  if (!open) return null
 
   const apply = () => {
     if (!preview?.ok) return
-    // Merge this reconstructed row into any existing normalized table, replacing
-    // that year. Other years stay as whatever was there (or fall back to reported
-    // at compute time).
     const existing = state?.data?.normalizedIncomeHistory || []
     const rows = [...existing.filter(r => yr(r) !== year), preview.row]
       .sort((a, b) => yr(a).localeCompare(yr(b)))
     applyNormalization(rows)
-    setBasis('normalized')      // switch to it so the effect is visible immediately
+    setBasis('normalized')
     setApplied(true)
   }
 
   const g = (row, f) => num(row?.[f])
   const lineLabel = EDITABLE.find(([k]) => k === line)?.[1] || line
 
-  // Side-by-side rows for the preview table.
   const compareFields = [
     ['revenue', 'Revenue'],
     ['otherIncome', 'Other income'],
@@ -121,7 +114,6 @@ export default function NormalizeModal({ open, onClose }) {
               <p className="text-xs text-bear">No income history loaded.</p>
             ) : (
               <>
-                {/* Year + line + value */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-xs text-slate-400">Year</label>
@@ -153,7 +145,6 @@ export default function NormalizeModal({ open, onClose }) {
                     className="w-full bg-navy-800 border border-navy-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 placeholder-slate-600 mt-1 focus:outline-none focus:border-accent" />
                 </div>
 
-                {/* Tax treatment — only meaningful for lines above the tax line */}
                 {line !== 'tax' && (
                   <div className="flex items-center gap-3 text-xs">
                     <span className="text-slate-400">This change was:</span>
@@ -168,7 +159,6 @@ export default function NormalizeModal({ open, onClose }) {
                   </div>
                 )}
 
-                {/* Preview */}
                 {preview && !preview.ok && (
                   <div className="text-xs rounded-lg px-3 py-2 bg-bear/10 text-bear">
                     Can't reconcile: {preview.reason}
