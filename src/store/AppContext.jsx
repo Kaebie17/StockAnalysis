@@ -437,9 +437,3 @@ export function useApp() {
   if (!ctx) throw new Error('useApp must be within AppProvider')
   return ctx
 }
-
-function mergeByYear(reported, normalized) {
-  const byYear = Object.fromEntries((reported || []).map(r => [r.year, r]))
-  for (const r of (normalized || [])) byYear[r.year] = r   // normalized row wins whole
-  return Object.values(byYear).sort((a, b) => String(a.year).localeCompare(String(b.year)))
-}
