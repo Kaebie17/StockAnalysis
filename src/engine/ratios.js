@@ -78,7 +78,10 @@ export function calcRatios(data, opts = {}) {
 
   // Helper: unwrap .value from tagged field
   const val = f => f?.value ?? null
-
+  const yearOf = row => {
+  const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
+    return m ? Number(m[0]) : null
+  }
   // ── Core raw values ────────────────────────────────────────────────────────
   const revenue     = val(latestI.revenue)     ?? val(ttm?.revenue)
   const opProfit    = val(latestI.operatingProfit)
