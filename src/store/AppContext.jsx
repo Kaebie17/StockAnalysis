@@ -15,12 +15,26 @@ import { getCached, setCached, deleteCached, clearAllCached, loadFolderHandle, s
 import { applyCSVOverrides, swapField, autoLoadOverride } from '../utils/csv.js'
 import { queuePush } from '../sync/sync.js'
 import { mergeByYear } from '../engine/reconstruct.js'
+import { listRevisions } from '../utils/db.js'
 
 const AppContext = createContext(null)
 
 const yearOf = row => {
   const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
   return m ? Number(m[0]) : null
+}
+
+// The persisted CAGR window for a ticker (stored as a 'growth-window' revision by
+// useEstimate). Read here so the store computes with it from the first render —
+// otherwise the slider shows the pinned window while the CAGR uses the default.
+async function loadPinnedWindow(ticker) {
+  try {
+    const rows = await listRevisions({ ticker })
+    const win = rows
+      .filter(r => r.lever === 'growth-window' && r.disposition === 'revised')
+      .sort((a, b) => b.createdAt - a.createdAt)[0]
+    return win?.windowYears ?? null
+  } catch { return null }
 }
 
 const initial = {
@@ -39,7 +53,7 @@ const initial = {
   swapState: {},
   // Qualitative / governance inputs (Block 5)
   holdingsData: null, arData: null, quarterlyData: null,
-  growthWindowYears: null,   // user's chosen CAGR window; null = the 5-year default
+  growthWindowYears: null,   // user's chosen CAGR window; null = full-history default
   normalizedIncomeHistory: null,   // reconstructed rows; only years the user restated
 }
 
@@ -221,6 +235,7 @@ export function AppProvider({ children }) {
   const load = useCallback(async (rawTicker) => {
     if (!rawTicker?.trim()) return
     const ticker = rawTicker.trim().toUpperCase()
+    const pinnedWindow = await loadPinnedWindow(ticker) 
     dispatch({ type: 'FETCH_START', ticker, query: rawTicker.trim() })
 
     try {
@@ -240,12 +255,12 @@ export function AppProvider({ children }) {
           const csvData = await autoLoadOverride(ticker, state.folderHandle)
           if (csvData) {
             const withCSV = applyCSVOverrides(cached.data, csvData)
-            const computed = computeAll(withCSV, {}, {}, {}, state.arData)
-            dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, data: withCSV, csvData, csvActive: true } })
+            const computed = computeAll(withCSV, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow })
+            dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, data: withCSV, csvData, csvActive: true, growthWindowYears: pinnedWindow } })
             return
           }
         }
-        dispatch({ type: 'FETCH_SUCCESS', payload: cached })
+        dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, growthWindowYears: pinnedWindow } })
         // Load swap state
         const swaps = await loadSwapState(ticker)
         if (Object.keys(swaps).length > 0) dispatch({ type: 'RECALC', payload: { swapState: swaps } })
@@ -272,9 +287,9 @@ export function AppProvider({ children }) {
         }
       }
 
-      const computed = computeAll(finalData, {}, {}, {}, state.arData)
-      const payload  = { data: finalData, ...computed, csvData, csvActive }
-      await setCached(ticker, { data, ...computeAll(data, {}, {}, {}, state.arData) })  // cache without CSV
+      const computed = computeAll(finalData, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow })
+      const payload  = { data: finalData, ...computed, csvData, csvActive, growthWindowYears: pinnedWindow }
+      await setCached(ticker, { data, ...computeAll(data, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow }) })  // cache without CSV
       dispatch({ type: 'FETCH_SUCCESS', payload })
 
     } catch (err) {
@@ -419,14 +434,15 @@ export function AppProvider({ children }) {
     dispatch({ type: 'RESET' })
   }, [])
 
-  const loadFromCSV = useCallback((normalizedData) => {
+  const loadFromCSV = useCallback(async (normalizedData) => {
     try {
-      const computed = computeAll(normalizedData, {}, {}, {})
-      dispatch({ type: 'FETCH_SUCCESS', payload: { data: normalizedData, ...computed } })
+      const pinnedWindow = state.ticker ? await loadPinnedWindow(state.ticker) : null
+      const computed = computeAll(normalizedData, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow })
+      dispatch({ type: 'FETCH_SUCCESS', payload: { data: normalizedData, ...computed, growthWindowYears: pinnedWindow } })
     } catch (err) {
       dispatch({ type: 'FETCH_ERROR', error: err.message })
     }
-  }, [])
+  }, [state.ticker, state.arData])
 
   return (
     <AppContext.Provider value={{

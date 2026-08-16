@@ -4,9 +4,10 @@
 export function scoreQuality(data, ratioResult, weights = {}) {
   const r = ratioResult
   const ratios = r?.ratios || {}
-
+  const cagrWin = ratios.revCagrWindowYears?.value
+  const growthLabel = cagrWin ? `Revenue Growth (${cagrWin}yr CAGR)` : 'Revenue Growth (CAGR)'
   const predictors = [
-    { key: 'revenueGrowth', label: 'Revenue Growth (5yr CAGR)',
+    { key: 'revenueGrowth', label: growthLabel,
       value: ratios.revCagr?.value, threshold: 10,
       pass: ratios.revCagr?.value != null ? ratios.revCagr.value >= 10 : null,
       weight: weights.revenueGrowth ?? 1.5, tagged: ratios.revCagr },

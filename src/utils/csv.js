@@ -31,7 +31,7 @@ export const CSV_RAW_FIELDS = [
 export const CALCULATED_FIELDS = [
   'roe', 'roce', 'roa', 'netMargin', 'operatingMargin', 'ebitdaMargin',
   'grossMargin', 'de', 'icr', 'pe', 'pb', 'ps', 'evEbitda', 'evRevenue',
-  'grahamNumber', 'revCagr', 'fcfYield', 'fcfConversion', 'bookPerShare',
+  'grahamNumber', 'revCagr' , 'revCagrWindowYears', 'fcfYield', 'fcfConversion', 'bookPerShare',
   'ebitda', 'ev', 'netDebt', 'capitalEmployed'
 ]
 

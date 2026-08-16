@@ -77,7 +77,7 @@ function PredictorRow({ predictor }) {
 // Scoring weights — moved here from the old Scoring Studio gear. Fundamentals
 // scoring is a fundamentals concern, so it lives in the fundamentals block.
 const FUNDAMENTAL_WEIGHTS = [
-  { key: 'revenueGrowth',    label: 'Revenue Growth (5yr CAGR)', defaultW: 1.5 },
+  { key: 'revenueGrowth',    label: 'Revenue Growth',            defaultW: 1.5 },
   { key: 'grossMargin',      label: 'Gross Margin',              defaultW: 1 },
   { key: 'ebitdaMargin',     label: 'EBITDA Margin',             defaultW: 1 },
   { key: 'netMargin',        label: 'Net Margin',                defaultW: 1 },
@@ -103,7 +103,7 @@ export default function FundamentalsPanel({ open, onClose }) {
 
   const cur     = data.currency === 'INR' ? '₹' : '$'
   // Label follows the ACTUAL window the engine used.
-  const cagrYears = ratios?.revCagrWindowYears
+  const cagrYears = ratios?.revCagrWindowYears?.value
     ?? Math.min(state.growthWindowYears || 5, Math.max(1, (data.incomeHistory || []).length - 1))
   const div     = data.currency === 'INR' ? 1e7 : 1e6
   const unit    = data.currency === 'INR' ? 'Cr' : 'M'

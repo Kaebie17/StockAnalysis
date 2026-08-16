@@ -26,8 +26,8 @@ export default function GrowthWindowPicker() {
 
   // Effective window shown on the scale: the user's pick, else the resolved
   // window the engine used, else the 5y default (capped by history).
-  const effective = growthWindow
-    ?? state.ratioResult?.ratios?.revCagrWindowYears
+  const effective = state.ratioResult?.ratios?.revCagrWindowYears?.value
+    ?? growthWindow
     ?? Math.min(5, maxWin)
 
   // Commit on release, not on every drag tick, to avoid a recompute per pixel.

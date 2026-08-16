@@ -769,7 +769,9 @@ export function resolveGrowthBasis(ratioResult, opts = {}) {
   // 2. The single dynamic CAGR — identical to every other consumer.
   if (r.revCagr?.value != null && isFinite(r.revCagr.value)) {
     all.push({ growth: r.revCagr.value / 100, source: 'cagr', rung: 'fallback',
-               label: `${r.revCagrWindowYears || 5}-yr revenue CAGR (your window)` })
+               label: r.revCagrWindowYears?.value
+                ? `${r.revCagrWindowYears.value}-yr revenue CAGR (your window)`
+                  : 'revenue CAGR (your window)' })
   }
 
   if (all.length === 0) {

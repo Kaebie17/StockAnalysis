@@ -231,7 +231,7 @@ export function calcRatios(data, opts = {}) {
   let revCagrWindowYears = null
   if (revSeries.length >= 2) {
     const nYrs = revSeries.length - 1
-    const requested = opts?.growthWindowYears > 0 ? opts.growthWindowYears : 5
+    const requested = opts?.growthWindowYears > 0 ? opts.growthWindowYears : nYrs
     let win
     if (opts?.growthWindowFromYear != null) {
       const idx = revSeries.findIndex(p => p.year >= opts.growthWindowFromYear)
@@ -392,7 +392,7 @@ export function calcRatios(data, opts = {}) {
       // Growth
       revCagr:            tag(revCagr, 'calculated',
         revCagrWindowYears ? `Revenue CAGR over the last ${revCagrWindowYears} years` : 'Revenue CAGR'),
-      revCagrWindowYears: revCagrWindowYears,
+      revCagrWindowYears: tag(revCagrWindowYears, 'calculated', 'Years in the revenue-CAGR window'),
       revGrowthYoY:    tag(revGrowthYoY,    'calculated', 'Revenue YoY growth'),
       npGrowthYoY:     tag(npGrowthYoY,     'calculated', 'Net Profit YoY growth'),
       // FCF
