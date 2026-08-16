@@ -65,9 +65,7 @@ export default function GrowthWindowPicker() {
         onChange={e => setLive(+e.target.value)}
         onMouseUp={e => commit(+e.target.value)}
         onTouchEnd={e => commit(+e.target.value)}
-        disabled={!!blockedBy}
-        className={`w-full accent-accent h-1.5 rounded-full appearance-none bg-navy-700
-                    ${blockedBy ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}
+        className="w-full accent-accent h-1.5 rounded-full appearance-none bg-navy-700 cursor-pointer"
       />
 
       <div className="flex justify-between text-[10px] text-slate-600 mt-1 font-mono">
@@ -76,9 +74,9 @@ export default function GrowthWindowPicker() {
       </div>
 
       {blockedBy ? (
-        <p className="text-[10px] text-neutral mt-1">
-          Not in use — growth is currently from {blockedBy}. Clear that under
-          Events &amp; revisions for this window to take effect.
+        <p className="text-[10px] text-slate-600 mt-1">
+          Drives the CAGR, fundamentals score, stage, DCF and market expectation.
+          (Estimate 2 is currently using {blockedBy} instead of this window.)
         </p>
       ) : (
         <p className="text-[10px] text-slate-600 mt-1">
