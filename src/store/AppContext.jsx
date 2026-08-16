@@ -18,6 +18,11 @@ import { mergeByYear } from '../engine/reconstruct.js'
 
 const AppContext = createContext(null)
 
+const yearOf = row => {
+  const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
+  return m ? Number(m[0]) : null
+}
+
 const initial = {
   status: 'idle', progress: null, error: null, ticker: '', query: '',
   data: null, ratioResult: null,
