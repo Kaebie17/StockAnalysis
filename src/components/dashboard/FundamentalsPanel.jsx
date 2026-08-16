@@ -267,7 +267,6 @@ export default function FundamentalsPanel({ open, onClose }) {
               because it drives far more than one number — both estimates, the
               health bars, the exit triggers and market expectation all read this
               rate. The choice belongs with the evidence it's made from. */}
-          <GrowthWindowPicker />
         </div>
       )}
     </div>
@@ -286,79 +285,3 @@ export default function FundamentalsPanel({ open, onClose }) {
  * Options come from what this stock actually has, since "long run" means eight
  * years on one company and twelve on another.
  */
-function GrowthWindowPicker() {
-  const { state, setGrowthWindowYears } = useApp()
-  const { growthWindow, setGrowthWindow, estimate } = useEstimate(state)
-
-  // Two effects, deliberately: the app-state change recomputes every ratio that
-  // reads the window (stage, fair value, market expectation, the dashboard card)
-  // and the revision persists the choice across reloads.
-  const choose = async (years) => {
-    setGrowthWindowYears(years)
-    await setGrowthWindow(years)
-  }
-
-  const years = (state.data?.incomeHistory || [])
-    .map(r => String(r?.year ?? '').match(/(?:19|20)\d{2}/)?.[0])
-    .filter(Boolean).length
-  if (years < 3) return null
-
-  // Only windows the history can actually support, plus the full span.
-  const options = [3, 5, 7, 10].filter(y => y <= years - 1)
-  if (years - 1 > 10) options.push(years - 1)
-  if (options.length < 2) return null
-
-  // What the CHOSEN WINDOW yields, not what the estimate currently applies.
-  //
-  // The picker was showing estimate.growthPct — the rate actually in force,
-  // which an applied revision outranks. So selecting a window changed nothing
-  // visible and the label read "applied automatically from news", which had
-  // nothing to do with the control the user was operating.
-  const windowRate = state.ratioResult?.ratios?.revCagr?.value ?? null
-
-  // A revision outranks any window, so the control is inert until it's cleared.
-  // Saying so beats letting the user click through four options that do nothing.
-  const blockedBy = estimate?.growthSource === 'revision' || estimate?.growthSource === 'guidance'
-    ? estimate.growthLabel : null
-
-  return (
-    <div className="mt-3 pt-3 border-t border-navy-800">
-      <div className="flex items-baseline gap-2 flex-wrap">
-        <span className="text-[11px] text-slate-500">Growth measured over</span>
-        {options.map(y => (
-          <button key={y}
-            onClick={() => choose(growthWindow === y ? null : y)}
-            className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
-              growthWindow === y
-                ? 'border-accent/60 text-accent bg-navy-800'
-                : 'border-navy-700 text-slate-500 hover:text-slate-300'}`}>
-            {y}yr
-          </button>
-        ))}
-        {growthWindow && (
-          <button onClick={() => choose(null)}
-            className="text-[10px] text-slate-600 hover:text-slate-400">default</button>
-        )}
-        {windowRate && (
-          <span className="text-[11px] text-slate-300 ml-auto">
-            {(windowRate.growth * 100).toFixed(1)}%
-            {windowRate.truncated && (
-              <span className="text-slate-600"> · only {windowRate.years}yr available</span>
-            )}
-          </span>
-        )}
-      </div>
-
-      {blockedBy ? (
-        <p className="text-[10px] text-neutral mt-1">
-          Not in use — growth is currently {estimate.growthPct}% from {blockedBy}. Clear that
-          under Events &amp; revisions for this window to take effect.
-        </p>
-      ) : (
-        <p className="text-[10px] text-slate-600 mt-1">
-          Changes both estimates, the health bars and the exit levels.
-        </p>
-      )}
-    </div>
-  )
-}
