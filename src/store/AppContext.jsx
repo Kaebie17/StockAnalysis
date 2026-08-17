@@ -27,15 +27,6 @@ const yearOf = row => {
 // The persisted CAGR window for a ticker (stored as a 'growth-window' revision by
 // useEstimate). Read here so the store computes with it from the first render —
 // otherwise the slider shows the pinned window while the CAGR uses the default.
-async function loadPinnedWindow(ticker) {
-  try {
-    const rows = await listRevisions({ ticker })
-    const win = rows
-      .filter(r => r.lever === 'growth-window' && r.disposition === 'revised')
-      .sort((a, b) => b.createdAt - a.createdAt)[0]
-    return win?.windowYears ?? null
-  } catch { return null }
-}
 
 const initial = {
   status: 'idle', progress: null, error: null, ticker: '', query: '',
@@ -102,13 +93,10 @@ function reducer(s, a) {
       return { ...s, data, ...computed }
     }
     case 'SET_GROWTH_WINDOW': {
-      // Recompute rather than store-and-hope. The window feeds calcRatios, so
-      // stage classification, fair value, market expectation and the dashboard
-      // card all shift with it — updating the field without recomputing would
-      // leave five consumers on the old figure.
       if (!s.data) return { ...s, growthWindowYears: a.years }
-      const next = { ...s, growthWindowYears: a.years }
-      const computed = computeAll(s.data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+      const data = { ...s.data, growthWindowYears: a.years }   // persist on data (cached per ticker)
+      const next = { ...s, growthWindowYears: a.years, data }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: a.years, basis: s.basis })
       return { ...next, ...computed }
     }
@@ -235,7 +223,8 @@ export function AppProvider({ children }) {
   const load = useCallback(async (rawTicker) => {
     if (!rawTicker?.trim()) return
     const ticker = rawTicker.trim().toUpperCase()
-    const pinnedWindow = await loadPinnedWindow(ticker) 
+    // Restored from cached data below (data.growthWindowYears); no separate lookup.
+    let pinnedWindow = null 
     dispatch({ type: 'FETCH_START', ticker, query: rawTicker.trim() })
 
     try {
@@ -260,6 +249,7 @@ export function AppProvider({ children }) {
             return
           }
         }
+        pinnedWindow = cached.data?.growthWindowYears ?? null
         dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, growthWindowYears: pinnedWindow } })
         // Load swap state
         const swaps = await loadSwapState(ticker)
@@ -436,7 +426,7 @@ export function AppProvider({ children }) {
 
   const loadFromCSV = useCallback(async (normalizedData) => {
     try {
-      const pinnedWindow = state.ticker ? await loadPinnedWindow(state.ticker) : null
+      const pinnedWindow = normalizedData?.growthWindowYears ?? null
       const computed = computeAll(normalizedData, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow })
       dispatch({ type: 'FETCH_SUCCESS', payload: { data: normalizedData, ...computed, growthWindowYears: pinnedWindow } })
     } catch (err) {

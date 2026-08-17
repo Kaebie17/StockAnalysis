@@ -113,17 +113,11 @@ export function useEstimate(state, opts = {}) {
     // actually did.
     try { setStored(await currentEstimate(ticker)) } catch { setStored(null) }
 
-    // Latest pinned growth window, if the user has chosen one.
-    const win = rows
-      .filter(r => r.lever === 'growth-window' && r.disposition === 'revised')
-      .sort((a, b) => b.createdAt - a.createdAt)[0]
-    setGrowthWindowState(win?.windowYears ?? null)
-    // Push the persisted choice into app state so every ratio consumer picks it
-    // up after a reload, not just the estimate.
-    if (opts?.onGrowthWindowLoaded) opts.onGrowthWindowLoaded(win?.windowYears ?? null)
+    // Growth window is no longer restored from revisions — the store persists it
+    // on cached `data` (data.growthWindowYears) and restores it on load.
     // `version` participates so a commit anywhere re-runs this everywhere.
   }, [ticker, version])
-
+  
   useEffect(() => { reload() }, [reload])
 
   useEffect(() => {
@@ -275,18 +269,11 @@ export function useEstimate(state, opts = {}) {
    * number that silently goes stale.
    */
   const setGrowthWindow = useCallback(async (years) => {
-    if (!ticker) return
-    await appendRevision({
-      ticker, lever: 'growth-window',
-      disposition: years == null ? 'dismissed' : 'revised',
-      windowYears: years,
-      trigger: 'manual',
-      reason: years == null ? 'Reverted to the default growth window'
-                            : `Growth measured over ${years} years, your choice`,
-    })
-    await reload()
-    bumpRevisionVersion()
-  }, [ticker, reload])
+    // Session/view control — the store persists it on `data` (cached per ticker).
+    // No revision row: a slider position isn't a forecast revision, and appending
+    // one per drag accumulated dead rows.
+    setGrowthWindowState(years)
+  }, [])
 
   /** Record a revision and re-apply. `disposition` is 'revised' | 'dismissed' | 'deferred'. */
   const commit = useCallback(async (entry) => {
