@@ -400,6 +400,7 @@ export function calcRatios(data, opts = {}) {
       fcfConversion:   tagFcf(fcfConversion,   'calculated', 'FCF ÷ Net Profit × 100'),
       // EPS / Book
       eps:             tag(eps,             epsRaw != null ? 'source' : 'calculated', epsRaw ? null : 'Net Profit ÷ Shares Outstanding'),
+      dividendPayout: tag(val(latestI.dividendPayout), 'source', 'Dividend payout % (from source)'),
       bookPerShare:    tag(bookPerShare,     'calculated', 'Total Equity ÷ Shares Outstanding'),
       // Meta (from v7 quote, for reference only)
       divYield:        tag(meta?.divYield,   'source-reference', 'From Yahoo v7 quote'),

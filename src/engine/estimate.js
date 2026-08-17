@@ -22,7 +22,7 @@
  */
 
 import { targetMultiple } from './targetMultiple.js'
-import { justifiedMultiples, preferredForm } from './justifiedMultiple.js'
+import { justifiedMultiples, preferredForm, averagePayoutPct } from './justifiedMultiple.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -272,9 +272,20 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
   // missing it, the company's own historical average payout is used — the
   // flat 80% it used to fall back to was a number I chose, and it fires on
   // exactly the companies whose data is thinnest.
+  // Payout from the actual data, in order of directness: reported latest →
+  // company's own historical average → derived from dividend/cashflow/yield.
+  // No sector-average guess: if none of the company's own figures yield a
+  // payout, this model can't run and defers to the others (DCF, multiples).
   const histPayout = averagePayout(opts.incomeHistory)
-  const payoutPct = (payout != null && payout >= 0 && payout <= 100) ? payout : histPayout
-  if (payoutPct == null) return null           // no basis → no estimate
+  let payoutPct = (payout != null && payout >= 0 && payout <= 100) ? payout : histPayout
+  if (payoutPct == null) {
+    payoutPct = averagePayoutPct(incomeHistory, {
+      cashflowHistory: opts.cashflowHistory || [],
+      dividendYield: ratioResult?.ratios?.dividendYield?.value ?? null,
+      pe: ratioResult?.ratios?.pe?.value ?? null,
+    })
+  }
+  if (payoutPct == null) return null   // no derivable dividend data → defer to other models
   const retention = 1 - payoutPct / 100
   const growth = growthOverride != null ? growthOverride
     : (roe > 0 ? (roe / 100) * retention : null)

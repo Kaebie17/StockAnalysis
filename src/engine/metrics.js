@@ -143,6 +143,19 @@ export const METRICS = {
     needs: 'P/E, Graham number',
   },
 
+  dividendPayout: {
+    table: 'income', label: 'Dividend Payout %', base: false,
+    yahoo: ['payoutRatio'],
+    sec: [],
+    // Screener prints this as a percent ("Dividend Payout %"). It's already a
+    // ratio, not an absolute — captured as-is, no pctOf conversion.
+    screener: ['dividendpayout', 'dividendpayout%', 'payoutratio', 'payout'],
+    expandFrom: null,
+    ar: [/dividend payout/i, /payout ratio/i],
+    csv: ['dividendPayout', 'payoutRatio'],
+    needs: 'justified dividend multiple',
+  },
+
   // ── Balance ───────────────────────────────────────────────────────────────
   totalEquity: {
     table: 'balance', label: 'Total Equity', base: true,   // or equityCapital + reserves

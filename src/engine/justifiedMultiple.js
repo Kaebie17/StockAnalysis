@@ -53,7 +53,13 @@ export function requiredReturn({ riskFreeRate, beta, equityRiskPremium = 0.065 }
 
 /** Sustainable growth: what the business can fund from what it keeps. */
 export function sustainableGrowth({ roe, payoutPct } = {}) {
-  if (!(roe > 0) || payoutPct == null) return null
+  if (!(roe > 0)) return null
+  // A company with no reported payout is treated as retaining everything — a
+  // non-dividend payer reinvests all earnings, so g = ROE. This is the standard
+  // treatment; refusing to compute would drop P/B and every payout-free form too.
+  if (payoutPct == null) {
+    return { g: roe / 100, retention: 1, roe, payoutPct: 0, payoutAssumed: true }
+  }
   if (payoutPct < 0 || payoutPct > 100) return null
   const retention = 1 - payoutPct / 100
   return { g: (roe / 100) * retention, retention, roe, payoutPct }
@@ -261,7 +267,7 @@ function firstOf(forms) {
  *   3. dividend per share ÷ EPS, which needs no absolute figures at all
  *   4. the trailing dividend yield against the P/E, the last resort
  */
-function averagePayoutPct(history = [], opts = {}) {
+export function averagePayoutPct(history = [], opts = {}) {
   const rates = []
   for (const row of history || []) {
     const np = val(row?.netProfit)
