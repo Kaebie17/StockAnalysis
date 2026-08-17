@@ -3,7 +3,7 @@ import { useApp } from '../../store/AppContext.jsx'
 import { reconstructRow } from '../../engine/reconstruct.js'
 import { parseExcerpt, proposalToEdit } from '../../engine/parseExcerpt.js'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
-
+import { createPortal } from 'react-dom'
 /**
  * NormalizeModal — manual normalization via paste. Two modes, both paste boxes:
  *
@@ -107,10 +107,10 @@ export default function NormalizeModal({ open, onClose }) {
   ]
   const rrForPreview = edit?.year ? reportedRowFor(edit.year) : null
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
          onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="card max-w-xl w-full space-y-4 max-h-[85vh] overflow-y-auto">
+      <div className="card max-w-3xl w-full space-y-4 max-h-[85vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-semibold text-white">Normalize from the report</h2>
@@ -260,7 +260,8 @@ export default function NormalizeModal({ open, onClose }) {
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 

@@ -3,6 +3,7 @@ import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 import { expandHints as expandersFor, METRICS } from '../../engine/metrics.js'
 import { parseHoldings } from '../../engine/parseHoldings.js'
 import { useApp } from '../../store/AppContext.jsx'
+import { createPortal } from 'react-dom'
 
 const ALL_METRICS = Object.keys(METRICS)
 
@@ -151,10 +152,10 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
   const holdingsOk = results?.holdings?.ok
   const totalOk = finMatched + (holdingsOk ? 1 : 0)
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-         onClick={e => e.target === e.currentTarget && handleClose()}>
-      <div className="card max-w-2xl w-full space-y-4 max-h-[85vh] overflow-y-auto">
+         onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="card max-w-4xl w-full space-y-4 max-h-[85vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="font-semibold text-white">Add more history</h2>
@@ -303,7 +304,8 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
