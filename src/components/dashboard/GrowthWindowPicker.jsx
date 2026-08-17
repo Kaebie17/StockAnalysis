@@ -13,7 +13,7 @@ import { useEstimate } from '../../store/useEstimate.js'
 
 export default function GrowthWindowPicker() {
   const { state, setGrowthWindowYears } = useApp()
-  const { growthWindow, setGrowthWindow, estimate } = useEstimate(state)
+  const { setGrowthWindow, estimate } = useEstimate(state)
 
   const years = (state.data?.incomeHistory || [])
     .map(r => String(r?.year ?? '').match(/(?:19|20)\d{2}/)?.[0])
@@ -31,8 +31,7 @@ export default function GrowthWindowPicker() {
   // Effective window shown on the scale: the user's pick, else the resolved
   // window the engine used, else the 5y default (capped by history).
   const effective = state.ratioResult?.ratios?.revCagrWindowYears?.value
-    ?? growthWindow
-    ?? Math.min(5, maxWin)
+    ?? maxWin
 
   // Commit on release, not on every drag tick, to avoid a recompute per pixel.
   const commit = async (n) => {
