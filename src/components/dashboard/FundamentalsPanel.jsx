@@ -104,7 +104,7 @@ export default function FundamentalsPanel({ open, onClose }) {
   const cur     = data.currency === 'INR' ? '₹' : '$'
   // Label follows the ACTUAL window the engine used.
   const cagrYears = ratios?.revCagrWindowYears?.value
-    ?? Math.min(state.growthWindowYears || 5, Math.max(1, (data.incomeHistory || []).length - 1))
+  ?? Math.max(1, (data.incomeHistory || []).length - 1)
   const div     = data.currency === 'INR' ? 1e7 : 1e6
   const unit    = data.currency === 'INR' ? 'Cr' : 'M'
 
