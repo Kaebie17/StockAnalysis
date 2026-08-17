@@ -117,7 +117,7 @@ export function useEstimate(state, opts = {}) {
     // on cached `data` (data.growthWindowYears) and restores it on load.
     // `version` participates so a commit anywhere re-runs this everywhere.
   }, [ticker, version])
-  
+
   useEffect(() => { reload() }, [reload])
 
   useEffect(() => {
@@ -147,7 +147,7 @@ export function useEstimate(state, opts = {}) {
   // a month. The rate is also market-wide, so per-ticker fetching was wrong in
   // principle as well as wasteful: it only depends on whether the market is
   // Indian or US.
-  const market = /\.(NS|BO)$/i.test(ticker || '') ? 'IN' : 'US'
+  const market = state?.data?.currency === 'INR' ? 'IN' : 'US'
   const riskFreeShared = useSyncExternalStore(subscribeRiskFree, getRiskFreeSnapshot, getRiskFreeSnapshot)
 
   useEffect(() => {
