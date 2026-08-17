@@ -84,7 +84,7 @@ function Dashboard() {
     <div className="min-h-screen bg-navy-950 overflow-x-hidden">
       <Header onOpenTable={t => { setFocusTable(t); setAddHistoryOpen(true) }} />
 
-      <main className="max-w-5xl mx-auto px-4 py-5 space-y-4">
+      <main className="max-w-5xl mx-auto px-4 space-y-4">
         {!showDashboard
           ? <EmptyState onUpload={() => setCsvModal('upload')} />
           : <>

@@ -116,16 +116,16 @@ export default function NormalizeModal({ open, onClose }) {
             <h2 className="font-semibold text-white">Normalize from the report</h2>
             <p className="text-xs text-slate-500 mt-0.5">
               Paste a full restated table (replaces those years) or an excerpt (the app
-              reads the line, year and value \u2014 you confirm). Reported stays untouched.
+              reads the line, year and value - you confirm). Reported stays untouched.
             </p>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">\u2715</button>
+          <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">{'\u2715'}</button>
         </div>
 
         {applied ? (
           <div className="text-center py-6 space-y-3">
-            <div className="text-3xl">\u2705</div>
-            <p className="text-sm text-slate-300">Normalized basis updated \u2014 toggle in the header to compare.</p>
+            <div className="text-3xl">{'\u2705'}</div>
+            <p className="text-sm text-slate-300">Normalized basis updated - toggle in the header to compare.</p>
             <button onClick={onClose} className="btn-primary text-sm">Done</button>
           </div>
         ) : (
@@ -161,7 +161,7 @@ export default function NormalizeModal({ open, onClose }) {
                       <label className="text-[10px] text-slate-500">Line</label>
                       <select value={edit.line || ''} onChange={e => setEdit({ ...edit, line: e.target.value })}
                         className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1 text-xs text-slate-200 mt-0.5">
-                        <option value="">\u2014</option>
+                        <option value="">{'\u2014'}</option>
                         {Object.entries(LINE_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
                       </select>
                     </div>
@@ -244,10 +244,10 @@ export default function NormalizeModal({ open, onClose }) {
                         same years in the normalized basis.
                       </p>
                     ) : (
-                      <p className="text-xs text-bear">Nothing recognized \u2014 check the table has year headers.</p>
+                      <p className="text-xs text-bear">Nothing recognized - check the table has year headers.</p>
                     )}
                     <div className="flex gap-2">
-                      <button onClick={() => setTableResult(null)} className="btn-ghost text-sm flex-1">\u21ba Try again</button>
+                      <button onClick={() => setTableResult(null)} className="btn-ghost text-sm flex-1">{'\u21ba'} Try again</button>
                       <button onClick={applyTable} disabled={!tableResult.rows?.length}
                         className="btn-primary text-sm flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
                         Replace &amp; switch to normalized
@@ -268,7 +268,7 @@ export default function NormalizeModal({ open, onClose }) {
 function PreviewTable({ reported, row, fields, div, sym, unit, g }) {
   return (
     <div className="space-y-1">
-      <div className="text-xs font-medium text-slate-300">Reported \u2192 Normalized</div>
+      <div className="text-xs font-medium text-slate-300">Reported {'\u2192'} Normalized</div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead><tr className="border-b border-navy-700">
