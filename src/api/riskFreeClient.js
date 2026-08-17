@@ -11,7 +11,7 @@
  * silently move every justified multiple in the app.
  */
 
-const KEY = 'sa_riskfree'
+const keyFor = (market) => `sa_riskfree_${market}`
 const REFRESH_AFTER_MS = 30 * 24 * 60 * 60 * 1000     // a month
 const STALE_AFTER_MS = 180 * 24 * 60 * 60 * 1000      // six months — say so loudly
 
@@ -25,15 +25,14 @@ let lastError = null
 let failedAt = 0
 const RETRY_LOCKOUT_MS = 60 * 60 * 1000
 
-function load() {
+function load(market) {
   try {
-    const raw = localStorage.getItem(KEY)
+    const raw = localStorage.getItem(keyFor(market))
     return raw ? JSON.parse(raw) : null
   } catch { return null }
 }
-
-function save(v) {
-  try { localStorage.setItem(KEY, JSON.stringify(v)) } catch { /* private mode */ }
+function save(market, v) {
+  try { localStorage.setItem(keyFor(market), JSON.stringify(v)) } catch {}
 }
 
 /**
@@ -56,7 +55,7 @@ function shouldRefetch(stored, userKey) {
  * exists, which is a valid state the caller must handle.
  */
 export async function getRiskFreeRate({ market = 'IN', userKey = null, force = false } = {}) {
-  const stored = load()
+  const stored = load(market)
   const age = stored?.fetchedAt ? Date.now() - stored.fetchedAt : Infinity
 
   // A stored rate is only reused if it was fetched WITH a key. The first load
@@ -97,7 +96,7 @@ export async function getRiskFreeRate({ market = 'IN', userKey = null, force = f
         const j = await r.json().catch(() => null)
         if (j?.rate > 0) {
           const rec = { ...j, hadKey: true }
-          save(rec); failedAt = 0; lastError = null
+          save(market, rec); failedAt = 0; lastError = null
           return rec
         }
         // Carry the reason forward so the UI can say WHY rather than only that
@@ -140,7 +139,11 @@ function shape(v) {
 }
 
 export function clearRiskFreeCache() {
-  try { localStorage.removeItem(KEY) } catch { /* ignore */ }
+  try {
+    localStorage.removeItem('sa_riskfree_US')
+    localStorage.removeItem('sa_riskfree_IN')
+    localStorage.removeItem('sa_riskfree')   // legacy market-blind key
+  } catch {}
   failedAt = 0
   lastError = null
 }

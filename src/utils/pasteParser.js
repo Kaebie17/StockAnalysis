@@ -409,7 +409,7 @@ export function quarterMeta(label) {
  * the rest of the app stores absolute currency, so callers pass scale=1e7 for
  * .NS/.BO tickers). Per-share fields in SKIP_SCALE are never scaled.
  */
-const SKIP_SCALE = new Set(['eps'])
+const SKIP_SCALE = new Set(['eps','dividendPayout'])
 
 export function tagPastedRows(rows, tableType, opts = {}) {
   const scale = opts.scale ?? 1
