@@ -9,7 +9,7 @@ function InfoTip({ text }) {
     <span className="relative inline-flex ml-1">
       <button
         onClick={e => { e.stopPropagation(); setShow(!show) }}
-        className="w-4 h-4 rounded-full bg-navy-700 text-slate-400 text-xs flex items-center justify-center hover:bg-navy-600 hover:text-white transition-colors leading-none"
+        className="shrink-0 w-4 h-4 rounded-full bg-navy-700 text-slate-400 text-xs flex items-center justify-center hover:bg-navy-600 hover:text-white transition-colors leading-none"
       >ⓘ</button>
       {show && (
         <>

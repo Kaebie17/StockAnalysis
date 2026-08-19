@@ -210,7 +210,7 @@ function Dot({ open, setOpen, degraded, children }) {
         title={degraded ? 'Built on a weaker basis — tap for detail' : 'What this is based on'}
         aria-label={degraded ? 'Built on a weaker basis' : 'What this is based on'}
         onClick={e => { e.stopPropagation(); setOpen(o => !o) }}
-        className={`w-4 h-4 rounded-full border text-[10px] leading-none flex items-center
+        className={`shrink-0 w-4 h-4 rounded-full border text-[10px] leading-none flex items-center
                     justify-center shrink-0 transition-colors ${
           degraded ? 'border-neutral/60 text-neutral hover:border-neutral'
                    : 'border-navy-600 text-slate-400 hover:text-accent hover:border-accent/60'}`}>
