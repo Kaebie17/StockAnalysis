@@ -93,7 +93,7 @@
 /* Touch targets. A 10px text button is legible but not reliably tappable; this
    grows the hit area without changing the visual size. */
 @media (pointer: coarse) {
-  button, a[role="button"], [role="tab"] { min-height: 32px; }
+    button:not(.h-4):not(.h-3\.5):not(.h-3):not(.h-5):not(.h-6), a[role="button"]:not(.h-4):not(.h-3\.5), [role="tab"] { min-height: 32px; }
   .tap-sm { position: relative; }
   .tap-sm::after {
     content: ''; position: absolute; inset: -8px; /* invisible padding */
