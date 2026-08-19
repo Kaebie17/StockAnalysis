@@ -174,63 +174,63 @@ function IdentityBar({ onOpenTable }) {
           : (marketCap / 1e9).toFixed(1) + 'B')
     : null
 
-  return (
-    <div className="border-t border-navy-800 pt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-      {/* Left: ticker + CMP + change + mcap + sector */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-        <span className="font-mono font-bold text-white text-base">
+    return (
+    <div className="border-t border-navy-800 pt-2 space-y-1.5">
+      {/* Row 1: ticker + name */}
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="font-mono font-bold text-white text-base whitespace-nowrap">
           {data.ticker}
         </span>
         {data.name && data.name !== data.ticker && (
-          <span className="text-slate-400 text-xs">{data.name}</span>
+          <span className="text-slate-400 text-xs truncate">{data.name}</span>
         )}
-        {/* CMP — prominent with lightweight refresh spinner */}
+      </div>
+
+      {/* Row 2: CMP + change + mcap */}
+      <div className="flex items-center gap-x-3 gap-y-1 flex-wrap">
         {price != null && (
-          <div className="flex items-center gap-1.5">
-            <span className="text-white font-semibold text-base flex items-center gap-1.5">
-              CMP: {cur}{price.toFixed(2)}
-              <button 
-                type="button"
-                onClick={handleRefreshPrice} 
-                disabled={refreshing}
-                title="Refresh CMP"
-                style={{ background: 'transparent', border: 'none', padding: 0, boxShadow: 'none' }}
-                className="cursor-pointer focus:outline-none p-0.5 group">
-                <svg 
-                  className={`w-3.5 h-3.5 text-slate-400 group-hover:text-accent transition-transform ${refreshing ? 'animate-spin text-accent' : ''}`}
-                  fill="none" 
-                  stroke="currentColor" 
-                  strokeWidth="2" 
-                  viewBox="0 0 24 24" 
-                  xmlns="http://www.w3.org/2000/svg">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                </svg>
-              </button>
-            </span>
-            {change != null && (
-              <span className={change >= 0 ? 'text-bull text-xs' : 'text-bear text-xs'}>
-                {change >= 0 ? '▲' : '▼'} {Math.abs(change).toFixed(2)}%
-              </span>
-            )}
-          </div>
+          <span className="text-white font-semibold text-base flex items-center gap-1.5 whitespace-nowrap">
+            CMP: {cur}{price.toFixed(2)}
+            <button
+              type="button"
+              onClick={handleRefreshPrice}
+              disabled={refreshing}
+              title="Refresh CMP"
+              style={{ background: 'transparent', border: 'none', padding: 0, boxShadow: 'none' }}
+              className="cursor-pointer focus:outline-none p-0.5 group">
+              <svg
+                className={`w-3.5 h-3.5 text-slate-400 group-hover:text-accent transition-transform ${refreshing ? 'animate-spin text-accent' : ''}`}
+                fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+              </svg>
+            </button>
+          </span>
         )}
-        {mcapStr && <span className="text-xs text-slate-400">Mkt Cap: {mcapStr}</span>}
-        {data.meta?.sector && <span className="text-xs text-slate-500">Sector: {data.meta.sector}</span>}
+        {change != null && (
+          <span className={`${change >= 0 ? 'text-bull' : 'text-bear'} text-xs whitespace-nowrap`}>
+            {change >= 0 ? '▲' : '▼'} {Math.abs(change).toFixed(2)}%
+          </span>
+        )}
+        {mcapStr && <span className="text-xs text-slate-400 whitespace-nowrap">Mkt Cap: {mcapStr}</span>}
+        {data.meta?.sector && <span className="text-xs text-slate-500 whitespace-nowrap">Sector: {data.meta.sector}</span>}
+      </div>
+
+      {/* Row 3: data vintage badge (its own line — it's long) */}
+      <div className="flex flex-wrap">
         <DataVintageBadge data={data} state={state} onOpenTable={onOpenTable} />
       </div>
 
-      {/* Right: stage. Buy/sell moved to the floating action button — this row
-          was carrying too much on a phone. */}
-      <div className="flex items-center gap-2">
+      {/* Row 4: stage + basis controls + dividend — wrap as whole units */}
+      <div className="flex items-center gap-x-2 gap-y-1.5 flex-wrap">
         {openLots.length > 0 && (
-          <span className="text-[10px] text-slate-500">
+          <span className="text-[10px] text-slate-500 whitespace-nowrap">
             {openLots.length} lot{openLots.length > 1 ? 's' : ''} held
           </span>
         )}
-        <span className="text-xs text-slate-500">Stage:</span>
-        <span className="badge badge-neutral text-xs">{stageInfo.emoji} {stageInfo.label}</span>
+        <span className="text-xs text-slate-500 whitespace-nowrap">Stage:</span>
+        <span className="badge badge-neutral text-xs whitespace-nowrap">{stageInfo.emoji} {stageInfo.label}</span>
         <select
-          className="text-xs bg-navy-800 border border-navy-700 text-slate-300 rounded px-1.5 py-0.5 cursor-pointer"
+          className="text-xs bg-navy-800 border border-navy-700 text-slate-300 rounded px-1.5 py-0.5 cursor-pointer max-w-[9rem]"
           value={stage || 'ESTABLISHED'}
           onChange={e => overrideStage(e.target.value)}>
           <option value="PRE_REVENUE">🌱 Pre-Revenue</option>
@@ -238,17 +238,14 @@ function IdentityBar({ onOpenTable }) {
           <option value="TRANSITION">🔄 Transition</option>
           <option value="ESTABLISHED">🏛️ Established</option>
         </select>
-        {/* Basis: reported (as-filed) vs normalized (user-reconstructed one-offs).
-            The toggle only appears once at least one year has been normalized;
-            the ⚖ button always opens the reconstruction modal. */}
         <button onClick={() => setNormOpen(true)} title="Normalize a one-off"
-          className="text-xs px-2 py-0.5 rounded border border-navy-700 text-slate-400 hover:text-accent hover:border-accent/50 transition-colors">
+          className="text-xs px-2 py-0.5 rounded border border-navy-700 text-slate-400 hover:text-accent hover:border-accent/50 transition-colors whitespace-nowrap">
           ⚖ Normalize
         </button>
         {hasNorm && (
           <button onClick={() => setBasis(basis === 'normalized' ? 'reported' : 'normalized')}
             title="Switch between as-reported and normalized figures"
-            className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+            className={`text-xs px-2 py-0.5 rounded border transition-colors whitespace-nowrap ${
               basis === 'normalized'
                 ? 'border-accent bg-navy-800 text-white'
                 : 'border-navy-700 text-slate-400 hover:text-accent'}`}>
@@ -257,6 +254,7 @@ function IdentityBar({ onOpenTable }) {
         )}
         <DividendLine data={data} ratioResult={ratioResult} cur={cur} />
       </div>
+
       <NormalizeModal open={normOpen} onClose={() => setNormOpen(false)} />
     </div>
   )
