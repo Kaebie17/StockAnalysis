@@ -14,9 +14,9 @@ function InfoTip({ text }) {
       {show && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setShow(false)} />
-          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50
-                          w-72 bg-navy-700 border border-navy-600 rounded-lg p-3
-                          text-xs text-slate-300 leading-relaxed shadow-xl">
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50
+                  w-72 max-w-[90vw] bg-navy-700 border border-navy-600 rounded-lg p-3
+                  text-xs text-slate-300 leading-relaxed shadow-xl">
             {text}
             <div className="absolute top-full left-1/2 -translate-x-1/2 border-4
                             border-transparent border-t-navy-700" />

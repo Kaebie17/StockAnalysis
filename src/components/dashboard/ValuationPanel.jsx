@@ -166,8 +166,8 @@ export default function ValuationPanel({ open, onClose }) {
             <span className="relative group ml-1 cursor-help">
               <span className="shrink-0 w-3.5 h-3.5 rounded-full bg-navy-700 text-slate-400 text-[10px] flex items-center justify-center hover:bg-navy-600 hover:text-white">ⓘ</span>
               <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1.5 rounded bg-navy-700
-                               text-xs text-slate-200 whitespace-normal z-50 invisible group-hover:visible
-                               border border-navy-600 shadow-lg w-64 text-left">
+                  text-xs text-slate-200 whitespace-normal z-50 invisible group-hover:visible
+                  border border-navy-600 shadow-lg w-64 max-w-[90vw] text-left">
                 Fair Value is the <strong>weighted average</strong> of all applicable models —
                 not the midpoint of the range. DCF and EV/EBITDA carry more weight (3× and 2×)
                 than P/B or Graham (1-1.5×) since they're more reliable for established companies.

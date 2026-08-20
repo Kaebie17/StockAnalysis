@@ -410,10 +410,11 @@ function DataQualityDot({ quality, ticker, onOpenTable }) {
       {open && (
         <>
           <span className="fixed inset-0 z-[60]" onClick={() => setOpen(false)} />
-          <span className="absolute z-[61] left-0 top-5 w-72 max-w-[86vw]
-                           bg-navy-900 border border-navy-700 rounded-lg shadow-2xl p-3
-                           text-left font-normal normal-case cursor-default space-y-2"
-                onClick={e => e.stopPropagation()}>
+          <span className="fixed left-1/2 -translate-x-1/2 top-auto mt-2 w-[92vw] max-w-sm
+                 sm:absolute sm:left-auto sm:right-0 sm:translate-x-0 sm:mt-0 sm:top-5 sm:w-72
+                 z-[61] bg-navy-900 border border-navy-700 rounded-lg shadow-2xl p-3
+                 text-left font-normal normal-case cursor-default space-y-2"
+                 onClick={e => e.stopPropagation()}>
 
             {quality.adjustments.length > 0 && (
               <span className="block">

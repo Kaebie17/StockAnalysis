@@ -13,8 +13,8 @@ function ResTag({ tagged }) {
     <span className="relative group ml-1 cursor-help">
       <span className={`text-xs ${badge.color}`}>{badge.icon}</span>
       <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 rounded bg-navy-700
-                       text-xs text-slate-200 whitespace-nowrap z-50 invisible group-hover:visible
-                       border border-navy-600 shadow-lg max-w-xs text-center">
+                  text-xs text-slate-200 whitespace-normal z-50 invisible group-hover:visible
+                  border border-navy-600 shadow-lg max-w-[90vw] w-max text-center">
         {badge.tooltip}
       </span>
     </span>
