@@ -148,14 +148,13 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     }
   }
 
-    // ── Weighted consensus ────────────────────────────────────────────────────────
-  // Weights are curated per stage/sector in getApplicableModels, so fair value
-  // leans on the model that actually fits the business (e.g. EV/EBITDA for an
-  // asset-heavy growth company) rather than a flat table. A reliability gate then
-  // drops any model whose inputs are meaningless for THIS stock (earnings multiples
-  // on a loss-maker, P/B with no ROE), so it can't drag the consensus even if it
-  // produced a number.
-  const stageWeights = modelMeta.weights || {}
+    // ── Applicable models & primary selection ─────────────────────────────────────
+  // No weighted blend: averaging models that disagree by era (a turnaround's
+  // EV/EBITDA vs its pre-turnaround revenue multiples) produces a number no model
+  // supports. Fair value is the PRIMARY model — the most applicable one for this
+  // stage/sector (first in the relevance-ordered applicable list) — with the other
+  // models shown as a range for context. A reliability gate drops models whose
+  // inputs are meaningless for this stock.
   const netMargin = r?.ratios?.netMargin?.value
   const roeVal    = r?.ratios?.roe?.value
   const inputValid = (m) => {
@@ -164,47 +163,31 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     return true
   }
   const validKeys = modelMeta.applicable.filter(m => results[m]?.value > 0 && inputValid(m))
-  const weights = stageWeights
-  const totalW    = validKeys.reduce((s, m) => s + (weights[m] || 1), 0)
-  const fairValue = totalW > 0
-    ? validKeys.reduce((s, m) => s + results[m].value * (weights[m] || 1), 0) / totalW
-    : null
 
-  const modelValues = validKeys.map(m => results[m].value)
-  const rangeLow    = modelValues.length > 1 ? Math.min(...modelValues) : fairValue
-  const rangeHigh   = modelValues.length > 1 ? Math.max(...modelValues) : fairValue
-
-  // ── Fair-value RANGE from the two most relevant models for this stage/sector ──
-  // modelMeta.applicable is ordered by relevance, so the first two with values are
-  // the "best two". We present their range (low–high) rather than a blended mean.
   const MODEL_NAMES = {
     dcf: 'DCF', pe: 'P/E', evEbitda: 'EV/EBITDA', pb: 'P/B',
     ps: 'P/S', graham: 'Graham', evGrossProfit: 'EV/Gross Profit', peg: 'PEG',
   }
-  const topKeys = validKeys.slice(0, 2)
-  const topModels = topKeys.map(m => ({ key: m, name: MODEL_NAMES[m] || m, value: results[m].value }))
-  const fvRangeLow  = topModels.length ? Math.min(...topModels.map(t => t.value)) : null
-  const fvRangeHigh = topModels.length ? Math.max(...topModels.map(t => t.value)) : null
+
+  // Primary = most applicable model (first valid in the relevance-ordered list).
+  const primaryKey   = validKeys[0] || null
+  const primaryModel = primaryKey
+    ? { key: primaryKey, name: MODEL_NAMES[primaryKey] || primaryKey, value: results[primaryKey].value }
+    : null
+  const fairValue = primaryModel?.value ?? null
+
+  // Range across all valid models — context only, shown in details.
+  const modelValues = validKeys.map(m => results[m].value)
+  const rangeLow    = modelValues.length > 1 ? Math.min(...modelValues) : fairValue
+  const rangeHigh   = modelValues.length > 1 ? Math.max(...modelValues) : fairValue
 
   // ── Sensitivity + scenarios (DCF is the growth/WACC-sensitive model) ──────────
   const sensitivity = (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf)
     ? dcfSensitivity(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntY)
     : null
 
-  // Re-blend the weighted consensus with a replacement DCF value (other models
-  // don't depend on growth/WACC, so only DCF moves across scenarios).
-  const consensusWith = (dcfPs) => {
-    const merged = { ...results, ...(dcfPs != null ? { dcf: { value: dcfPs } } : {}) }
-    const vks = modelMeta.applicable.filter(m => merged[m]?.value > 0)
-    const tw  = vks.reduce((s, m) => s + (weights[m] || 1), 0)
-    return tw > 0 ? vks.reduce((s, m) => s + merged[m].value * (weights[m] || 1), 0) / tw : null
-  }
-
   let scenarios = null
   if (cfBaseDcf && r.shares) {
-    // Anchor scenarios on the professional DEFAULTS (not the possibly-overridden
-    // current assumptions) so Bear/Base/Bull are stable and don't compound when
-    // a scenario is applied via the sliders.
     const scenBase = { growthRate: estimateGrowth(r), wacc: waccDefault, termGrowth: 0.03, projYears }
     scenarios = {}
     for (const key of ['bear', 'base', 'bull']) {
@@ -214,20 +197,16 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
         label: SCENARIO_PRESETS[key].label,
         assumptions: sa,
         dcf: dcfPs,
-        fairValue: consensusWith(dcfPs),
+        fairValue: dcfPs,
       }
     }
   }
 
-  // Fair value + signal now derive from the RANGE of the two best models, not the
-  // weighted-average blend. Signal reflects where CMP sits vs the range: below the
-  // low → undervalued, above the high → overvalued, inside → fairly valued.
-  const fvMid = (fvRangeLow != null && fvRangeHigh != null) ? (fvRangeLow + fvRangeHigh) / 2 : fairValue
-  const upside = fvMid != null && r.price > 0 ? ((fvMid - r.price) / r.price) * 100 : null
-
-  const signal = (fvRangeLow == null || r.price <= 0) ? 'UNKNOWN'
-    : r.price < fvRangeLow * 0.98 ? 'UNDERVALUED'
-    : r.price > fvRangeHigh * 1.02 ? 'OVERVALUED'
+  // Signal from the primary model's value vs CMP.
+  const upside = fairValue != null && r.price > 0 ? ((fairValue - r.price) / r.price) * 100 : null
+  const signal = (fairValue == null || r.price <= 0) ? 'UNKNOWN'
+    : r.price < fairValue * 0.98 ? 'UNDERVALUED'
+    : r.price > fairValue * 1.02 ? 'OVERVALUED'
     : 'FAIRLY_VALUED'
 
   // ── Reverse DCF ───────────────────────────────────────────────────────────────
@@ -238,15 +217,12 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     impliedGrowth  = solveGrowth(cfForRev, targetEV, wacc, termGrowth, projYears)
   }
 
-  return {
+    return {
     models: results,
     modelMeta,
-    fairValue: fvMid,
-    blendedFairValue: fairValue,
+    fairValue,
+    primaryModel,
     rangeLow,
-    topModels,
-    fvRangeLow,
-    fvRangeHigh,
     rangeHigh,
     upside,
     signal,
@@ -254,7 +230,6 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     sensitivity,
     scenarios,
     assumptions: { wacc, termGrowth, projYears, growthRate, sectorPe, sectorEvEb },
-    // Store defaults so UI can show them and reset to them
     defaults: { wacc: waccDefault, termGrowth: 0.03, projYears: 10, growthRate: estimateGrowth(r), sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault }
   }
 }

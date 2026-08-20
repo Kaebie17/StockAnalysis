@@ -108,25 +108,23 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
           badge={valuation.signal}
           onExpand={() => onExpand('valuation')}
           isExpanded={expanded === 'valuation'}>
-          {valuation.fvRangeLow != null && price ? (
+            {valuation.primaryModel != null && price ? (
             <div className="space-y-1">
               <div className={`text-xl font-bold font-mono ${signalColor(valuation.signal)}`}>
                 {valuation.signal.replace('_', ' ')}
               </div>
               <div className="text-xs text-slate-400 break-words">
                 Fair value: <span className="text-white font-mono whitespace-nowrap">
-                  {cur}{Math.round(valuation.fvRangeLow).toLocaleString('en-IN')}
-                  {valuation.fvRangeHigh !== valuation.fvRangeLow
-                    ? ` – ${cur}${Math.round(valuation.fvRangeHigh).toLocaleString('en-IN')}` : ''}
+                  {cur}{Math.round(valuation.primaryModel.value).toLocaleString('en-IN')}
                 </span>
               </div>
               {/* Four ranges, ordered by the question they answer: two
                   valuations (what the business is worth) then two projections
                   (where the price may go). Each carries its own method directly
                   beneath it. */}
-              {valuation.topModels?.length > 0 && (
+                {valuation.primaryModel?.name && (
                 <div className="text-[11px] text-slate-500 -mt-0.5">
-                  via {valuation.topModels.map(t => t.name).join(' & ')}
+                  via {valuation.primaryModel.name}
                 </div>
               )}
               <div className="text-xs text-slate-400">
