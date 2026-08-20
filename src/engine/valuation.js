@@ -72,7 +72,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // capex assumption feeding a fair value. ratios.js now derives real FCF from
   // real capex (opCF - capex); if that isn't available, the DCF doesn't run.
   // A skipped model is honest. A model built on an invented capex figure is not.
-  const cfBaseDcf = (r.fcf != null && r.fcf > 0) ? r.fcf : null
+  const cfBaseDcf = (r.fcf != null && r.fcf > 0 && !r.fcfMaintenanceOnly) ? r.fcf : null
   if (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf) {
     const perShare = dcfPerShare(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntG, ntY)
     if (perShare != null) {
@@ -148,9 +148,23 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     }
   }
 
-  // ── Weighted consensus ────────────────────────────────────────────────────────
-  const weights   = { dcf: 3, pe: 2, evEbitda: 2, pb: 1.5, ps: 1, graham: 1, evGrossProfit: 1 }
-  const validKeys = modelMeta.applicable.filter(m => results[m]?.value > 0)
+    // ── Weighted consensus ────────────────────────────────────────────────────────
+  // Weights are curated per stage/sector in getApplicableModels, so fair value
+  // leans on the model that actually fits the business (e.g. EV/EBITDA for an
+  // asset-heavy growth company) rather than a flat table. A reliability gate then
+  // drops any model whose inputs are meaningless for THIS stock (earnings multiples
+  // on a loss-maker, P/B with no ROE), so it can't drag the consensus even if it
+  // produced a number.
+  const stageWeights = modelMeta.weights || {}
+  const netMargin = r?.ratios?.netMargin?.value
+  const roeVal    = r?.ratios?.roe?.value
+  const inputValid = (m) => {
+    if ((m === 'pe' || m === 'graham' || m === 'peg') && !(netMargin > 0)) return false
+    if (m === 'pb' && !(roeVal > 0)) return false
+    return true
+  }
+  const validKeys = modelMeta.applicable.filter(m => results[m]?.value > 0 && inputValid(m))
+  const weights = stageWeights
   const totalW    = validKeys.reduce((s, m) => s + (weights[m] || 1), 0)
   const fairValue = totalW > 0
     ? validKeys.reduce((s, m) => s + results[m].value * (weights[m] || 1), 0) / totalW
@@ -218,7 +232,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
 
   // ── Reverse DCF ───────────────────────────────────────────────────────────────
   let impliedGrowth = null
-  const cfForRev = r.fcf > 0 ? r.fcf : null      // same rule as the DCF above
+  const cfForRev = (r.fcf > 0 && !r.fcfMaintenanceOnly) ? r.fcf : null   // same rule as the DCF above
   if (cfForRev && r.price > 0 && r.shares && r.totalDebt != null) {
     const targetEV = r.price * r.shares + r.totalDebt - r.cash
     impliedGrowth  = solveGrowth(cfForRev, targetEV, wacc, termGrowth, projYears)
