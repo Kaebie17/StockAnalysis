@@ -58,8 +58,19 @@ function getVerdict(valSignal, techLabel, qualLabel) {
 export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory }) {
   const { state } = useApp()
   const { valuation, quality, technicals, ratioResult, marketExpectation } = state
-  console.log('FIRST RENDER:', state.status, valuation?.primaryModel, valuation?.models && Object.keys(valuation.models))
-  console.log('DBG:', valuation?.modelMeta?.applicable, valuation?.models?.dcf?.value, valuation?.models?.dcf && Object.keys(valuation.models.dcf))
+  console.log('FULL:', {
+  status: state.status,
+  primaryModel: valuation?.primaryModel,
+  fairValue: valuation?.fairValue,
+  rangeLow: valuation?.rangeLow,
+  signal: valuation?.signal,
+  applicable: valuation?.modelMeta?.applicable,
+  dcfValue: valuation?.models?.dcf?.value,
+  netMargin: ratioResult?.ratios?.netMargin?.value,
+  roe: ratioResult?.ratios?.roe?.value,
+  price: ratioResult?.price,
+  allKeys: Object.keys(valuation || {}),
+})
   const [newsOpen, setNewsOpen] = useState(false)
   const newsQuery = (state.query || '').trim() || state.data?.name || state.ticker
   // Primary variant for summary card
