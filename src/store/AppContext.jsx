@@ -250,7 +250,8 @@ export function AppProvider({ children }) {
           }
         }
         pinnedWindow = cached.data?.growthWindowYears ?? null
-        dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, growthWindowYears: pinnedWindow } })
+        const computed = computeAll(cached.data, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { growthWindowYears: pinnedWindow, basis: cached.data?.basis })
+        dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, growthWindowYears: pinnedWindow } })
         // Load swap state
         const swaps = await loadSwapState(ticker)
         if (Object.keys(swaps).length > 0) dispatch({ type: 'RECALC', payload: { swapState: swaps } })
