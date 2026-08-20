@@ -59,6 +59,7 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
   const { state } = useApp()
   const { valuation, quality, technicals, ratioResult, marketExpectation } = state
   console.log('FIRST RENDER:', state.status, valuation?.primaryModel, valuation?.models && Object.keys(valuation.models))
+  console.log('DBG:', valuation?.modelMeta?.applicable, valuation?.models?.dcf?.value, valuation?.models?.dcf && Object.keys(valuation.models.dcf))
   const [newsOpen, setNewsOpen] = useState(false)
   const newsQuery = (state.query || '').trim() || state.data?.name || state.ticker
   // Primary variant for summary card
