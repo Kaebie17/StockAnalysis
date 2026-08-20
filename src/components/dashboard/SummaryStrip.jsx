@@ -81,6 +81,13 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
 
   const cur      = state.data?.currency === 'INR' ? '₹' : '$'
   const price    = ratioResult?.price
+  console.log('SS DEBUG:', {
+  hasValuation: !!valuation,
+  primaryModel: valuation?.primaryModel,
+  price,
+  applicable: valuation?.modelMeta?.applicable,
+  resultKeys: Object.keys(valuation?.models || {}),
+})
   void valuation?.primaryModel
   const techLabel = technicals?.available ? technicals.label : 'NEUTRAL'
   const qualLabel = quality?.label ?? 'HEALTHY'
