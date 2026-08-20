@@ -77,11 +77,10 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
     } catch { return null }
   }, [state.data, ratioResult, state.holdingsData, state.arData])
 
-  if (!valuation) return null
+  if (!valuation || !valuation.models) return null
 
   const cur      = state.data?.currency === 'INR' ? '₹' : '$'
   const price    = ratioResult?.price
-  void valuation?.primaryModel
   const techLabel = technicals?.available ? technicals.label : 'NEUTRAL'
   const qualLabel = quality?.label ?? 'HEALTHY'
   const verdict   = getVerdict(valuation.signal, techLabel, qualLabel)
@@ -109,7 +108,9 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
           badge={valuation.signal}
           onExpand={() => onExpand('valuation')}
           isExpanded={expanded === 'valuation'}>
-            {valuation.primaryModel != null && price ? (
+            {state.status === 'loading' ? (
+              <div className="text-sm text-slate-500">Loading valuation…</div>
+            ) : valuation.primaryModel != null && price ? (
             <div className="space-y-1">
               <div className={`text-xl font-bold font-mono ${signalColor(valuation.signal)}`}>
                 {valuation.signal.replace('_', ' ')}
