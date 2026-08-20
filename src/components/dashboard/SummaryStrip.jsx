@@ -58,6 +58,7 @@ function getVerdict(valSignal, techLabel, qualLabel) {
 export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory }) {
   const { state } = useApp()
   const { valuation, quality, technicals, ratioResult, marketExpectation } = state
+  console.log('FIRST RENDER:', state.status, valuation?.primaryModel, valuation?.models && Object.keys(valuation.models))
   const [newsOpen, setNewsOpen] = useState(false)
   const newsQuery = (state.query || '').trim() || state.data?.name || state.ticker
   // Primary variant for summary card
@@ -108,9 +109,7 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
           badge={valuation.signal}
           onExpand={() => onExpand('valuation')}
           isExpanded={expanded === 'valuation'}>
-            {state.status === 'loading' ? (
-              <div className="text-sm text-slate-500">Loading valuation…</div>
-            ) : valuation.primaryModel != null && price ? (
+            {valuation.primaryModel != null && price ? (
             <div className="space-y-1">
               <div className={`text-xl font-bold font-mono ${signalColor(valuation.signal)}`}>
                 {valuation.signal.replace('_', ' ')}
@@ -120,10 +119,6 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
                   {cur}{Math.round(valuation.primaryModel.value).toLocaleString('en-IN')}
                 </span>
               </div>
-              {/* Four ranges, ordered by the question they answer: two
-                  valuations (what the business is worth) then two projections
-                  (where the price may go). Each carries its own method directly
-                  beneath it. */}
                 {valuation.primaryModel?.name && (
                 <div className="text-[11px] text-slate-500 -mt-0.5">
                   via {valuation.primaryModel.name}
@@ -142,9 +137,9 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
               {ratios?.pe?.value != null && <div className="text-xs text-slate-500">P/E: {ratios.pe.value.toFixed(1)}×</div>}
               {ratios?.evEbitda?.value != null && <div className="text-xs text-slate-500">EV/EBITDA: {ratios.evEbitda.value.toFixed(1)}×</div>}
             </div>
-          ) : (
+          ) : state.status === 'success' ? (
             <div className="text-sm text-slate-500">Insufficient data for valuation</div>
-          )}
+          ) : null}
         </PillarCard>
 
         {/* ── FUNDAMENTALS ───────────────────────────────────────────────────── */}
