@@ -245,8 +245,8 @@ export function useEstimate(state, opts = {}) {
   // on someone noticing.
   const sanity = sanityCheck(estimate, {
     price: state?.ratioResult?.price,
-    fairValue: state?.valuation?.fvRangeLow > 0
-      ? { low: state.valuation.fvRangeLow, high: state.valuation.fvRangeHigh } : null,
+        fairValue: state?.valuation?.rangeLow > 0
+      ? { low: state.valuation.rangeLow, high: state.valuation.rangeHigh } : null,
     analystTarget: state?.analystTarget || null,
   })
 
