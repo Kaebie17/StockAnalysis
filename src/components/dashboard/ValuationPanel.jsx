@@ -93,59 +93,66 @@ export default function ValuationPanel({ open, onClose }) {
           subject. */}
       <EstimateRevisions state={state} />
 
-      {/* Model table — matches the spec exactly */}
-      <div className="overflow-x-auto">
-        <table className="w-auto sm:w-full text-sm">
-          <thead>
-            <tr className="border-b border-navy-700 text-xs text-slate-400">
-              <th className="text-left py-2 font-medium">Model</th>
-              <th className="text-left sm:text-right py-2 font-medium">Fair Value</th>
-              <th className="text-left sm:text-right py-2 font-medium">vs CMP</th>
-              <th className="py-2 pl-2 font-medium hidden sm:table-cell"></th>
-              <th className="text-right py-2 font-medium hidden sm:table-cell">Wt</th>
-            </tr>
-          </thead>
-          <tbody>
-            {allModels.map(key => {
-              const meta   = MODEL_DISPLAY[key]
-              const result = models[key]
-              const fv     = result?.value
-              const note   = result?.note
-              const up     = fv != null && price ? ((fv - price) / price) * 100 : null
-              const isNA   = modelMeta?.notApplicable?.includes(key)
-              const isCaution = modelMeta?.caution?.includes(key)
+            {/* Model list — stacked cards on mobile, aligned columns on desktop */}
+      <div className="space-y-0">
+        {/* Header row — desktop only */}
+        <div className="hidden sm:grid sm:grid-cols-[1fr_auto_auto_auto_auto] sm:gap-3 border-b border-navy-700 text-xs text-slate-400 py-2 font-medium">
+          <span>Model</span>
+          <span className="text-right w-20">Fair Value</span>
+          <span className="text-right w-16">vs CMP</span>
+          <span className="w-16"></span>
+          <span className="text-right w-8">Wt</span>
+        </div>
 
-              return (
-                <tr key={key}
-                  className={`border-b border-navy-800/40 ${isNA ? 'opacity-25' : ''}`}
-                  title={note || ''}>
-                  <td className="py-2 text-xs text-slate-300">
-                    {isNA
-                      ? <span className="line-through text-slate-600">{meta.name}</span>
-                      : isCaution
-                      ? <span>{key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name} <span className="text-neutral text-xs">⚠</span></span>
-                      : (key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name)}
-                  </td>
-                  <td className="py-2 text-left sm:text-right font-mono text-white text-xs">
-                    {fv != null ? cur + fv.toFixed(0) : isNA ? 'N/A' : '—'}
-                  </td>
-                  <td className={`py-2 text-left sm:text-right font-mono text-xs font-semibold
-                    ${up == null ? 'text-slate-500' : up >= 0 ? 'text-bull' : 'text-bear'}`}>
-                    {up != null ? fmtPct(up) : '—'}
-                  </td>
-                  <td className="py-2 pl-2 hidden sm:table-cell">
-                    <DotBar upside={up} />
-                  </td>
-                  <td className="py-2 text-right text-slate-600 text-xs font-mono hidden sm:table-cell">
-                    {meta.weight}
-                  </td>
-                </tr>
-              )
-            })}
-            <DCFScenarioPanel />
-          </tbody>
-        </table>
+        {allModels.map(key => {
+          const meta   = MODEL_DISPLAY[key]
+          const result = models[key]
+          const fv     = result?.value
+          const note   = result?.note
+          const up     = fv != null && price ? ((fv - price) / price) * 100 : null
+          const isNA   = modelMeta?.notApplicable?.includes(key)
+          const isCaution = modelMeta?.caution?.includes(key)
+
+          const label = isNA
+            ? <span className="line-through text-slate-600">{meta.name}</span>
+            : isCaution
+            ? <span>{key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name} <span className="text-neutral">⚠</span></span>
+            : (key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name)
+
+          const fvText = fv != null ? cur + fv.toFixed(0) : isNA ? 'N/A' : '—'
+          const upText = up != null ? fmtPct(up) : '—'
+          const upColor = up == null ? 'text-slate-500' : up >= 0 ? 'text-bull' : 'text-bear'
+
+          return (
+            <div key={key}
+              title={note || ''}
+              className={`border-b border-navy-800/40 py-2 text-xs
+                          flex flex-col gap-1
+                          sm:grid sm:grid-cols-[1fr_auto_auto_auto_auto] sm:gap-3 sm:items-center
+                          ${isNA ? 'opacity-25' : ''}`}>
+              {/* Mobile: name + weight dots on line 1 */}
+              <div className="flex items-center justify-between sm:block">
+                <span className="text-slate-300">{label}</span>
+                <span className="text-slate-600 font-mono sm:hidden">{meta.weight}</span>
+              </div>
+              {/* Mobile: fair value + vs CMP on line 2 (full width, no wrap) */}
+              <div className="flex items-center justify-between gap-3 sm:contents">
+                <span className="font-mono text-white whitespace-nowrap tabular-nums sm:text-right sm:w-20">
+                  {fvText}
+                </span>
+                <span className={`font-mono font-semibold whitespace-nowrap tabular-nums sm:text-right sm:w-16 ${upColor}`}>
+                  {upText}
+                </span>
+                <span className="hidden sm:block sm:w-16"><DotBar upside={up} /></span>
+                <span className="hidden sm:block sm:text-right sm:w-8 text-slate-600 font-mono">{meta.weight}</span>
+              </div>
+            </div>
+          )
+        })}
       </div>
+
+      {/* DCF scenarios — moved OUT of the table (was invalid inside tbody) */}
+      <DCFScenarioPanel />
 
       {/* Consensus row */}
       <div className="flex flex-wrap items-center justify-between gap-2 py-2 px-3 bg-navy-800/50 rounded-lg">
