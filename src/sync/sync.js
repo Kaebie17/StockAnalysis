@@ -9,7 +9,7 @@
  * Syncable = user-generated data. financials is a re-fetchable cache → NOT synced.
  */
 import { supabase, syncEnabled } from './supabaseClient.js'
-import { exportSyncableRecords, putSyncableRecord } from '../utils/db.js'
+import { exportSyncableRecords, putSyncableRecord, getCached } from '../utils/db.js'
 import { getOverrides } from '../engine/formulaOverrides.js'
 
 const OVERRIDES_KEY = 'formulaOverrides:global'
@@ -69,7 +69,37 @@ export async function pullAll() {
       pulled++
       continue
     }
-    const [store] = row.key.split(':')
+    const [store, ...rest] = row.key.split(':')
+    // financials only syncs to carry pasted Screener history across devices
+    // (see exportSyncableRecords). Price/marketCap/change1d are live,
+    // re-fetchable quote data — the poller and manual refresh keep them
+    // current locally on their own, and a pull must never regress them back
+    // to whatever price happened to be pushed last. That surfaced as a
+    // freshly-refreshed price reverting on every full page reload (which
+    // re-runs the initial pull), while in-app navigation — which never
+    // re-pulls — kept the fresh price.
+    if (store === 'financials') {
+      try {
+        // getCached(ticker) resolves the stored record's `data` field, i.e.
+        // the payload `{ data: <normalized>, ratioResult, ... }` — the live
+        // fields live at existing.data.price, not existing.price.
+        const existing = await getCached(rest.join(':'))
+        if (existing?.data?.price != null) {
+          row.value = {
+            ...row.value,
+            data: {
+              ...row.value.data,
+              data: {
+                ...row.value.data?.data,
+                price:     existing.data.price,
+                marketCap: existing.data.marketCap,
+                meta:      { ...row.value.data?.data?.meta, change1d: existing.data.meta?.change1d },
+              },
+            },
+          }
+        }
+      } catch { /* no local copy to protect — fall through to the pulled value */ }
+    }
     try { await putSyncableRecord(store, row.value); pulled++ } catch {}
   }
   return { pulled }

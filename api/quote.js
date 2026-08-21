@@ -2,6 +2,12 @@
 // The full analysis fetch is heavy/slow; this returns just the current price and
 // market cap so the price can refresh every minute without re-loading everything.
 const YahooFinance = require('yahoo-finance2').default
+// v3 requires an instance — calling .quote() on the class itself throws
+// "Call `const yahooFinance = new YahooFinance()` first" on every request,
+// which resolveQuote's per-candidate try/catch swallowed silently, so this
+// endpoint always returned { price: null } and the poller never had
+// anything to dispatch.
+const yf = new YahooFinance({ suppressNotices: ['yahooSurvey', 'ripHistorical'], validation: { logErrors: false } })
 
 // Try the symbol as given, then Indian exchange suffixes.
 async function resolveQuote(ticker) {
@@ -9,7 +15,11 @@ async function resolveQuote(ticker) {
   const candidates = /\.(NS|BO)$/i.test(base) ? [base] : [base, `${base}.NS`, `${base}.BO`]
   for (const sym of candidates) {
     try {
-      const q = await YahooFinance.quote(sym, { validateResult: false })
+      // validateResult belongs in the third (module) options argument, not
+      // the second (query) one — passed there it fails schema validation
+      // ("should NOT have additional properties") and throws instead of
+      // just skipping strict validation.
+      const q = await yf.quote(sym, {}, { validateResult: false })
       if (q && q.regularMarketPrice != null) return q
     } catch { /* try next */ }
   }
