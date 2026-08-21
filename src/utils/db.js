@@ -124,11 +124,27 @@ export async function getCached(ticker) {
   // IMPORTANT: return null ONLY when the record genuinely doesn't exist. A read
   // FAILURE must throw — otherwise the caller can't tell "no cache" from "read
   // broke" and would re-fetch + overwrite good (e.g. Screener-merged) data.
-  const rec = await txGet('financials', ticker.toUpperCase())   // throws on tx error
-  if (!rec) return null
-  // Touch lastAccessed (best-effort; a failure here must NOT lose the read).
-  try { await txPut('financials', { ...rec, lastAccessed: Date.now() }) } catch {}
-  return rec.data
+  //
+  // The get and the lastAccessed touch-write run in ONE readwrite transaction.
+  // Doing them as two separate transactions (get, then a later put) let a
+  // concurrent setCached() land in between: this function would re-save the
+  // record it read BEFORE that write, clobbering the fresh data with a stale
+  // copy stamped with a new lastAccessed. That surfaced as a manually-
+  // refreshed price reverting on reload whenever something else (e.g. the
+  // Positions panel) read the same ticker's cache while the price save was
+  // still in flight.
+  const d = await openDB()
+  return new Promise((resolve, reject) => {
+    const store = d.transaction('financials', 'readwrite').objectStore('financials')
+    const req = store.get(ticker.toUpperCase())
+    req.onsuccess = () => {
+      const rec = req.result
+      if (!rec) { resolve(null); return }
+      try { store.put({ ...rec, lastAccessed: Date.now() }) } catch {}
+      resolve(rec.data)
+    }
+    req.onerror = () => reject(req.error)
+  })
 }
 
 export async function setCached(ticker, data) {
