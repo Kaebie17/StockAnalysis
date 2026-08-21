@@ -6,7 +6,7 @@ import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
 import { assessFromQuarterly } from '../../engine/quarterlyBridge.js'
 import { fetchMarketRegime } from '../../api/marketRegime.js'
-import { getCached } from '../../utils/db.js'
+import { getCached, getCachedAge, FINANCIALS_TTL } from '../../utils/db.js'
 import { fetchQuotes } from '../../api/quotesClient.js'
 import { analyzeMany } from '../../store/analyzeTicker.js'
 import { evaluateTriggers, suggestLevels } from '../../engine/exitTriggers.js'
@@ -54,28 +54,39 @@ export default function PositionsPanel({ open, onClose }) {
     return () => { dead = true }
   }, [open, state.ticker])
 
-  // Cached analysis + live price for every held ticker, fetching anything that
-  // has never been analysed. Adding holdings you already own is the normal way
-  // in, so on a fresh install nothing is cached — waiting for the user to visit
+  // Cached analysis + live price for every held ticker, fetching anything
+  // that's never been analysed AND refreshing anything analysed more than
+  // FINANCIALS_TTL ago. Adding holdings you already own is the normal way in,
+  // so on a fresh install nothing is cached — waiting for the user to visit
   // each stock would leave the whole portfolio blank exactly when it matters.
+  // Without the age check, a stock analysed once stayed on that snapshot
+  // forever: nothing ever re-triggered analyzeTicker for a ticker that
+  // already had SOME cached record, however old, so a position could sit on
+  // month-old fundamentals indefinitely.
   React.useEffect(() => {
     if (!open || positions.length === 0) return
     let dead = false
     ;(async () => {
       const tickers = [...new Set(positions.filter(p => p.status !== 'closed').map(p => p.ticker))]
       const out = {}
-      const missing = []
+      const needsRefresh = []
       for (const t of tickers) {
-        try { const c = await getCached(t); if (c) out[t] = c; else missing.push(t) }
-        catch { missing.push(t) }
+        try {
+          const c = await getCached(t)
+          if (c) out[t] = c
+          const age = await getCachedAge(t)
+          if (!c || age == null || age > FINANCIALS_TTL) needsRefresh.push(t)
+        }
+        catch { needsRefresh.push(t) }
       }
       if (dead) return
       setAnalyses(out)
-      try { const q = await fetchQuotes(tickers); if (!dead) setQuotes(q) } catch { /* optional */ }
+      try { const q = await fetchQuotes(tickers, { force: true }); if (!dead) setQuotes(q) } catch { /* optional */ }
 
-      if (missing.length > 0 && !dead) {
-        setFetching(missing.length)
-        await analyzeMany(missing, {
+      if (needsRefresh.length > 0 && !dead) {
+        setFetching(needsRefresh.length)
+        await analyzeMany(needsRefresh, {
+          force: true,
           onEach: (t, res) => {
             if (dead) return
             setAnalyses(prev => ({ ...prev, [t]: res }))
@@ -147,7 +158,7 @@ export default function PositionsPanel({ open, onClose }) {
 
               {fetching > 0 && (
                 <p className="text-[11px] text-slate-500">
-                  Analysing {fetching} stock{fetching > 1 ? 's' : ''} you haven't opened yet…
+                  Refreshing {fetching} stock{fetching > 1 ? 's' : ''}…
                 </p>
               )}
 

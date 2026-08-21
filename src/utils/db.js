@@ -118,7 +118,19 @@ async function txGetAll(store) {
 
 // ─── Financial cache (ephemeral) ──────────────────────────────────────────────
 
-const TTL = 3600 * 1000  // 1 hour
+export const FINANCIALS_TTL = 3600 * 1000  // 1 hour
+
+// Read-only: how old the cached record for a ticker is, in ms — or null if
+// there isn't one. Lets a caller (the Positions panel, so held stocks refresh
+// themselves instead of sitting on whatever snapshot was cached the day they
+// were added) decide a cache hit is too old to trust, without the get()
+// touching lastAccessed the way getCached() does.
+export async function getCachedAge(ticker) {
+  try {
+    const rec = await txGet('financials', ticker.toUpperCase())
+    return rec ? Date.now() - (rec.timestamp ?? 0) : null
+  } catch { return null }
+}
 
 export async function getCached(ticker) {
   // IMPORTANT: return null ONLY when the record genuinely doesn't exist. A read

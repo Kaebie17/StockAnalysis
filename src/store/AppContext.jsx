@@ -67,9 +67,17 @@ function reducer(s, a) {
     case 'CSV_APPLIED':   return { ...s, ...a.payload }
     case 'MERGE_PASTED': {
       if (!s.data) return s
-      const histKey  = a.tableType + 'History'
-      const existing = s.data[histKey] || []
-      const merged   = { ...Object.fromEntries(existing.map(r => [r.year, { ...r }])) }
+      const histKey = a.tableType + 'History'
+      // Income is the one table with a reported/normalized split. Merge onto
+      // the persisted TRUE REPORTED baseline, not onto s.data.incomeHistory —
+      // when basis is 'normalized' that field holds the merged/normalized
+      // series, and merging a fresh reported paste on top of normalized
+      // figures would bake the normalization into what's supposed to be the
+      // reported source. Balance/cashflow have no such split.
+      const base = a.tableType === 'income'
+        ? (s.data.reportedIncomeHistory || s.data.incomeHistory || [])
+        : (s.data[histKey] || [])
+      const merged = { ...Object.fromEntries(base.map(r => [r.year, { ...r }])) }
       for (const row of a.taggedRows) {
         if (!row.year) continue
         if (!merged[row.year]) merged[row.year] = { year: row.year }
@@ -82,8 +90,14 @@ function reducer(s, a) {
         }
       }
       const newHistory = Object.values(merged).sort((x, y) => x.year.localeCompare(y.year))
-      const data = { ...s.data, [histKey]: newHistory, source: 'merged' }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: s.basis })
+      // A paste into the income table IS a reported-data event — a new year
+      // closing, a restated figure from a fresh Screener/AR pull. It updates
+      // the reported baseline directly; computeAll re-derives the ACTIVE
+      // series (merging in normalizedIncomeHistory) from there on its own.
+      const data = a.tableType === 'income'
+        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged' }
+        : { ...s.data, [histKey]: newHistory, source: 'merged' }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
     case 'PRICE_UPDATE': {
@@ -94,15 +108,21 @@ function reducer(s, a) {
         marketCap: a.marketCap ?? s.data.marketCap,
         meta: a.change != null ? { ...s.data.meta, change1d: a.change } : s.data.meta,
       }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: s.basis })
+      // basis lives on data.basis, not on state itself — `s.basis` is always
+      // undefined, which silently forced every price tick (poller + manual
+      // refresh) to recompute on REPORTED figures even while a user viewing
+      // Normalized basis stayed on that toggle. Every other call site here
+      // uses data.basis correctly; this one didn't.
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
     case 'SET_GROWTH_WINDOW': {
       if (!s.data) return { ...s, growthWindowYears: a.years }
       const data = { ...s.data, growthWindowYears: a.years }   // persist on data (cached per ticker)
       const next = { ...s, growthWindowYears: a.years, data }
+      // Same s.basis typo as PRICE_UPDATE had — basis lives on data.basis.
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: a.years, basis: s.basis })
+                                  { growthWindowYears: a.years, basis: data.basis })
       return { ...next, ...computed }
     }
     case 'SWAP_FIELD':    return { ...s, ...a.payload }
@@ -155,13 +175,28 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // AND toggled to it. One-offs are never silently adjusted — assessDataQuality
   // now only flags them (dq.flags); correction is manual via reconstruction.
   const dq = assessDataQuality(data?.incomeHistory || [])
+  // reportedIncomeHistory is a SEPARATE, persisted source — the true
+  // as-reported baseline. It is seeded ONCE, on the very first computeAll
+  // call a fresh fetch/paste ever sees (when genuinely absent), and left
+  // untouched on every call after that. computeAll runs on every basis
+  // toggle and every price tick, so re-deriving it from whatever
+  // data.incomeHistory currently holds — as this used to do — meant the
+  // ACTIVE series (already normalized, after the first toggle) permanently
+  // overwrote the reported baseline on every subsequent recompute. Genuine
+  // reported-data events (initial fetch, a pasted new year, a restated
+  // figure) update it explicitly at the call site instead — see
+  // MERGE_PASTED, the one place besides this bootstrap that's allowed to.
+  const reportedBase = data.reportedIncomeHistory ?? data.incomeHistory
+  // The ACTIVE series always re-derives from the two stable sources
+  // (reportedBase + normalizedIncomeHistory) rather than from the previous
+  // call's incomeHistory, so toggling the basis back and forth is always
+  // correct regardless of how many recomputes happened while normalized —
+  // mergeByYear's own contract is "start from reported."
   const useNorm = opts.basis === 'normalized' && data.normalizedIncomeHistory?.length > 0
   const income = useNorm
-    ? mergeByYear(data.incomeHistory, data.normalizedIncomeHistory)  // normalized row wins per year
-    : data.incomeHistory
-  // reportedIncomeHistory stays reported so estimate.js band-history readers
-  // (which fall back to incomeHistory anyway) are unaffected.
-  data = { ...data, incomeHistory: income, reportedIncomeHistory: data.incomeHistory }
+    ? mergeByYear(reportedBase, data.normalizedIncomeHistory)  // normalized row wins per year
+    : reportedBase
+  data = { ...data, incomeHistory: income, reportedIncomeHistory: reportedBase }
   data = applyDocFacts(migrateStoredData(data), arData)
   // The growth window reaches ratios, so every consumer — stage classification,
   // fair value, market expectation, the AI verdict and the dashboard card — uses

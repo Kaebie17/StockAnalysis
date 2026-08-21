@@ -39,10 +39,13 @@ export async function analyzeTicker(ticker, { force = false } = {}) {
       const cached = await getCached(t)
       if (cached) return cached
     } catch { /* read failure — fall through and fetch */ }
-
-    const failed = failedAt.get(t)
-    if (failed && Date.now() - failed < RETRY_AFTER_MS) return null
   }
+
+  // Applies whether or not this call is forcing past a stale cache hit — a
+  // ticker that just failed (delisted, misspelled) shouldn't be re-hit every
+  // time the Positions panel decides its cache is too old to trust.
+  const failed = failedAt.get(t)
+  if (failed && Date.now() - failed < RETRY_AFTER_MS) return null
 
   if (inflight.has(t)) return inflight.get(t)
 
@@ -76,7 +79,7 @@ export async function analyzeTicker(ticker, { force = false } = {}) {
  * throttled. `onEach` fires as each lands so rows fill in progressively rather
  * than the panel sitting blank until the last one returns.
  */
-export async function analyzeMany(tickers = [], { onEach, concurrency = 2 } = {}) {
+export async function analyzeMany(tickers = [], { onEach, concurrency = 2, force = false } = {}) {
   const queue = [...new Set(tickers.filter(Boolean))]
   const results = {}
   let idx = 0
@@ -84,7 +87,7 @@ export async function analyzeMany(tickers = [], { onEach, concurrency = 2 } = {}
   async function worker() {
     while (idx < queue.length) {
       const t = queue[idx++]
-      const res = await analyzeTicker(t)
+      const res = await analyzeTicker(t, { force })
       if (res) { results[t] = res; onEach?.(t, res) }
     }
   }

@@ -95,7 +95,11 @@ module.exports = async function handler(req, res) {
       }
       if (symbols.length === 0) return res.status(200).json({ peers: [], error: 'no_peers' })
 
-      const rows = await yf.quote(symbols, { validateResult: false })
+      // validateResult belongs in the third (module) options argument, not the
+      // second (query) one — passed there it fails quote()'s own schema check
+      // ("should NOT have additional properties") and throws, taking this
+      // endpoint down with a 500 on every call.
+      const rows = await yf.quote(symbols, {}, { validateResult: false })
       const list = Array.isArray(rows) ? rows : [rows]
       const peers = list
         .filter(q => q?.symbol && q.trailingPE > 0)
@@ -113,7 +117,8 @@ module.exports = async function handler(req, res) {
         .split(',').map(s => s.trim()).filter(Boolean).slice(0, 50)
       if (symbols.length === 0) return res.status(400).json({ error: 'Missing tickers' })
 
-      const rows = await yf.quote(symbols, { validateResult: false })
+      // Same fix as 'peers': validateResult goes in the third argument.
+      const rows = await yf.quote(symbols, {}, { validateResult: false })
       const list = Array.isArray(rows) ? rows : [rows]
       const out = {}
       for (const q of list) {
