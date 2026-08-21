@@ -88,7 +88,12 @@ function reducer(s, a) {
     }
     case 'PRICE_UPDATE': {
       if (!s.data || a.price == null) return s
-      const data = { ...s.data, price: a.price, marketCap: a.marketCap ?? s.data.marketCap }
+      const data = {
+        ...s.data,
+        price: a.price,
+        marketCap: a.marketCap ?? s.data.marketCap,
+        meta: a.change != null ? { ...s.data.meta, change1d: a.change } : s.data.meta,
+      }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: s.basis })
       return { ...s, data, ...computed }
     }
@@ -206,9 +211,10 @@ export function AppProvider({ children }) {
       try {
         const r = await fetch(`/api/quote?ticker=${encodeURIComponent(state.ticker)}`)
         const q = await r.json()
-        if (q?.price != null) dispatch({ type: 'PRICE_UPDATE', price: q.price, marketCap: q.marketCap })
+        if (q?.price != null) dispatch({ type: 'PRICE_UPDATE', price: q.price, marketCap: q.marketCap, change: q.change })
       } catch { /* ignore transient errors */ }
     }
+    tick()
     const id = setInterval(tick, POLL_MS)
     return () => { clearInterval(id); events.forEach(e => window.removeEventListener(e, bump)) }
   }, [state.ticker, state.status])
@@ -220,6 +226,13 @@ export function AppProvider({ children }) {
     }).catch(() => {})
   }, [])
 
+  useEffect(() => {
+    if (state.status === 'success' && state.data?.price != null && state.ticker) {
+      const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data.basis }) }
+      setCached(state.ticker, payload).catch(() => {})
+    }
+  }, [state.data?.price])
+  
   const load = useCallback(async (rawTicker) => {
     if (!rawTicker?.trim()) return
     const ticker = rawTicker.trim().toUpperCase()
@@ -435,9 +448,25 @@ export function AppProvider({ children }) {
     }
   }, [state.ticker, state.arData])
 
+    const refreshPrice = useCallback(async () => {
+    const ticker = state.data?.ticker || state.ticker
+    if (!ticker) return
+    try {
+      const res = await fetch(`/api/yahoo?endpoint=all&ticker=${encodeURIComponent(ticker)}`)
+      if (!res.ok) return
+      const json = await res.json()
+      const newPrice  = json?.quote?.regularMarketPrice
+      const newMcap   = json?.quote?.marketCap
+      const newChange = json?.quote?.regularMarketChangePercent
+      if (newPrice != null) {
+        dispatch({ type: 'PRICE_UPDATE', price: newPrice, marketCap: newMcap, change: newChange })
+      }
+    } catch { /* ignore transient errors */ }
+  }, [state.ticker, state.data])
+
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBasis, applyNormalization 
+      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBasis, applyNormalization, refreshPrice
     }}>
       {children}
     </AppContext.Provider>

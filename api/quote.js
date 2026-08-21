@@ -9,7 +9,7 @@ async function resolveQuote(ticker) {
   const candidates = /\.(NS|BO)$/i.test(base) ? [base] : [base, `${base}.NS`, `${base}.BO`]
   for (const sym of candidates) {
     try {
-      const q = await YahooFinance.quote(sym)
+      const q = await YahooFinance.quote(sym, { validateResult: false })
       if (q && q.regularMarketPrice != null) return q
     } catch { /* try next */ }
   }
@@ -26,6 +26,7 @@ module.exports = async function handler(req, res) {
       price:     q.regularMarketPrice ?? null,
       marketCap: q.marketCap ?? null,
       volume:    q.regularMarketVolume ?? null,
+      change:    q.regularMarketChangePercent ?? null,
       currency:  q.currency ?? null,
     })
   } catch (e) {

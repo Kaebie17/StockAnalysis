@@ -126,7 +126,7 @@ export default function Header({ onOpenTable }) {
 }
 
 function IdentityBar({ onOpenTable }) {
-  const { state, overrideStage, setBasis } = useApp()
+    const { state, overrideStage, setBasis, refreshPrice } = useApp()
   const { data, ratioResult, stage } = state
   const [normOpen, setNormOpen] = React.useState(false)
   const basis = data?.basis || 'reported'
@@ -143,24 +143,10 @@ function IdentityBar({ onOpenTable }) {
   const cur       = data?.currency === 'INR' ? '₹' : '$'
 
   const handleRefreshPrice = async () => {
-    const ticker = state?.data?.ticker || state?.ticker
-    if (!ticker || refreshing) return
+    if (refreshing) return
     setRefreshing(true)
     try {
-      // Lightweight fetch: hits backend quote endpoint directly instead of full pipeline
-      const res = await fetch(`/api/yahoo?endpoint=all&ticker=${encodeURIComponent(ticker)}`)
-      if (res.ok) {
-        const json = await res.json()
-        const newPrice = json?.quote?.regularMarketPrice
-        const newChange = json?.quote?.regularMarketChangePercent
-
-        if (newPrice != null) {
-          ratioResult.price = newPrice
-          if (data?.meta) data.meta.change1d = newChange ?? data.meta.change1d
-        }
-      }
-    } catch (err) {
-      console.warn('Failed to refresh CMP:', err)
+      await refreshPrice()
     } finally {
       setTimeout(() => setRefreshing(false), 500)
     }
