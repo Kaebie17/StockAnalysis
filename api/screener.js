@@ -78,10 +78,15 @@ const INCOME_POSITIONS  = { revenue:0, expenses:1, operatingProfit:2, otherIncom
 const BALANCE_POSITIONS = { equityCapital:0, reserves:1, borrowings:2, totalLiabilities:4, fixedAssets:5, investments:7, totalAssets:9 }
 const CF_POSITIONS      = { operatingCF:0, investingCF:1, financingCF:2, freeCashFlow:4 }
 
+const { checkOrigin, rateLimit, ALLOWED_ORIGINS } = require('./_lib.js')
+
 module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*')
+  const origin = req.headers.origin
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGINS.has(origin) ? origin : [...ALLOWED_ORIGINS][0])
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
   if (req.method === 'OPTIONS') return res.status(200).end()
+  if (!checkOrigin(req, res)) return
+  if (!rateLimit(req, res, { max: 40, windowMs: 60_000, keyPrefix: 'screener' })) return
 
   const { ticker, consolidated = 'true' } = req.query
   if (!ticker) return res.status(400).json({ error: 'Missing ticker' })

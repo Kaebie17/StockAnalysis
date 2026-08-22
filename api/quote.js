@@ -8,6 +8,7 @@ const YahooFinance = require('yahoo-finance2').default
 // endpoint always returned { price: null } and the poller never had
 // anything to dispatch.
 const yf = new YahooFinance({ suppressNotices: ['yahooSurvey', 'ripHistorical'], validation: { logErrors: false } })
+const { checkOrigin, rateLimit } = require('./_lib.js')
 
 // Try the symbol as given, then Indian exchange suffixes.
 async function resolveQuote(ticker) {
@@ -27,6 +28,10 @@ async function resolveQuote(ticker) {
 }
 
 module.exports = async function handler(req, res) {
+  if (!checkOrigin(req, res)) return
+  // The poller ticks every 60s per open ticker, plus a poll on mount — one
+  // caller rarely needs more than a handful of calls a minute.
+  if (!rateLimit(req, res, { max: 20, windowMs: 60_000, keyPrefix: 'quote' })) return
   const ticker = req.query?.ticker || req.body?.ticker
   if (!ticker) { res.status(400).json({ price: null, error: 'no ticker' }); return }
   try {

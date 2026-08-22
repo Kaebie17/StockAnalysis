@@ -258,11 +258,16 @@ function decodeXml(s) {
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
 }
 
+const { checkOrigin, rateLimit, ALLOWED_ORIGINS } = require('./_lib.js')
+
 // ── handler ───────────────────────────────────────────────────────────────────
 module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*')
+  const origin = req.headers.origin
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGINS.has(origin) ? origin : [...ALLOWED_ORIGINS][0])
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
   if (req.method === 'OPTIONS') return res.status(200).end()
+  if (!checkOrigin(req, res)) return
+  if (!rateLimit(req, res, { max: 60, windowMs: 60_000, keyPrefix: 'news' })) return
 
   const query = (req.query.query || req.query.ticker || '').toString().trim()
   const ticker = (req.query.ticker || '').toString().trim()

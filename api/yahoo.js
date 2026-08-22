@@ -9,6 +9,7 @@
  */
 
 const YahooFinance = require('yahoo-finance2').default
+const { checkOrigin, rateLimit, ALLOWED_ORIGINS } = require('./_lib.js')
 
 const yf = new YahooFinance({
   suppressNotices: ['yahooSurvey', 'ripHistorical'],
@@ -16,9 +17,14 @@ const yf = new YahooFinance({
 })
 
 module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*')
+  const origin = req.headers.origin
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGINS.has(origin) ? origin : [...ALLOWED_ORIGINS][0])
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
   if (req.method === 'OPTIONS') return res.status(200).end()
+  if (!checkOrigin(req, res)) return
+  // Generous: the Positions panel can legitimately burst ~10-20 calls here
+  // (endpoint=all per stale holding) the moment it opens on a big portfolio.
+  if (!rateLimit(req, res, { max: 90, windowMs: 60_000, keyPrefix: 'yahoo' })) return
 
   const { ticker, endpoint, query } = req.query
 

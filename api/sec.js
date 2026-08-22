@@ -18,6 +18,8 @@
  *   { incomeHistory:[{year,...}], balanceHistory:[...], cashflowHistory:[...] }
  */
 
+import { checkOrigin, rateLimit } from './_lib.js'
+
 const UA = process.env.SEC_USER_AGENT || 'StockAnalyzr (contact: set SEC_USER_AGENT env var)'
 const MAX_YEARS = 12   // valuation caps growth windows at ~10y; 12 covers it with margin
 
@@ -144,6 +146,8 @@ function buildRows(facts, conceptGroup) {
 }
 
 export default async function handler(req, res) {
+  if (!checkOrigin(req, res)) return
+  if (!rateLimit(req, res, { max: 40, windowMs: 60_000, keyPrefix: 'sec' })) return
   const ticker = String(req.query?.ticker || '').trim().toUpperCase()
   if (!ticker) { res.status(400).json({ error: 'ticker required' }); return }
   // US only — Indian tickers use the Screener path.

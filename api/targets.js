@@ -15,6 +15,7 @@
  */
 
 const YahooFinance = require('yahoo-finance2').default
+const { checkOrigin, rateLimit, ALLOWED_ORIGINS } = require('./_lib.js')
 
 const UA = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
@@ -23,9 +24,12 @@ const UA = {
 }
 
 module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*')
+  const origin = req.headers.origin
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGINS.has(origin) ? origin : [...ALLOWED_ORIGINS][0])
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
   if (req.method === 'OPTIONS') return res.status(200).end()
+  if (!checkOrigin(req, res)) return
+  if (!rateLimit(req, res, { max: 40, windowMs: 60_000, keyPrefix: 'targets' })) return
   res.setHeader('Cache-Control', 's-maxage=1800, stale-while-revalidate=3600')
 
   const raw = (req.query.ticker || '').toString().trim()

@@ -16,6 +16,8 @@
 //      stale-but-real rate is better than an invented one, and the client shows
 //      how old it is.
 
+import { checkOrigin, requireOrigin, rateLimit } from './_lib.js'
+
 const DEFAULT_MODEL = 'gemini-2.5-flash'
 
 // Plausible bands by market. A rate outside these is rejected regardless of how
@@ -48,6 +50,17 @@ export default async function handler(req, res) {
   }
 
   const key = q.userKey || process.env.GEMINI_API_KEY
+
+  // Same reasoning as /api/analyze: a request relying on the server's own
+  // GEMINI_API_KEY has a real cost, and `force=1` bypasses this endpoint's
+  // month-long cache entirely — without this check, anyone could repeatedly
+  // force a fresh (billed) lookup with no key of their own. A user-supplied
+  // key only spends the user's own quota.
+  const usingServerKey = !q.userKey && !!process.env.GEMINI_API_KEY
+  if (usingServerKey) { if (!requireOrigin(req, res)) return }
+  else { if (!checkOrigin(req, res)) return }
+  if (!rateLimit(req, res, { max: 10, windowMs: 60_000, keyPrefix: 'riskfree' })) return
+
   if (!key) {
     return res.status(200).json(cached
       ? { ...cached, source: 'stale', note: 'No API key — showing the last value fetched.' }
