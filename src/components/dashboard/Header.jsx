@@ -129,6 +129,9 @@ function IdentityBar({ onOpenTable }) {
     const { state, overrideStage, setBasis, refreshPrice } = useApp()
   const { data, ratioResult, stage } = state
   const [normOpen, setNormOpen] = React.useState(false)
+  // Which flag (if any) opened the modal — names the year/note in its banner
+  // and defaults it to table mode. null = the plain "⚖ Normalize" button.
+  const [normFlag, setNormFlag] = React.useState(null)
   const basis = data?.basis || 'reported'
   const hasNorm = (data?.normalizedIncomeHistory?.length || 0) > 0
   const [refreshing, setRefreshing] = React.useState(false)
@@ -203,7 +206,8 @@ function IdentityBar({ onOpenTable }) {
 
       {/* Row 3: data vintage badge (its own line — it's long) */}
       <div className="flex flex-wrap">
-        <DataVintageBadge data={data} state={state} onOpenTable={onOpenTable} />
+        <DataVintageBadge data={data} state={state}
+          onNormalize={f => { setNormFlag(f); setNormOpen(true) }} />
       </div>
 
       {/* Row 4: stage + basis controls + dividend — wrap as whole units */}
@@ -224,7 +228,7 @@ function IdentityBar({ onOpenTable }) {
           <option value="TRANSITION">🔄 Transition</option>
           <option value="ESTABLISHED">🏛️ Established</option>
         </select>
-        <button onClick={() => setNormOpen(true)} title="Normalize a one-off"
+        <button onClick={() => { setNormFlag(null); setNormOpen(true) }} title="Normalize a one-off"
           className="text-xs px-2 py-0.5 rounded border border-navy-700 text-slate-400 hover:text-accent hover:border-accent/50 transition-colors whitespace-nowrap">
           ⚖ Normalize
         </button>
@@ -241,7 +245,7 @@ function IdentityBar({ onOpenTable }) {
         <DividendLine data={data} ratioResult={ratioResult} cur={cur} />
       </div>
 
-      <NormalizeModal open={normOpen} onClose={() => setNormOpen(false)} />
+      <NormalizeModal open={normOpen} onClose={() => setNormOpen(false)} flag={normFlag} />
     </div>
   )
 }
@@ -305,7 +309,7 @@ function DividendLine({ data, ratioResult, cur }) {
  * the company has almost certainly reported a newer year that data
  * providers (including Yahoo) simply haven't ingested yet.
  */
-function DataVintageBadge({ data, state, onOpenTable }) {
+function DataVintageBadge({ data, state, onNormalize }) {
   const years = (data.incomeHistory || []).map(r => r.year).filter(Boolean).sort()
   if (years.length === 0) {
     return <span className="text-xs text-slate-600">📡 No annual data available</span>
@@ -335,7 +339,7 @@ function DataVintageBadge({ data, state, onOpenTable }) {
       </span>
       {isStale && <span>⚠️</span>}
       {quality.hasIssues && (
-        <DataQualityDot quality={quality} ticker={state.ticker} onOpenTable={onOpenTable} />
+        <DataQualityDot quality={quality} ticker={state.ticker} onNormalize={onNormalize} />
       )}
     </span>
   )
@@ -348,7 +352,7 @@ function DataVintageBadge({ data, state, onOpenTable }) {
  * because a user reading a margin needs to know both — that FY24 has had an
  * exceptional item removed is as material as that FY26 looks odd.
  */
-function DataQualityDot({ quality, ticker, onOpenTable }) {
+function DataQualityDot({ quality, ticker, onNormalize }) {
   const [open, setOpen] = React.useState(false)
   const [resolutions, setResolutions] = React.useState([])
 
@@ -428,14 +432,14 @@ function DataQualityDot({ quality, ticker, onOpenTable }) {
                       </span>
                       {!settled && (
                         <span className="flex items-center gap-3 mt-1">
-                          {/* Routes to where the answer lives. A one-off is
-                              usually inside Other income or an expense sub-line,
-                              which Screener keeps collapsed — so a normal copy
-                              misses it and re-pasting with those rows expanded
-                              resolves it without anyone typing a figure. */}
-                          <button onClick={() => { setOpen(false); onOpenTable?.(f.resolveHint || 'income') }}
+                          {/* Opens the normalize flow (restated table or a
+                              disclosed-excerpt correction), not a raw re-paste —
+                              the figure is already populated, so a plain re-paste
+                              is a no-op; this is the one path that can actually
+                              overwrite it. */}
+                          <button onClick={() => { setOpen(false); onNormalize?.(f) }}
                             className="text-accent hover:text-accent-light">
-                            re-paste P&amp;L with sub-rows expanded
+                            normalize this year →
                           </button>
                           <button onClick={() => resolve(f, 'accepted')}
                             className="text-slate-500 hover:text-slate-300">

@@ -157,10 +157,6 @@ export function suspectYears(incomeHistory = [], { alreadyAdjusted = [] } = {}) 
         year: p.year, kind: 'margin-outlier',
         marginPct: round(p.margin, 1), typicalPct: round(median, 1),
         note: `Margin of ${round(p.margin, 1)}% against a usual ${round(median, 1)}%`,
-        // A one-off is usually inside Other income or an expense sub-line, which
-        // Screener keeps collapsed — a normal copy misses it, so re-pasting with
-        // those rows expanded resolves this more often than not.
-        resolveHint: 'income',
       })
     }
   }
@@ -217,10 +213,6 @@ export function pnlSpikes(incomeHistory = []) {
         kind: 'pnl-spike',
         field,
         note: `${label} ${steps[i] > 0 ? 'jumped' : 'dropped'} ${Math.abs(round(steps[i] * 100, 0))}% in ${pts[i + 1].year}, well beyond its usual year-to-year change`,
-        // Every SPIKE_FIELDS line lives on the P&L, so the fix is the same
-        // re-paste-with-sub-rows-expanded action as a margin outlier — there is
-        // no 'window' table for this to resolve to.
-        resolveHint: 'income',
       })
     }
   }
@@ -241,7 +233,7 @@ export function assessDataQuality(incomeHistory = [], opts = {}) {
     ...pnlSpikes(rows),
   ]
   const userFlags = Object.entries(opts.flags || {})
-    .map(([year, note]) => ({ year: Number(year), kind: 'user-flagged', note, resolveHint: 'income' }))
+    .map(([year, note]) => ({ year: Number(year), kind: 'user-flagged', note }))
   const flags = [...detected, ...userFlags].sort((a, b) => (b.year || 0) - (a.year || 0))
 
   const years = rows.map(yearOf).filter(y => y != null).sort((a, b) => a - b)

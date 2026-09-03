@@ -29,7 +29,7 @@ const LINE_LABELS = {
   depreciation: 'Depreciation', tax: 'Tax', revenue: 'Revenue',
 }
 
-export default function NormalizeModal({ open, onClose }) {
+export default function NormalizeModal({ open, onClose, flag = null }) {
   const { state, applyNormalization, setBasis } = useApp()
   const income   = state?.data?.incomeHistory || []
   const currency = state?.data?.currency
@@ -38,7 +38,11 @@ export default function NormalizeModal({ open, onClose }) {
   const sym   = cur(currency)
   const scale = currency === 'INR' ? 1e7 : 1
 
-  const [mode, setMode]         = useState('excerpt')
+  // Arriving from a data-quality flag ("Depreciation jumped 40%...") means the
+  // fix is a full restated table more often than not — Screener/the AR usually
+  // give you the whole year again, not one isolated line. Table mode is the
+  // default here; excerpt stays one tab away for a single disclosed line-item.
+  const [mode, setMode]         = useState(flag ? 'table' : 'excerpt')
   const [text, setText]         = useState('')
   const [proposal, setProposal] = useState(null)
   const [edit, setEdit]         = useState(null)
@@ -47,17 +51,21 @@ export default function NormalizeModal({ open, onClose }) {
 
   useEffect(() => {
     if (!open) return
-    setMode('excerpt'); setText(''); setProposal(null); setEdit(null)
+    setMode(flag ? 'table' : 'excerpt'); setText(''); setProposal(null)
+    // Pre-seed year (and line, when the flag named one Screener line) so
+    // switching to excerpt mode doesn't make the user re-type what the flag
+    // already told the app.
+    setEdit(flag ? { line: LINE_LABELS[flag.field] ? flag.field : '', year: String(flag.year), mode: 'set', value: null, percent: null } : null)
     setTableResult(null); setApplied(false)
-  }, [open])
+  }, [open, flag])
 
   useEffect(() => {
     if (!open || mode !== 'excerpt') return
-    if (!text.trim()) { setProposal(null); setEdit(null); return }
+    if (!text.trim()) { setProposal(null); if (!flag) setEdit(null); return }
     const p = parseExcerpt(text)
     setProposal(p)
     setEdit({ line: p.line, year: p.year, mode: p.mode, value: p.value, percent: p.percent })
-  }, [open, mode, text])
+  }, [open, mode, text, flag])
 
   if (!open) return null
 
@@ -121,6 +129,12 @@ export default function NormalizeModal({ open, onClose }) {
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">{'\u2715'}</button>
         </div>
+
+        {flag && !applied && (
+          <div className="text-xs rounded-lg px-3 py-2 bg-neutral/10 text-neutral">
+            Fixing FY{flag.year}: {flag.note}
+          </div>
+        )}
 
         {applied ? (
           <div className="text-center py-6 space-y-3">
