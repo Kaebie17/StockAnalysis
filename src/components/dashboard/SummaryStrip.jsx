@@ -164,7 +164,7 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
             <div className={`text-xl font-bold ${signalColor(quality?.label)}`}>
               {quality ? `${quality.score}/10` : '—'}
             </div>
-            <div className="text-xs text-slate-400">Quality score</div>
+            <div className="text-xs text-slate-400">Fundamentals score</div>
             {ratios?.roe?.value       != null && <div className="text-xs text-slate-500">ROE: {ratios.roe.value.toFixed(1)}%</div>}
             {ratios?.netMargin?.value  != null && <div className="text-xs text-slate-500">Net Margin: {ratios.netMargin.value.toFixed(1)}%</div>}
             {ratioResult?.fcf          != null && (

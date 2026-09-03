@@ -13,7 +13,7 @@ import { useEstimate } from '../../store/useEstimate.js'
 
 export default function GrowthWindowPicker() {
   const { state, setGrowthWindowYears } = useApp()
-  const { setGrowthWindow, estimate } = useEstimate(state)
+  const { estimate } = useEstimate(state)
 
   const years = (state.data?.incomeHistory || [])
     .map(r => String(r?.year ?? '').match(/(?:19|20)\d{2}/)?.[0])
@@ -34,10 +34,13 @@ export default function GrowthWindowPicker() {
     ?? maxWin
 
   // Commit on release, not on every drag tick, to avoid a recompute per pixel.
-  const commit = async (n) => {
+  // Only setGrowthWindowYears (AppContext, global) actually drives anything —
+  // ratioResult.ratios.revCagr is recomputed from it and every consumer
+  // (Estimate 2 included, via resolveGrowthBasis reading revCagr directly)
+  // reads that, not a second per-component copy of the window.
+  const commit = (n) => {
     const v = n >= maxWin ? maxWin : n
     setGrowthWindowYears(v)
-    await setGrowthWindow(v)
   }
 
   // A revision/guidance outranks any window, so the control is inert until cleared.

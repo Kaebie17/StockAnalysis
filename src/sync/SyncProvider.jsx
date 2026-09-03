@@ -30,12 +30,22 @@ function errText(e) {
 export function SyncProvider({ children }) {
   const [user, setUser] = useState(null)
   const [status, setStatus] = useState(syncEnabled() ? 'idle' : 'off')
+  const [error, setError] = useState(null)
 
   const runInitialSync = useCallback(async () => {
     setStatus('syncing')
-    await pullAll()
-    await pushAllLocal()
-    setStatus('synced')
+    setError(null)
+    const pullResult = await pullAll()
+    const pushResult = await pushAllLocal()
+    // Both halves have to actually succeed for this to mean "synced" — a pull
+    // or push that silently failed used to still land here and show the same
+    // "Synced" label as a real success.
+    if (pullResult?.ok === false || pushResult?.ok === false) {
+      setError(errText(pullResult?.ok === false ? pullResult.error : pushResult.error))
+      setStatus('error')
+    } else {
+      setStatus('synced')
+    }
   }, [])
 
   useEffect(() => {
@@ -79,13 +89,13 @@ export function SyncProvider({ children }) {
   const signOut = useCallback(async () => {
     if (!syncEnabled()) return
     await supabase.auth.signOut()
-    setUser(null); setStatus('idle')
+    setUser(null); setStatus('idle'); setError(null)
   }, [])
 
   const syncNow = useCallback(async () => { if (user) await runInitialSync() }, [user, runInitialSync])
 
   return (
-    <SyncCtx.Provider value={{ enabled: syncEnabled(), user, status, signIn, verifyCode, signOut, syncNow }}>
+    <SyncCtx.Provider value={{ enabled: syncEnabled(), user, status, error, signIn, verifyCode, signOut, syncNow }}>
       {children}
     </SyncCtx.Provider>
   )

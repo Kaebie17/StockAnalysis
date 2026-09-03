@@ -15,10 +15,20 @@ export function buildBlockSummary(state, extra = {}) {
   const { valuation: v, quality: q, technicals: t, marketExpectation: me, ratioResult: r, data } = state
   const num = x => (x == null || isNaN(x) ? null : +(+x).toFixed(2))
 
-  const models = (v.topModels || []).map(m => ({
-    model: m.name, fairValue: num(m.value),
-    vsCmpPct: r.price ? num(((m.value - r.price) / r.price) * 100) : null,
-  }))
+  // v.topModels / v.fvRangeLow / v.fvRangeHigh never existed on what
+  // runValuation() actually returns (models/rangeLow/rangeHigh/primaryModel) —
+  // this was silently building an empty AI-verdict payload for every stock.
+  // "Most relevant" = the same stage/sector weight ordering the fair-value
+  // primary-model pick uses, so the verdict sees the same ranking the panel does.
+  const weights = v.modelMeta?.weights || {}
+  const models = Object.entries(v.models || {})
+    .filter(([, x]) => x?.value != null)
+    .sort(([a], [b]) => (weights[b] ?? 0) - (weights[a] ?? 0))
+    .slice(0, 2)
+    .map(([k, x]) => ({
+      model: k, fairValue: num(x.value),
+      vsCmpPct: r.price ? num(((x.value - r.price) / r.price) * 100) : null,
+    }))
   const allModels = Object.entries(v.models || {})
     .filter(([, x]) => x?.value != null)
     .map(([k, x]) => ({ model: k, fairValue: num(x.value) }))
@@ -39,7 +49,7 @@ export function buildBlockSummary(state, extra = {}) {
     // ── VALUATION highlight ──
     valuation: {
       signal: v.signal,
-      fairValueRange: [num(v.fvRangeLow), num(v.fvRangeHigh)],
+      fairValueRange: [num(v.rangeLow), num(v.rangeHigh)],
       basedOnModels: models,          // two most relevant + fair value + %vs CMP
       allModelFairValues: allModels,
       upsidePct: num(v.upside),

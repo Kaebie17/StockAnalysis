@@ -76,16 +76,27 @@ function PredictorRow({ predictor }) {
 
 // Scoring weights — moved here from the old Scoring Studio gear. Fundamentals
 // scoring is a fundamentals concern, so it lives in the fundamentals block.
+//
+// Keys here MUST match a predictor `key` in scoreQuality() (quality.js) — that's
+// what weights[key] is read by. Three didn't: 'debtTrend'/'interestCoverage' were
+// spelled differently from the real predictors ('de'/'icr'), so moving those
+// sliders silently did nothing, and 'roce' — a real, weighted predictor — had no
+// slider at all. 'grossMargin' had no matching predictor to begin with; rather
+// than inventing one, it's dropped (see the note where scoreQuality reads
+// ebitdaMargin — Indian P&Ls mostly don't carry a separate reported gross-profit
+// line the way EBITDA/operating margin is already carried, so a gross-margin
+// predictor would score null on most tickers, and it overlaps conceptually with
+// the operating-margin one already here).
 const FUNDAMENTAL_WEIGHTS = [
-  { key: 'revenueGrowth',    label: 'Revenue Growth',            defaultW: 1.5 },
-  { key: 'grossMargin',      label: 'Gross Margin',              defaultW: 1 },
-  { key: 'ebitdaMargin',     label: 'EBITDA Margin',             defaultW: 1 },
-  { key: 'netMargin',        label: 'Net Margin',                defaultW: 1 },
-  { key: 'fcfConversion',    label: 'FCF Conversion',            defaultW: 1.5 },
-  { key: 'debtTrend',        label: 'Debt Management',           defaultW: 1 },
-  { key: 'roe',              label: 'Return on Equity',          defaultW: 1.5 },
-  { key: 'interestCoverage', label: 'Interest Coverage',         defaultW: 1 },
-  { key: 'consistency',      label: 'Earnings Consistency',      defaultW: 1 },
+  { key: 'revenueGrowth', label: 'Revenue Growth',       defaultW: 1.5 },
+  { key: 'ebitdaMargin',  label: 'EBITDA Margin',        defaultW: 1 },
+  { key: 'netMargin',     label: 'Net Margin',           defaultW: 1 },
+  { key: 'fcfConversion', label: 'FCF Conversion',       defaultW: 1.5 },
+  { key: 'de',            label: 'Debt Management',      defaultW: 1 },
+  { key: 'roe',           label: 'Return on Equity',     defaultW: 1.5 },
+  { key: 'roce',          label: 'Return on Capital Employed', defaultW: 1 },
+  { key: 'icr',           label: 'Interest Coverage',    defaultW: 1 },
+  { key: 'consistency',   label: 'Earnings Consistency', defaultW: 1 },
 ]
 
 export default function FundamentalsPanel({ open, onClose }) {
@@ -161,7 +172,7 @@ export default function FundamentalsPanel({ open, onClose }) {
         <div>
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-              Quality Score — {quality.score}/10
+              Fundamentals Score — {quality.score}/10
             </span>
             <span className={`badge ${quality.label === 'EXCELLENT' || quality.label === 'HEALTHY' ? 'badge-bull' : quality.label === 'WEAK' ? 'badge-bear' : 'badge-neutral'}`}>
               {quality.label}

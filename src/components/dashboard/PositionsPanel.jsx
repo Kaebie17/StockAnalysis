@@ -1,12 +1,12 @@
 import React, { useMemo, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import PositionModal from './PositionModal.jsx'
-import { usePositions, positionMath, removePosition, saveExitPlan, updatePositionDate } from '../../store/usePositions.js'
+import { usePositions, positionMath, removePosition, saveExitPlan, updatePositionDate, backfillSnapshot } from '../../store/usePositions.js'
 import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
 import { assessFromQuarterly } from '../../engine/quarterlyBridge.js'
 import { fetchMarketRegime } from '../../api/marketRegime.js'
-import { getCached, getCachedAge, FINANCIALS_TTL } from '../../utils/db.js'
+import { getCached, getCachedAge, FINANCIALS_TTL, loadExitPlanForTicker } from '../../utils/db.js'
 import { fetchQuotes } from '../../api/quotesClient.js'
 import { analyzeMany } from '../../store/analyzeTicker.js'
 import { evaluateTriggers, suggestLevels } from '../../engine/exitTriggers.js'
@@ -45,6 +45,7 @@ export default function PositionsPanel({ open, onClose }) {
   const [analyses, setAnalyses] = useState({})
   const [quotes, setQuotes] = useState({})
   const [fetching, setFetching] = useState(0)
+  const [exitPlans, setExitPlans] = useState({})   // ticker -> {stopPrice, targetPrice}
 
   React.useEffect(() => {
     if (!open) return
@@ -63,6 +64,19 @@ export default function PositionsPanel({ open, onClose }) {
   // forever: nothing ever re-triggered analyzeTicker for a ticker that
   // already had SOME cached record, however old, so a position could sit on
   // month-old fundamentals indefinitely.
+  // Give any bulk-added lot a baseline it never got. backfillSnapshot exists
+  // in usePositions.js specifically for this ("A lot added through bulk entry
+  // has no snapshot"), but nothing ever called it — a lot added without its
+  // ticker open in the dashboard stayed on a permanently unavailable "vs your
+  // entry" bar forever, exactly the case the function's own comment names.
+  const backfillMissing = async (ticker, analysis) => {
+    if (!analysis?.ratioResult) return
+    const need = positions.filter(p => p.ticker === ticker && p.status !== 'closed' && !p.snapshot?.estimate)
+    if (need.length === 0) return
+    for (const p of need) { try { await backfillSnapshot(p, analysis) } catch { /* best effort */ } }
+    refresh()
+  }
+
   React.useEffect(() => {
     if (!open || positions.length === 0) return
     let dead = false
@@ -81,6 +95,7 @@ export default function PositionsPanel({ open, onClose }) {
       }
       if (dead) return
       setAnalyses(out)
+      for (const [t, a] of Object.entries(out)) backfillMissing(t, a)
       try { const q = await fetchQuotes(tickers, { force: true }); if (!dead) setQuotes(q) } catch { /* optional */ }
 
       if (needsRefresh.length > 0 && !dead) {
@@ -91,10 +106,27 @@ export default function PositionsPanel({ open, onClose }) {
             if (dead) return
             setAnalyses(prev => ({ ...prev, [t]: res }))
             setFetching(n => Math.max(0, n - 1))
+            backfillMissing(t, res)
           },
         })
         if (!dead) setFetching(0)
       }
+    })()
+    return () => { dead = true }
+  }, [open, positions])
+
+  // Exit plans, per ticker — independent of which lot IDs currently exist, so
+  // a partial sale or a backdated add can't silently drop the alert.
+  React.useEffect(() => {
+    if (!open || positions.length === 0) return
+    let dead = false
+    ;(async () => {
+      const tickers = [...new Set(positions.filter(p => p.status !== 'closed').map(p => p.ticker))]
+      const out = {}
+      for (const t of tickers) {
+        try { const p = await loadExitPlanForTicker(t); if (p) out[t] = p } catch { /* no plan set */ }
+      }
+      if (!dead) setExitPlans(out)
     })()
     return () => { dead = true }
   }, [open, positions])
@@ -118,7 +150,16 @@ export default function PositionsPanel({ open, onClose }) {
     return analyses?.[t]?.ratioResult?.price ?? null
   }
 
-  const totalValue = holdings.reduce((s, h) => s + h.shares * (priceOf(h.ticker) ?? h.avgPrice ?? 0), 0)
+  // exitTriggers.js's concentration check is explicit that both sides must be
+  // measured the same way — comparing one lot's market VALUE against a
+  // portfolio total that's silently part cost (whichever holdings happened to
+  // be missing a live quote) overstates or understates every OTHER holding's
+  // share of the book. totalValue is now only ever a clean, fully-priced
+  // figure — null the moment any holding lacks a quote — and totalCost is
+  // always available as the consistent fallback basis for both sides.
+  const allPriced = holdings.every(h => priceOf(h.ticker) != null)
+  const totalValue = allPriced ? holdings.reduce((s, h) => s + h.shares * priceOf(h.ticker), 0) : null
+  const totalCost  = holdings.reduce((s, h) => s + h.shares * (h.avgPrice ?? 0), 0)
 
   if (!open) return null
 
@@ -167,12 +208,17 @@ export default function PositionsPanel({ open, onClose }) {
                   price={priceOf(h.ticker)}
                   analysis={state.ticker === h.ticker && state.ratioResult ? state : analyses[h.ticker]}
                   isLive={state.ticker === h.ticker && !!state.ratioResult}
-                  state={state} regime={regime} totalValue={totalValue}
+                  state={state} regime={regime} totalValue={totalValue} totalCost={totalCost}
+                  exitPlan={exitPlans[h.ticker]}
                   expanded={expanded === h.ticker}
                   onToggle={() => setExpanded(e => (e === h.ticker ? null : h.ticker))}
                   onAnalyse={() => { load(h.ticker); onClose() }}
                   onSell={lot => setSellTarget(lot)}
-                  onRefresh={refresh} />
+                  onRefresh={refresh}
+                  onSaveExitPlan={async plan => {
+                    const rec = await saveExitPlan(h.ticker, plan)
+                    setExitPlans(prev => ({ ...prev, [h.ticker]: rec }))
+                  }} />
               ))}
 
               {closed.length > 0 && (
@@ -212,8 +258,8 @@ export default function PositionsPanel({ open, onClose }) {
 /**
  * One holding: a scannable row, expanding to the analysis and the lot ledger.
  */
-function Holding({ agg, price, analysis, isLive, state, regime, totalValue,
-                   expanded, onToggle, onAnalyse, onSell, onRefresh }) {
+function Holding({ agg, price, analysis, isLive, state, regime, totalValue, totalCost, exitPlan,
+                   expanded, onToggle, onAnalyse, onSell, onRefresh, onSaveExitPlan }) {
   const c = agg.lots[0]?.snapshot?.currency
   const m = holdingMath(agg, price)
 
@@ -268,14 +314,14 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue,
         marketExpectation: analysis.marketExpectation,
         guidance: isLive ? state.guidance : null, guidanceAssessment: ga,
         priceHistory: analysis.data?.priceHistory || [],
-        portfolioValue: totalValue, plan: agg.lots[0]?.plan,
+        portfolioValue: totalValue, portfolioCost: totalCost, plan: exitPlan,
       }),
       { estimate: est,
         suggestions: suggestLevels({
           price, estimate: est, technicals: analysis.technicals,
           priceHistory: analysis.data?.priceHistory || [], buyPrice: agg.avgPrice }) })
     return { estimate: est, health: h, triggers: t }
-  }, [analysis, price, isLive, state, regime, agg, totalValue])
+  }, [analysis, price, isLive, state, regime, agg, totalValue, totalCost, exitPlan])
 
   const level = summaryLevel(health)
   const firedCount = triggers?.fired?.length || 0
@@ -342,14 +388,21 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue,
           {health?.stale && (
             <p className="text-[10px] text-slate-600">from the last saved analysis</p>
           )}
+          {/* evaluateTriggers() computes this but nothing read it, so a holding
+              with no analysis available looked identical to one that was
+              checked and came back clean. */}
+          {triggers?.empty && (
+            <p className="text-[10px] text-slate-600">not enough data to evaluate exit conditions yet</p>
+          )}
 
           <LotLedger agg={agg} price={price} currency={c}
                      indexNow={regime?.indexLevel ?? null}
+                     baselineFrom={triggers?.baselineFrom}
                      onSell={onSell} onRefresh={onRefresh} />
 
           {triggers && (
-            <ExitPlan agg={agg} triggers={triggers} price={price} currency={c}
-              onSave={async plan => { await saveExitPlan(agg.lots[0].id, plan); onRefresh() }} />
+            <ExitPlan plan={exitPlan} triggers={triggers} price={price} currency={c}
+              onSave={onSaveExitPlan} />
           )}
         </div>
       )}
@@ -385,6 +438,12 @@ function BarRow({ label, bar, mode = 'level' }) {
       <span className={`truncate min-w-0 ${bar?.available ? 'text-slate-400' : 'text-slate-600'}`}>
         {bar?.available ? bar.label : bar?.reason}
       </span>
+      {/* estimateBar() computes this but nothing rendered it — a baseline
+          captured today (not at purchase) drifting was shown with the same
+          confidence as a genuine purchase-day reading. */}
+      {bar?.available && bar?.lateSnapshot && (
+        <span className="text-neutral shrink-0" title="Baseline wasn't captured at purchase — this drift reading starts from a later date">⚠</span>
+      )}
     </div>
   )
 }
@@ -430,7 +489,7 @@ function Bars({ level }) {
  * The lots, as a ledger. No analysis here — that lives above, on the holding.
  * These rows say how the position was built and let each entry be corrected.
  */
-function LotLedger({ agg, price, currency, indexNow, onSell, onRefresh }) {
+function LotLedger({ agg, price, currency, indexNow, baselineFrom, onSell, onRefresh }) {
   const [editing, setEditing] = useState(null)
   const [menu, setMenu] = useState(null)
   const bench = benchmarkReturn(agg.snapshot, price, indexNow)
@@ -502,7 +561,15 @@ function LotLedger({ agg, price, currency, indexNow, onSell, onRefresh }) {
 
       {agg.snapshot?.backfilled && (
         <p className="text-[10px] text-neutral">
-          set the real purchase dates to compare from when you actually bought
+          baseline starts {baselineFrom ? dstr(baselineFrom) : 'today'} — set the real purchase dates to compare from when you actually bought
+        </p>
+      )}
+      {/* Computed by positionAggregate.js but never rendered — a mechanically
+          rebuilt baseline (financials/prices as of the purchase date, not a
+          live capture) looked identical to a real one with nothing to say so. */}
+      {agg.snapshot?.reconstructed && !agg.snapshot?.backfilled && (
+        <p className="text-[10px] text-neutral">
+          baseline rebuilt from that date's financials and prices — a mechanical estimate, not one observed live
         </p>
       )}
     </div>
@@ -570,9 +637,8 @@ function DateEditor({ current, onSet, onCancel }) {
  * and wanting to be told when it's reached are the same intent, so a separate
  * save step only obscured that anything was being watched.
  */
-function ExitPlan({ agg, triggers, price, currency, onSave }) {
+function ExitPlan({ plan, triggers, price, currency, onSave }) {
   const fired = triggers?.fired || []
-  const plan = agg.lots[0]?.plan
   const stops = triggers?.suggestions?.stops || []
   const targets = triggers?.suggestions?.targets || []
   // Open by default once you've expanded the holding. It used to start

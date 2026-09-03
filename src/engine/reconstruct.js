@@ -55,6 +55,21 @@ export function reconstructRow(reportedRow, edits, opts = {}) {
   const editMap = new Map(edits.map(e => [e.line, e]))
   const cur = f => editMap.has(f) ? Number(editMap.get(f).newValue) : orig(f)
 
+  // A direct net-profit edit — an already-net-of-tax, below-the-line item (an
+  // insurer's inter-fund transfer between Non-Par and Shareholders' Account, an
+  // actuarial reserve movement, etc.) — never flows through revenue, expenses,
+  // interest, depreciation or tax at all, so forcing it through that identity
+  // would be wrong, not just inconvenient. It gets its own path: set netProfit,
+  // re-derive EPS, and leave pbt/tax exactly as reported — there is nothing to
+  // reconcile them against, because this item genuinely sits below that line.
+  if (editMap.has('netProfit') && edits.length === 1) {
+    const npVal = Number(editMap.get('netProfit').newValue)
+    set('netProfit', npVal)
+    const shares = opts.shares ?? impliedShares(reportedRow)
+    if (shares > 0) set('eps', npVal / shares)
+    return { ok: true, row }
+  }
+
   // Tag the raw edited values first (so they carry provenance).
   for (const e of edits) set(e.line, Number(e.newValue))
 

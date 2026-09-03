@@ -68,6 +68,14 @@ export function scoreQuality(data, ratioResult, weights = {}) {
 function checkConsistency(incomeHistory) {
   if (!incomeHistory || incomeHistory.length < 3) return null
   const last5 = incomeHistory.slice(-5)
-  const profitable = last5.filter(y => (y.netProfit?.value ?? 0) > 0).length
-  return profitable >= 3
+  // A year with no reported net profit was coerced to 0 via `?? 0`, which
+  // reads as a LOSS — a missing figure and a real loss are not the same
+  // thing, and on a thin history one data gap could flip this predicter
+  // from pass to fail on no evidence at all. Excluded, not counted against.
+  const known = last5.filter(y => y.netProfit?.value != null)
+  if (known.length < 3) return null   // not enough real data to judge consistency
+  const profitable = known.filter(y => y.netProfit.value > 0).length
+  // Same "3 of 5" bar (60%), applied to however many years actually have a
+  // reported figure rather than assuming an unreported year failed it.
+  return profitable / known.length >= 0.6
 }

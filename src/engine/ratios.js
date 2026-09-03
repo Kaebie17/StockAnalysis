@@ -223,29 +223,21 @@ export function calcRatios(data, opts = {}) {
   // ONE growth figure, read by every consumer. Window defaults to 5y, fully
   // settable; supports an optional start-year to exclude a structural break.
   const revSeries = incomeReal
-    .map(r => ({ year: yearOf(r), rev: val(r.revenue) }))
-    .filter(p => p.year != null && p.rev > 0)
+    .map(r => ({ year: yearOf(r), value: val(r.revenue) }))
+    .filter(p => p.year != null && p.value > 0)
     .sort((a, b) => a.year - b.year)
+  const { cagr: revCagr, windowYears: revCagrWindowYears } = windowedCagr(revSeries, opts)
 
-  let revCagr = null
-  let revCagrWindowYears = null
-  if (revSeries.length >= 2) {
-    const nYrs = revSeries.length - 1
-    const requested = opts?.growthWindowYears > 0 ? opts.growthWindowYears : nYrs
-    let win
-    if (opts?.growthWindowFromYear != null) {
-      const idx = revSeries.findIndex(p => p.year >= opts.growthWindowFromYear)
-      win = idx >= 0 ? Math.max(1, (revSeries.length - 1) - idx) : Math.min(requested, nYrs)
-    } else {
-      win = Math.min(requested, nYrs)
-    }
-    const start = revSeries[revSeries.length - 1 - win].rev
-    const end   = revSeries[revSeries.length - 1].rev
-    if (start > 0 && end > 0) {
-      revCagr = (Math.pow(end / start, 1 / win) - 1) * 100
-      revCagrWindowYears = win
-    }
-  }
+  // Net-profit CAGR, same window. The "historical earnings CAGR" figure shown
+  // in the market-expectation comparison used to actually be npGrowthYoY — a
+  // single year's YoY change — labeled "CAGR" even though it wasn't one and
+  // never respected the growth-window slider. This is the real multi-year,
+  // window-respecting figure.
+  const npSeries = incomeReal
+    .map(r => ({ year: yearOf(r), value: val(r.netProfit) }))
+    .filter(p => p.year != null && p.value > 0)
+    .sort((a, b) => a.year - b.year)
+  const { cagr: npCagr, windowYears: npCagrWindowYears } = windowedCagr(npSeries, opts)
 
   // ── EV ─────────────────────────────────────────────────────────────────────
   const ev = (marketCap != null && totalDebt != null && cash != null)
@@ -393,6 +385,9 @@ export function calcRatios(data, opts = {}) {
       revCagr:            tag(revCagr, 'calculated',
         revCagrWindowYears ? `Revenue CAGR over the last ${revCagrWindowYears} years` : 'Revenue CAGR'),
       revCagrWindowYears: tag(revCagrWindowYears, 'calculated', 'Years in the revenue-CAGR window'),
+      npCagr:             tag(npCagr, 'calculated',
+        npCagrWindowYears ? `Net Profit CAGR over the last ${npCagrWindowYears} years` : 'Net Profit CAGR'),
+      npCagrWindowYears:  tag(npCagrWindowYears, 'calculated', 'Years in the net-profit-CAGR window'),
       revGrowthYoY:    tag(revGrowthYoY,    'calculated', 'Revenue YoY growth'),
       npGrowthYoY:     tag(npGrowthYoY,     'calculated', 'Net Profit YoY growth'),
       // FCF
@@ -414,6 +409,30 @@ export function calcRatios(data, opts = {}) {
 }
 
 // ─── Pure math helpers ────────────────────────────────────────────────────────
+
+// Windowed CAGR over a (year, value) series, respecting the same user-chosen
+// window (opts.growthWindowYears) / structural-break start-year
+// (opts.growthWindowFromYear) revCagr already used — factored out so a second
+// series (net profit) doesn't duplicate the window logic and risk it drifting
+// out of sync with revCagr's.
+function windowedCagr(series, opts) {
+  if (series.length < 2) return { cagr: null, windowYears: null }
+  const nYrs = series.length - 1
+  const requested = opts?.growthWindowYears > 0 ? opts.growthWindowYears : nYrs
+  let win
+  if (opts?.growthWindowFromYear != null) {
+    const idx = series.findIndex(p => p.year >= opts.growthWindowFromYear)
+    win = idx >= 0 ? Math.max(1, (series.length - 1) - idx) : Math.min(requested, nYrs)
+  } else {
+    win = Math.min(requested, nYrs)
+  }
+  const start = series[series.length - 1 - win].value
+  const end   = series[series.length - 1].value
+  // Net profit (unlike revenue) can cross zero — a CAGR through a loss year is
+  // meaningless, so this declines rather than compounding through one.
+  if (!(start > 0) || !(end > 0)) return { cagr: null, windowYears: null }
+  return { cagr: (Math.pow(end / start, 1 / win) - 1) * 100, windowYears: win }
+}
 
 function div(a, b)    { return a != null && b != null && b !== 0 ? a / b : null }
 function pct(a, b)    { const d = div(a, b); return d != null ? d * 100 : null }

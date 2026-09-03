@@ -19,20 +19,26 @@
  */
 
 const CR = 1e7          // Indian crore
+const LAKH = 1e5        // Indian lakh — insurers/banks report in this, not crore
 const LAKH_CR = 1e12
 const MN = 1e6
 const BN = 1e9
 
-/** Money in absolute units. Handles crore / lakh crore / million / billion. */
+/** Money in absolute units. Handles lakh / crore / lakh crore / million / billion. */
 export function extractMoney(text) {
   const out = []
-  const re = /(?:₹|rs\.?|inr|\$|usd)?\s*([\d,]+(?:\.\d+)?)\s*(lakh\s*crore|lakh\s*cr|crore|cr\b|million|mn\b|billion|bn\b)/gi
+  // Compound "lakh crore"/"lakh cr" MUST come before the bare "lakh" alternative:
+  // JS regex alternation takes the first alternative that matches, not the
+  // longest, so a bare "lakh" listed first would win on "lakh crore" text too and
+  // read it 1e7x too small.
+  const re = /(?:₹|rs\.?|inr|\$|usd)?\s*([\d,]+(?:\.\d+)?)\s*(lakh\s*crore|lakh\s*cr|lakh|crore|cr\b|million|mn\b|billion|bn\b)/gi
   let m
   while ((m = re.exec(text)) !== null) {
     const n = parseFloat(m[1].replace(/,/g, ''))
     if (!isFinite(n)) continue
     const u = m[2].toLowerCase().replace(/\s+/g, ' ')
-    const mult = /lakh/.test(u) ? LAKH_CR
+    const mult = /^lakh\s*(crore|cr)/.test(u) ? LAKH_CR
+      : /^lakh/.test(u) ? LAKH
       : /^(crore|cr)/.test(u) ? CR
       : /^(million|mn)/.test(u) ? MN
       : /^(billion|bn)/.test(u) ? BN : null

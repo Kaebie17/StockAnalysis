@@ -37,15 +37,22 @@ export function getDefaultAssumptions(stage, sectorType, ratios) {
     : stage === 'TRANSITION'  ? 0.13
     : 0.12  // ESTABLISHED
 
+  // Terminal FCF multiple — was hardcoded inline in the FCF variant with no
+  // override path at all; pulled up here so it goes through the same
+  // overrides mechanism as the other two terminal multiples.
+  const terminalFcfMultiple = 18
+
   return {
     terminalSalesMultiple,
     terminalPeMultiple,
+    terminalFcfMultiple,
     discountRate,
     horizon: 10,
     // Rationale strings shown in ⓘ tooltips
     rationale: {
       terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple),
       terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple),
+      terminalFcfMultiple:   `${terminalFcfMultiple}× FCF is the assumed terminal FCF multiple — what the market will pay per rupee of free cash flow at maturity. Mature cash-generative businesses typically trade at 15-25× FCF. Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.`,
       discountRate:          getDiscountRationale(stage, discountRate),
       horizon:               'Standard investment horizon of 10 years. Long enough to smooth out cycles, short enough to be meaningful. Change to 5 years for faster-moving sectors.'
     }
@@ -203,14 +210,22 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
   // EV target for the EV/Sales variant (equity market cap ignores net debt, which
   // overstates sales-implied growth for levered firms). Earnings uses P/E → equity.
   const evTarget = (marketCap != null && r?.netDebt != null) ? marketCap + r.netDebt : null
-  const historicalNPGrowth  = r?.ratios?.npGrowthYoY?.value
+  // npCagr, not npGrowthYoY — getConclusion() below labels this "Historical
+  // earnings CAGR", but npGrowthYoY is one year's change, not a multi-year
+  // compound rate, and never moved when the growth-window slider did.
+  const historicalNPGrowth  = r?.ratios?.npCagr?.value
 
 const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
 
   const variants = {}
 
   // ── Sales-based ─────────────────────────────────────────────────────────────
-  if (revenue != null && revenue > 0 && marketCap) {
+  // Was gating on revenue+marketCap only, but the actual calculation needs
+  // evTarget (market cap + net debt), which additionally requires debt AND
+  // cash to both be known. When either was missing this rendered as a normal,
+  // seemingly-live card with nothing inside it, instead of the same clean N/A
+  // treatment the other two variants get when they can't compute.
+  if (revenue != null && revenue > 0 && marketCap && evTarget != null) {
     const impliedG = solveImpliedGrowth(revenue, evTarget, terminalSalesMultiple, discountRate, horizon)
     const sanity   = impliedG != null
       ? buildSanityTable(revenue, evTarget, terminalSalesMultiple, discountRate, horizon, impliedG)
@@ -238,7 +253,10 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   } else {
     variants.sales = {
       applicable: false,
-      reason: revenue == null ? 'Revenue data not available' : 'Revenue is zero or negative'
+      reason: revenue == null ? 'Revenue data not available'
+        : !(revenue > 0) ? 'Revenue is zero or negative'
+        : !marketCap ? 'Market cap not available'
+        : 'Debt and/or cash not available — needed to bridge market cap to enterprise value'
     }
   }
 
@@ -281,7 +299,7 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   const fcfBase = fcf ?? opCF
   if (fcfBase != null && fcfBase > 0 && marketCap) {
     // For FCF we use EV/FCF terminal multiple — typically 15-25×
-    const termFcfMult = 18
+    const termFcfMult = assumptions.terminalFcfMultiple
     const impliedG = solveImpliedGrowth(fcfBase, marketCap, termFcfMult, discountRate, horizon)
     const sanity   = impliedG != null
       ? buildSanityTable(fcfBase, marketCap, termFcfMult, discountRate, horizon, impliedG)
@@ -303,12 +321,9 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       sanityTable: sanity,
       conclusion: getConclusion(impliedG, historicalRevGrowth, stage, 'FCF'),
       assumptions: {
-        terminalMultiple: {
-          value: termFcfMult,
-          rationale: `${termFcfMult}× FCF is the assumed terminal FCF multiple — what the market will pay per rupee of free cash flow at maturity. Mature cash-generative businesses typically trade at 15-25× FCF. Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.`
-        },
-        discountRate: { value: discountRate, rationale: assumptions.rationale.discountRate },
-        horizon:      { value: horizon,       rationale: assumptions.rationale.horizon }
+        terminalMultiple: { value: termFcfMult, rationale: assumptions.rationale.terminalFcfMultiple },
+        discountRate:     { value: discountRate, rationale: assumptions.rationale.discountRate },
+        horizon:          { value: horizon,       rationale: assumptions.rationale.horizon }
       }
     }
   } else {

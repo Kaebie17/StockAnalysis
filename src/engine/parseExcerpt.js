@@ -14,6 +14,13 @@ import { extractMoney } from './factExtract.js'
 
 // P&L lines the user may restate, with the words that name them in a report.
 const LINE_KEYWORDS = [
+  // Below-the-line items (inter-fund transfers, actuarial reserve movements —
+  // common in insurer/bank disclosures) name "profit"/"PAT" directly rather than
+  // a P&L line, and are usually already stated net of tax. Listed first: this
+  // phrasing is specific enough that when it's present, it names the real
+  // driver, ahead of a same-paragraph "other income" or "tax" mention that
+  // belongs to a different, unrelated figure.
+  ['netProfit',    /\bnet profit\b|\bprofit after tax\b|\bPAT\b|\bprofit for the (?:financial\s+)?year\b|\bprofit for the period\b/i],
   ['otherIncome',  /\bother\s+income\b/i],
   ['tax',          /\b(tax|taxation|income tax|tax expense)\b/i],
   ['interest',     /\b(interest|finance cost|finance charges)\b/i],

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react'
+import React, { useState } from 'react'
 import { AppProvider, useApp } from './store/AppContext.jsx'
 import Header from './components/dashboard/Header.jsx'
 import SummaryStrip from './components/dashboard/SummaryStrip.jsx'
@@ -12,23 +12,17 @@ import DataGapBanner from './components/dashboard/DataGapBanner.jsx'
 import GapFillModal from './components/dashboard/GapFillModal.jsx'
 import AddHistoryModal from './components/dashboard/AddHistoryModal.jsx'
 import ScoringStudio from './components/studio/ScoringStudio.jsx'
-import { parseCSV } from './utils/csv.js'
-import { requestFolderAccess, exportOverrideJSON, openFilePicker, importOverrideFile } from './utils/csv.js'
 import MoatQualityPanel from './components/dashboard/MoatQualityPanel.jsx'
 import BackupControls from './components/BackupControls.jsx'
 import PositionFab from './components/dashboard/PositionFab.jsx'
 import PortfolioNews from './components/dashboard/PortfolioNews.jsx'
 
 function Dashboard() {
-  const { state, load, applyCSV, setFolderHandle, applyPastedTable, dismissGap } = useApp()
+  const { state, load, applyPastedTable, dismissGap } = useApp()
   const [expanded, setExpanded] = useState(null)
   const [studioOpen, setStudioOpen] = useState(false)
-  const [csvModal, setCsvModal] = useState(false)  // 'upload' | 'gap-fill' | false
   const [gapFillOpen, setGapFillOpen] = useState(false)
   const [addHistoryOpen, setAddHistoryOpen] = useState(false)
-  // Which paste table to scroll to, when a data-quality flag points at one.
-  const [focusTable, setFocusTable] = useState(null)
-  const fileRef = useRef()
 
   const handleExpand = (panel) => {
     const next = expanded === panel ? null : panel
@@ -37,72 +31,16 @@ function Dashboard() {
       document.getElementById(`panel-${next}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100)
   }
 
-  const handleCSVUpload = useCallback(async (file) => {
-    try {
-      const csvData = await parseCSV(file)
-
-      // Request folder access on first CSV upload (Chrome/Android)
-      let handle = state.folderHandle
-      if (!handle && window.showDirectoryPicker) {
-        const granted = window.confirm(
-          'Allow StockAnalyzr to save this data in a "StockAnalyzr Data" folder?\n\n' +
-          'This lets the app auto-load your data next time without re-uploading.'
-        )
-        if (granted) {
-          handle = await requestFolderAccess()
-          if (handle) await setFolderHandle(handle)
-        }
-      }
-
-      // Export JSON for persistence
-      if (handle || !window.showDirectoryPicker) {
-        await exportOverrideJSON(state.ticker, csvData, handle)
-      }
-
-      applyCSV(csvData)
-      setCsvModal(false)
-    } catch (err) {
-      alert(`CSV error: ${err.message}`)
-    }
-  }, [state.folderHandle, state.ticker, applyCSV, setFolderHandle])
-
-  // Manual JSON import (Safari/iOS)
-  const handleJSONImport = useCallback(async (file) => {
-    try {
-      const { importOverrideFile: importFn } = await import('./utils/csv.js')
-      const csvData = await importFn(file)
-      if (csvData) applyCSV(csvData)
-      setCsvModal(false)
-    } catch (err) {
-      alert(`Import error: ${err.message}`)
-    }
-  }, [applyCSV])
-
   const showDashboard = state.status === 'success'
 
   return (
     <div className="min-h-screen bg-navy-950 overflow-x-hidden">
-      <Header onOpenTable={t => { setFocusTable(t); setAddHistoryOpen(true) }} />
+      <Header />
 
       <main className="max-w-5xl mx-auto px-4 space-y-4">
         {!showDashboard
-          ? <EmptyState onUpload={() => setCsvModal('upload')} />
+          ? <EmptyState />
           : <>
-              {/* CSV active banner */}
-              {state.csvActive && (
-                <div className="flex items-center justify-between px-3 py-2 bg-accent/10
-                                border border-accent/30 rounded-lg text-xs">
-                  <span className="text-accent">
-                    📎 CSV data active for {state.ticker} — some fields use your uploaded data
-                  </span>
-                  <button
-                    onClick={() => setCsvModal('gap-fill')}
-                    className="text-accent hover:text-accent-light underline">
-                    Manage
-                  </button>
-                </div>
-              )}
-
               <SummaryStrip onExpand={handleExpand} expanded={expanded} onAddHistory={() => setAddHistoryOpen(true)} detail={
                 <div className="space-y-4">
                   <GrowthWindowPicker />
@@ -152,24 +90,13 @@ function Dashboard() {
           {/* Portfolio-wide news brief — opens once per session when something
               on a holding needs attention, then collapses to a badge. */}
           <PortfolioNews onOpenTicker={t => load(t)} />
-          {/* Positions — same cluster as CSV and Studio rather than a second
-              stack in the same corner, which would just overlap them. */}
+          {/* Positions — same cluster as Studio rather than a second stack in
+              the same corner, which would just overlap them. */}
           <PositionFab />
-          {/* CSV upload */}
-          <button
-            onClick={() => setCsvModal('upload')}
-            title="Upload CSV data"
-            className={`w-11 h-11 rounded-full shadow-lg active:scale-95 transition-all
-                        flex items-center justify-center text-sm font-bold
-                        ${state.csvActive
-                          ? 'bg-accent text-white'
-                          : 'bg-navy-800 border border-navy-600 text-slate-400 hover:text-white hover:border-accent'}`}>
-            📎
-          </button>
           {/* Scoring studio */}
           <button
             onClick={() => setStudioOpen(true)}
-            title="Scoring Studio"
+            title="Guidance"
             className="w-11 h-11 rounded-full bg-accent shadow-lg hover:bg-accent-dark
                        active:scale-95 transition-all flex items-center justify-center text-white text-xl">
             ⚙
@@ -188,90 +115,12 @@ function Dashboard() {
       />
 
       <AddHistoryModal
-        focusTable={focusTable}
         open={addHistoryOpen}
-        onClose={() => { setAddHistoryOpen(false); setFocusTable(null) }}
+        onClose={() => setAddHistoryOpen(false)}
         ticker={state.ticker}
         onApplyAll={applyPastedTable}
       />
 
-      {/* CSV Modal */}
-      {csvModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-             onClick={e => e.target === e.currentTarget && setCsvModal(false)}>
-          <div className="card max-w-md w-full space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold text-white">
-                {csvModal === 'gap-fill' ? 'CSV Data Management' : 'Upload Financial Data'}
-              </h2>
-              <button onClick={() => setCsvModal(false)} className="text-slate-500 hover:text-white">✕</button>
-            </div>
-
-            {csvModal === 'upload' && (
-              <>
-                <div className="text-xs text-slate-400 space-y-1">
-                  <p>CSV data takes priority over Yahoo and Screener for raw financial fields.</p>
-                  <p>Calculated metrics (ROE, margins, ratios) always use our formulas.</p>
-                  <p className="text-slate-500">
-                    Required: <code className="text-accent">year, revenue</code> or <code className="text-accent">year, netProfit</code><br/>
-                    Optional: operatingProfit, depreciation, interest, totalDebt, totalAssets,
-                    cash, currentAssets, currentLiabilities, operatingCF, freeCashFlow, eps
-                  </p>
-                  <p className="text-slate-500">Add a row with year="unit" and value="Crores" or "Absolute"</p>
-                </div>
-
-                {/* CSV upload */}
-                <div
-                  className="border-2 border-dashed border-navy-700 rounded-xl p-6 text-center
-                             cursor-pointer hover:border-accent transition-colors"
-                  onClick={() => fileRef.current?.click()}>
-                  <div className="text-3xl mb-2">📊</div>
-                  <div className="text-sm text-slate-400">Click to select CSV file</div>
-                  <input ref={fileRef} type="file" accept=".csv" className="hidden"
-                    onChange={e => { if (e.target.files[0]) handleCSVUpload(e.target.files[0]) }} />
-                </div>
-
-                {/* JSON import (load previously exported data) */}
-                <div className="border-t border-navy-800 pt-3">
-                  <p className="text-xs text-slate-500 mb-2">
-                    Previously uploaded data for {state.ticker}?
-                  </p>
-                  <button
-                    onClick={() => openFilePicker(handleJSONImport)}
-                    className="btn-ghost text-sm w-full">
-                    📂 Load saved StockAnalyzr file (.json)
-                  </button>
-                </div>
-              </>
-            )}
-
-            {csvModal === 'gap-fill' && (
-              <div className="space-y-3">
-                <p className="text-xs text-slate-400">
-                  CSV data is active for {state.ticker}. Fields with 📎 are using your CSV data.
-                  Click any 📎 field in the dashboard to swap between CSV and source values.
-                </p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => { setCsvModal('upload') }}
-                    className="btn-ghost text-sm flex-1">
-                    Re-upload CSV
-                  </button>
-                  <button
-                    onClick={() => {
-                      // Clear CSV — re-normalize from original source data
-                      // For now just reload the ticker
-                      window.location.reload()
-                    }}
-                    className="btn-ghost text-sm flex-1 text-bear hover:text-bear">
-                    Remove CSV
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

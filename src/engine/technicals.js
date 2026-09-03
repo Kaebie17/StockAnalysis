@@ -29,6 +29,15 @@ export function runTechnicals(priceHistory) {
   const vol20avg = avg(volumes.slice(-20))
   const volRatio = volumes[volumes.length - 1] / (vol20avg || 1)
 
+  // OBV was computed above and then never read — "OBV rising ✓" in the UI was
+  // actually inferring accumulation from the volume ratio (today vs the 20-day
+  // average), a different signal entirely. The real OBV trend over the same
+  // 20-day window it's compared against: is cumulative volume net higher than
+  // it was, i.e. is buying pressure actually confirming the move.
+  const obvNow  = obv[obv.length - 1]
+  const obvPrev = obv[Math.max(0, obv.length - 21)]
+  const obvRising = obvNow > obvPrev
+
   // Trend detection
   const lastSma50  = sma50[sma50.length - 1]
   const lastSma200 = sma200[sma200.length - 1]
@@ -105,12 +114,12 @@ export function runTechnicals(priceHistory) {
       rsi: +latestRsi.toFixed(1),
       macd: { macd: +latestMacd.toFixed(3), signal: +latestSig.toFixed(3), histogram: +latestHist.toFixed(3) },
       bollinger: { ...latestBB, position: +bbPosition.toFixed(2) },
-      volume: { current: volumes[volumes.length - 1], avg20: +vol20avg.toFixed(0), ratio: +volRatio.toFixed(2) }
+      volume: { current: volumes[volumes.length - 1], avg20: +vol20avg.toFixed(0), ratio: +volRatio.toFixed(2), obv: Math.round(obvNow) }
     },
     signals: {
       goldenCross, deathCross, aboveSma50, aboveSma200,
       rsiOverbought, rsiOversold, rsiBullDiv, rsiBearDiv,
-      macdBullCross, macdBearCross, macdAboveZero
+      macdBullCross, macdBearCross, macdAboveZero, obvRising
     },
     levels,
     patterns,

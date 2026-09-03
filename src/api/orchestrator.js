@@ -29,7 +29,7 @@ export async function fetchTicker(rawTicker, onProgress) {
   // failure falls through to the Yahoo-only result, i.e. previous behaviour.
   if (isUsTicker(rawTicker)) {
     const [yRes, secRes] = await Promise.allSettled([fetchYahoo(rawTicker), fetchSec(rawTicker)])
-    if (yRes.status !== 'fulfilled') throw new Error('UPLOAD_REQUIRED')
+    if (yRes.status !== 'fulfilled') throw new Error('Could not fetch data for this ticker from Yahoo Finance.')
     const yahooData = yRes.value
     if (secRes.status !== 'fulfilled' || !secRes.value) {
       console.info('[orchestrator] SEC unavailable:', secRes.reason?.message || 'no data')
@@ -57,7 +57,7 @@ export async function fetchTicker(rawTicker, onProgress) {
   }
 
   // Yahoo is required — cannot function without it
-  if (!yahooOk) throw new Error('UPLOAD_REQUIRED')
+  if (!yahooOk) throw new Error('Could not fetch data for this ticker from Yahoo Finance.')
 
   const yahooData    = yahooResult.value
   const screenerData = screenerOk ? screenerResult.value : null

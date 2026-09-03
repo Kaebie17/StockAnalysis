@@ -27,7 +27,6 @@
 
 import { grossProfitOf } from './ratios.js'
 import { latest, hasContent } from './reconcileDocs.js'
-import { deriveGrossMarginSeries } from './estimation.js'
 
 // ── tunable thresholds (surface in ScoringStudio later) ───────────────────────
 export const MQ_CONFIG = {
@@ -66,17 +65,13 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
   const incRoce = incrementalRoce(series)
   const dilution = dilutionSignal(series.impliedShares)
 
-  // Gross margin missing from source data? Try deriving it from a user-confirmed
-  // document input (cost of materials consumed) paired with that year's revenue.
-  let gmDerived = false, gmEstimated = false
-  if (gm.median == null) {
-    const derived = deriveGrossMarginSeries(arData, revenueByYear(data))
-    if (derived.grossMargin?.length) {
-      gm = summarize(derived.grossMargin.map(r => r.pct))
-      gmDerived = true
-      gmEstimated = derived.grossMargin.some(r => r.tier === 'estimated')
-    }
-  }
+  // A document-derived gross-margin fallback used to live here (cost of
+  // materials consumed from arData, paired with revenue) but read from a key
+  // (`materialCost`) reconcileDocs.js stopped writing once the dictionary
+  // consolidated it under `cogs` — so it had been permanently dead (nothing
+  // to derive from) rather than an active fallback. Removed rather than
+  // rewired to the new key: not worth carrying for the one metric it covered.
+  const gmDerived = false, gmEstimated = false
 
   const de  = ratioResult?.ratios?.de?.value ?? null
   const icr = ratioResult?.ratios?.icr?.value ?? null
@@ -161,16 +156,6 @@ function buildSeries(data, r) {
 
 const index = rows => Object.fromEntries((rows || []).map(r => [r.year, r]))
 const pct = (a, b) => (b ? (a / b) * 100 : null)
-
-function revenueByYear(data) {
-  const out = {}
-  for (const row of (data?.incomeHistory || [])) {
-    if (row.synthetic) continue
-    const rev = row.revenue?.value
-    if (rev != null && row.year != null) out[row.year] = rev
-  }
-  return out
-}
 
 // ── stats ─────────────────────────────────────────────────────────────────────
 function summarize(arr, hitThreshold = null) {
@@ -271,38 +256,54 @@ function deriveQuality({ roe, fcfConv, de, icr, incRoce, dilution, pledge, rptSi
   const ev = []
   let good = 0, bad = 0, critical = 0
 
+  // Every `ok` below is genuinely three-state (true/false/null) and matches
+  // EXACTLY what good++/bad++ counts — not a plain boolean that happened to
+  // render as a hard ✓/✗ for a "medium" reading the tier math treated as a
+  // wash. A value that's neither strong enough to help nor weak enough to
+  // hurt now shows as neutral instead of a misleading pass or fail.
+
   // ROE level + consistency
   if (roe.median != null) {
     const strong = roe.median >= config.roe.high && (roe.hitRate == null || roe.hitRate >= config.roe.hitPct)
-    ev.push({ ok: strong, text: `ROE median ${roe.median}%${roe.hitRate != null ? `, ${roe.hitRate}% of yrs ≥ ${config.roe.ok}%` : ''}` })
-    strong ? good++ : (roe.median < config.roe.ok ? bad++ : null)
+    const weak = roe.median < config.roe.ok
+    ev.push({ ok: strong ? true : weak ? false : null, text: `ROE median ${roe.median}%${roe.hitRate != null ? `, ${roe.hitRate}% of yrs ≥ ${config.roe.ok}%` : ''}` })
+    strong ? good++ : (weak ? bad++ : null)
   }
   // FCF conversion
   if (fcfConv != null) {
     const strong = fcfConv >= config.fcfConv.high
-    ev.push({ ok: strong, text: `FCF conversion ${round(fcfConv, 0)}%` })
-    strong ? good++ : (fcfConv < config.fcfConv.ok ? bad++ : null)
+    const weak = fcfConv < config.fcfConv.ok
+    ev.push({ ok: strong ? true : weak ? false : null, text: `FCF conversion ${round(fcfConv, 0)}%` })
+    strong ? good++ : (weak ? bad++ : null)
   }
   // Leverage OR coverage
   if (de != null || icr != null) {
     const lowLev = de != null && de < config.de.low
     const strongCov = icr != null && icr >= config.icr.strong
-    const ok = lowLev || strongCov
-    ev.push({ ok, text: `${de != null ? `D/E ${round(de, 2)}` : ''}${de != null && icr != null ? ' · ' : ''}${icr != null ? `coverage ${round(icr, 1)}×` : ''}` })
-    ok ? good++ : null
-    if (de != null && de > config.de.high && (icr == null || icr < config.icr.ok)) { bad++; critical++ }
+    const strong = lowLev || strongCov
+    // Critical only when coverage is ACTUALLY measured and weak — a missing
+    // interest-coverage figure is a data gap (usually because "interest" isn't
+    // separately disclosed), not evidence of weak coverage, and treating the
+    // two the same could single-handedly force a real "Low Quality" verdict
+    // off nothing but an absent number.
+    const weak = de != null && de > config.de.high && icr != null && icr < config.icr.ok
+    ev.push({ ok: strong ? true : weak ? false : null, text: `${de != null ? `D/E ${round(de, 2)}` : ''}${de != null && icr != null ? ' · ' : ''}${icr != null ? `coverage ${round(icr, 1)}×` : de != null && de > config.de.high ? 'coverage unknown' : ''}` })
+    strong ? good++ : null
+    if (weak) { bad++; critical++ }
   }
   // Incremental ROCE
   if (incRoce.quality) {
-    const ok = incRoce.quality === 'improving' || incRoce.quality === 'flat'
-    ev.push({ ok, text: `Incremental returns ${incRoce.quality}` })
-    incRoce.quality === 'improving' ? good++ : (incRoce.quality === 'declining' ? bad++ : null)
+    const improving = incRoce.quality === 'improving'
+    const declining = incRoce.quality === 'declining'
+    ev.push({ ok: improving ? true : declining ? false : null, text: `Incremental returns ${incRoce.quality}` })
+    improving ? good++ : (declining ? bad++ : null)
   }
   // Dilution
   if (dilution.trend) {
-    const ok = dilution.trend !== 'diluting'
-    ev.push({ ok, text: `Share count ${dilution.trend}${dilution.pct != null ? ` (${dilution.pct > 0 ? '+' : ''}${dilution.pct}%)` : ''}` })
-    dilution.trend === 'buyback' ? good++ : (dilution.trend === 'diluting' ? bad++ : null)
+    const buyback = dilution.trend === 'buyback'
+    const diluting = dilution.trend === 'diluting'
+    ev.push({ ok: buyback ? true : diluting ? false : null, text: `Share count ${dilution.trend}${dilution.pct != null ? ` (${dilution.pct > 0 ? '+' : ''}${dilution.pct}%)` : ''}` })
+    buyback ? good++ : (diluting ? bad++ : null)
   }
   // Gated governance (only when both sources present)
   if (bothPresent) {
@@ -317,7 +318,12 @@ function deriveQuality({ roe, fcfConv, de, icr, incRoce, dilution, pledge, rptSi
         ? 'No material related-party transactions'
         : `Related-party ${rptSignal.level != null ? rptSignal.level + '% of revenue' : 'disclosed'}${rptSignal.asOf ? ` · as of ${rptSignal.asOf}` : ''}`
       ev.push({ ok, text: rptText })
-      rptSignal.heavy ? (bad++, critical++) : null
+      // Was only ever penalised when heavy, never rewarded when clean — the
+      // checkmark still said ✓ for a clean reading, but nothing counted it
+      // toward `good`. Made symmetric with the pledge check right above,
+      // which already rewards a clean reading the same way it penalises a
+      // bad one.
+      rptSignal.heavy ? (bad++, critical++) : good++
     }
   } else {
     ev.push({ ok: null, text: '🔒 Promoter pledge & related-party pending Screener holdings + annual report' })

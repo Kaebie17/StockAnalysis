@@ -7,16 +7,14 @@ import { saveDataResolution, listDataResolutions } from '../../utils/db.js'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
-import FormulasPanel from '../FormulasPanel.jsx'
 import SyncControls from '../../sync/SyncControls.jsx'
 import NormalizeModal from './NormalizeModal.jsx'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
 
-export default function Header({ onOpenTable }) {
+export default function Header() {
   const { state, load, reset } = useApp()
   const [input, setInput] = useState('')
-  const [fxOpen, setFxOpen] = useState(false)
 
   // Keep the box showing whatever ticker is actually loaded. Without this the
   // input is local state that starts empty and is never written back to, so
@@ -35,7 +33,6 @@ export default function Header({ onOpenTable }) {
   }
 
   return (
-    <>
     <header className="sticky top-0 z-50 bg-navy-950/95 backdrop-blur border-b border-navy-800">
       <div className="max-w-5xl mx-auto px-4 py-3 space-y-2">
         {/* Search row */}
@@ -65,16 +62,6 @@ export default function Header({ onOpenTable }) {
               Analyze
             </button>
           </form>
-          {/* Formula overrides are GLOBAL — one set shared by every ticker — so
-              this belongs on the landing page, not in the per-ticker row. On
-              mobile that row was carrying logo + input + Analyze + Formulas +
-              Reset all at once, which is what made it unusable. */}
-          {state.status !== 'success' && (
-            <button onClick={() => setFxOpen(true)} title="Edit metric formulas"
-              className="text-xs px-3 py-2 rounded-lg border border-navy-600 text-slate-400 hover:text-accent hover:border-accent/50 shrink-0 transition-colors">
-              ƒ Formulas
-            </button>
-          )}
           {state.ticker && state.status === 'success' && (
             <button
               onClick={async () => {
@@ -104,7 +91,7 @@ export default function Header({ onOpenTable }) {
         )}
 
         {/* Stock identity bar — CMP, Market Cap, Sector, Stage */}
-        {state.status === 'success' && state.data && <IdentityBar onOpenTable={onOpenTable} />}
+        {state.status === 'success' && state.data && <IdentityBar />}
 
         {/* Example tickers */}
         {state.status === 'idle' && (
@@ -120,12 +107,10 @@ export default function Header({ onOpenTable }) {
         )}
       </div>
     </header>
-    <FormulasPanel open={fxOpen} onClose={() => setFxOpen(false)} />
-    </>
   )
 }
 
-function IdentityBar({ onOpenTable }) {
+function IdentityBar() {
     const { state, overrideStage, setBasis, refreshPrice } = useApp()
   const { data, ratioResult, stage } = state
   const [normOpen, setNormOpen] = React.useState(false)

@@ -85,10 +85,6 @@ export function useEstimate(state, opts = {}) {
   // Which justified form the user has chosen, if they've overridden the sector
   // default. Session-level: a preference about how to read a number, not data.
   const [form, setForm] = useState(null)
-  // The growth window the user pinned, if any. Stored as a revision so it
-  // survives reload and appears in the log — it is a decision about the company
-  // like any other, and one that changes every derived number.
-  const [growthWindow, setGrowthWindowState] = useState(null)
   // Risk-free rate for the justified multiple. Null until fetched, and null is a
   // valid outcome — Estimate 1 declines rather than falling back to a made-up
   // rate, since every justified multiple is sensitive to it.
@@ -98,7 +94,7 @@ export function useEstimate(state, opts = {}) {
   const ticker = state?.ticker
 
   const reload = useCallback(async () => {
-    if (!ticker) { setOverrides({}); setRevisions([]); setGrowthWindowState(null); return }
+    if (!ticker) { setOverrides({}); setRevisions([]); return }
 
     // Declared outside the try so the growth-window lookup below can see it —
     // it was scoped to the block and referenced after, which throws.
@@ -113,8 +109,6 @@ export function useEstimate(state, opts = {}) {
     // actually did.
     try { setStored(await currentEstimate(ticker)) } catch { setStored(null) }
 
-    // Growth window is no longer restored from revisions — the store persists it
-    // on cached `data` (data.growthWindowYears) and restores it on load.
     // `version` participates so a commit anywhere re-runs this everywhere.
   }, [ticker, version])
 
@@ -189,7 +183,13 @@ export function useEstimate(state, opts = {}) {
     guidedMargin: guidedMarginOf(state),
     guidanceFiscalYear: state.guidance?.revenueGuidance?.fiscalYear || null,
     guidanceExpired: state.guidance?.revenueGuidance?.status === 'resolved',
-    growthWindowYears: growthWindow,
+    // No growthWindowYears here — resolveGrowthBasis (estimate.js) reads
+    // ratioResult.ratios.revCagr directly, which is already computed from
+    // the shared, global growth window (AppContext's growthWindowYears via
+    // calcRatios) the main slider drives. A second, hook-local copy of the
+    // window used to be threaded through here, but nothing downstream ever
+    // read it, and being per-component useState it couldn't have reached
+    // this instance from the slider's instance anyway.
     growthOverride:   overrides.growth   ?? null,
     // Where the override came from. "Your revision" was shown even for a change
     // the app applied automatically from a news item, which reads as though the
@@ -262,19 +262,6 @@ export function useEstimate(state, opts = {}) {
   // resurface on the next poll.
   const handledKeys = new Set(revisions.map(r => r.sourceKey).filter(Boolean))
 
-  /**
-   * Pin a growth window. Stores the YEAR COUNT, not the rate it currently
-   * produces — the rate is re-derived from whatever data exists at the time, so
-   * a pinned window stays current as new years arrive rather than freezing a
-   * number that silently goes stale.
-   */
-  const setGrowthWindow = useCallback(async (years) => {
-    // Session/view control — the store persists it on `data` (cached per ticker).
-    // No revision row: a slider position isn't a forecast revision, and appending
-    // one per drag accumulated dead rows.
-    setGrowthWindowState(years)
-  }, [])
-
   /** Record a revision and re-apply. `disposition` is 'revised' | 'dismissed' | 'deferred'. */
   const commit = useCallback(async (entry) => {
     if (!ticker) return null
@@ -301,7 +288,6 @@ export function useEstimate(state, opts = {}) {
     estimate, overrides, revisions, peers, peerBand, rerating,
     guidanceAssessment, quarterlySuggestion, score, stored, relative, sanity,
     justified, form, setForm,
-    growthWindow, setGrowthWindow,
     riskFree: riskFreeShared, refreshRate,
     handledKeys, deferredLevers,
     commit, freeze, reload,

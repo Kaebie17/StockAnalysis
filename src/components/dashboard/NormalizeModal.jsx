@@ -27,6 +27,10 @@ const yr  = row => String(row?.year ?? '')
 const LINE_LABELS = {
   otherIncome: 'Other income', expenses: 'Expenses', interest: 'Interest',
   depreciation: 'Depreciation', tax: 'Tax', revenue: 'Revenue',
+  // Below-the-line, already net-of-tax — an insurer's inter-fund transfer, an
+  // actuarial reserve movement, etc. Doesn't run through the identity below;
+  // see reconstructRow's dedicated direct-netProfit path.
+  netProfit: 'Net profit (direct, net of tax)',
 }
 
 export default function NormalizeModal({ open, onClose, flag = null }) {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   savePosition, listPositions, getPosition, closePosition, deletePosition,
-  saveEstimate, currentEstimate,
+  saveEstimate, currentEstimate, saveExitPlanForTicker,
 } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
 import { buildEstimate } from '../engine/estimate.js'
@@ -86,24 +86,43 @@ export function buildSnapshot({ state, buyDate, regime }) {
 
 /** Record a purchase, freezing the snapshot at the same moment. */
 export async function recordBuy({ ticker, name, shares, buyPrice, buyDate, note, state }) {
+  const when = buyDate || Date.now()
   // Regime at the moment of purchase — today's reading for a same-day entry, the
   // historical one for a back-dated lot. Never blocks the save: a position that
   // fails to record because a volatility index was unreachable would be absurd.
   let regime = null
   try {
     const indian = /\.(NS|BO)$/i.test(ticker || '')
-    const isBackdated = buyDate && (Date.now() - buyDate) > 2 * 86400000
-    regime = isBackdated ? await fetchRegimeOn(buyDate, { indian })
-                         : await fetchMarketRegime({ indian })
+    const isRecentEnough = (Date.now() - when) <= 2 * 86400000
+    regime = isRecentEnough ? await fetchMarketRegime({ indian })
+                            : await fetchRegimeOn(when, { indian })
   } catch { /* recorded as unavailable */ }
+
+  // Back-dated by more than a week: the buy form promises "the app will
+  // rebuild what its estimate would have been on that date from the
+  // financials and prices of the time" — without this, that promise was
+  // never kept. recordBuy only ever called buildSnapshot(), which stamps
+  // TODAY's numbers with the chosen date, so a lot added months late looked
+  // exactly like one captured live at purchase. Fetched independently of the
+  // live `state`, since a back-dated add (especially bulk-add) typically has
+  // no analysis for this ticker in memory at all.
+  const BACKDATED_MS = 7 * 86400000
+  let snapshot = null
+  if ((Date.now() - when) > BACKDATED_MS) {
+    try {
+      const analysis = await analyzeTicker(ticker)
+      snapshot = analysis ? rebuildSnapshot(analysis, when, regime) : null
+    } catch { /* fall through to the live/stub snapshot below */ }
+  }
+  if (!snapshot) snapshot = buildSnapshot({ state, buyDate: when, regime })
 
   const rec = await savePosition({
     ticker, name: name || null,
     shares: Number(shares) || 0,
     buyPrice: Number(buyPrice) || 0,
-    buyDate: buyDate || Date.now(),
+    buyDate: when,
     note: note || null,
-    snapshot: buildSnapshot({ state, buyDate, regime }),
+    snapshot,
   })
   if (rec) queuePush(`positions:${rec.id}`, rec)
 
@@ -152,6 +171,13 @@ export async function recordSell(ticker, { sellPrice, sellDate, shares, exitReas
   const price = sellPrice != null ? Number(sellPrice) : null
   const closed = []
 
+  // Conditions at the moment of exit — the sell-side twin of the buy
+  // snapshot. exitReason/exitNote capture WHY; this captures everything else
+  // that was true at the time, because that's what makes a pattern across
+  // sales findable later ("I keep selling right before a re-rating", "I sell
+  // too early relative to my own fair value") instead of unfalsifiable memory.
+  const exitSnapshot = await buildExitSnapshot(t, price, when)
+
   for (const lot of open) {
     if (toSell <= 0) break
     const lotShares = Number(lot.shares) || 0
@@ -160,7 +186,7 @@ export async function recordSell(ticker, { sellPrice, sellDate, shares, exitReas
     if (toSell >= lotShares) {
       // Whole lot goes.
       let rec = await closePosition(lot.id, { sellPrice: price, sellDate: when, sharesSold: lotShares })
-      if (rec && (exitReason || exitNote)) rec = await savePosition({ ...rec, exitReason, exitNote })
+      if (rec) rec = await savePosition({ ...rec, exitReason, exitNote, exitSnapshot })
       if (rec) { queuePush(`positions:${rec.id}`, rec); closed.push(rec) }
       toSell -= lotShares
     } else {
@@ -171,7 +197,7 @@ export async function recordSell(ticker, { sellPrice, sellDate, shares, exitReas
         shares: toSell,
         status: 'closed',
         sellPrice: price, sellDate: when, sharesSold: toSell,
-        exitReason: exitReason || null, exitNote: exitNote || null,
+        exitReason: exitReason || null, exitNote: exitNote || null, exitSnapshot,
         splitFrom: lot.id,
         createdAt: undefined,
       })
@@ -183,6 +209,53 @@ export async function recordSell(ticker, { sellPrice, sellDate, shares, exitReas
   }
 
   return { closed, remaining: held - (shares != null ? Math.min(+shares, held) : held) }
+}
+
+/**
+ * Freeze what was true at the moment of SALE — the exit-side twin of
+ * buildSnapshot(). Fetched independently of whatever ticker happens to be
+ * loaded in the dashboard (via analyzeTicker, cache-first): a sale is
+ * recorded from the portfolio-wide holdings list at least as often as from
+ * the stock's own page, so relying on live in-memory state would leave most
+ * sales with an empty snapshot.
+ */
+async function buildExitSnapshot(ticker, sellPrice, whenMs) {
+  let analysis = null
+  try { analysis = await analyzeTicker(ticker) } catch { /* named in missing[] below */ }
+
+  let regime = null
+  try {
+    const indian = /\.(NS|BO)$/i.test(ticker || '')
+    const isRecentEnough = (Date.now() - whenMs) <= 2 * 86400000
+    regime = isRecentEnough ? await fetchMarketRegime({ indian })
+                            : await fetchRegimeOn(whenMs, { indian })
+  } catch { /* named in missing[] below */ }
+
+  const { ratioResult, data, valuation, quality, marketExpectation, sectorType } = analysis || {}
+  const price = sellPrice ?? ratioResult?.price ?? null
+  const fairValue = valuation?.fairValue ?? null
+
+  const missing = []
+  if (!analysis) missing.push('analysis unavailable for this ticker at time of sale')
+  if (regime?.missing?.length) missing.push(...regime.missing)
+
+  return {
+    takenAt: Date.now(),
+    price,
+    // The single most useful number for "did I sell too early/late": where
+    // the sale price sat against the app's own fair value at that moment.
+    vsFairValuePct: (fairValue > 0 && price > 0) ? ((price - fairValue) / fairValue) * 100 : null,
+    fairValue,
+    qualityScore: quality?.score ?? null,
+    marketImpliedGrowth: valuation?.impliedGrowth
+      ?? marketExpectation?.variants?.sales?.impliedGrowth
+      ?? marketExpectation?.variants?.earnings?.impliedGrowth ?? null,
+    sectorType: sectorType ?? null,
+    currency: data?.currency ?? null,
+    vix: regime?.vix ?? null,
+    indexLevel: regime?.indexLevel ?? null,
+    missing: missing.length ? missing : undefined,
+  }
 }
 
 /**
@@ -209,7 +282,10 @@ export function previewFifo(lots, shares) {
 
 export async function removePosition(id) {
   await deletePosition(id)
-  queuePush(`positions:${id}`, null)
+  // A tombstone, not `null` — putSyncableRecord's `!record` guard silently
+  // discarded a bare `null`, so the delete never reached another device and
+  // a removed lot would resurrect on its next pull. See sync.js pullAll.
+  queuePush(`positions:${id}`, { __deleted: true, id })
 }
 
 /**
@@ -293,19 +369,18 @@ export async function updatePositionDate(id, newDateMs) {
 }
 
 /**
- * The exit plan for a lot: an optional stop, an optional target, and any
- * threshold overrides. Stored on the position rather than in its own table —
- * it's per-lot, changes with the lot, and dies with it.
+ * The exit plan for a HOLDING: an optional stop, an optional target, and any
+ * threshold overrides. Keyed by ticker, not by lot id — a stop-loss is a
+ * decision about the position, not about whichever lot happened to be
+ * lots[0] when it was set. Binding it to a lot id meant a routine partial
+ * sale (closing that exact lot) or backdating an earlier purchase (which
+ * becomes the new lots[0]) silently orphaned the alert: it just stopped
+ * being evaluated, with no warning that the shares were still held.
  */
-export async function saveExitPlan(id, plan) {
-  const rec = await getPosition(id)
-  if (!rec) return null
-  const updated = await savePosition({
-    ...rec,
-    plan: { ...(rec.plan || {}), ...plan, updatedAt: Date.now() },
-  })
-  if (updated) queuePush(`positions:${updated.id}`, updated)
-  return updated
+export async function saveExitPlan(ticker, plan) {
+  const rec = await saveExitPlanForTicker(ticker, plan)
+  if (rec) queuePush(`exitPlans:${rec.ticker}`, rec)
+  return rec
 }
 
 /** Cost, value and P/L for a lot at the current price. */

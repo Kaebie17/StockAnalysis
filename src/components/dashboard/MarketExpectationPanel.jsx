@@ -1,5 +1,6 @@
-import React, { useState } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
+import { runMarketExpectation } from '../../engine/marketExpectation.js'
 import { fmtCurrency, fmtNum } from '../../utils/format.js'
 
 // ⓘ Info tooltip component
@@ -95,9 +96,8 @@ function SanityTable({ rows, marketCap, cur }) {
   )
 }
 
-function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, assumptions }) {
+function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, terminalMultipleKey }) {
   const [showSanity, setShowSanity] = useState(false)
-  const [localAssumptions, setLocalAssumptions] = useState({})
 
   if (!variant.applicable) {
     return (
@@ -109,12 +109,6 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, assum
         <span className="text-xs text-slate-600">N/A</span>
       </div>
     )
-  }
-
-  const update = (key, val) => {
-    const next = { ...localAssumptions, [key]: val }
-    setLocalAssumptions(next)
-    onAssumptionChange?.(next)
   }
 
   return (
@@ -136,25 +130,47 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, assum
       {/* Implied growth bar */}
       <GrowthBar impliedG={variant.impliedGrowth} />
 
-      {/* Editable assumptions */}
+      {/* Editable assumptions — the ⓘ rationale text says "increase if you
+          believe…, decrease if…", which only means something if the field it
+          sits next to actually takes the edit. It didn't: this used to render
+          the same three values as plain read-only spans, with the update()
+          function that would have wired an input up defined but never called
+          by anything. */}
       <div className="space-y-2 pt-1 border-t border-navy-800/50">
         <div className="text-xs text-slate-500 font-medium">Assumptions</div>
 
-        {/* Assumptions — derived from stage/sector, shown read-only */}
         <div className="flex items-center justify-between gap-2 text-xs">
           <div className="flex items-center text-slate-400">Terminal Multiple
             <InfoTip text={variant.assumptions.terminalMultiple.rationale} /></div>
-          <span className="font-mono text-slate-300">{variant.assumptions.terminalMultiple.value.toFixed(1)}×</span>
+          <div className="flex items-center gap-1">
+            <input type="number" step="0.5" min="0.5" max="60"
+              value={variant.assumptions.terminalMultiple.value}
+              onChange={e => { const v = +e.target.value; if (isFinite(v) && v > 0) onAssumptionChange?.(terminalMultipleKey, v) }}
+              className="w-16 bg-navy-800 border border-navy-700 rounded px-1.5 py-0.5 text-right font-mono text-slate-200 text-xs" />
+            <span className="text-slate-500">×</span>
+          </div>
         </div>
         <div className="flex items-center justify-between gap-2 text-xs">
           <div className="flex items-center text-slate-400">Discount Rate
             <InfoTip text={variant.assumptions.discountRate.rationale} /></div>
-          <span className="font-mono text-slate-300">{(variant.assumptions.discountRate.value * 100).toFixed(0)}%</span>
+          <div className="flex items-center gap-1">
+            <input type="number" step="1" min="1" max="40"
+              value={Math.round(variant.assumptions.discountRate.value * 100)}
+              onChange={e => { const v = +e.target.value; if (isFinite(v) && v > 0) onAssumptionChange?.('discountRate', v / 100) }}
+              className="w-14 bg-navy-800 border border-navy-700 rounded px-1.5 py-0.5 text-right font-mono text-slate-200 text-xs" />
+            <span className="text-slate-500">%</span>
+          </div>
         </div>
         <div className="flex items-center justify-between gap-2 text-xs">
           <div className="flex items-center text-slate-400">Horizon
             <InfoTip text={variant.assumptions.horizon.rationale} /></div>
-          <span className="font-mono text-slate-300">{variant.assumptions.horizon.value}yr</span>
+          <div className="flex items-center gap-1">
+            <input type="number" step="1" min="3" max="20"
+              value={variant.assumptions.horizon.value}
+              onChange={e => { const v = +e.target.value; if (isFinite(v) && v >= 1) onAssumptionChange?.('horizon', v) }}
+              className="w-14 bg-navy-800 border border-navy-700 rounded px-1.5 py-0.5 text-right font-mono text-slate-200 text-xs" />
+            <span className="text-slate-500">yr</span>
+          </div>
         </div>
       </div>
 
@@ -180,11 +196,35 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, assum
   )
 }
 
+// Which top-level override key each variant's own terminal multiple maps to
+// — discountRate/horizon are shared across all three (one required return,
+// one horizon), but the terminal multiple is variant-specific.
+const TERMINAL_KEY = { sales: 'terminalSalesMultiple', earnings: 'terminalPeMultiple', fcf: 'terminalFcfMultiple' }
+
 export default function MarketExpectationPanel({ open, onClose }) {
-  const { state, runMarketExpectation: rerun } = useApp()
-  const { marketExpectation, data, ratioResult } = state
+  const { state } = useApp()
+  const { data, ratioResult } = state
+  // Edits recompute LOCALLY (runMarketExpectation is a pure function of its
+  // inputs) rather than round-tripping through global state — this panel's
+  // own "what if" exploration, not a committed change to the fair-value
+  // pillar shown elsewhere.
+  const [overrides, setOverrides] = useState({})
+  const hasOverrides = Object.keys(overrides).length > 0
+
+  // Fresh each time the panel opens (or the ticker changes underneath it) —
+  // a leftover override from the last stock you looked at silently applying
+  // to this one would be the same "stale state bleeds into a new ticker" bug
+  // found elsewhere in the valuation assumptions.
+  useEffect(() => { if (open) setOverrides({}) }, [open, state.ticker])
+
+  const marketExpectation = useMemo(() => {
+    if (!hasOverrides) return state.marketExpectation
+    return runMarketExpectation(data, ratioResult, state.stage, state.sectorType, overrides)
+  }, [overrides, hasOverrides, state.marketExpectation, data, ratioResult, state.stage, state.sectorType])
 
   if (!open || !marketExpectation) return null
+
+  const onAssumptionChange = (key, val) => setOverrides(prev => ({ ...prev, [key]: val }))
 
   const cur = data?.currency === 'INR' ? '₹' : '$'
   const { variants, marketCap } = marketExpectation
@@ -203,7 +243,14 @@ export default function MarketExpectationPanel({ open, onClose }) {
             What growth rate is the market betting on?
           </p>
         </div>
-        <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">✕</button>
+        <div className="flex items-center gap-3 shrink-0">
+          {hasOverrides && (
+            <button onClick={() => setOverrides({})} className="text-xs text-accent hover:text-accent-light">
+              ↺ reset to defaults
+            </button>
+          )}
+          <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">✕</button>
+        </div>
       </div>
 
       {/* Current market cap context */}
@@ -230,6 +277,8 @@ export default function MarketExpectationPanel({ open, onClose }) {
               variant={variants[k]}
               cur={cur}
               marketCap={marketCap}
+              terminalMultipleKey={TERMINAL_KEY[k]}
+              onAssumptionChange={onAssumptionChange}
             />
           ))
         }
@@ -244,6 +293,8 @@ export default function MarketExpectationPanel({ open, onClose }) {
               variant={variants[k]}
               cur={cur}
               marketCap={marketCap}
+              terminalMultipleKey={TERMINAL_KEY[k]}
+              onAssumptionChange={onAssumptionChange}
             />
           ))
         }

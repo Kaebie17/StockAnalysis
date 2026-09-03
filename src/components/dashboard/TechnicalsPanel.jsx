@@ -40,8 +40,12 @@ export default function TechnicalsPanel({ open, onClose }) {
       text: indicators.rsi > 70 ? `RSI ${indicators.rsi} — Overbought` : indicators.rsi < 30 ? `RSI ${indicators.rsi} — Oversold` : `RSI ${indicators.rsi} — Neutral ✓` },
     { label: 'MACD',             value: indicators.macd.histogram > 0, good: indicators.macd.histogram > 0,
       text: indicators.macd.histogram > 0 ? 'MACD bullish crossover ✓' : 'MACD bearish ✗' },
-    { label: 'Volume',           value: indicators.volume.ratio > 1, good: indicators.volume.ratio > 1,
-      text: `${indicators.volume.ratio.toFixed(1)}× avg vol — ${indicators.volume.ratio > 1.2 ? 'OBV rising ✓' : indicators.volume.ratio < 0.8 ? 'Low volume ✗' : 'Normal'}` },
+    // Was inferring "OBV rising" from the volume ratio (today's volume vs the
+    // 20-day average) — a different signal from actual on-balance volume,
+    // which technicals.js computes but never used to exist for the panel to
+    // read. signals.obvRising is the real cumulative-volume trend.
+    { label: 'Volume',           value: signals.obvRising, good: signals.obvRising,
+      text: `${indicators.volume.ratio.toFixed(1)}× avg vol — ${signals.obvRising ? 'OBV rising ✓' : 'OBV falling ✗'}` },
     { label: 'Pattern',          value: patterns?.length > 0, good: patterns?.[0]?.type === 'bullish',
       text: patterns?.length > 0 ? `${patterns[0].name} (${patterns[0].type})` : 'No major pattern today ➖' }
   ]

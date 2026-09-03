@@ -114,7 +114,6 @@ export function normalize(source, raw) {
   if (source === 'screener') return normalizeScreener(raw)
   if (source === 'merged')   return normalizeMerged(raw)
   if (source === 'sec-merged') return normalizeSecMerged(raw)
-  if (source === 'csv')      return raw
   throw new Error(`Unknown source: ${source}`)
 }
 

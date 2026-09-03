@@ -54,6 +54,12 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
   const [pasteText, setPasteText] = useState({ income: '', quarterly: '', balance: '', cashflow: '', holdings: '' })
   const [results, setResults] = useState(null)      // { income:{…}, …, holdings:{ok,…} }
   const [applied, setApplied] = useState(false)
+  // Fill-only is the safe default (never let a re-paste silently downgrade a
+  // field a stronger source already populated) — but that safety used to be
+  // invisible: nothing told you a field you thought you'd just fixed was
+  // quietly kept at its old value. This makes both the skip and the opt-in
+  // to override it explicit in the preview instead.
+  const [overwrite, setOverwrite] = useState(false)
 
   // Scroll to the table the caller asked for. A data-quality flag names where
   // the answer lives, and dropping the user at the top of a five-table modal
@@ -72,6 +78,7 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
     setPasteText({ income: '', quarterly: '', balance: '', cashflow: '', holdings: '' })
     setResults(null)
     setApplied(false)
+    setOverwrite(false)
   }, [open])
 
   if (!open) return null
@@ -84,6 +91,23 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
   const focusedMatch = focusTable ? TABLES.filter(t => t.key === focusTable) : []
   const visibleTables = focusedMatch.length ? focusedMatch : TABLES
   const focusLabel = focusedMatch.length ? focusedMatch[0].label : null
+
+  // What's actually stored right now, per table, keyed by year — so the
+  // preview can say which parsed fields are new vs. already set (and would
+  // be silently kept unless Overwrite is checked) instead of leaving that
+  // invisible until after confirming.
+  const existingHistoryFor = (tableType) => {
+    if (tableType === 'income' || tableType === 'quarterly')
+      return appState?.data?.reportedIncomeHistory || appState?.data?.incomeHistory || []
+    if (tableType === 'balance')  return appState?.data?.balanceHistory  || []
+    if (tableType === 'cashflow') return appState?.data?.cashflowHistory || []
+    return []
+  }
+  const existingVal = (tableType, year, field) => {
+    const row = existingHistoryFor(tableType).find(r => r.year === year)
+    const v = row?.[field]
+    return v && typeof v === 'object' ? v.value : v
+  }
 
   const handleParseAll = () => {
     const out = {}
@@ -105,7 +129,7 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
     for (const [tableType, result] of Object.entries(results)) {
       if (tableType === 'holdings' || tableType === 'quarterly') continue
       if (result.matchedCount > 0) {
-        onApplyAll(tableType, tagPastedRows(result.rows, tableType, { scale: pasteScale(currency, ticker) }))
+        onApplyAll(tableType, tagPastedRows(result.rows, tableType, { scale: pasteScale(currency, ticker) }), { overwrite })
       }
     }
     // Quarterly → its own series, alongside (not inside) the annual history.
@@ -159,6 +183,23 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
     : 0
   const holdingsOk = results?.holdings?.ok
   const totalOk = finMatched + (holdingsOk ? 1 : 0)
+
+  // How many parsed fields already have a stored value — computed once so
+  // both the checkbox copy and the per-cell preview styling agree, and so
+  // it's visible BEFORE confirming rather than discovered never, since the
+  // fill-only default leaves no trace of what it skipped.
+  let overlapCount = 0
+  if (results) {
+    for (const [k, r] of Object.entries(results)) {
+      if (k === 'holdings' || !r.rows?.length) continue
+      for (const row of r.rows) {
+        for (const [f, v] of Object.entries(row)) {
+          if (f === 'year' || v == null) continue
+          if (existingVal(k, row.year, f) != null) overlapCount++
+        }
+      }
+    }
+  }
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
@@ -272,11 +313,23 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
                             {present.map(f => (
                               <tr key={f} className="border-b border-navy-800/50">
                                 <td className="py-1 text-slate-300">{labels[f]}</td>
-                                {r.rows.map((row, i) => (
-                                  <td key={i} className="text-right py-1 px-2 font-mono">
-                                    {row[f] != null ? <span className="text-white">{row[f].toLocaleString()}</span> : <span className="text-slate-600">—</span>}
-                                  </td>
-                                ))}
+                                {r.rows.map((row, i) => {
+                                  const ex = existingVal(k, row.year, f)
+                                  const has = ex != null
+                                  const kept = has && !overwrite
+                                  const replacing = has && overwrite && row[f] != null && ex !== row[f]
+                                  const title = kept ? `Already ${ex.toLocaleString()} — kept (check Overwrite to replace)`
+                                    : replacing ? `Replaces ${ex.toLocaleString()}` : ''
+                                  return (
+                                    <td key={i} className="text-right py-1 px-2 font-mono" title={title}>
+                                      {row[f] != null
+                                        ? <span className={kept ? 'text-slate-600 line-through' : replacing ? 'text-accent' : 'text-white'}>
+                                            {row[f].toLocaleString()}
+                                          </span>
+                                        : <span className="text-slate-600">—</span>}
+                                    </td>
+                                  )
+                                })}
                               </tr>
                             ))}
                           </tbody>
@@ -293,6 +346,19 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
                       ? `Promoter holding: ${results.holdings.promoterSeries[0].pct}% → ${results.holdings.promoterSeries[results.holdings.promoterSeries.length - 1].pct}% over ${results.holdings.quarters.length} quarters`
                       : results.holdings.note}
                   </div>
+                )}
+
+                {overlapCount > 0 && (
+                  <label className="flex items-start gap-2 text-xs text-slate-400 bg-navy-800/40 rounded-lg px-3 py-2 cursor-pointer">
+                    <input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)}
+                      className="mt-0.5" />
+                    <span>
+                      {overlapCount} field{overlapCount > 1 ? 's' : ''} above already {overlapCount > 1 ? 'have' : 'has'} a value
+                      (shown struck through). {overwrite
+                        ? 'Overwrite is on — this paste will replace them.'
+                        : "Unchecked, they'll be kept as-is — check to replace them with this paste instead."}
+                    </span>
+                  </label>
                 )}
 
                 <p className="text-xs text-slate-500">

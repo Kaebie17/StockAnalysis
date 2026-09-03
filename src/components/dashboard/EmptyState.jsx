@@ -8,7 +8,7 @@ import { usePositions } from '../../store/usePositions.js'
 const PositionsPanel = React.lazy(() => import('./PositionsPanel.jsx'))
 const SoldPositions  = React.lazy(() => import('./SoldPositions.jsx'))
 
-export default function EmptyState({ onUpload }) {
+export default function EmptyState() {
   const { state } = useApp()
   const [panel, setPanel] = useState(null)          // null | 'bulk' | 'list' | 'sold'
   const { positions, refresh } = usePositions()
@@ -16,7 +16,7 @@ export default function EmptyState({ onUpload }) {
   const hasClosed = positions.some(p => p.status === 'closed')
 
   if (state.status === 'loading') return <LoadingSkeleton />
-  if (state.status === 'error')   return <ErrorState onUpload={onUpload} />
+  if (state.status === 'error')   return <ErrorState />
 
   return (
     <div className="flex flex-col items-center justify-center px-4 text-center">
@@ -113,27 +113,8 @@ function LoadingSkeleton() {
   )
 }
 
-function ErrorState({ onUpload }) {
+function ErrorState() {
   const { state } = useApp()
-
-  if (state.uploadRequired) {
-    return (
-      <div className="card border-neutral/30 bg-neutral/5 max-w-lg mx-auto text-center py-10 space-y-4">
-        <div className="text-4xl">📂</div>
-        <h3 className="font-semibold text-white">Upload your financial data</h3>
-        <p className="text-sm text-slate-400">
-          Both Yahoo Finance and Screener.in were unavailable for this ticker.
-          Upload a CSV with annual revenue, net income, and cash flow data.
-        </p>
-        <button onClick={onUpload} className="btn-primary">
-          Upload CSV
-        </button>
-        <p className="text-xs text-slate-500">
-          Expected columns: year, revenue, netIncome, freeCashFlow, totalDebt, totalEquity
-        </p>
-      </div>
-    )
-  }
 
   return (
     <div className="card border-bear/30 bg-bear/5 max-w-lg mx-auto text-center py-10 space-y-3">

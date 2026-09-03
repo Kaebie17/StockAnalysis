@@ -6,7 +6,7 @@ import { useSync } from './SyncProvider.jsx'
  * PWA (no magic-link Safari handoff). Renders nothing if Supabase isn't set up.
  */
 export default function SyncControls() {
-  const { enabled, user, status, signIn, verifyCode, signOut, syncNow } = useSync()
+  const { enabled, user, status, error, signIn, verifyCode, signOut, syncNow } = useSync()
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
   const [open, setOpen] = useState(false)
@@ -14,10 +14,14 @@ export default function SyncControls() {
   if (!enabled) return null
 
   if (user) {
+    const label = status === 'syncing' ? 'Syncing…' : status === 'error' ? 'Sync failed' : 'Synced'
     return (
       <div className="flex items-center gap-2 text-xs">
-        <span className="text-slate-500 truncate">{status === 'syncing' ? 'Syncing…' : 'Synced'} · {user.email}</span>
-        <button onClick={syncNow} className="text-slate-400 hover:text-accent shrink-0">↻</button>
+        <span className={`truncate ${status === 'error' ? 'text-bear' : 'text-slate-500'}`}
+              title={status === 'error' ? (error || 'Sync failed — tap ↻ to retry.') : undefined}>
+          {label} · {user.email}
+        </span>
+        <button onClick={syncNow} className="text-slate-400 hover:text-accent shrink-0" title="Sync now">↻</button>
         <button onClick={signOut} className="text-slate-500 hover:text-bear shrink-0">sign out</button>
       </div>
     )

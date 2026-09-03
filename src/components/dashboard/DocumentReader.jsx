@@ -243,15 +243,11 @@ export default function DocumentReader({ open, onClose }) {
                             : b.pledge?.pct != null ? ` · ${b.pledge.pct}% pledged`
                             : b.amount?.value != null ? ` · ₹${b.amount.value.toLocaleString()}` : ''
                           const isNumeric = b.amount != null || b.pledge != null || b.rpt != null
-                          const basisTag = b.field === 'materialCost'
-                            ? (b.basis === 'consolidated' ? '[Consolidated]' : b.basis === 'standalone' ? '[Standalone]' : '[Basis unclear]')
-                            : null
                           return (
                             <div key={id} className={`rounded-lg border p-3 ${isKept ? 'border-bull/40 bg-bull/5' : 'border-navy-700 bg-navy-900/50'}`}>
                               <div className="flex items-center justify-between mb-1.5">
                                 <span className="text-[10px] text-slate-500">
                                   p.{b.page} · matched “{b.keyword}”{fig}
-                                  {basisTag && <span className={`ml-1 ${b.basis === 'standalone' ? 'text-bear' : b.basis === 'consolidated' ? 'text-bull' : 'text-neutral'}`}>{basisTag}</span>}
                                 </span>
                                 <div className="flex gap-1">
                                   <button onClick={() => setBlock(id, { status: isKept ? 'pending' : 'kept' })}

@@ -11,7 +11,7 @@
  */
 
 const DB_NAME    = 'stockanalyzr'
-const DB_VERSION = 6
+const DB_VERSION = 7
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
@@ -72,6 +72,15 @@ function openDB() {
       if (!d.objectStoreNames.contains('estimates')) {
         const s = d.createObjectStore('estimates', { keyPath: 'id' })
         s.createIndex('ticker', 'ticker')
+      }
+      // Exit plans — keyed by TICKER, not by lot id. A stop/target alert is a
+      // decision about the holding, not about whichever lot happened to be
+      // lots[0] when it was set: binding it to a specific lot id meant a
+      // routine partial sale (closing that exact lot) or backdating an
+      // earlier purchase (which becomes the new lots[0]) silently orphaned
+      // the alert — it just stopped being evaluated, with nothing to say so.
+      if (!d.objectStoreNames.contains('exitPlans')) {
+        d.createObjectStore('exitPlans', { keyPath: 'ticker' })
       }
     }
     req.onsuccess = e => { db = e.target.result; openPromise = null; resolve(db) }
@@ -250,17 +259,6 @@ export async function deleteProfile(name) {
   await txDelete('profiles', name)
 }
 
-// ─── Swap states (which fields user has swapped to CSV) ───────────────────────
-
-export async function saveSwapState(ticker, swaps) {
-  await txPut('swapStates', { ticker: ticker.toUpperCase(), swaps, updatedAt: Date.now() })
-}
-
-export async function loadSwapState(ticker) {
-  const rec = await txGet('swapStates', ticker.toUpperCase())
-  return rec?.swaps ?? {}
-}
-
 export async function saveGuidance(ticker, payload) {
   await txPut('guidance', { ticker: ticker.toUpperCase(), ...payload, updatedAt: Date.now() })
 }
@@ -272,10 +270,6 @@ export async function loadGuidance(ticker) {
 
 export async function clearGuidance(ticker) {
   await txDelete('guidance', ticker.toUpperCase())
-}
-
-export async function clearSwapState(ticker) {
-  await txDelete('swapStates', ticker.toUpperCase())
 }
 
 // ─── Positions (stocks the user actually owns) ───────────────────────────────
@@ -338,6 +332,21 @@ export async function closePosition(id, { sellPrice, sellDate, sharesSold } = {}
 // Only for a mis-entry the user wants gone. Closing is the normal path.
 export async function deletePosition(id) {
   await txDelete('positions', id)
+}
+
+// ─── Exit plans (stop/target alerts, per TICKER) ─────────────────────────────
+
+export async function saveExitPlanForTicker(ticker, plan) {
+  const t = String(ticker || '').toUpperCase()
+  if (!t) return null
+  const existing = await txGet('exitPlans', t)
+  const rec = { ...(existing || {}), ...plan, ticker: t, updatedAt: Date.now() }
+  await txPut('exitPlans', rec)
+  return rec
+}
+
+export async function loadExitPlanForTicker(ticker) {
+  return (await txGet('exitPlans', String(ticker || '').toUpperCase())) || null
 }
 
 // ─── Revision log (append-only) ──────────────────────────────────────────────
@@ -460,7 +469,7 @@ export async function listEstimates(ticker) {
 // never wipes stores it doesn't mention). fsHandles is skipped (not serializable).
 
 const BACKUP_STORES = ['financials', 'guidance', 'swapStates', 'aiVerdicts', 'profiles',
-                       'positions', 'revisions', 'estimates']
+                       'positions', 'revisions', 'estimates', 'exitPlans']
 
 export async function exportAllData() {
   const stores = {}
@@ -500,6 +509,7 @@ export const SYNC_STORES = {
   positions:  'id',         // one row per LOT, not per ticker
   revisions:  'id',         // append-only; last-write-wins is safe (rows are immutable)
   estimates:  'id',         // superseded rows are kept, so these are immutable too
+  exitPlans:  'ticker',
 }
 
 export async function exportSyncableRecords() {
@@ -520,28 +530,44 @@ export async function exportSyncableRecords() {
   return out
 }
 
-export async function putSyncableRecord(store, record) {
+// Which field on each store's own records carries its local last-modified
+// time — compared against the pulled row's `updated_at` so a pull can never
+// clobber a local edit that's newer than what's on the server. revisions/
+// estimates are append-only (rows are never updated in place, only superseded
+// by a new row), so last-write-wins is safe there without a comparison.
+const LOCAL_TS_FIELD = {
+  financials: 'timestamp',
+  guidance:   'updatedAt',
+  swapStates: 'updatedAt',
+  aiVerdicts: 'savedAt',
+  profiles:   'updatedAt',
+  positions:  'updatedAt',
+  revisions:  null,
+  estimates:  null,
+  exitPlans:  'updatedAt',
+}
+
+export async function putSyncableRecord(store, record, remoteUpdatedAt) {
   if (!SYNC_STORES[store] || !record) return
+  const tsField = LOCAL_TS_FIELD[store]
+  if (tsField && remoteUpdatedAt != null) {
+    const key = record[SYNC_STORES[store]]
+    const existing = key != null ? await txGet(store, key) : null
+    const localTs = existing?.[tsField] ?? 0
+    const remoteTs = new Date(remoteUpdatedAt).getTime()
+    // Local is the same age or newer — a debounced push for this exact edit
+    // may still be in flight. Keep the local copy; the push, once it lands,
+    // becomes the new server value and this comparison is moot next pull.
+    if (existing && remoteTs <= localTs) return
+  }
   await txPut(store, record)
 }
 
-// ─── File System folder handle (Chrome/Android persistence) ──────────────────
-
-export async function saveFolderHandle(handle) {
-  try {
-    await txPut('fsHandles', { id: 'stockanalyzrFolder', handle })
-  } catch { /* IndexedDB can't always store FileSystemDirectoryHandle */ }
+// A tombstone pull: delete the local record a remote device removed, rather
+// than silently discarding the delete signal (which is what happened when a
+// delete pushed `null` and putSyncableRecord's `!record` guard ate it).
+export async function deleteSyncableRecord(store, key) {
+  if (!SYNC_STORES[store] || key == null) return
+  await txDelete(store, key)
 }
 
-export async function loadFolderHandle() {
-  try {
-    const rec = await txGet('fsHandles', 'stockanalyzrFolder')
-    if (!rec?.handle) return null
-    // Verify permission is still granted
-    const perm = await rec.handle.queryPermission({ mode: 'readwrite' })
-    if (perm === 'granted') return rec.handle
-    // Try to re-request
-    const req = await rec.handle.requestPermission({ mode: 'readwrite' })
-    return req === 'granted' ? rec.handle : null
-  } catch { return null }
-}

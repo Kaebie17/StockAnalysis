@@ -230,7 +230,7 @@ function EvidenceList({ title, items }) {
         {items.map((e, i) => (
           <li key={i} className="text-xs flex gap-2">
             <span className={e.ok === null ? 'text-slate-500' : e.ok ? 'text-bull' : 'text-bear'}>
-              {e.ok === null ? '·' : e.ok ? '✓' : '✗'}
+              {e.ok === null ? '-' : e.ok ? '✓' : '✗'}
             </span>
             <span className="text-slate-300">{e.text}</span>
           </li>

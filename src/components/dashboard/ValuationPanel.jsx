@@ -2,7 +2,6 @@ import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { fmtPct, fmtPctPlain } from '../../utils/format.js'
 import DCFScenarioPanel from './DCFScenarioPanel.jsx'
-import { buildEstimate } from '../../engine/estimate.js'
 import { useEstimate } from '../../store/useEstimate.js'
 import FactInputModal from './FactInputModal.jsx'
 import { useNewsFacts, keyOf, leverOf } from '../../store/useNewsFacts.js'
@@ -86,7 +85,7 @@ export default function ValuationPanel({ open, onClose }) {
           model table down the page. */}
       <TwoEstimates state={state} />
 
-      <EstimateExplainer ratioResult={state.ratioResult} data={state.data} assumptions={state.assumptions} />
+      <EstimateExplainer state={state} />
 
       {/* Revisions live next to the working, not in a separate screen: the
           number, how it was derived, and what has been changed about it are one
@@ -239,17 +238,20 @@ export default function ValuationPanel({ open, onClose }) {
  * shares, and buyers pay N times that" can decide whether they agree with the
  * assumptions — which is the whole reason to show the working.
  */
-function EstimateExplainer({ ratioResult, data, assumptions }) {
+function EstimateExplainer({ state }) {
   const [open, setOpen] = useState(false)
-  if (!ratioResult) return null
-
-  const est = buildEstimate(ratioResult, {
-    guidedGrowth: (assumptions?.nearTermGrowth != null && isFinite(assumptions.nearTermGrowth))
-      ? assumptions.nearTermGrowth : null,
-    priceHistory:   data?.priceHistory   || [],
-    incomeHistory:  data?.incomeHistory  || [],
-    balanceHistory: data?.balanceHistory || [],
-  })
+  // Was hand-rolling its own buildEstimate() call with 4 of the ~14 options
+  // TwoEstimates/useEstimate actually apply (growth window, accepted
+  // revisions, peer band, guidance, the pre-normalisation history for the
+  // multiple band) — so the moment a user committed any revision, this
+  // walkthrough explained a DIFFERENT number than the one sitting right
+  // above it. Sharing the same hook is the fix: same inputs, same number,
+  // and it stays in sync with revisions the same way TwoEstimates does
+  // (useEstimate's docblock: multiple call sites, one shared revision
+  // counter, so a commit anywhere reloads all of them together).
+  const { estimate: est } = useEstimate(state)
+  const data = state?.data
+  if (!state?.ratioResult || !est) return null
 
   const inr  = data?.currency === 'INR'
   const cur  = inr ? '₹' : '$'

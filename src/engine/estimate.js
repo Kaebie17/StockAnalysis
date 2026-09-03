@@ -1256,10 +1256,22 @@ export function buildEstimate(ratioResult, opts = {}) {
     // is still available to fetch, without implying the shorter one is invalid.
     multipleLabel = `its own forward P/E over ${own.spanYears} year${own.spanYears === 1 ? '' : 's'}` +
       (own.spanYears < 5 ? ' — paste the Screener tables for a longer range' : '')
-  } else if (fitted?.multiple > 0) {
+  } else if (fitted?.multiple > 0 && fitted.source === 'historical-median') {
     multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
     multipleBasis = 'historical-median'
     multipleLabel = `its own median multiple over ${fitted.observations} years`
+    fittedSteps = fitted.steps
+  } else if (fitted?.multiple > 0 && fitted.source === 'peers') {
+    // targetMultiple() falls back to peers itself when this stock has fewer
+    // than 3 years of matched price/earnings history (too recently listed to
+    // measure a real band of its own) — that result was being displayed with
+    // the SAME "its own median multiple" label as the branch above, i.e. as
+    // if it had been measured from this stock's own trading when it was
+    // actually borrowed from other companies. Routed to the same 'peer'
+    // basis (and its existing, honest caveat) used elsewhere in this chain.
+    multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
+    multipleBasis = 'peer'
+    multipleLabel = `peer multiples — only ${fitted.observations} year${fitted.observations === 1 ? '' : 's'} of this stock's own trading history, too little to measure its own band`
     fittedSteps = fitted.steps
   } else if (peerBand?.median > 0) {
     multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }

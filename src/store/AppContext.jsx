@@ -10,9 +10,7 @@ import { assessDataQuality } from '../engine/dataQuality.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
-import { getCached, setCached, deleteCached, clearAllCached, loadFolderHandle, saveFolderHandle,
-         loadSwapState, saveSwapState, saveGuidance, loadGuidance } from '../utils/db.js'
-import { applyCSVOverrides, swapField, autoLoadOverride } from '../utils/csv.js'
+import { getCached, setCached, deleteCached, clearAllCached, saveGuidance, loadGuidance } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
 import { mergeByYear } from '../engine/reconstruct.js'
 import { listRevisions } from '../utils/db.js'
@@ -35,13 +33,6 @@ const initial = {
   marketExpectation: null,
   stage: null, sectorType: null,
   assumptions: {}, meAssumptions: {}, scoreWeights: {},
-  uploadRequired: false,
-  // CSV state
-  csvData: null,      // raw parsed CSV for this ticker
-  csvActive: false,   // whether CSV overrides are applied
-  folderHandle: null, // File System Access API folder handle
-  // Swap state: { income:{year:{field:true}}, balance:{...}, cashflow:{...} }
-  swapState: {},
   // Qualitative / governance inputs (Block 5)
   holdingsData: null, arData: null, quarterlyData: null,
   growthWindowYears: null,   // user's chosen CAGR window; null = full-history default
@@ -52,19 +43,21 @@ function reducer(s, a) {
   switch (a.type) {
     case 'FETCH_START':
       return { ...s, status: 'loading', error: null, progress: null,
-               uploadRequired: false, ticker: a.ticker, query: a.query,
-               csvData: null, csvActive: false, swapState: {} }
+               ticker: a.ticker, query: a.query,
+               // WACC/growth/margin overrides are a decision about the STOCK
+               // on screen — tuning one ticker's WACC and then searching a
+               // different one silently applied the first ticker's override
+               // to the second, with nothing on screen to say so. scoreWeights
+               // is deliberately left alone: that's a standing preference
+               // about how you want quality scored, not stock-specific data.
+               assumptions: {}, meAssumptions: {} }
     case 'PROGRESS':      return { ...s, progress: a.payload }
     case 'FETCH_SUCCESS': return { ...s, status: 'success', error: null, ...a.payload }
     case 'FETCH_ERROR':   return { ...s, status: 'error', error: a.error }
-    case 'UPLOAD_REQ':    return { ...s, status: 'error', uploadRequired: true,
-                                   error: 'Both sources unavailable. Upload CSV.' }
     case 'SET_STAGE':     return { ...s, stage: a.stage, valuation: a.valuation,
                                    marketExpectation: a.marketExpectation }
     case 'RECALC':        return { ...s, ...a.payload }
     case 'SET_QUAL':      return { ...s, ...a.payload }
-    case 'SET_FOLDER':    return { ...s, folderHandle: a.handle }
-    case 'CSV_APPLIED':   return { ...s, ...a.payload }
     case 'MERGE_PASTED': {
       if (!s.data) return s
       const histKey = a.tableType + 'History'
@@ -83,7 +76,13 @@ function reducer(s, a) {
         if (!merged[row.year]) merged[row.year] = { year: row.year }
         for (const [field, tagged] of Object.entries(row)) {
           if (field === 'year') continue
-          if (tagged?.value != null && merged[row.year][field]?.value == null) {
+          // Fill-only by default — a re-paste never silently downgrades a
+          // field a stronger source already populated. `overwrite` is an
+          // explicit, visible opt-in (AddHistoryModal's checkbox) for the
+          // legitimate other case: Screener restated a figure, or the first
+          // paste missed an unexpanded row and the corrected value needs to
+          // actually land, not vanish with no sign it was ever dropped.
+          if (tagged?.value != null && (a.overwrite || merged[row.year][field]?.value == null)) {
             merged[row.year][field] = tagged
           }
           if (tagged?.value != null) delete merged[row.year].synthetic
@@ -125,8 +124,7 @@ function reducer(s, a) {
                                   { growthWindowYears: a.years, basis: data.basis })
       return { ...next, ...computed }
     }
-    case 'SWAP_FIELD':    return { ...s, ...a.payload }
-    case 'RESET':          return { ...initial, folderHandle: s.folderHandle }  // keep CSV folder connection
+    case 'RESET':          return { ...initial }
     case 'APPLY_NORMALIZATION': {
       if (!s.data) return s
       // a.rows: full reconstructed rows (already validated, ok:true). Years not in
@@ -217,7 +215,7 @@ export function AppProvider({ children }) {
   // Persist the current (possibly Screener-merged) data whenever it changes, so a
   // pasted-history merge — not just the initial fetch — survives a reload.
   useEffect(() => {
-    if (state.status !== 'success' || !state.ticker || !state.data || state.csvActive) return
+    if (state.status !== 'success' || !state.ticker || !state.data) return
     const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data.basis }) }
     try { setCached(state.ticker, payload) } catch {}
     // Sync merged financials (they hold pasted Screener history the user built).
@@ -254,13 +252,6 @@ export function AppProvider({ children }) {
     return () => { clearInterval(id); events.forEach(e => window.removeEventListener(e, bump)) }
   }, [state.ticker, state.status])
 
-  // Load folder handle on mount
-  useEffect(() => {
-    loadFolderHandle().then(handle => {
-      if (handle) dispatch({ type: 'SET_FOLDER', handle })
-    }).catch(() => {})
-  }, [])
-
   useEffect(() => {
     if (state.status === 'success' && state.data?.price != null && state.ticker) {
       const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data.basis }) }
@@ -287,22 +278,9 @@ export function AppProvider({ children }) {
         return
       }
       if (cached) {
-        // Try auto-load CSV override (Chrome/Android)
-        if (state.folderHandle) {
-          const csvData = await autoLoadOverride(ticker, state.folderHandle)
-          if (csvData) {
-            const withCSV = applyCSVOverrides(cached.data, csvData)
-            const computed = computeAll(withCSV, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data?.basis })
-            dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, data: withCSV, csvData, csvActive: true, growthWindowYears: pinnedWindow } })
-            return
-          }
-        }
         pinnedWindow = cached.data?.growthWindowYears ?? null
         const computed = computeAll(cached.data, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { growthWindowYears: pinnedWindow, basis: cached.data?.basis })
         dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, growthWindowYears: pinnedWindow } })
-        // Load swap state
-        const swaps = await loadSwapState(ticker)
-        if (Object.keys(swaps).length > 0) dispatch({ type: 'RECALC', payload: { swapState: swaps } })
         return
       }
 
@@ -314,28 +292,15 @@ export function AppProvider({ children }) {
       // because it had the sources backwards; Screener now replaces Yahoo outright.
       const data = normalize(source, raw)
 
-      // Try auto-load CSV for this ticker (Chrome/Android)
-      let finalData = data
-      let csvData   = null
-      let csvActive = false
-      if (state.folderHandle) {
-        csvData = await autoLoadOverride(ticker, state.folderHandle)
-        if (csvData) {
-          finalData = applyCSVOverrides(data, csvData)
-          csvActive = true
-        }
-      }
-
-      const computed = computeAll(finalData, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow })
-      const payload  = { data: finalData, ...computed, csvData, csvActive, growthWindowYears: pinnedWindow }
-      await setCached(ticker, { data, ...computeAll(data, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow }) })  // cache without CSV
+      const computed = computeAll(data, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow })
+      const payload  = { data, ...computed, growthWindowYears: pinnedWindow }
+      await setCached(ticker, payload)
       dispatch({ type: 'FETCH_SUCCESS', payload })
 
     } catch (err) {
-      if (err.message === 'UPLOAD_REQUIRED') dispatch({ type: 'UPLOAD_REQ' })
-      else dispatch({ type: 'FETCH_ERROR', error: err.message })
+      dispatch({ type: 'FETCH_ERROR', error: err.message })
     }
-  }, [state.folderHandle])
+  }, [])
 
   const recalc = useCallback((newAssumptions, newWeights, newMeAssumptions) => {
     if (!state.data) return
@@ -401,43 +366,14 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_STAGE', stage, valuation, marketExpectation })
   }, [state])
 
-  // Apply CSV data — CSV wins for raw fields, recalculates everything
-  const applyCSV = useCallback((csvData) => {
-    if (!state.data) return
-    const withCSV  = applyCSVOverrides(state.data, csvData)
-    const computed = computeAll(withCSV, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData)
-    dispatch({ type: 'CSV_APPLIED', payload: { data: withCSV, ...computed, csvData, csvActive: true } })
-  }, [state])
-
-  // Swap a single field between CSV value and source value — triggers full recalc
-  const swap = useCallback(async (historyType, year, field) => {
-    if (!state.data) return
-    const updated  = swapField(state.data, year, historyType, field)
-    const computed = computeAll(updated, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data?.basis })
-
-    // Track swap state
-    const newSwaps = { ...state.swapState }
-    if (!newSwaps[historyType]) newSwaps[historyType] = {}
-    if (!newSwaps[historyType][year]) newSwaps[historyType][year] = {}
-    const key = `${historyType}.${year}.${field}`
-    newSwaps[historyType][year][field] = !newSwaps[historyType][year][field]
-
-    await saveSwapState(state.ticker, newSwaps)
-    queuePush(`swapStates:${state.ticker.toUpperCase()}`, { ticker: state.ticker.toUpperCase(), swaps: newSwaps })
-    dispatch({ type: 'SWAP_FIELD', payload: { data: updated, ...computed, swapState: newSwaps } })
-  }, [state])
-
   // Merge a single pasted table (income/balance/cashflow) into current data.
   // Pasted years that overlap Yahoo's years get added as cross-source fill
-  // for any field Yahoo was missing; new years extend history.
-  const applyPastedTable = useCallback((tableType, taggedRows) => {
-    dispatch({ type: 'MERGE_PASTED', tableType, taggedRows })
+  // for any field Yahoo was missing; new years extend history. Pass
+  // { overwrite: true } to replace an already-populated field instead (see
+  // MERGE_PASTED) — off by default everywhere this is called from.
+  const applyPastedTable = useCallback((tableType, taggedRows, opts = {}) => {
+    dispatch({ type: 'MERGE_PASTED', tableType, taggedRows, overwrite: !!opts.overwrite })
     }, [])
-
-  const setFolderHandle = useCallback(async (handle) => {
-    await saveFolderHandle(handle)
-    dispatch({ type: 'SET_FOLDER', handle })
-  }, [])
 
   const reset = useCallback(() => {
     dispatch({ type: 'RESET' })
@@ -473,16 +409,6 @@ export function AppProvider({ children }) {
     dispatch({ type: 'RESET' })
   }, [])
 
-  const loadFromCSV = useCallback(async (normalizedData) => {
-    try {
-      const pinnedWindow = normalizedData?.growthWindowYears ?? null
-      const computed = computeAll(normalizedData, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow })
-      dispatch({ type: 'FETCH_SUCCESS', payload: { data: normalizedData, ...computed, growthWindowYears: pinnedWindow } })
-    } catch (err) {
-      dispatch({ type: 'FETCH_ERROR', error: err.message })
-    }
-  }, [state.ticker, state.arData])
-
     const refreshPrice = useCallback(async () => {
     const ticker = state.data?.ticker || state.ticker
     if (!ticker) return
@@ -501,7 +427,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, applyCSV, swap, setFolderHandle, loadFromCSV, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBasis, applyNormalization, refreshPrice
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBasis, applyNormalization, refreshPrice
     }}>
       {children}
     </AppContext.Provider>

@@ -109,18 +109,26 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // book value is meaningless for them — distorts consensus
   const actualPb = r.ratios?.pb?.value
   const pbDistorted = actualPb != null && actualPb > 10
-  if (isApplicable('pb', modelMeta) && r.bookPerShare > 0 && !pbDistorted) {
-    const roe = r.ratios?.roe?.value
-    const targetPb = ['insurance','bank','nbfc'].includes(sectorType)
-      ? 2.0   // industry median PB for financials (not stock's own — that's circular)
-      : clamp((roe || 12) / 8, 0.5, 5)
-    results.pb = { value: r.bookPerShare * targetPb, note: `Book x ${targetPb.toFixed(1)}x (${['insurance','bank','nbfc'].includes(sectorType) ? 'sector median PB' : 'ROE-derived'})` }
+  const isFinancialSector = ['insurance', 'bank', 'nbfc'].includes(sectorType)
+  const roe = r.ratios?.roe?.value
+  // No fabricated 12%-ROE stand-in: a target multiple built on a number
+  // nobody measured isn't "conservative," it's a guess wearing this
+  // company's row. Financials use a sector-median multiple (not circular,
+  // since it isn't derived from the stock's own price); everyone else needs
+  // a REAL measured ROE or the row simply doesn't exist.
+  if (isApplicable('pb', modelMeta) && r.bookPerShare > 0 && !pbDistorted &&
+      (isFinancialSector || roe > 0)) {
+    const targetPb = isFinancialSector ? 2.0 : clamp(roe / 8, 0.5, 5)
+    results.pb = { value: r.bookPerShare * targetPb, note: `Book x ${targetPb.toFixed(1)}x (${isFinancialSector ? 'sector median PB' : 'ROE-derived'})` }
   }
 
   // ── P/S ──────────────────────────────────────────────────────────────────────
-  if (isApplicable('ps', modelMeta) && r.revenue > 0 && r.shares) {
-    const netM     = r.ratios?.netMargin?.value
-    const targetPs = clamp((netM || 5) / 8, 0.3, 6)
+  // Same principle: a target multiple needs this company's own net margin.
+  // A flat 5%-margin stand-in isn't this company's margin, and DCF/P&L
+  // already gets its own consistency from ratios.js never assuming one.
+  const netM = r.ratios?.netMargin?.value
+  if (isApplicable('ps', modelMeta) && r.revenue > 0 && r.shares && netM > 0) {
+    const targetPs = clamp(netM / 8, 0.3, 6)
     results.ps = { value: (r.revenue / r.shares) * targetPs, note: `Revenue/Share × ${targetPs.toFixed(1)}× (margin-derived)` }
   }
 
@@ -151,15 +159,16 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     // ── Applicable models & primary selection ─────────────────────────────────────
   // No weighted blend: averaging models that disagree by era (a turnaround's
   // EV/EBITDA vs its pre-turnaround revenue multiples) produces a number no model
-  // supports. Fair value is the PRIMARY model — the most applicable one for this
-  // stage/sector (first in the relevance-ordered applicable list) — with the other
-  // models shown as a range for context. A reliability gate drops models whose
-  // inputs are meaningless for this stock.
+  // supports. Fair value is the PRIMARY model — the highest-weighted one for this
+  // stage/sector among those with valid inputs (see byWeightDesc below) — with the
+  // other models shown as a range for context. A reliability gate drops models
+  // whose inputs are meaningless for this stock.
   const netMargin = r?.ratios?.netMargin?.value
-  const roeVal    = r?.ratios?.roe?.value
   const inputValid = (m) => {
     if ((m === 'pe' || m === 'graham' || m === 'peg') && !(netMargin > 0)) return false
-    if (m === 'pb' && !(roeVal > 0)) return false
+    // Financial-sector P/B uses a fixed sector-median multiple, not an
+    // ROE-derived one (see the P/B block above), so it isn't gated on ROE.
+    if (m === 'pb' && !isFinancialSector && !(roe > 0)) return false
     return true
   }
   const validKeys = modelMeta.applicable.filter(m => results[m]?.value > 0 && inputValid(m))
@@ -169,8 +178,22 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     ps: 'P/S', graham: 'Graham', evGrossProfit: 'EV/Gross Profit', peg: 'PEG',
   }
 
-  // Primary = most applicable model (first valid in the relevance-ordered list).
-  const primaryKey   = validKeys[0] || null
+  // Primary = the highest-WEIGHTED model among the ones that actually have
+  // valid inputs for this ticker — modelMeta.weights is the stage/sector
+  // domain judgement of which model to trust most (e.g. DCF=3, EV/EBITDA=2.5,
+  // P/E=2 for an established company); ranking by it, rather than by array
+  // position in `applicable`, is what makes this "the most appropriate model
+  // for the ticker" rather than an accident of how the list happened to be
+  // typed. That accident was real: GROWTH and TRANSITION both list `ps`
+  // (weight 1) before `peg` (weight 1.5) in `applicable`, so array-order
+  // selection picked the LOWER-weighted model whenever both were valid.
+  // Filtering to validKeys first, then ranking, is also the cascade for a
+  // missing result: if the top-weighted model's inputs aren't there, it's
+  // simply not in validKeys, and the next-highest-weighted valid one wins —
+  // never a hole where the highest-weighted model failed to compute.
+  const byWeightDesc = (a, b) => (modelMeta.weights?.[b] ?? 0) - (modelMeta.weights?.[a] ?? 0)
+  const rankedKeys   = [...validKeys].sort(byWeightDesc)
+  const primaryKey   = rankedKeys[0] || null
   const primaryModel = primaryKey
     ? { key: primaryKey, name: MODEL_NAMES[primaryKey] || primaryKey, value: results[primaryKey].value }
     : null
@@ -182,13 +205,22 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const rangeHigh   = modelValues.length > 1 ? Math.max(...modelValues) : fairValue
 
   // ── Sensitivity + scenarios (DCF is the growth/WACC-sensitive model) ──────────
-  const sensitivity = (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf)
+  // Both axes need REAL base values — a sensitivity grid built by sweeping
+  // around a fabricated 8%/flat-WACC centre is a grid of guesses, not a
+  // range around this company's own numbers.
+  const sensitivity = (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf && growthRate != null && wacc != null)
     ? dcfSensitivity(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntY)
     : null
 
+  // Both the scenario cards and the sensitivity grid need REAL base values —
+  // without them, scenarioAssumptions() correctly returns null growth/wacc,
+  // but the panel would still render a card and format `null * 100` as a
+  // (wrong-looking, still misleading) "0%" rather than not showing the card
+  // at all. Gating the whole block here means "no scenarios" instead.
   let scenarios = null
-  if (cfBaseDcf && r.shares) {
-    const scenBase = { growthRate: estimateGrowth(r), wacc: waccDefault, termGrowth: 0.03, projYears }
+  const scenGrowthDefault = estimateGrowth(r)
+  if (cfBaseDcf && r.shares && scenGrowthDefault != null && waccDefault != null) {
+    const scenBase = { growthRate: scenGrowthDefault, wacc: waccDefault, termGrowth: 0.03, projYears }
     scenarios = {}
     for (const key of ['bear', 'base', 'bull']) {
       const sa    = scenarioAssumptions(key, scenBase)
@@ -212,7 +244,10 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // ── Reverse DCF ───────────────────────────────────────────────────────────────
   let impliedGrowth = null
   const cfForRev = (r.fcf > 0 && !r.fcfMaintenanceOnly) ? r.fcf : null   // same rule as the DCF above
-  if (cfForRev && r.price > 0 && r.shares && r.totalDebt != null) {
+  // wacc discounts every cash flow in the solve below — a null wacc silently
+  // coerces to 0 in arithmetic (no discounting at all), which would return a
+  // confidently wrong implied growth rather than none. Requires a real WACC.
+  if (cfForRev && r.price > 0 && r.shares && r.totalDebt != null && wacc != null) {
     const targetEV = r.price * r.shares + r.totalDebt - r.cash
     impliedGrowth  = solveGrowth(cfForRev, targetEV, wacc, termGrowth, projYears)
   }
@@ -248,10 +283,16 @@ function computeWacc(r, { riskFree = 0.07, erp = 0.055, taxRate = 0.25 } = {}) {
   const E = r?.marketCap > 0 ? r.marketCap : null
   const D = r?.totalDebt > 0 ? r.totalDebt : 0
   const ke = riskFree + beta * erp
-  // Cost of debt: interest / debt if both present, else a sensible India default.
-  let kd = 0.09
-  if (r?.interest > 0 && D > 0) kd = clamp(r.interest / D, 0.04, 0.18)
   if (E == null) return clamp(ke, 0.08, 0.16)          // no market cap → all-equity proxy
+  // Cost of debt has to be MEASURED (interest / debt) — a flat 9% dressed up
+  // as this company's WACC was the same "invented figure feeding a fair
+  // value" problem the DCF section below already refuses for FCF/CapEx.
+  // D == 0 means debt carries no weight in WACC at all, so kd is moot there.
+  let kd = 0
+  if (D > 0) {
+    if (!(r?.interest > 0)) return null      // real debt, no way to measure its cost
+    kd = clamp(r.interest / D, 0.04, 0.18)
+  }
   const V = E + D
   const wacc = (E / V) * ke + (D / V) * kd * (1 - taxRate)
   return clamp(wacc, 0.08, 0.16)
@@ -289,8 +330,11 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
   else if (rdcf != null) { implied = rdcf; basis = 'reverse-DCF' }
   if (implied == null) return null
 
-  // Recent actual growth to compare against (basis-appropriate).
-  const recent = (basis === 'earnings') ? g.npGrowthYoY?.value
+  // Recent actual growth to compare against (basis-appropriate). npCagr, not
+  // npGrowthYoY — the latter is a single year's change and was rendering as
+  // "Historical earnings CAGR" even though it wasn't a CAGR and didn't move
+  // when the growth-window slider did.
+  const recent = (basis === 'earnings') ? g.npCagr?.value
                                         : (g.revCagr?.value)
   const recentLabel = (basis === 'earnings') ? 'earnings' : 'sales'
   const basisLabel  = basis === 'reverse-DCF' ? ' (reverse-DCF)' : ` (${basis}-based)`
@@ -331,17 +375,25 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
 
 function estimateGrowth(r) {
   // The single dynamic windowed CAGR — same figure every consumer uses, so the
-  // user's window now reaches the DCF. Clamp is a sanity bound, not a source.
-  const g = (r.ratios?.revCagr?.value ?? 8) / 100
-  return clamp(g, 0.02, 0.20)
+  // user's window now reaches the DCF. Clamp is a sanity bound on a REAL
+  // measured rate, not a source: no revCagr means no growth rate, not a flat
+  // 8% dressed up as one. Callers (DCF, scenarios, reverse-DCF) decline
+  // rather than substitute when this comes back null.
+  const cagr = r.ratios?.revCagr?.value
+  if (cagr == null) return null
+  return clamp(cagr / 100, 0.02, 0.20)
 }
 
 // Enterprise PV → equity value per share, with a growth fade toward terminal.
 function dcfPerShare(cfBase, g, wacc, tg, yrs, cash, debt, shares, ntGrowth = null, ntYears = 0) {
   // cash/debt are never null now — ratios.js assumes nil cash and flags it, so the
   // bridge always runs. The flag rides along on r.bsEstimated and the note below.
-  if (!(cfBase > 0) || !(shares > 0) || wacc <= tg) return null
+  if (!(cfBase > 0) || !(shares > 0)) return null
+  if (wacc == null || wacc <= tg) return null
   if (cash == null || debt == null) return null
+  // No measured base growth rate AND no user-set near-term (guidance) window
+  // to fade from instead — there's nothing real to project the cash flow on.
+  if (ntYears === 0 && g == null) return null
   const ev = dcfEV(cfBase, g, wacc, tg, yrs, ntGrowth, ntYears)
   const ps = (ev + cash - debt) / shares
   return ps > 0 ? ps : null
@@ -375,8 +427,13 @@ export function scenarioAssumptions(preset, base) {
   const p = SCENARIO_PRESETS[preset] || SCENARIO_PRESETS.base
   const termGrowth = clamp((base.termGrowth ?? 0.03) + p.termAdd, 0.0, 0.06)
   return {
-    growthRate: clamp((base.growthRate ?? 0.08) * p.growthMul, 0.02, 0.30),
-    wacc:       clamp((base.wacc ?? 0.10) + p.waccAdd, termGrowth + 0.01, 0.30),
+    // null base growth/wacc (no measured CAGR, no computable WACC) stays
+    // null through every scenario rather than falling back to a flat
+    // 8%/10% — dcfPerShare declines cleanly on a null input; it must NOT
+    // receive a number nobody measured just because a scenario multiplier
+    // was applied to it.
+    growthRate: base.growthRate != null ? clamp(base.growthRate * p.growthMul, 0.02, 0.30) : null,
+    wacc:       base.wacc != null ? clamp(base.wacc + p.waccAdd, termGrowth + 0.01, 0.30) : null,
     termGrowth,
     projYears:  base.projYears ?? 10,
   }
