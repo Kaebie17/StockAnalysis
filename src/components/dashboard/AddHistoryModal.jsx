@@ -76,6 +76,14 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
 
   if (!open) return null
   const url = screenerUrl(ticker)
+  // A data-quality flag names exactly one table where the answer lives — showing
+  // the other four alongside it just makes the user hunt for the one that
+  // matters. General "Add more history" (no focusTable) still gets everything.
+  // A hint that doesn't match a real table key falls back to everything too,
+  // rather than silently rendering zero paste boxes.
+  const focusedMatch = focusTable ? TABLES.filter(t => t.key === focusTable) : []
+  const visibleTables = focusedMatch.length ? focusedMatch : TABLES
+  const focusLabel = focusedMatch.length ? focusedMatch[0].label : null
 
   const handleParseAll = () => {
     const out = {}
@@ -158,9 +166,11 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
       <div className="card max-w-4xl w-full space-y-4 max-h-[85vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="font-semibold text-white">Add more history</h2>
+            <h2 className="font-semibold text-white">{focusLabel ? `Re-paste ${focusLabel}` : 'Add more history'}</h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Paste any Screener tables — financials extend history, shareholding feeds Quality &amp; Moat
+              {focusLabel
+                ? 'Expand the sub-rows Screener collapses by default, then paste the table again.'
+                : 'Paste any Screener tables — financials extend history, shareholding feeds Quality & Moat'}
             </p>
           </div>
           <button onClick={handleClose} className="text-slate-500 hover:text-white text-xl leading-none">✕</button>
@@ -177,11 +187,13 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
               <p className="text-xs text-bear">No ticker available to open Screener.</p>
             )}
             <p className="text-xs text-slate-500">
-              Copy whichever tables you want to add, paste each into its box. Fill only the ones you have.
+              {focusLabel
+                ? `Copy the ${focusLabel} table and paste it below.`
+                : 'Copy whichever tables you want to add, paste each into its box. Fill only the ones you have.'}
             </p>
 
             <div className="space-y-3">
-              {TABLES.map(t => (
+              {visibleTables.map(t => (
                 <div key={t.key} id={`paste-table-${t.key}`}
                      className={`space-y-1 scroll-mt-4 rounded-lg transition-colors ${
                        focusTable === t.key ? 'ring-1 ring-accent/50 p-2 -m-2' : ''}`}>

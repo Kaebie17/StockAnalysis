@@ -217,7 +217,10 @@ export function pnlSpikes(incomeHistory = []) {
         kind: 'pnl-spike',
         field,
         note: `${label} ${steps[i] > 0 ? 'jumped' : 'dropped'} ${Math.abs(round(steps[i] * 100, 0))}% in ${pts[i + 1].year}, well beyond its usual year-to-year change`,
-        resolveHint: 'window',
+        // Every SPIKE_FIELDS line lives on the P&L, so the fix is the same
+        // re-paste-with-sub-rows-expanded action as a margin outlier — there is
+        // no 'window' table for this to resolve to.
+        resolveHint: 'income',
       })
     }
   }
