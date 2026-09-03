@@ -96,17 +96,26 @@ export function extractPageBlocks(page, text, config = SECTION_CONFIG) {
 export function finalizeSections(blocks, config = SECTION_CONFIG) {
   const deduped = dedupe(blocks)
 
-  // Group by field, cap per field, tag structured (RPT) with any % / amount found.
+  // Group by field, tag structured (RPT/pledge/number) hits with any % / amount
+  // found, THEN cap per field. Tagging before capping matters: on a document with
+  // many boilerplate mentions of the same keyword (e.g. "encumbered" repeated
+  // across every investment-schedule note in an insurer's annual report), a
+  // page-order-first cap can throw away the one hit that actually carries a
+  // figure before ever looking at it. Numeric hits sort first (stable, so page
+  // order is preserved within each group) so the cap drops boilerplate, not data.
+  const hasNumber = b => b.pledge?.pct != null || b.rpt?.pctOfRevenue != null || b.amount?.value != null
   const groups = config.map(cfg => {
-    const fieldBlocks = deduped
+    const tagged = deduped
       .filter(b => b.field === cfg.field)
-      .slice(0, MAX_PER_FIELD)
       .map(b => {
         if (cfg.field === 'rpt') return { ...b, rpt: sniffRpt(b.snippet) }
         if (cfg.field === 'pledge') return { ...b, pledge: sniffPledge(b.snippet) }
         if (cfg.input === 'number') return { ...b, amount: sniffAmount(b.snippet) }
         return b
       })
+    const fieldBlocks = tagged
+      .sort((a, b) => (hasNumber(b) ? 1 : 0) - (hasNumber(a) ? 1 : 0))
+      .slice(0, MAX_PER_FIELD)
     return { field: cfg.field, label: cfg.label, structured: !!cfg.structured, blocks: fieldBlocks }
   }).filter(g => g.blocks.length > 0)
 
