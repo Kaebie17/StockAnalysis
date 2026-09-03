@@ -1,7 +1,7 @@
 
 import React, { useRef, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { extractSections, detectScanned, sniffAmount, sniffPledge, sniffRpt } from '../../engine/arExtract.js'
+import { extractPageBlocks, finalizeSections, isScannedStats, sniffAmount, sniffPledge, sniffRpt } from '../../engine/arExtract.js'
 import { reconcile } from '../../engine/reconcileDocs.js'
 import { METRICS } from '../../engine/metrics.js'
 import { buildArConfig } from '../../engine/arExtract.js'
@@ -68,10 +68,6 @@ export default function DocumentReader({ open, onClose }) {
     if (!file) return
     setFileName(file.name); setStatus('extracting'); setProgress(0)
     try {
-      const pages = await extractPdfText(file, setProgress)
-      const chars = pages.reduce((s, p) => s + (p.text?.length || 0), 0)
-      setDiag({ pages: pages.length, chars, perPage: pages.length ? Math.round(chars / pages.length) : 0 })
-      if (detectScanned(pages)) { setStatus('scanned'); return }
       // The reader hunts for the standing narrative sections PLUS a number field
       // per metric still missing. This line was the whole point of buildArConfig
       // and I'd left it calling the default config — so after I removed the
@@ -79,7 +75,15 @@ export default function DocumentReader({ open, onClose }) {
       // numbers at all. Worse than before I touched it.
       const gaps = findMissingBaseMetrics(state.ratioResult, state.data,
                                           state.arData?.dismissedGaps || [])
-      const { groups } = extractSections(pages, buildArConfig(gaps.arTargets))
+      const config = buildArConfig(gaps.arTargets)
+      // Streamed page-by-page: only the small windowed snippets a page matches
+      // are kept, never the page's full text — a document the size of an
+      // insurance-company annual report (hundreds of pages) would otherwise
+      // hold its entire text layer in memory at once and can crash the tab.
+      const { blocks, chars, pageCount } = await extractPdfBlocks(file, config, setProgress)
+      setDiag({ pages: pageCount, chars, perPage: pageCount ? Math.round(chars / pageCount) : 0 })
+      if (isScannedStats(chars, pageCount)) { setStatus('scanned'); return }
+      const { groups } = finalizeSections(blocks, config)
       const seed = {}
       groups.forEach(g => g.blocks.forEach(b => { seed[blockId(b)] = { status: 'pending', text: b.snippet } }))
       setGroups(groups); setDecisions(seed); setStatus('review')
@@ -288,17 +292,31 @@ function Center({ icon, title, sub, onClose }) {
   )
 }
 
-async function extractPdfText(file, onProgress) {
+// Reads and matches one page at a time — never holds more than one page's text
+// in memory. `page.cleanup()` releases that page's decoded fonts/images from
+// pdf.js's own cache as we go, and we yield to the event loop periodically so a
+// very long document doesn't freeze the tab or starve the browser's GC.
+async function extractPdfBlocks(file, config, onProgress) {
   const buf = await file.arrayBuffer()
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise
-  const pages = []
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i)
-    const content = await page.getTextContent()
-    pages.push({ page: i, text: content.items.map(it => it.str).join(' ') })
-    if (onProgress) onProgress(Math.round((i / pdf.numPages) * 100))
+  const numPages = pdf.numPages
+  const blocks = []
+  let chars = 0
+  try {
+    for (let i = 1; i <= numPages; i++) {
+      const page = await pdf.getPage(i)
+      const content = await page.getTextContent()
+      const text = content.items.map(it => it.str).join(' ')
+      chars += text.length
+      blocks.push(...extractPageBlocks(i, text, config))
+      page.cleanup()
+      if (onProgress) onProgress(Math.round((i / numPages) * 100))
+      if (i % 25 === 0) await new Promise(r => setTimeout(r, 0))
+    }
+  } finally {
+    pdf.destroy()
   }
-  return pages
+  return { blocks, chars, pageCount: numPages }
 }
 
 function highlight(snippet, keyword) {

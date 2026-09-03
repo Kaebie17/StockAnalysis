@@ -64,28 +64,36 @@ export function buildArConfig(arTargets = []) {
   ]
 }
 
-export function extractSections(pages, config = SECTION_CONFIG) {
+// Matches ONE page's text against the config and returns just the (small,
+// windowed) blocks found on it. Callers that hold the whole document in memory
+// can loop this themselves; extractSections() below does that for convenience,
+// but a streaming caller (e.g. DocumentReader, page-by-page from pdf.js) should
+// call this directly per page and never hold full page text beyond that call.
+export function extractPageBlocks(page, text, config = SECTION_CONFIG) {
   const blocks = []
-  for (const { page, text } of pages) {
-    if (!text) continue
-    for (const cfg of config) {
-      for (const re of cfg.keywords) {
-        const flags = re.flags.includes('g') ? re.flags : re.flags + 'g'
-        const rx = new RegExp(re.source, flags)
-        let m
-        while ((m = rx.exec(text)) !== null) {
-          blocks.push({
-            field: cfg.field, label: cfg.label, page,
-            idx: m.index, keyword: m[0],
-            snippet: windowAround(text, m.index, m[0].length),
-            basis: detectBasis(text, m.index),
-          })
-          if (m.index === rx.lastIndex) rx.lastIndex++   // avoid zero-length loop
-        }
+  if (!text) return blocks
+  for (const cfg of config) {
+    for (const re of cfg.keywords) {
+      const flags = re.flags.includes('g') ? re.flags : re.flags + 'g'
+      const rx = new RegExp(re.source, flags)
+      let m
+      while ((m = rx.exec(text)) !== null) {
+        blocks.push({
+          field: cfg.field, label: cfg.label, page,
+          idx: m.index, keyword: m[0],
+          snippet: windowAround(text, m.index, m[0].length),
+          basis: detectBasis(text, m.index),
+        })
+        if (m.index === rx.lastIndex) rx.lastIndex++   // avoid zero-length loop
       }
     }
   }
+  return blocks
+}
 
+// Dedupe + group an already-collected block list (from extractPageBlocks, one
+// call per page) into the display groups the reader renders.
+export function finalizeSections(blocks, config = SECTION_CONFIG) {
   const deduped = dedupe(blocks)
 
   // Group by field, cap per field, tag structured (RPT) with any % / amount found.
@@ -105,11 +113,27 @@ export function extractSections(pages, config = SECTION_CONFIG) {
   return { groups, totalHits: deduped.length }
 }
 
+/** Batch convenience: same result as before, for callers that already hold all
+ * pages in memory (small documents, tests). Streaming callers should use
+ * extractPageBlocks()/finalizeSections() directly instead. */
+export function extractSections(pages, config = SECTION_CONFIG) {
+  const blocks = []
+  for (const { page, text } of pages) blocks.push(...extractPageBlocks(page, text, config))
+  return finalizeSections(blocks, config)
+}
+
 /** Little/no text layer ⇒ scanned PDF ⇒ caller falls back to manual paste. */
 export function detectScanned(pages) {
   if (!pages.length) return true
   const totalChars = pages.reduce((s, p) => s + (p.text?.length || 0), 0)
   return totalChars / pages.length < 50
+}
+
+/** Same scanned check as detectScanned(), from running totals instead of a full
+ * pages array — for a streaming caller that never materializes one. */
+export function isScannedStats(totalChars, pageCount) {
+  if (!pageCount) return true
+  return totalChars / pageCount < 50
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
