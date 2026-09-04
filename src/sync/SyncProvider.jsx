@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import { supabase, syncEnabled } from './supabaseClient.js'
-import { pullAll, pushAllLocal, currentUser } from './sync.js'
+import { pullAll, pushAllLocal } from './sync.js'
 
 /**
  * SyncProvider — magic-link auth + local-first sync orchestration.
@@ -31,6 +31,14 @@ export function SyncProvider({ children }) {
   const [user, setUser] = useState(null)
   const [status, setStatus] = useState(syncEnabled() ? 'idle' : 'off')
   const [error, setError] = useState(null)
+  // Bumped after every pull that actually lands records. pullAll() writes
+  // straight into IndexedDB through db.js — it has no way to reach into
+  // AppContext's in-memory `state.data` or usePositions' in-memory list, so
+  // without this, a ticker already open (or the positions list already
+  // mounted) BEFORE sign-in stayed on whatever it loaded then, even after
+  // sync pulled newer data underneath it. Consumers (AppContext, usePositions)
+  // watch this value and re-read their own cache when it changes.
+  const [lastPulledAt, setLastPulledAt] = useState(0)
 
   const runInitialSync = useCallback(async () => {
     setStatus('syncing')
@@ -44,6 +52,7 @@ export function SyncProvider({ children }) {
       setTimeout(() => reject(new Error(`Sync timed out (${label})`)), SYNC_TIMEOUT_MS))
     try {
       const pullResult = await Promise.race([pullAll(), timeout('pull')])
+      if (pullResult?.ok && pullResult.pulled > 0) setLastPulledAt(Date.now())
       const pushResult = await Promise.race([pushAllLocal(), timeout('push')])
       // Both halves have to actually succeed for this to mean "synced" — a pull
       // or push that silently failed used to still land here and show the same
@@ -60,9 +69,14 @@ export function SyncProvider({ children }) {
     }
   }, [])
 
+  // onAuthStateChange fires immediately on subscribe with whatever session
+  // already exists, THEN again on any later real change (sign-in, sign-out,
+  // token refresh) — it already covers "there's a session on mount," so a
+  // separate currentUser() check here was a second, redundant trigger. Both
+  // fired runInitialSync() on every load with an existing session, running
+  // two full pull+push cycles concurrently instead of one.
   useEffect(() => {
     if (!syncEnabled()) return
-    currentUser().then(u => { if (u) { setUser(u); runInitialSync() } })
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
       const u = session?.user || null
       setUser(u)
@@ -107,7 +121,7 @@ export function SyncProvider({ children }) {
   const syncNow = useCallback(async () => { if (user) await runInitialSync() }, [user, runInitialSync])
 
   return (
-    <SyncCtx.Provider value={{ enabled: syncEnabled(), user, status, error, signIn, verifyCode, signOut, syncNow }}>
+    <SyncCtx.Provider value={{ enabled: syncEnabled(), user, status, error, lastPulledAt, signIn, verifyCode, signOut, syncNow }}>
       {children}
     </SyncCtx.Provider>
   )

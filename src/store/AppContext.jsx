@@ -12,6 +12,7 @@ import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
 import { getCached, setCached, deleteCached, clearAllCached, saveGuidance, loadGuidance } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
+import { useSync } from '../sync/SyncProvider.jsx'
 import { mergeByYear } from '../engine/reconstruct.js'
 import { listRevisions } from '../utils/db.js'
 
@@ -211,6 +212,7 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
 
 export function AppProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, initial)
+  const { lastPulledAt } = useSync()
 
   // Persist the current (possibly Screener-merged) data whenever it changes, so a
   // pasted-history merge — not just the initial fetch — survives a reload.
@@ -226,6 +228,24 @@ export function AppProvider({ children }) {
       queuePush(`financials:${t}`, { key: t, data: payload, timestamp: Date.now(), lastAccessed: Date.now() })
     }
   }, [state.data])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A sync pull writes straight into IndexedDB (via db.js) — it has no way to
+  // reach into this reducer's in-memory `state.data`. Without this, a ticker
+  // opened BEFORE signing in stayed on whatever it loaded then (e.g. a plain
+  // Yahoo-only fetch) even after sync pulled in the real, Screener-merged
+  // record for that same ticker: same bug as usePositions, same fix — re-read
+  // the currently open ticker's cache whenever a pull lands.
+  useEffect(() => {
+    if (!lastPulledAt || !state.ticker) return
+    let cancelled = false
+    getCached(state.ticker).then(cached => {
+      if (cancelled || !cached) return
+      const pinnedWindow = cached.data?.growthWindowYears ?? null
+      const computed = computeAll(cached.data, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { growthWindowYears: pinnedWindow, basis: cached.data?.basis })
+      dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, growthWindowYears: pinnedWindow } })
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [lastPulledAt])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live price poller: refresh just the quote every 60s while the user is active.
   // Stops re-fetching after 15 min of inactivity and resumes automatically on the

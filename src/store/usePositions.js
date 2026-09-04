@@ -4,6 +4,7 @@ import {
   saveEstimate, currentEstimate, saveExitPlanForTicker,
 } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
+import { useSync } from '../sync/SyncProvider.jsx'
 import { buildEstimate } from '../engine/estimate.js'
 import { rebuildSnapshot } from '../engine/snapshotRebuild.js'
 import { fetchRegimeOn, fetchMarketRegime } from '../api/marketRegime.js'
@@ -20,6 +21,13 @@ import { analyzeTicker } from './analyzeTicker.js'
 export function usePositions(ticker) {
   const [positions, setPositions] = useState([])
   const [loading, setLoading] = useState(true)
+  // pullAll() writes pulled positions straight into IndexedDB, with no way to
+  // reach back into whatever usePositions() instances are already mounted —
+  // this hook only ever re-read the DB on mount / when `ticker` changed, so a
+  // sync that landed AFTER the landing page was already showing (the normal
+  // case: sign in from an already-open tab) left it on stale data until
+  // something else — navigating away and back — happened to remount it.
+  const { lastPulledAt } = useSync()
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -28,7 +36,7 @@ export function usePositions(ticker) {
     finally { setLoading(false) }
   }, [ticker])
 
-  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => { refresh() }, [refresh, lastPulledAt])
 
   return { positions, loading, refresh }
 }
