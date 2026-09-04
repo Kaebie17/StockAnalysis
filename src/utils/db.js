@@ -83,8 +83,28 @@ function openDB() {
         d.createObjectStore('exitPlans', { keyPath: 'ticker' })
       }
     }
-    req.onsuccess = e => { db = e.target.result; openPromise = null; resolve(db) }
+    req.onsuccess = e => {
+      db = e.target.result
+      // Without this, a DB_VERSION bump (like 6→7 here) never lands for a user
+      // who has the site open elsewhere — a background tab, or an installed
+      // PWA window they didn't fully close. That other connection just sits on
+      // the old version, and onblocked below fires and waits forever, since
+      // nothing ever tells it to get out of the way. Every read/write in THIS
+      // tab hangs right along with it (openDB()'s promise never resolves),
+      // which is what made positions/cache/sync all look silently broken at
+      // once. Closing here lets the other tab's upgrade proceed; it can reopen
+      // (openDB() dedupes via `db`/`openPromise`) the next time it touches data.
+      db.onversionchange = () => { db.close(); db = null }
+      openPromise = null
+      resolve(db)
+    }
     req.onerror   = () => { openPromise = null; reject(req.error) }
+    // Fires when THIS open request is the one being blocked by another tab's
+    // older connection that hasn't closed. Left unhandled, req.onsuccess never
+    // fires and openPromise (and every caller awaiting it) hangs indefinitely.
+    req.onblocked = () => {
+      console.warn('[db] open blocked by another tab on an older DB version — waiting for it to close')
+    }
   })
   return openPromise
 }

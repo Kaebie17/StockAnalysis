@@ -35,16 +35,28 @@ export function SyncProvider({ children }) {
   const runInitialSync = useCallback(async () => {
     setStatus('syncing')
     setError(null)
-    const pullResult = await pullAll()
-    const pushResult = await pushAllLocal()
-    // Both halves have to actually succeed for this to mean "synced" — a pull
-    // or push that silently failed used to still land here and show the same
-    // "Synced" label as a real success.
-    if (pullResult?.ok === false || pushResult?.ok === false) {
-      setError(errText(pullResult?.ok === false ? pullResult.error : pushResult.error))
+    // A network call here (getUser/select/upsert) has no built-in timeout — a
+    // stalled connection would otherwise leave status stuck on 'syncing'
+    // forever with nothing shown to the user. This guarantees a terminal
+    // status either way.
+    const SYNC_TIMEOUT_MS = 20000
+    const timeout = (label) => new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Sync timed out (${label})`)), SYNC_TIMEOUT_MS))
+    try {
+      const pullResult = await Promise.race([pullAll(), timeout('pull')])
+      const pushResult = await Promise.race([pushAllLocal(), timeout('push')])
+      // Both halves have to actually succeed for this to mean "synced" — a pull
+      // or push that silently failed used to still land here and show the same
+      // "Synced" label as a real success.
+      if (pullResult?.ok === false || pushResult?.ok === false) {
+        setError(errText(pullResult?.ok === false ? pullResult.error : pushResult.error))
+        setStatus('error')
+      } else {
+        setStatus('synced')
+      }
+    } catch (e) {
+      setError(errText(e))
       setStatus('error')
-    } else {
-      setStatus('synced')
     }
   }, [])
 
