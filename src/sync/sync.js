@@ -106,6 +106,18 @@ export async function pullAll() {
     // freshly-refreshed price reverting on every full page reload (which
     // re-runs the initial pull), while in-app navigation — which never
     // re-pulls — kept the fresh price.
+    // A financials record's local `timestamp` gets reset by every 60s
+    // price-poll tick and by every plain ticker fetch — passive refreshes
+    // with no user edit behind them. Left as `row.updated_at` unconditionally,
+    // putSyncableRecord's freshness gate (below) compares that constantly-
+    // refreshed local timestamp against the pulled record's `updated_at` —
+    // which is from whenever it was actually pushed — and a plain Yahoo
+    // record that merely loaded moments ago always wins, discarding a
+    // genuinely richer Screener-merged pull every time. Bypass the gate
+    // specifically for that upgrade (local isn't Screener-merged, the pull
+    // is); once local already HAS its own Screener-merged data, both sides
+    // represent real pasted effort, so recency still decides between them.
+    let bypassFreshnessGate = false
     if (store === 'financials') {
       try {
         // getCached(ticker) resolves the stored record's `data` field, i.e.
@@ -126,9 +138,16 @@ export async function pullAll() {
             },
           }
         }
+        // row.value is the RAW pulled record (rec) → deepSource is two levels
+        // in (row.value.data.data.deepSource). `existing` is getCached()'s
+        // return, which is already unwrapped one level (rec.data, i.e. the
+        // payload) → deepSource is one level in (existing.data.deepSource) —
+        // same distinction the price-merge above already relies on.
+        bypassFreshnessGate = row.value?.data?.data?.deepSource === 'screener'
+          && existing?.data?.deepSource !== 'screener'
       } catch { /* no local copy to protect — fall through to the pulled value */ }
     }
-    try { await putSyncableRecord(store, row.value, row.updated_at); pulled++ } catch {}
+    try { await putSyncableRecord(store, row.value, bypassFreshnessGate ? null : row.updated_at); pulled++ } catch {}
   }
   return { pulled, ok: true }
 }
