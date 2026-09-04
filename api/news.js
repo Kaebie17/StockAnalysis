@@ -129,7 +129,10 @@ function relevanceTokens(company, ticker) {
   const base = String(ticker || '').replace(/\.(NS|BO)$/i, '').toLowerCase()
   const tickerToken = (base && /[a-z]/.test(base) && base.length >= 4) ? base : null
 
-  return { phrases: [...new Set(phrases)], single: words[0] || null, ticker: tickerToken }
+  // Uppercase, suffix-stripped — for exact comparison against Yahoo's own
+  // relatedTickers tag (see classify()), not text search, so no length/
+  // alphabetic restriction like tickerToken needs for safe substring matching.
+  return { phrases: [...new Set(phrases)], single: words[0] || null, ticker: tickerToken, base: base.toUpperCase() }
 }
 
 // Names that are people first and companies second. A headline carrying one of
@@ -144,19 +147,45 @@ function titleMentionsCompany(title, tokens) {
   return false
 }
 
+// A genuinely specific match: a real multi-word phrase, or the ticker itself —
+// both unambiguous enough that a person/offtopic-context word appearing
+// alongside one is a real (if odd) coincidence, not a name collision. A
+// single-word company name (Trent, Dixon, ITC…) matching only its bare word
+// is NOT specific enough on its own — that's exactly how a family-name
+// obituary or a same-named footballer's wedding story slips through, and
+// exactly how a cricket report about "Trent Boult" would too.
+function hasSpecificMatch(title, tokens) {
+  const t = String(title || '').toLowerCase()
+  const hasPhrase = tokens.phrases?.some(p => p.split(' ').length >= 2 && t.includes(p))
+  // A ticker match only adds real specificity when it's a genuinely DIFFERENT
+  // string from the ambiguous brand-anchor word — for Trent (ticker TRENT →
+  // base "trent") or Dixon Technologies (ticker DIXON → base "dixon"), the
+  // ticker and the single ambiguous word are literally identical, so "the
+  // ticker matched" is the exact same weak signal as "the bare word matched,"
+  // not a second, corroborating one.
+  const tickerIsDistinct = tokens.ticker && tokens.ticker !== tokens.single
+  const hasTicker = tickerIsDistinct && t.includes(tokens.ticker)
+  return !!(hasPhrase || hasTicker)
+}
+
 /**
  * Is this about a PERSON who shares the company's name? Checked before anything
  * else, because no amount of relevance scoring downstream can rescue an
  * obituary that was let in at the top.
  */
 function looksPersonal(title, tokens) {
-  const t = String(title || '')
-  if (!PERSON_CONTEXT.test(t)) return false
-  // Only when the sole connection is the family name, not the full company name.
-  const lower = t.toLowerCase()
-  const hasPhrase = tokens.phrases?.some(p => lower.includes(p))
-  const hasTicker = tokens.ticker && lower.includes(tokens.ticker)
-  return !hasPhrase && !hasTicker
+  if (!PERSON_CONTEXT.test(String(title || ''))) return false
+  return !hasSpecificMatch(title, tokens)
+}
+
+// Sports coverage — checked for the same reason as looksPersonal(), and hit
+// by the same class of bug: a single ambiguous word (Trent, Dixon) colliding
+// with an unrelated match report or player name, not a name collision this
+// two-word-phrase system was originally built to catch.
+const OFFTOPIC_CONTEXT = /\b(wicket|innings|century|batsman|bowler|bowling|cricket|football|soccer|striker|midfielder|goalkeeper|tournament|championship|olympics?|medal|coach|squad|captain of|playing xi|\bt20\b|\bodi\b|test match|premier league|world cup|kabaddi|hockey (?:team|match)|badminton|tennis|athlete|\bipl\b|match(?:es)?\s+(?:won|lost|drawn)|five[- ]wicket|runs?\s+(?:scored|off)|century maker)\b/i
+function looksOfftopic(title, tokens) {
+  if (!OFFTOPIC_CONTEXT.test(String(title || ''))) return false
+  return !hasSpecificMatch(title, tokens)
 }
 
 // Does the headline read like a generic market-research report?
@@ -176,11 +205,26 @@ function isMarketReport(title) {
 // tier:'sector' ONLY when it's a generic market report AND the company isn't in
 // the headline. Everything else (incl. company-mentioning market reports, and
 // company news that happens not to use the exact token) stays 'primary'.
-function classify(title, tokens) {
+//
+// `relatedTickers` (Yahoo items only) is Yahoo's OWN classification of which
+// companies a story is about — a stronger signal than guessing from title
+// text. Trusted only POSITIVELY here (an exact match short-circuits straight
+// to 'primary', skipping every check below): there's no way to verify from
+// here how exhaustively Yahoo tags every company a story touches on, so its
+// absence isn't treated as proof of irrelevance — a story missing our ticker
+// in this list still falls through to the normal text-based checks rather
+// than being excluded outright.
+function classify(title, tokens, relatedTickers) {
+  if (tokens.base && relatedTickers?.some(rt =>
+    String(rt).toUpperCase().replace(/\.(NS|BO)$/i, '') === tokens.base
+  )) return 'primary'
+
   // A person sharing the company's family name is not company news. Dropped
   // rather than demoted: an obituary in a stock feed is noise however it's
-  // labelled, and letting it through cost the whole feed credibility.
+  // labelled, and letting it through cost the whole feed credibility. Same
+  // logic, same reason, for sports coverage of a same-named athlete/team.
   if (looksPersonal(title, tokens)) return 'excluded'
+  if (looksOfftopic(title, tokens)) return 'excluded'
   if (isMarketReport(title) && !titleMentionsCompany(title, tokens)) return 'sector'
   // Nothing tying it to this company at all — a name collision or a stray match.
   if (!titleMentionsCompany(title, tokens) && !isMarketReport(title)) return 'unrelated'
@@ -201,9 +245,25 @@ async function fromYahoo(query) {
       source: n.publisher || 'Yahoo Finance',
       url: n.link,
       date: toMillis(n.providerPublishTime),
+      // Yahoo's own tag of which tickers a story is about — see classify().
+      relatedTickers: Array.isArray(n.relatedTickers) ? n.relatedTickers : [],
     }))
     .filter(x => x.title && x.url)
 }
+
+// Restricting Google's search to known financial publishers — rather than an
+// open search across all of Google News — is what actually cuts sports/
+// entertainment noise at the source. A single-word company name (Trent,
+// Dixon) has no such problem on a purely financial site; it does on an
+// unrestricted search, which is indifferent to whether a "Trent" match came
+// from a business page or a cricket report.
+const INDIAN_NEWS_SITES = [
+  'moneycontrol.com', 'economictimes.indiatimes.com', 'livemint.com',
+  'business-standard.com', 'financialexpress.com', 'cnbctv18.com', 'ndtvprofit.com',
+]
+const GLOBAL_NEWS_SITES = [
+  'reuters.com', 'bloomberg.com', 'cnbc.com', 'marketwatch.com', 'wsj.com', 'finance.yahoo.com',
+]
 
 // ── source 2: Google News RSS (key-free, no date filter — all data through) ───
 async function fromGoogle(query, indian) {
@@ -212,8 +272,11 @@ async function fromGoogle(query, indian) {
     : { hl: 'en-US', gl: 'US', ceid: 'US:en' }
 
   const q = String(query).replace(/\.(NS|BO)$/i, '').trim()
+  const sites = indian ? INDIAN_NEWS_SITES : GLOBAL_NEWS_SITES
+  const siteFilter = sites.map(s => `site:${s}`).join(' OR ')
+  const fullQuery = `${q} (${siteFilter})`
   const url =
-    `https://news.google.com/rss/search?q=${encodeURIComponent(q)}` +
+    `https://news.google.com/rss/search?q=${encodeURIComponent(fullQuery)}` +
     `&hl=${locale.hl}&gl=${locale.gl}&ceid=${locale.ceid}`
 
   const ctrl = new AbortController()
@@ -324,9 +387,10 @@ module.exports = async function handler(req, res) {
     const k = normTitle(item.title)
     if (!k || seen.has(k)) continue
     seen.add(k)
-    const tier = classify(item.title, tokens)
+    const tier = classify(item.title, tokens, item.relatedTickers)
     if (tier === 'excluded' || tier === 'unrelated') continue   // never surfaced
-    merged.push({ ...item, tier })
+    const { relatedTickers, ...rest } = item   // internal-only, not part of the client payload
+    merged.push({ ...rest, tier })
   }
 
   // Sort: primary tier first, sector last; newest-first within each tier.
