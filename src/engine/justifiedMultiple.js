@@ -139,6 +139,50 @@ function twoStageEvMultiple({ conversion, g, r, years = STAGE_1_YEARS, terminalG
 }
 
 /**
+ * The P/B analog of twoStageMultiple() (P/E) — same shape, but for book value
+ * instead of earnings, and needing no dividend data as an input (matching
+ * the single-stage P/B form's own "needs no payout" property).
+ *
+ * Before this existed, the P/B block below did the same flat-terminal
+ * substitution the EV/EBITDA and EV/Sales forms used to (gUsed = twoStage ?
+ * TERMINAL_GROWTH_CAP : g fed straight into the single-stage formula) — no
+ * explicit stage-1 credit for the years of real high growth before the fade,
+ * understating the justified multiple for exactly the high-growth,
+ * non-dividend-paying companies where this form matters most.
+ *
+ * P/E needs an explicit payoutPct input; P/B derives an EQUIVALENT implied
+ * payout from g and ROE themselves (payout = 1 - g/ROE, the same
+ * sustainable-growth relationship — g = ROE x retention — that produced g in
+ * the first place, just solved for the other variable). That's what lets
+ * this stay payout-data-free, like the single-stage P/B form already is.
+ */
+function twoStagePbMultiple({ roe, g, r, years = STAGE_1_YEARS, terminalG = TERMINAL_GROWTH_CAP }) {
+  if (!(r > terminalG)) return null
+  const roeDec = roe / 100
+  if (!(roeDec > 0)) return null
+  const payout = Math.max(0, Math.min(1, 1 - g / roeDec))
+
+  // Stage 1: dividends at the implied payout, per unit of TODAY's book value.
+  // Book value at the START of year t earns ROE that year; what isn't paid
+  // out is retained and grows next year's book base.
+  let pv = 0
+  let bookAtStart = 1   // per unit of today's book value
+  for (let t = 1; t <= years; t++) {
+    const dividend = bookAtStart * roeDec * payout
+    pv += dividend / Math.pow(1 + r, t)
+    bookAtStart *= (1 + g)
+  }
+
+  // Terminal: book value has compounded to bookAtStart by the time growth
+  // fades. Terminal payout rises — same substitution twoStageMultiple (P/E)
+  // already uses — since a slower-growing business needs to retain less.
+  const terminalPayout = (roeDec > terminalG) ? Math.max(0, Math.min(1, 1 - terminalG / roeDec)) : payout
+  const terminal = (bookAtStart * roeDec * (1 + terminalG) * terminalPayout) / (r - terminalG)
+  pv += terminal / Math.pow(1 + r, years)
+  return pv
+}
+
+/**
  * Every justified multiple the inputs can support. Returns null for a form whose
  * inputs are missing rather than substituting a value — a blank with a stated
  * reason is more useful than a number nobody can trace.
@@ -196,15 +240,20 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   // between ROE and r is what justifies a premium.
   if (roe != null) {
     const roeDec = roe / 100
-    const gUsed = twoStage ? TERMINAL_GROWTH_CAP : g
-    const pb = (roeDec - gUsed) / (r - gUsed)
+    const pb = twoStage
+      ? twoStagePbMultiple({ roe, g, r })
+      : (r - g > 0 ? (roeDec - g) / (r - g) : null)
     if (pb > 0 && isFinite(pb)) {
       forms.pb = {
         multiple: round(pb, 2), basis: 'pb',
-        label: twoStage ? 'Justified P/B (faded growth)' : 'Justified P/B',
-        steps: [`(ROE ${round(roe, 1)}% - growth ${round(gUsed * 100, 1)}%) / (required ${round(r * 100, 1)}% - growth ${round(gUsed * 100, 1)}%)`,
-                roeDec > r ? 'Earning above its cost of equity, so worth more than book.'
-                           : 'Earning below its cost of equity, so worth less than book.'],
+        label: twoStage ? 'Justified P/B (two-stage)' : 'Justified P/B',
+        steps: twoStage
+          ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
+             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(TERMINAL_GROWTH_CAP * 100, 1)}%`,
+             `Implied payout rises as growth fades, same as the Justified P/E basis`]
+          : [`(ROE ${round(roe, 1)}% - growth ${round(g * 100, 1)}%) / (required ${round(r * 100, 1)}% - growth ${round(g * 100, 1)}%)`,
+             roeDec > r ? 'Earning above its cost of equity, so worth more than book.'
+                        : 'Earning below its cost of equity, so worth less than book.'],
       }
     }
   }
