@@ -150,6 +150,24 @@ export default function PositionsPanel({ open, onClose }) {
     return analyses?.[t]?.ratioResult?.price ?? null
   }
 
+  // Manual, per-ticker refresh. The hourly TTL refresh above only re-fires on
+  // panel open / a position-list change — leave the panel open on one ticker
+  // for a while and every OTHER holding's price and analysis just sit there,
+  // with no way to ask for a fresh read short of closing and reopening the
+  // whole panel. This gives that a button instead of a clock.
+  const refreshOneTicker = async (ticker) => {
+    try {
+      const q = await fetchQuotes([ticker], { force: true })
+      if (q) setQuotes(prev => ({ ...prev, ...q }))
+    } catch { /* optional */ }
+    try {
+      await analyzeMany([ticker], {
+        force: true,
+        onEach: (t, res) => setAnalyses(prev => ({ ...prev, [t]: res })),
+      })
+    } catch { /* best effort */ }
+  }
+
   // exitTriggers.js's concentration check is explicit that both sides must be
   // measured the same way — comparing one lot's market VALUE against a
   // portfolio total that's silently part cost (whichever holdings happened to
@@ -215,6 +233,7 @@ export default function PositionsPanel({ open, onClose }) {
                   onAnalyse={() => { load(h.ticker); onClose() }}
                   onSell={lot => setSellTarget(lot)}
                   onRefresh={refresh}
+                  onManualRefresh={() => refreshOneTicker(h.ticker)}
                   onSaveExitPlan={async plan => {
                     const rec = await saveExitPlan(h.ticker, plan)
                     setExitPlans(prev => ({ ...prev, [h.ticker]: rec }))
@@ -259,9 +278,16 @@ export default function PositionsPanel({ open, onClose }) {
  * One holding: a scannable row, expanding to the analysis and the lot ledger.
  */
 function Holding({ agg, price, analysis, isLive, state, regime, totalValue, totalCost, exitPlan,
-                   expanded, onToggle, onAnalyse, onSell, onRefresh, onSaveExitPlan }) {
+                   expanded, onToggle, onAnalyse, onSell, onRefresh, onManualRefresh, onSaveExitPlan }) {
   const c = agg.lots[0]?.snapshot?.currency
   const m = holdingMath(agg, price)
+  const [refreshing, setRefreshing] = useState(false)
+  const handleManualRefresh = async (e) => {
+    e.stopPropagation()
+    if (refreshing) return
+    setRefreshing(true)
+    try { await onManualRefresh() } finally { setRefreshing(false) }
+  }
 
   // Analysis is computed once for the holding, from live state when this is the
   // loaded ticker and from the saved analysis otherwise.
@@ -328,9 +354,13 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
 
   return (
     <div className="bg-navy-800/40 rounded-lg overflow-hidden">
-      {/* Collapsed row — the whole portfolio should read in one screen. */}
-      <button onClick={onToggle}
-        className="w-full flex items-center gap-3 px-3 py-2.5 text-left min-w-0">
+      {/* Collapsed row — the whole portfolio should read in one screen. A
+          plain div (not a button) here, since it now holds a real nested
+          refresh button — a button-in-a-button is invalid HTML and makes the
+          refresh click also fire the outer toggle. */}
+      <div onClick={onToggle} role="button" tabIndex={0}
+        onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && onToggle()}
+        className="w-full flex items-center gap-3 px-3 py-2.5 text-left min-w-0 cursor-pointer">
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-white">
             {agg.ticker.replace(/\.(NS|BO)$/, '')}
@@ -341,6 +371,15 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
           </div>
         </div>
         <Bars level={level} />
+        {/* Manual refresh — the hourly TTL refresh only re-fires on panel
+            open, so a holding left sitting on screen for a while has no other
+            way to ask for a current price/analysis short of closing and
+            reopening the whole panel. */}
+        <button onClick={handleManualRefresh} disabled={refreshing}
+          title="Refresh price & analysis" aria-label="Refresh price and analysis"
+          className="text-slate-500 hover:text-accent shrink-0 text-xs px-0.5 disabled:opacity-50">
+          {refreshing ? '…' : '↻'}
+        </button>
         <div className="text-right w-24 shrink-0 tabular-nums">
           <div className="text-[13px] text-slate-200">{price > 0 ? money(price, c) : '—'}</div>
           {m?.pnl != null && (
@@ -350,7 +389,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
           )}
         </div>
         <span className="text-slate-600 text-xs">{expanded ? '▲' : '▼'}</span>
-      </button>
+      </div>
 
       {expanded && (
         <div className="px-3 pb-3 space-y-2.5">

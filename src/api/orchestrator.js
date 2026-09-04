@@ -14,9 +14,9 @@
  *   - If Screener is blocked (Cloudflare): Yahoo only, no error shown to user
  */
 
-import { fetchYahoo }   from './yahoo.js'
+import { fetchYahoo, resolveTicker } from './yahoo.js'
 import { fetchScreener } from './screener.js'
-import { fetchSec, isUsTicker } from './secClient.js'
+import { fetchSec } from './secClient.js'
 
 export async function fetchTicker(rawTicker, onProgress) {
   const log  = (msg, step) => onProgress?.({ msg, step })
@@ -24,11 +24,22 @@ export async function fetchTicker(rawTicker, onProgress) {
 
   log('Fetching financial data…', 1)
 
+  // Resolve once, use for both the routing decision below AND the Yahoo fetch
+  // itself. This used to be guessed from the RAW input's suffix (isUsTicker:
+  // "no .NS/.BO → must be American") — wrong for the overwhelming majority of
+  // real usage, since every example ticker on the homepage (and anything else
+  // typed without an explicit suffix) has none. resolveTicker() is the same
+  // lookup fetchYahoo() already had to do internally to find the real Yahoo
+  // symbol; using ITS answer instead of re-guessing means a bare "RELIANCE"
+  // correctly routes to Screener instead of a SEC lookup that can only fail.
+  const resolved  = await resolveTicker(rawTicker)
+  const isIndian  = /\.(NS|BO)$/i.test(resolved)
+
   // ── US tickers: Yahoo (price/meta) + SEC EDGAR (deep annual history) ────────
   // SEC fills Screener's slot for US stocks — automatic, no paste. Any SEC
   // failure falls through to the Yahoo-only result, i.e. previous behaviour.
-  if (isUsTicker(rawTicker)) {
-    const [yRes, secRes] = await Promise.allSettled([fetchYahoo(rawTicker), fetchSec(rawTicker)])
+  if (!isIndian) {
+    const [yRes, secRes] = await Promise.allSettled([fetchYahoo(rawTicker, resolved), fetchSec(resolved)])
     if (yRes.status !== 'fulfilled') throw new Error('Could not fetch data for this ticker from Yahoo Finance.')
     const yahooData = yRes.value
     if (secRes.status !== 'fulfilled' || !secRes.value) {
@@ -41,7 +52,7 @@ export async function fetchTicker(rawTicker, onProgress) {
 
   // Yahoo and Screener in parallel
   const [yahooResult, screenerResult] = await Promise.allSettled([
-    fetchYahoo(rawTicker),
+    fetchYahoo(rawTicker, resolved),
     fetchScreener(bare)
   ])
 

@@ -11,7 +11,7 @@
  */
 
 const DB_NAME    = 'stockanalyzr'
-const DB_VERSION = 7
+const DB_VERSION = 8
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
@@ -81,6 +81,13 @@ function openDB() {
       // the alert — it just stopped being evaluated, with nothing to say so.
       if (!d.objectStoreNames.contains('exitPlans')) {
         d.createObjectStore('exitPlans', { keyPath: 'ticker' })
+      }
+      // Ticker → resolved-symbol cache (e.g. RELIANCE → RELIANCE.NS). No TTL:
+      // a company's exchange suffix doesn't change, so this is resolved once
+      // (one Yahoo search call) and reused forever, instead of every fresh
+      // fetch re-asking Yahoo the same question.
+      if (!d.objectStoreNames.contains('tickerResolutions')) {
+        d.createObjectStore('tickerResolutions', { keyPath: 'raw' })
       }
     }
     req.onsuccess = e => {
@@ -209,6 +216,21 @@ export async function setCached(ticker, data) {
 // Remove one ticker's cached data (used by "reset ticker").
 export async function deleteCached(ticker) {
   try { await txDelete('financials', ticker.toUpperCase()) } catch { /* non-critical */ }
+}
+
+// ── Ticker resolution cache (bare symbol → real Yahoo symbol) ─────────────────
+// No TTL: an exchange listing's suffix is effectively permanent, so this is
+// resolved once and trusted from then on.
+export async function getResolvedTicker(raw) {
+  try {
+    const rec = await txGet('tickerResolutions', String(raw || '').trim().toUpperCase())
+    return rec?.resolved ?? null
+  } catch { return null }
+}
+export async function saveResolvedTicker(raw, resolved) {
+  const r = String(raw || '').trim().toUpperCase()
+  if (!r || !resolved) return
+  try { await txPut('tickerResolutions', { raw: r, resolved, updatedAt: Date.now() }) } catch { /* non-critical */ }
 }
 
 // ── AI verdict cache ─────────────────────────────────────────────────────────
@@ -543,7 +565,15 @@ export async function exportSyncableRecords() {
       // financials: only sync records holding pasted effort (merged). Pure Yahoo
       // is re-fetchable. Record shape is { key, data: { data: <normalized>, ... } },
       // so the source flag is at rec.data.data.source.
-      if (store === 'financials' && rec?.data?.data?.deepSource !== 'screener') continue
+      //
+      // Checks `source === 'merged'` (not just `deepSource === 'screener'`):
+      // normalize.js sets both together for an automatic Screener/SEC merge at
+      // initial fetch, but MERGE_PASTED — the manual "Add History" paste path —
+      // only ever set `source`, never `deepSource`. Checking `deepSource` alone
+      // meant every ticker built up by pasting history was silently excluded
+      // from sync, no matter how much real work went into it. `source` is the
+      // one field both paths have always set correctly.
+      if (store === 'financials' && rec?.data?.data?.source !== 'merged') continue
       out.push({ key: `${store}:${nk}`, value: rec })
     }
   }

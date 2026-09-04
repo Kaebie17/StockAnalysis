@@ -1223,8 +1223,6 @@ export function buildEstimate(ratioResult, opts = {}) {
   if (own && currentPe > 0) {
     const ratio = own.median / currentPe
     if (ratio > 2.5 || ratio < 0.4) {
-      console.info(`[estimate] discarding P/E band ${own.low}-${own.high}x — ` +
-                   `current multiple is ${round(currentPe, 1)}x, so the history isn't comparable`)
       own = null
     }
   }
@@ -1323,8 +1321,6 @@ export function buildEstimate(ratioResult, opts = {}) {
     || multiples.high <= multiples.base * 1.03
   const implausible = multiples.low > 0 && (multiples.high / multiples.low) > 2.5
   if (degenerate || implausible) {
-    console.info(`[estimate] discarding band ${multiples.low}-${multiples.high}x — ` +
-                 (degenerate ? 'percentiles collapsed' : 'spread too wide to be one regime'))
     if (currentPe > 0) {
       const c = currentPe
       const sp = priceDispersion(priceHistory)

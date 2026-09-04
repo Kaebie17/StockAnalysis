@@ -138,13 +138,19 @@ export async function pullAll() {
             },
           }
         }
-        // row.value is the RAW pulled record (rec) → deepSource is two levels
-        // in (row.value.data.data.deepSource). `existing` is getCached()'s
-        // return, which is already unwrapped one level (rec.data, i.e. the
-        // payload) → deepSource is one level in (existing.data.deepSource) —
-        // same distinction the price-merge above already relies on.
-        bypassFreshnessGate = row.value?.data?.data?.deepSource === 'screener'
-          && existing?.data?.deepSource !== 'screener'
+        // Matches exportSyncableRecords()'s own eligibility check: `source`,
+        // not `deepSource` — MERGE_PASTED (manual "Add History") only ever
+        // set `source`, so any ticker built up that way still reads
+        // `deepSource: undefined` locally even after being correctly pushed.
+        // Checking `deepSource` here would silently fail the bypass for every
+        // one of those, recreating this exact bug for them specifically.
+        // row.value is the RAW pulled record (rec) → source is two levels in
+        // (row.value.data.data.source). `existing` is getCached()'s return,
+        // already unwrapped one level (rec.data, i.e. the payload) → source is
+        // one level in (existing.data.source) — same distinction the
+        // price-merge above already relies on.
+        bypassFreshnessGate = row.value?.data?.data?.source === 'merged'
+          && existing?.data?.source !== 'merged'
       } catch { /* no local copy to protect — fall through to the pulled value */ }
     }
     try { await putSyncableRecord(store, row.value, bypassFreshnessGate ? null : row.updated_at); pulled++ } catch {}

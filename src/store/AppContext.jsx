@@ -94,9 +94,16 @@ function reducer(s, a) {
       // closing, a restated figure from a fresh Screener/AR pull. It updates
       // the reported baseline directly; computeAll re-derives the ACTIVE
       // series (merging in normalizedIncomeHistory) from there on its own.
+      // deepSource is the ONLY thing exportSyncableRecords() checks to decide
+      // whether a financials record is worth pushing to Supabase (db.js).
+      // normalize.js sets it when Screener data merges in automatically at
+      // initial fetch — but a manual paste through this exact modal is the
+      // SAME kind of Screener data, arriving later, and this case never set
+      // it. That silently made every ticker built up via "Add History" un-
+      // syncable: real pasted effort, sitting on one device forever.
       const data = a.tableType === 'income'
-        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged' }
-        : { ...s.data, [histKey]: newHistory, source: 'merged' }
+        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
+        : { ...s.data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }

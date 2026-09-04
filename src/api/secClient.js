@@ -13,5 +13,3 @@ export async function fetchSec(ticker) {
   if (!d.incomeHistory?.length) throw new Error('sec: no history')
   return d
 }
-
-export const isUsTicker = t => !!t && !/\.(NS|BO)$/i.test(String(t).trim())
