@@ -12,6 +12,8 @@ import { getApplicableModels } from './stage.js'
 import { computePeg } from './peg.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
 import { sectorPe as getSectorPe } from './sectorMultiples.js'
+import { peerBand } from './peerBands.js'
+import { justifiedMultiples } from './justifiedMultiple.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const modelMeta = getApplicableModels(stage, sectorType)
@@ -69,9 +71,22 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     }
   }
 
-  // ── P/E ── uses sector median PE, not stock's own PE ─────────────────────────
+  // ── P/E ── real peer data preferred, sector table as fallback ────────────────
+  // Before real peer data existed, "sector median" here meant a static,
+  // hand-set table — a genuine peer group's ACTUAL current multiple is a
+  // strictly better anchor when there are enough peers to trust (see
+  // peerBands.js). Forward P/E tried first (a market-implied peer band
+  // already prices in near-term earnings changes the same way this model
+  // is trying to); trailing P/E as a second peer-based attempt; the sector
+  // table only when peer data isn't available at all.
+  const peers = assumptions.peers || []
   if (isApplicable('pe', modelMeta) && r.eps > 0) {
-    results.pe = { value: r.eps * sectorPe, note: `EPS × sector median ${sectorPe}× P/E` }
+    const peBand = peerBand(peers, 'forwardPe') || peerBand(peers, 'pe')
+    const targetPe = peBand?.median ?? sectorPe
+    const note = peBand
+      ? `EPS × peer median ${targetPe}× P/E (${peBand.count} peers)`
+      : `EPS × sector median ${targetPe}× P/E`
+    results.pe = { value: r.eps * targetPe, note }
   }
 
   // ── EV/EBITDA ── uses stock's actual multiple as anchor ───────────────────────
@@ -98,8 +113,33 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // a REAL measured ROE or the row simply doesn't exist.
   if (isApplicable('pb', modelMeta) && r.bookPerShare > 0 && !pbDistorted &&
       (isFinancialSector || roe > 0)) {
-    const targetPb = isFinancialSector ? 2.0 : clamp(roe / 8, 0.5, 5)
-    results.pb = { value: r.bookPerShare * targetPb, note: `Book x ${targetPb.toFixed(1)}x (${isFinancialSector ? 'sector median PB' : 'ROE-derived'})` }
+    const pbBand = peerBand(peers, 'pb')
+    let targetPb = null, pbNote = null
+    if (pbBand) {
+      targetPb = pbBand.median
+      pbNote = `Book x ${targetPb.toFixed(1)}x (peer median PB, ${pbBand.count} peers)`
+    } else if (isFinancialSector) {
+      targetPb = 2.0
+      pbNote = `Book x ${targetPb.toFixed(1)}x (sector median PB)`
+    } else {
+      // Last resort — no peer P/B data and no non-financial sector-PB table.
+      // Reuses justifiedMultiple.js's own P/B form (already two-stage-fixed)
+      // rather than a second, divergent implementation of the same formula.
+      // Labeled distinctly so a coincidental match with the Justified
+      // Multiples tab's own number is never mistaken for something else —
+      // it's the SAME calculation here on purpose, not a coincidence.
+      const jm = justifiedMultiples(r, {
+        riskFreeRate: assumptions.liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN,
+        beta: r?.ratios?.beta?.value, market,
+      })
+      targetPb = jm?.forms?.pb?.multiple ?? null
+      if (targetPb != null) {
+        pbNote = `Book x ${targetPb.toFixed(1)}x (no peer/sector P/B data — the fundamentals-based Justified form, used as a last resort)`
+      }
+    }
+    if (targetPb != null) {
+      results.pb = { value: r.bookPerShare * targetPb, note: pbNote }
+    }
   }
 
   // ── P/S ──────────────────────────────────────────────────────────────────────

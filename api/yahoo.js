@@ -108,10 +108,14 @@ module.exports = async function handler(req, res) {
       const rows = await yf.quote(symbols, {}, { validateResult: false })
       const list = Array.isArray(rows) ? rows : [rows]
       const peers = list
-        .filter(q => q?.symbol && q.trailingPE > 0)
+        // A peer with no P/E (loss-making, common for growth-stage names) can
+        // still have a perfectly usable P/B — requiring trailingPE dropped
+        // that peer from the list entirely, losing its P/B too.
+        .filter(q => q?.symbol && (q.trailingPE > 0 || q.priceToBook > 0))
         .map(q => ({
           symbol: q.symbol, name: q.shortName || q.longName || q.symbol,
-          pe: q.trailingPE, forwardPe: q.forwardPE ?? null,
+          pe: q.trailingPE ?? null, forwardPe: q.forwardPE ?? null,
+          pb: q.priceToBook ?? null,
           marketCap: q.marketCap ?? null,
         }))
       res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400')

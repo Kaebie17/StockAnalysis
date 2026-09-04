@@ -22,6 +22,8 @@
  */
 
 const round = (v, d = 1) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
+import { peerBand } from './peerBands.js'
+
 const DAY = 86400000
 
 // How long a deviation must persist before it counts as a re-rating — but ONLY
@@ -167,16 +169,19 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   }
 }
 
-/** Median peer multiple, for the second anchor. */
+/**
+ * Median peer multiple, for the second anchor. Thin wrapper over the shared
+ * peerBand() (src/engine/peerBands.js) — preserves this exact original
+ * per-peer forward-then-trailing fallback (each peer individually uses its
+ * OWN forward P/E if it has one, else its trailing P/E), a different, equally
+ * valid strategy from valuation.js's separate-pass approach ("try every
+ * peer's forward P/E as one pool first, only fall back to trailing P/E as a
+ * second pool if that doesn't yield enough"). Unchanged signature, unchanged
+ * behavior, zero callers touched.
+ */
 export function peerBandFrom(peers = []) {
-  const pes = peers.map(p => p.forwardPe ?? p.pe).filter(v => v > 0 && v < 100).sort((a, b) => a - b)
-  if (pes.length < 3) return null
-  return {
-    low: round(q(pes, 0.25), 1),
-    median: round(q(pes, 0.5), 1),
-    high: round(q(pes, 0.75), 1),
-    count: pes.length,
-  }
+  const withFallback = peers.map(p => ({ ...p, pe: p.forwardPe ?? p.pe }))
+  return peerBand(withFallback, 'pe')
 }
 
 function latestEps(incomeHistory = []) {
