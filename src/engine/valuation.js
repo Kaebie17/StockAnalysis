@@ -10,32 +10,8 @@
  */
 import { getApplicableModels } from './stage.js'
 import { computePeg } from './peg.js'
-
-// Sector median P/E multiples — target for PE-based valuation
-const SECTOR_PE_MAP = {
-  'energy': 15, 'oil': 15, 'petroleum': 15, 'refineries': 15, 'gas': 15,
-  'insurance': 18, 'life insurance': 18, 'general insurance': 18,
-  'bank': 16, 'banking': 16, 'nbfc': 16, 'finance': 16, 'financial services': 16,
-  'technology': 25, 'software': 25, 'information technology': 25,
-  'automobile': 20, 'auto': 20, 'automotive': 20,
-  'mining': 12, 'metals': 12, 'steel': 10, 'iron': 10, 'aluminium': 12,
-  'fmcg': 45, 'consumer': 35, 'beverages': 40, 'food': 35,
-  'pharma': 28, 'healthcare': 28, 'hospitals': 30,
-  'real estate': 30, 'realty': 30,
-  'power': 18, 'utilities': 18, 'infrastructure': 20,
-  'chemicals': 22, 'cement': 20,
-  'telecom': 20,
-  'default': 20
-}
-
-function getSectorPe(data) {
-  const combined = [data?.meta?.sector, data?.meta?.industry, data?.name]
-    .filter(Boolean).join(' ').toLowerCase()
-  for (const [key, pe] of Object.entries(SECTOR_PE_MAP)) {
-    if (combined.includes(key)) return pe
-  }
-  return SECTOR_PE_MAP.default
-}
+import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
+import { sectorPe as getSectorPe } from './sectorMultiples.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const modelMeta = getApplicableModels(stage, sectorType)
@@ -46,12 +22,16 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const actualEvEb = r.ratios?.evEbitda?.value
   const sectorEvEbDefault = actualEvEb != null ? clamp(actualEvEb, 5, 20) : 12
 
+  // liveRiskFree/market: threaded from AppContext's shared fetch (Phase 8) —
+  // null until that resolves, which is fine, computeWacc() always falls back
+  // to a usable default rather than going blank.
+  const market = assumptions.market ?? 'IN'
   // WACC default is computed per company (CAPM), not a flat rate — see computeWacc.
-  const waccDefault = computeWacc(r)
+  const waccDefault = computeWacc(r, { liveRiskFree: assumptions.liveRiskFree ?? null, market })
 
   const {
     wacc       = waccDefault,
-    termGrowth = 0.03,
+    termGrowth = TERMINAL_GROWTH_RATE,
     projYears  = 10,
     sectorPe   = sectorPeDefault,
     sectorEvEb = sectorEvEbDefault,
@@ -265,24 +245,31 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     sensitivity,
     scenarios,
     assumptions: { wacc, termGrowth, projYears, growthRate, sectorPe, sectorEvEb },
-    defaults: { wacc: waccDefault, termGrowth: 0.03, projYears: 10, growthRate: estimateGrowth(r), sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault }
+    defaults: { wacc: waccDefault, termGrowth: TERMINAL_GROWTH_RATE, projYears: 10, growthRate: estimateGrowth(r), sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault }
   }
 }
 
 function isApplicable(m, meta) { return meta.applicable.includes(m) || meta.caution.includes(m) }
 
 // Company-specific WACC via CAPM, the professional standard (vs a flat rate):
-//   Cost of equity  Ke = riskFree + beta × equityRiskPremium
+//   Cost of equity  Ke = riskFree + beta × equityRiskPremium   (see requiredReturn.js)
 //   Cost of debt    Kd = interest / totalDebt  (after-tax: × (1 − taxRate))
 //   WACC = E/(E+D)·Ke + D/(E+D)·Kd·(1−tax)      with E = market cap, D = total debt
-// riskFree and ERP are the only convention inputs — defaults are India's ~10-yr
-// G-sec (7%) and a Damodaran-style India ERP (5.5%); pass overrides to retune.
+//
+// riskFree resolves through THREE tiers, always landing on a usable number —
+// Fair Value is a core, always-on feature and must never go blank for lack of
+// a configured AI key: liveRiskFree (shared with justifiedMultiple.js, when
+// Phase 8's plumbing supplies it) → DEFAULT_RISK_FREE_BY_MARKET → 0.07. ERP
+// comes from the same shared ERP_BY_MARKET justifiedMultiple.js now uses —
+// this used to be a second, independently-hardcoded 5.5% here vs 6.5% there,
+// silently disagreeing for no stated reason.
 // Result is clamped to a sane 8–16% band so a freak beta can't produce nonsense.
-function computeWacc(r, { riskFree = 0.07, erp = 0.055, taxRate = 0.25 } = {}) {
+function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRate = 0.25 } = {}) {
+  const riskFree = liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
   const beta = (r?.ratios?.beta?.value != null && r.ratios.beta.value > 0) ? r.ratios.beta.value : 1.0
   const E = r?.marketCap > 0 ? r.marketCap : null
   const D = r?.totalDebt > 0 ? r.totalDebt : 0
-  const ke = riskFree + beta * erp
+  const ke = capmCostOfEquity({ riskFreeRate: riskFree, beta, erp, market }).r
   if (E == null) return clamp(ke, 0.08, 0.16)          // no market cap → all-equity proxy
   // Cost of debt has to be MEASURED (interest / debt) — a flat 9% dressed up
   // as this company's WACC was the same "invented figure feeding a fair

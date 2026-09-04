@@ -21,13 +21,16 @@
  * reading arrived at independently, not an error in either.
  */
 
+import { capmCostOfEquity, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
+
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
 // Terminal growth cannot exceed the economy forever — a company growing faster
-// than nominal GDP in perpetuity eventually becomes the economy. India's
-// long-run nominal growth is the ceiling used when a two-stage model fades.
-const TERMINAL_GROWTH_CAP = 0.06
+// than nominal GDP in perpetuity eventually becomes the economy. Shared with
+// DCF's own terminal growth (src/engine/requiredReturn.js) — these used to be
+// two different, undocumented-reason constants (3% vs 6%) for the same idea.
+const TERMINAL_GROWTH_CAP = TERMINAL_GROWTH_RATE
 
 // Explicit high-growth window before the fade. Five to ten years is the usual
 // range in practice; the shorter end is used because a longer window compounds
@@ -35,20 +38,13 @@ const TERMINAL_GROWTH_CAP = 0.06
 const STAGE_1_YEARS = 5
 
 /**
- * Required return on equity — CAPM.
- *   r = risk-free + beta x equity risk premium
- * Beta is measured from price history where available; the equity risk premium
- * is the one genuine assumption here and is surfaced rather than buried.
+ * Required return on equity — CAPM. Thin wrapper over the shared
+ * capmCostOfEquity() (src/engine/requiredReturn.js) — same signature and
+ * "decline to null when no rate is available" behavior as before, so every
+ * existing call site (estimate.js, useEstimate.js) needs zero changes.
  */
-export function requiredReturn({ riskFreeRate, beta, equityRiskPremium = 0.065 } = {}) {
-  if (!(riskFreeRate > 0)) return null
-  const b = (beta > 0 && beta < 3) ? beta : 1     // an implausible beta is worse than none
-  const r = riskFreeRate + b * equityRiskPremium
-  return {
-    r, beta: b, betaAssumed: !(beta > 0 && beta < 3),
-    riskFreeRate, equityRiskPremium,
-    label: `${round(riskFreeRate * 100, 1)}% risk-free + ${round(b, 2)} beta x ${round(equityRiskPremium * 100, 1)}% premium`,
-  }
+export function requiredReturn({ riskFreeRate, beta, equityRiskPremium = null, market = 'IN' } = {}) {
+  return capmCostOfEquity({ riskFreeRate, beta, erp: equityRiskPremium, market })
 }
 
 /** Sustainable growth: what the business can fund from what it keeps. */
@@ -95,6 +91,49 @@ function twoStageMultiple({ payout, g, r, roe, years = STAGE_1_YEARS, terminalG 
     : payout
   const earningsAtT = Math.pow(1 + g, years)          // per unit of current earnings
   const terminal = (earningsAtT * (1 + terminalG) * terminalPayout) / (r - terminalG)
+  pv += terminal / Math.pow(1 + r, years)
+  return pv
+}
+
+/**
+ * The EV/EBITDA and EV/Sales analog of twoStageMultiple() above — same shape,
+ * different unit (cash reaching investors per unit of TODAY's EBITDA/revenue,
+ * instead of dividends per unit of today's earnings).
+ *
+ * Before this existed, the EV/EBITDA and EV/Sales forms below skipped the
+ * two-stage structure entirely and fell straight to `conversion / (r -
+ * terminalG)` — a SINGLE-STAGE Gordon-growth formula applied to TODAY's
+ * EBITDA, as if growth dropped to the terminal rate starting immediately.
+ * That gave zero credit for the explicit high-growth years the P/E form
+ * already models correctly, so any company whose growth exceeds its required
+ * return (the two-stage trigger) got a structurally understated EV/EBITDA —
+ * exactly backwards for the companies where getting the growth years right
+ * matters most.
+ *
+ * `conversion` is held constant across both stages, unlike payout above
+ * (which correctly rises as growth fades) — there's no EBITDA-based ROIC
+ * input here to derive a terminal conversion rate the same principled way,
+ * and `conversion` is already a coarse, bounded proxy rather than a precise
+ * reinvestment-need calculation. Holding it constant is a reasonable
+ * simplification; it is not the gap this function exists to close.
+ */
+function twoStageEvMultiple({ conversion, g, r, years = STAGE_1_YEARS, terminalG = TERMINAL_GROWTH_CAP }) {
+  if (!(r > terminalG)) return null
+
+  // Stage 1: cash reaching investors, per unit of TODAY's EBITDA/revenue,
+  // growing at g.
+  let pv = 0
+  let cf = conversion
+  for (let t = 1; t <= years; t++) {
+    cf *= (1 + g)
+    pv += cf / Math.pow(1 + r, t)
+  }
+
+  // Terminal: EBITDA/revenue has grown by (1+g)^years by the time growth
+  // fades — the terminal value sits on THAT larger base, discounted back from
+  // year 5, mirroring earningsAtT above.
+  const baseAtT = Math.pow(1 + g, years)   // per unit of today's EBITDA/revenue
+  const terminal = (baseAtT * (1 + terminalG) * conversion) / (r - terminalG)
   pv += terminal / Math.pow(1 + r, years)
   return pv
 }
@@ -175,19 +214,22 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   const ebitda = ratioResult?.ebitda ?? R.ebitda?.value
   const revenue = ratioResult?.revenue
   if (ebitda > 0 && revenue > 0) {
-    const gUsed = twoStage ? TERMINAL_GROWTH_CAP : g
-    const denom = r - gUsed
     // Share of EBITDA reaching investors after tax and reinvestment, bounded
     // because an unbounded conversion would swing the multiple wildly.
     const conversion = Math.max(0.25, Math.min(0.75, retention > 0 ? 1 - retention * 0.5 : 0.5))
-    if (denom > 0) {
-      const evEbitda = conversion / denom
-      if (evEbitda > 0 && isFinite(evEbitda)) {
-        forms.evEbitda = {
-          multiple: round(evEbitda, 1), basis: 'evEbitda', label: 'Justified EV/EBITDA',
-          steps: [`${round(conversion * 100, 0)}% of EBITDA reaching investors / (${round(r * 100, 1)}% required - ${round(gUsed * 100, 1)}% growth)`,
-                  `EBITDA margin ${round((ebitda / revenue) * 100, 1)}%`],
-        }
+    const evEbitda = twoStage
+      ? twoStageEvMultiple({ conversion, g, r })
+      : (r - g > 0 ? conversion / (r - g) : null)
+    if (evEbitda > 0 && isFinite(evEbitda)) {
+      forms.evEbitda = {
+        multiple: round(evEbitda, 1), basis: 'evEbitda',
+        label: twoStage ? 'Justified EV/EBITDA (two-stage)' : 'Justified EV/EBITDA',
+        steps: twoStage
+          ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
+             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(TERMINAL_GROWTH_CAP * 100, 1)}%`,
+             `${round(conversion * 100, 0)}% of EBITDA reaching investors, applied to EBITDA at each stage`]
+          : [`${round(conversion * 100, 0)}% of EBITDA reaching investors / (${round(r * 100, 1)}% required - ${round(g * 100, 1)}% growth)`,
+             `EBITDA margin ${round((ebitda / revenue) * 100, 1)}%`],
       }
     }
   }
@@ -196,15 +238,19 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   // construction: it prices revenue without knowing whether it converts to cash.
   const netMargin = R.netMargin?.value
   if (netMargin > 0 && revenue > 0) {
-    const gUsed = twoStage ? TERMINAL_GROWTH_CAP : g
-    const denom = r - gUsed
-    if (denom > 0) {
-      const evSales = (netMargin / 100) / denom
-      if (evSales > 0 && isFinite(evSales)) {
-        forms.evSales = {
-          multiple: round(evSales, 2), basis: 'evSales', label: 'Justified EV/Sales',
-          steps: [`Net margin ${round(netMargin, 1)}% / (${round(r * 100, 1)}% - ${round(gUsed * 100, 1)}%)`],
-        }
+    const conversion = netMargin / 100
+    const evSales = twoStage
+      ? twoStageEvMultiple({ conversion, g, r })
+      : (r - g > 0 ? conversion / (r - g) : null)
+    if (evSales > 0 && isFinite(evSales)) {
+      forms.evSales = {
+        multiple: round(evSales, 2), basis: 'evSales',
+        label: twoStage ? 'Justified EV/Sales (two-stage)' : 'Justified EV/Sales',
+        steps: twoStage
+          ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
+             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(TERMINAL_GROWTH_CAP * 100, 1)}%`,
+             `Net margin ${round(netMargin, 1)}%, applied to revenue at each stage`]
+          : [`Net margin ${round(netMargin, 1)}% / (${round(r * 100, 1)}% - ${round(g * 100, 1)}%)`],
       }
     }
   }

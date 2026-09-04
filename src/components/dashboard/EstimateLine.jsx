@@ -86,8 +86,14 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
           ({upside.base >= 0 ? '+' : ''}{upside.base}%)
         </span>
       )}
-      <Dot open={open} setOpen={setOpen} degraded={isDegraded || sanity?.severity === 'high'}>
-        {sanity && (
+      <Dot open={open} setOpen={setOpen} degraded={isDegraded || (!isJustified && sanity?.severity === 'high')}>
+        {/* sanityCheck() is always run against the MARKET estimate (see
+            useEstimate.js) — it never examines Estimate 1. Showing its verdict
+            on the Justified Multiples line's own tooltip made that line look
+            like it disagreed with a number it never computed: "this estimate
+            says 16625" referred to App Target's own midpoint, not Justified
+            Multiples' ~2179, with nothing on screen to say so. */}
+        {sanity && !isJustified && (
           <span className="block text-[11px] text-neutral border-b border-navy-800 pb-1.5 mb-1.5">
             ⚠ {sanity.banner}
             {sanity.issues.map((x, i) => <span key={i} className="block text-slate-500">{x}</span>)}

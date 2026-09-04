@@ -19,23 +19,37 @@
  */
 
 import { SECTOR_TYPES } from './stage.js'
+import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET } from './requiredReturn.js'
+import { sectorPe, sectorEvSales } from './sectorMultiples.js'
 
 // ─── Default assumptions by stage + sector ───────────────────────────────────
 
-export function getDefaultAssumptions(stage, sectorType, ratios) {
+// opts.{liveRiskFree, beta, market}: threaded from AppContext's shared fetch
+// (Phase 8) — null until that resolves, which is fine, this always falls back
+// to a usable default. This used to be a flat 4-bucket stage table (12/13/15/
+// 18%) that wasn't CAPM at all and ignored the company's own beta entirely —
+// the SAME company could get a materially different "required return" here
+// than valuation.js's WACC computed for the exact same moment. Discount rate
+// stays user-adjustable via its existing slider; only the DEFAULT changes.
+//
+// `data` (added here) is what lets the sector-table fallback below use the
+// SAME granular, ~15-bucket table valuation.js already had — this file used
+// to only receive the coarse sectorType enum (bank/nbfc/insurance/default)
+// and fell back to one flat number for every other sector: tech, FMCG,
+// steel, auto all got the identical "20× P/E, 3.0× sales" default despite
+// valuation.js already knowing better for every one of them.
+export function getDefaultAssumptions(stage, sectorType, ratios, data = null, opts = {}) {
   // Terminal Sales multiple — what the market will value the company at maturity
   // Based on sector median EV/Sales for mature companies in that sector
-  const terminalSalesMultiple = getSalesMultiple(sectorType, ratios)
+  const terminalSalesMultiple = getSalesMultiple(sectorType, ratios, data)
 
   // Terminal PE multiple — what earnings multiple a mature company deserves
-  const terminalPeMultiple = getPeMultiple(sectorType, ratios)
+  const terminalPeMultiple = getPeMultiple(sectorType, ratios, data)
 
-  // Discount rate — required annual return, reflects risk
-  // Growth/pre-revenue = higher risk = higher required return
-  const discountRate = stage === 'PRE_REVENUE' ? 0.18
-    : stage === 'GROWTH'      ? 0.15
-    : stage === 'TRANSITION'  ? 0.13
-    : 0.12  // ESTABLISHED
+  const market = opts.market ?? 'IN'
+  const riskFree = opts.liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
+  const capm = capmCostOfEquity({ riskFreeRate: riskFree, beta: opts.beta, market })
+  const discountRate = capm.r
 
   // Terminal FCF multiple — was hardcoded inline in the FCF variant with no
   // override path at all; pulled up here so it goes through the same
@@ -53,31 +67,34 @@ export function getDefaultAssumptions(stage, sectorType, ratios) {
       terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple),
       terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple),
       terminalFcfMultiple:   `${terminalFcfMultiple}× FCF is the assumed terminal FCF multiple — what the market will pay per rupee of free cash flow at maturity. Mature cash-generative businesses typically trade at 15-25× FCF. Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.`,
-      discountRate:          getDiscountRationale(stage, discountRate),
+      discountRate:          getDiscountRationale(stage, discountRate, capm),
       horizon:               'Standard investment horizon of 10 years. Long enough to smooth out cycles, short enough to be meaningful. Change to 5 years for faster-moving sectors.'
     }
   }
 }
 
-function getSalesMultiple(sectorType, ratios) {
+function getSalesMultiple(sectorType, ratios, data) {
   // If we have the stock's actual EV/Revenue, use it as anchor (clamped to reasonable range)
   const actual = ratios?.evRevenue?.value
   if (actual != null && actual > 0) return Math.round(Math.max(1.5, Math.min(actual, 8)) * 2) / 2
 
-  // Otherwise use sector median terminal Sales multiples
+  // Sector median, from the SAME shared table valuation.js uses — replaces
+  // the old 3-bucket-plus-one-flat-default fallback. Financial sub-types keep
+  // their own values (identical to before: insurance 1.5, bank 2.0, nbfc
+  // 2.5) since those aren't reliably distinguishable by name-matching alone.
   if (sectorType === SECTOR_TYPES.INSURANCE) return 1.5
   if (sectorType === SECTOR_TYPES.BANK)      return 2.0
   if (sectorType === SECTOR_TYPES.NBFC)      return 2.5
-  return 3.0  // general default for industrial/consumer/tech
+  return sectorEvSales(data)
 }
 
-function getPeMultiple(sectorType, ratios) {
+function getPeMultiple(sectorType, ratios, data) {
   const actual = ratios?.pe?.value
   if (actual != null && actual > 0 && actual < 60) return Math.round(actual)
   if (sectorType === SECTOR_TYPES.INSURANCE) return 18
   if (sectorType === SECTOR_TYPES.BANK)      return 16
   if (sectorType === SECTOR_TYPES.NBFC)      return 16
-  return 20
+  return sectorPe(data)
 }
 
 function getMultipleRationale(type, sectorType, value) {
@@ -92,13 +109,14 @@ function getMultipleRationale(type, sectorType, value) {
     `Increase for high-quality compounders; decrease for cyclical or capital-intensive businesses.`
 }
 
-function getDiscountRationale(stage, rate) {
+function getDiscountRationale(stage, rate, capm) {
   const pct = (rate * 100).toFixed(0)
-  const risk = stage === 'PRE_REVENUE' ? 'very high (pre-revenue, unproven model)'
-    : stage === 'GROWTH'     ? 'high (growth stage, execution uncertainty)'
-    : stage === 'TRANSITION' ? 'moderate (approaching profitability)'
-    : 'lower (mature, predictable cash flows)'
-  return `${pct}% is your required annual return. Risk is ${risk}. ` +
+  const stageNote = stage === 'PRE_REVENUE' ? ' Pre-revenue, unproven model — treat this as a floor, not a ceiling.'
+    : stage === 'GROWTH'     ? ' Growth stage carries real execution uncertainty beyond what beta alone captures.'
+    : stage === 'TRANSITION' ? ' Approaching profitability — moderate risk.'
+    : ''
+  const basis = capm?.label ? ` (${capm.label})` : ''
+  return `${pct}% is your required annual return${basis}.${stageNote} ` +
     `Think of this as the minimum return you need to invest here vs a safer alternative. ` +
     `Increase if you want a higher margin of safety; decrease if you trust the business more.`
 }
@@ -192,9 +210,13 @@ function getConclusion(impliedG, historicalGrowth, stage, metricType) {
 
 // ─── Main function ────────────────────────────────────────────────────────────
 
-export function runMarketExpectation(data, ratioResult, stage, sectorType, overrides = {}) {
+export function runMarketExpectation(data, ratioResult, stage, sectorType, overrides = {}, opts = {}) {
   const r   = ratioResult
-  const defaults = getDefaultAssumptions(stage, sectorType, r?.ratios)
+  const defaults = getDefaultAssumptions(stage, sectorType, r?.ratios, data, {
+    liveRiskFree: opts.liveRiskFree ?? null,
+    beta: opts.beta ?? r?.ratios?.beta?.value ?? null,
+    market: opts.market ?? 'IN',
+  })
   const assumptions = { ...defaults, ...overrides }
   const { terminalSalesMultiple, terminalPeMultiple, discountRate, horizon } = assumptions
 
