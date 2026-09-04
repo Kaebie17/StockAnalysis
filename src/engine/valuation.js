@@ -200,7 +200,12 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   let scenarios = null
   const scenGrowthDefault = estimateGrowth(r)
   if (cfBaseDcf && r.shares && scenGrowthDefault != null && waccDefault != null) {
-    const scenBase = { growthRate: scenGrowthDefault, wacc: waccDefault, termGrowth: 0.03, projYears }
+    // termGrowth: the RESOLVED value (respects a user-adjusted slider), not a
+    // separate hardcoded 3% — this was a second, independent copy of the
+    // constant Phase 1 unified, missed on the first pass and caught by
+    // actually rendering the scenario cards (they kept showing "term 3%"
+    // after the shared default moved to 4%).
+    const scenBase = { growthRate: scenGrowthDefault, wacc: waccDefault, termGrowth, projYears }
     scenarios = {}
     for (const key of ['bear', 'base', 'bull']) {
       const sa    = scenarioAssumptions(key, scenBase)
@@ -412,7 +417,7 @@ export const SCENARIO_PRESETS = {
 // The UI applies this via the existing recalc(assumptions) path.
 export function scenarioAssumptions(preset, base) {
   const p = SCENARIO_PRESETS[preset] || SCENARIO_PRESETS.base
-  const termGrowth = clamp((base.termGrowth ?? 0.03) + p.termAdd, 0.0, 0.06)
+  const termGrowth = clamp((base.termGrowth ?? TERMINAL_GROWTH_RATE) + p.termAdd, 0.0, 0.06)
   return {
     // null base growth/wacc (no measured CAGR, no computable WACC) stays
     // null through every scenario rather than falling back to a flat

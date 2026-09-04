@@ -15,6 +15,9 @@ import { queuePush } from '../sync/sync.js'
 import { useSync } from '../sync/SyncProvider.jsx'
 import { mergeByYear } from '../engine/reconstruct.js'
 import { listRevisions } from '../utils/db.js'
+import { fetchPeers } from '../api/peersClient.js'
+import { getRiskFreeRate } from '../api/riskFreeClient.js'
+import { getAiKey } from '../utils/aiKey.js'
 
 const AppContext = createContext(null)
 
@@ -58,6 +61,25 @@ function reducer(s, a) {
     case 'SET_STAGE':     return { ...s, stage: a.stage, valuation: a.valuation,
                                    marketExpectation: a.marketExpectation }
     case 'RECALC':        return { ...s, ...a.payload }
+    // Live peers + risk-free rate resolve asynchronously (a network fetch, up
+    // to a few seconds) well after the ticker itself finished loading. Merging
+    // them via the REDUCER's own `s` — not a closure-captured `state` from
+    // whenever the fetch started — is what keeps this safe if the user changed
+    // some other assumption (a slider) while the fetch was still in flight;
+    // a plain callback closing over `state` would risk clobbering that change
+    // with whatever `state` looked like when the effect was created.
+    case 'SET_LIVE_INPUTS': {
+      if (!s.data) return s
+      const assumptions = { ...s.assumptions, peers: a.peers, liveRiskFree: a.liveRiskFree, market: a.market }
+      const valuation = runValuation(s.data, s.ratioResult, s.stage, s.sectorType, assumptions)
+      const meOpts = {
+        liveRiskFree: a.liveRiskFree,
+        beta: assumptions.beta ?? s.ratioResult?.ratios?.beta?.value ?? null,
+        market: a.market,
+      }
+      const marketExpectation = runMarketExpectation(s.data, s.ratioResult, s.stage, s.sectorType, s.meAssumptions, meOpts)
+      return { ...s, assumptions, valuation, marketExpectation }
+    }
     case 'SET_QUAL':      return { ...s, ...a.payload }
     case 'MERGE_PASTED': {
       if (!s.data) return s
@@ -336,9 +358,46 @@ export function AppProvider({ children }) {
     const meAssumptions = { ...state.meAssumptions, ...newMeAssumptions }
     const valuation     = runValuation(state.data, state.ratioResult, state.stage, state.sectorType, assumptions)
     const quality       = scoreQuality(state.data, state.ratioResult, weights)
-    const me            = runMarketExpectation(state.data, state.ratioResult, state.stage, state.sectorType, meAssumptions)
+    // liveRiskFree/beta/market live in `assumptions` (valuation.js's WACC reads
+    // them from there too) — forwarded here as marketExpectation.js's own
+    // trailing `opts` param, since that file merges `meAssumptions`(overrides)
+    // onto its DEFAULTS object directly rather than reading raw inputs from it.
+    const meOpts = {
+      liveRiskFree: assumptions.liveRiskFree ?? null,
+      beta: assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
+      market: assumptions.market ?? 'IN',
+    }
+    const me            = runMarketExpectation(state.data, state.ratioResult, state.stage, state.sectorType, meAssumptions, meOpts)
     dispatch({ type: 'RECALC', payload: { valuation, quality, marketExpectation: me, assumptions, scoreWeights: weights, meAssumptions } })
   }, [state])
+
+  // Real peer data + a live risk-free rate for the SAME "required return"/
+  // "peer comparison" every valuation lens now shares (see requiredReturn.js,
+  // sectorMultiples.js). Centralized here (not scoped to whichever detail
+  // panel happens to be open) so every consumer of state.valuation/
+  // state.marketExpectation benefits — the dashboard's summary badges
+  // included, not just the Valuation/Market Expectation panels. Both fetches
+  // are already cache/dedup-safe (peersClient: 30-min TTL; riskFreeClient:
+  // shared module state + hour-long retry lockout), so this doesn't double up
+  // against useEstimate.js's own independent fetch of the same data for App
+  // Target/Justified Multiple. First paint always uses the hardcoded
+  // fallbacks (this hasn't resolved yet); the SET_LIVE_INPUTS dispatch below
+  // is a second, later render once it has — same two-pass pattern
+  // useEstimate.js already exhibits today, just extended to Fair Value and
+  // Market Expectation too.
+  useEffect(() => {
+    if (state.status !== 'success' || !state.ticker) return
+    let cancelled = false
+    const market = state.data?.currency === 'INR' ? 'IN' : 'US'
+    Promise.all([
+      fetchPeers(state.ticker),
+      getRiskFreeRate({ market, userKey: getAiKey() }),
+    ]).then(([peers, rf]) => {
+      if (cancelled) return
+      dispatch({ type: 'SET_LIVE_INPUTS', peers, liveRiskFree: rf?.rate ?? null, market })
+    })
+    return () => { cancelled = true }
+  }, [state.ticker, state.status])
 
   /** "This figure isn't reported for this company — stop asking." Stored per
    *  ticker alongside the AR data, so it syncs and survives a reload. It changes
@@ -389,7 +448,11 @@ export function AppProvider({ children }) {
   const overrideStage = useCallback((stage) => {
     if (!state.data) return
     const valuation         = runValuation(state.data, state.ratioResult, stage, state.sectorType, state.assumptions)
-    const marketExpectation = runMarketExpectation(state.data, state.ratioResult, stage, state.sectorType, state.meAssumptions)
+    const marketExpectation = runMarketExpectation(state.data, state.ratioResult, stage, state.sectorType, state.meAssumptions, {
+      liveRiskFree: state.assumptions.liveRiskFree ?? null,
+      beta: state.assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
+      market: state.assumptions.market ?? 'IN',
+    })
     dispatch({ type: 'SET_STAGE', stage, valuation, marketExpectation })
   }, [state])
 
