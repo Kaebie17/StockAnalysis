@@ -367,14 +367,17 @@ function isApplicable(m, meta) { return meta.applicable.includes(m) || meta.caut
 const TAX_RATE_BY_MARKET = { IN: 0.2517, US: 0.21 }
 
 // Result is clamped to a wide sanity band, NOT a "typical range" — CAPM's own
-// beta bound (capmCostOfEquity clamps beta to (0,3), else assumes 1) already
-// limits Ke to a principled [riskFree, riskFree + 3×ERP] span (~7-26.5% for
-// India, ~4.5-24% for the US), so a genuinely high-beta company's real cost
-// of equity is legitimate, not "nonsense" — a tight 8-16% clamp on top of
-// that would systematically understate required return (and so OVERVALUE)
+// beta handling (requiredReturn.js: raw beta outside (0, 5) is treated as
+// unusable data rather than used; a usable one is Blume-adjusted toward 1,
+// adjusted = (2/3) x raw + 1/3) already bounds Ke to roughly [riskFree +
+// 0.33×ERP, riskFree + 3.67×ERP] — about 9-31% for India, 7-28% for the US
+// at the DEFAULT risk-free rates (a live rate shifts this slightly, not
+// structurally). A genuinely high-beta company's real cost of equity sitting
+// near that upper end is legitimate, not "nonsense" — a tight clamp that cut
+// it down would systematically understate required return (and so OVERVALUE)
 // exactly the volatile, small-cap names where getting this right matters
 // most. This band only catches truly broken inputs (a data glitch, not a
-// real high-beta stock), sitting outside CAPM's own natural range on both ends.
+// real high-beta stock), sitting outside that natural range on both ends.
 function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRate = null } = {}) {
   const riskFree = liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
   const tax = taxRate ?? TAX_RATE_BY_MARKET[market] ?? TAX_RATE_BY_MARKET.IN
@@ -382,7 +385,7 @@ function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRat
   const E = r?.marketCap > 0 ? r.marketCap : null
   const D = r?.totalDebt > 0 ? r.totalDebt : 0
   const ke = capmCostOfEquity({ riskFreeRate: riskFree, beta, erp, market }).r
-  if (E == null) return clamp(ke, 0.04, 0.28)          // no market cap → all-equity proxy
+  if (E == null) return clamp(ke, 0.04, 0.34)          // no market cap → all-equity proxy
   // Cost of debt has to be MEASURED (interest / debt) — a flat 9% dressed up
   // as this company's WACC was the same "invented figure feeding a fair
   // value" problem the DCF section below already refuses for FCF/CapEx.
@@ -394,7 +397,7 @@ function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRat
   }
   const V = E + D
   const wacc = (E / V) * ke + (D / V) * kd * (1 - tax)
-  return clamp(wacc, 0.04, 0.28)
+  return clamp(wacc, 0.04, 0.34)
 }
 
 
@@ -504,7 +507,7 @@ function dcfPerShare(cfBase, g, wacc, tg, yrs, cash, debt, shares, ntGrowth = nu
 function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYears = 0) {
   if (!(cfBase > 0) || !(shares > 0)) return null
   const growthAxis = [-0.04, -0.02, 0, 0.02, 0.04].map(d => clamp(gBase + d, 0, 0.30))
-  const waccAxis   = [-0.02, -0.01, 0, 0.01, 0.02].map(d => clamp(wBase + d, tg + 0.01, 0.30))
+  const waccAxis   = [-0.02, -0.01, 0, 0.01, 0.02].map(d => clamp(wBase + d, tg + 0.01, 0.34))
   const grid = growthAxis.map(g =>
     waccAxis.map(w => ntYears > 0
       ? dcfPerShare(cfBase, g, w, tg, yrs, cash, debt, shares, g, ntYears)
@@ -532,7 +535,7 @@ export function scenarioAssumptions(preset, base) {
     // receive a number nobody measured just because a scenario multiplier
     // was applied to it.
     growthRate: base.growthRate != null ? clamp(base.growthRate * p.growthMul, 0.02, 0.30) : null,
-    wacc:       base.wacc != null ? clamp(base.wacc + p.waccAdd, termGrowth + 0.01, 0.30) : null,
+    wacc:       base.wacc != null ? clamp(base.wacc + p.waccAdd, termGrowth + 0.01, 0.34) : null,
     termGrowth,
     projYears:  base.projYears ?? 10,
   }

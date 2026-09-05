@@ -224,7 +224,7 @@ export default function ValuationPanel({ open, onClose }) {
       {showSliders && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
           {[
-            { key: 'wacc',       label: 'WACC',             min: 5,  max: 20, step: 0.5, pct: true,  def: DEFAULT_ASSUMPTIONS.wacc * 100 },
+            { key: 'wacc',       label: 'WACC',             min: 5,  max: 34, step: 0.5, pct: true,  def: DEFAULT_ASSUMPTIONS.wacc * 100 },
             { key: 'termGrowth', label: 'Terminal Growth',  min: 1,  max: 6,  step: 0.5, pct: true,  def: TERMINAL_GROWTH_RATE * 100 },
             { key: 'growthRate', label: 'FCF Growth',       min: -5, max: 40, step: 1,   pct: true,  def: DEFAULT_ASSUMPTIONS.growthRate * 100 },
             { key: 'sectorPe',   label: 'Sector P/E',       min: 5,   max: 60, step: 1,   pct: false, def: 20 },

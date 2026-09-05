@@ -34,9 +34,30 @@ export const TERMINAL_GROWTH_RATE = 0.04
 
 export const marketOf = (currency) => (currency === 'INR' ? 'IN' : 'US')
 
+// Blume adjustment (Blume, 1971/1975 — standard CFA-curriculum practice,
+// historically used by Bloomberg and Merrill Lynch): a raw regression beta
+// empirically mean-reverts toward 1 over time as a business matures and
+// diversifies, so using it unadjusted as a FORWARD-looking CAPM input
+// systematically overstates how extreme future risk will really be.
+// Replaces an earlier hard rule ("if beta > 3, just assume beta = 1") that
+// had no citable basis for exactly 3, and produced a cliff — a raw beta of
+// 2.99 was used as-is, 3.01 was discarded entirely for a flat 1 — instead of
+// a smooth, defensible transformation.
+const BLUME_WEIGHT = 2 / 3   // adjusted = (2/3) x raw + (1/3) x 1.0
+
+// A raw beta outside this window isn't "real but extreme" — it's far more
+// likely bad data (a too-short regression window, an unadjusted stock
+// split/spin-off, an illiquid stock's erratic prints). Beta = correlation x
+// (stock volatility / market volatility), and correlation is capped at 1, so
+// a genuinely liquid single stock essentially never clears ~4-5x market
+// volatility AND near-perfect correlation at once — 5 is a generous outer
+// bound past which the reading is treated as unusable data rather than
+// forced through a formula it would only distort further.
+const MAX_PLAUSIBLE_RAW_BETA = 5
+
 /**
- * Required return on equity — CAPM.
- *   r = risk-free + beta x equity risk premium
+ * Required return on equity — CAPM, with a Blume-adjusted beta.
+ *   r = risk-free + adjustedBeta x equity risk premium
  * Beta is Yahoo's own reported figure (ratios.beta); the equity risk premium
  * is the one genuine assumption here and is surfaced rather than buried.
  * Returns null iff riskFreeRate isn't a usable positive number — this
@@ -47,11 +68,14 @@ export const marketOf = (currency) => (currency === 'INR' ? 'IN' : 'US')
 export function capmCostOfEquity({ riskFreeRate, beta, erp = null, market = 'IN' } = {}) {
   if (!(riskFreeRate > 0)) return null
   const premium = erp ?? ERP_BY_MARKET[market] ?? ERP_BY_MARKET.IN
-  const b = (beta > 0 && beta < 3) ? beta : 1     // an implausible beta is worse than none
+  const rawUsable = beta > 0 && beta < MAX_PLAUSIBLE_RAW_BETA
+  const b = rawUsable ? (BLUME_WEIGHT * beta + (1 - BLUME_WEIGHT)) : 1
   const r = riskFreeRate + b * premium
   return {
-    r, beta: b, betaAssumed: !(beta > 0 && beta < 3),
+    r, beta: b, rawBeta: rawUsable ? beta : null, betaAssumed: !rawUsable,
     riskFreeRate, equityRiskPremium: premium, market,
-    label: `${round(riskFreeRate * 100, 1)}% risk-free + ${round(b, 2)} beta x ${round(premium * 100, 1)}% premium`,
+    label: rawUsable
+      ? `${round(riskFreeRate * 100, 1)}% risk-free + ${round(b, 2)} beta (Blume-adjusted from ${round(beta, 2)}) x ${round(premium * 100, 1)}% premium`
+      : `${round(riskFreeRate * 100, 1)}% risk-free + ${round(b, 2)} beta (assumed — reported beta unusable) x ${round(premium * 100, 1)}% premium`,
   }
 }
