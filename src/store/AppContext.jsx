@@ -17,6 +17,7 @@ import { mergeByYear } from '../engine/reconstruct.js'
 import { listRevisions } from '../utils/db.js'
 import { fetchPeers } from '../api/peersClient.js'
 import { getRiskFreeRate } from '../api/riskFreeClient.js'
+import { getEquityRiskPremium } from '../api/erpClient.js'
 import { getAiKey } from '../utils/aiKey.js'
 
 const AppContext = createContext(null)
@@ -61,19 +62,21 @@ function reducer(s, a) {
     case 'SET_STAGE':     return { ...s, stage: a.stage, valuation: a.valuation,
                                    marketExpectation: a.marketExpectation }
     case 'RECALC':        return { ...s, ...a.payload }
-    // Live peers + risk-free rate resolve asynchronously (a network fetch, up
-    // to a few seconds) well after the ticker itself finished loading. Merging
-    // them via the REDUCER's own `s` — not a closure-captured `state` from
-    // whenever the fetch started — is what keeps this safe if the user changed
-    // some other assumption (a slider) while the fetch was still in flight;
-    // a plain callback closing over `state` would risk clobbering that change
-    // with whatever `state` looked like when the effect was created.
+    // Live peers + risk-free rate + equity risk premium resolve asynchronously
+    // (a network fetch, up to a few seconds) well after the ticker itself
+    // finished loading. Merging them via the REDUCER's own `s` — not a
+    // closure-captured `state` from whenever the fetch started — is what
+    // keeps this safe if the user changed some other assumption (a slider)
+    // while the fetch was still in flight; a plain callback closing over
+    // `state` would risk clobbering that change with whatever `state` looked
+    // like when the effect was created.
     case 'SET_LIVE_INPUTS': {
       if (!s.data) return s
-      const assumptions = { ...s.assumptions, peers: a.peers, liveRiskFree: a.liveRiskFree, market: a.market }
+      const assumptions = { ...s.assumptions, peers: a.peers, liveRiskFree: a.liveRiskFree, liveErp: a.liveErp, market: a.market }
       const valuation = runValuation(s.data, s.ratioResult, s.stage, s.sectorType, assumptions)
       const meOpts = {
         liveRiskFree: a.liveRiskFree,
+        liveErp: a.liveErp,
         beta: assumptions.beta ?? s.ratioResult?.ratios?.beta?.value ?? null,
         market: a.market,
       }
@@ -364,6 +367,7 @@ export function AppProvider({ children }) {
     // onto its DEFAULTS object directly rather than reading raw inputs from it.
     const meOpts = {
       liveRiskFree: assumptions.liveRiskFree ?? null,
+      liveErp: assumptions.liveErp ?? null,
       beta: assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
       market: assumptions.market ?? 'IN',
     }
@@ -392,9 +396,10 @@ export function AppProvider({ children }) {
     Promise.all([
       fetchPeers(state.ticker),
       getRiskFreeRate({ market, userKey: getAiKey() }),
-    ]).then(([peers, rf]) => {
+      getEquityRiskPremium({ market, userKey: getAiKey() }),
+    ]).then(([peers, rf, erp]) => {
       if (cancelled) return
-      dispatch({ type: 'SET_LIVE_INPUTS', peers, liveRiskFree: rf?.rate ?? null, market })
+      dispatch({ type: 'SET_LIVE_INPUTS', peers, liveRiskFree: rf?.rate ?? null, liveErp: erp?.erp ?? null, market })
     })
     return () => { cancelled = true }
   }, [state.ticker, state.status])
@@ -450,6 +455,7 @@ export function AppProvider({ children }) {
     const valuation         = runValuation(state.data, state.ratioResult, stage, state.sectorType, state.assumptions)
     const marketExpectation = runMarketExpectation(state.data, state.ratioResult, stage, state.sectorType, state.meAssumptions, {
       liveRiskFree: state.assumptions.liveRiskFree ?? null,
+      liveErp: state.assumptions.liveErp ?? null,
       beta: state.assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
       market: state.assumptions.market ?? 'IN',
     })

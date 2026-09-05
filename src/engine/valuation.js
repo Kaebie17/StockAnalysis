@@ -54,7 +54,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // to a usable default rather than going blank.
   const market = assumptions.market ?? 'IN'
   // WACC default is computed per company (CAPM), not a flat rate — see computeWacc.
-  const waccDefault = computeWacc(r, { liveRiskFree: assumptions.liveRiskFree ?? null, market })
+  const waccDefault = computeWacc(r, { liveRiskFree: assumptions.liveRiskFree ?? null, erp: assumptions.liveErp ?? null, market })
 
   const {
     wacc       = waccDefault,
@@ -155,6 +155,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
       // it's the SAME calculation here on purpose, not a coincidence.
       const jm = justifiedMultiples(r, {
         riskFreeRate: assumptions.liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN,
+        equityRiskPremium: assumptions.liveErp ?? null,
         beta: r?.ratios?.beta?.value, market,
       })
       // Same instability guard as estimate.js's buildJustifiedEstimate — this

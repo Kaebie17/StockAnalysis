@@ -49,7 +49,7 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
 
   const market = opts.market ?? 'IN'
   const riskFree = opts.liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
-  const capm = capmCostOfEquity({ riskFreeRate: riskFree, beta: opts.beta, market })
+  const capm = capmCostOfEquity({ riskFreeRate: riskFree, beta: opts.beta, erp: opts.liveErp ?? null, market })
   const discountRate = capm.r
 
   // Terminal FCF multiple — was a single flat 18x for every sector alike (and
@@ -230,6 +230,7 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
   const r   = ratioResult
   const defaults = getDefaultAssumptions(stage, sectorType, r?.ratios, data, {
     liveRiskFree: opts.liveRiskFree ?? null,
+    liveErp: opts.liveErp ?? null,
     beta: opts.beta ?? r?.ratios?.beta?.value ?? null,
     market: opts.market ?? 'IN',
   })

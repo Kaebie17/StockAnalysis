@@ -7,6 +7,7 @@ import { assessFromQuarterly, growthDriftSuggestion } from '../engine/quarterlyB
 import { fetchPeers } from '../api/peersClient.js'
 import { relativePerformance } from '../api/marketRegime.js'
 import { getRiskFreeRate, refreshRiskFreeRate } from '../api/riskFreeClient.js'
+import { getEquityRiskPremium } from '../api/erpClient.js'
 import { getAiKey } from '../utils/aiKey.js'
 import { peerBandFrom, detectRerating } from '../engine/rerating.js'
 import { forwardPeBand } from '../engine/estimate.js'
@@ -78,6 +79,32 @@ async function ensureRiskFree(market, userKey, { force = false } = {}) {
   } finally { rfPending = false }
 }
 
+/**
+ * Module-level equity risk premium state, shared by every useEstimate
+ * instance — same reasoning and same shape as the risk-free state above:
+ * ERP is a property of the market, not of a ticker, so five independently-
+ * fetching hook instances would be five requests for the same number.
+ */
+let erpState = null
+let erpMarket = null
+let erpPending = false
+const erpListeners = new Set()
+
+function subscribeErp(fn) { erpListeners.add(fn); return () => erpListeners.delete(fn) }
+function getErpSnapshot() { return erpState }
+function emitErp(v) { erpState = v; for (const fn of erpListeners) fn() }
+
+async function ensureErp(market, userKey) {
+  if (erpState?.erp > 0 && erpMarket === market) return
+  if (erpPending) return
+  erpPending = true
+  try {
+    const r = await getEquityRiskPremium({ market, userKey })
+    erpMarket = market
+    emitErp(r)
+  } finally { erpPending = false }
+}
+
 export function useEstimate(state, opts = {}) {
   const { recalc } = useApp()
   const [overrides, setOverrides] = useState({})
@@ -145,9 +172,11 @@ export function useEstimate(state, opts = {}) {
   // Indian or US.
   const market = state?.data?.currency === 'INR' ? 'IN' : 'US'
   const riskFreeShared = useSyncExternalStore(subscribeRiskFree, getRiskFreeSnapshot, getRiskFreeSnapshot)
+  const erpShared = useSyncExternalStore(subscribeErp, getErpSnapshot, getErpSnapshot)
 
   useEffect(() => {
     ensureRiskFree(market, opts?.userKey || getAiKey())
+    ensureErp(market, opts?.userKey || getAiKey())
   }, [market, opts?.userKey])
 
   const refreshRate = useCallback(async () => {
@@ -174,6 +203,7 @@ export function useEstimate(state, opts = {}) {
     // module state and this reference was left behind, so Estimate 1 received
     // null for the rate and reported a missing key even when one was set.
     riskFreeRate: opts?.riskFreeRate ?? riskFreeShared?.rate ?? null,
+    equityRiskPremium: opts?.equityRiskPremium ?? erpShared?.erp ?? null,
     beta: state.data?.meta?.beta ?? state.technicals?.beta ?? null,
     incomeHistory: state.data?.incomeHistory || [],
     cashflowHistory: state.data?.cashflowHistory || [],
@@ -319,7 +349,7 @@ export function useEstimate(state, opts = {}) {
     estimate, overrides, revisions, peers, peerBand, rerating,
     guidanceAssessment, quarterlySuggestion, score, stored, relative, sanity,
     justified, form, setForm,
-    riskFree: riskFreeShared, refreshRate,
+    riskFree: riskFreeShared, refreshRate, erp: erpShared,
     handledKeys, deferredLevers,
     commit, freeze, reload,
   }
