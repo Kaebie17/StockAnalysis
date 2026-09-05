@@ -16,6 +16,7 @@ import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_RATE } f
 import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvSales as getSectorEvSales, financialPb } from './sectorMultiples.js'
 import { peerBand } from './peerBands.js'
 import { justifiedMultiples } from './justifiedMultiple.js'
+import { percentileSpread } from './spread.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // Every call site guards on state.data being truthy, not state.ratioResult
@@ -622,11 +623,10 @@ function growthScenarioSpread(data) {
 
   const yoy = []
   for (let i = 1; i < series.length; i++) yoy.push(series[i].value / series[i - 1].value - 1)
-  if (yoy.length < 4) return null   // too little history for a real spread
 
-  yoy.sort((a, b) => a - b)
-  const q = p => yoy[Math.min(yoy.length - 1, Math.floor(p * yoy.length))]
-  const spread = (q(0.85) - q(0.15)) / 2
+  const ps = percentileSpread(yoy, { minSamples: 4 })
+  if (!ps) return null   // too little history for a real spread
+  const spread = (ps.high - ps.low) / 2
   return (spread > 0 && isFinite(spread)) ? spread : null
 }
 

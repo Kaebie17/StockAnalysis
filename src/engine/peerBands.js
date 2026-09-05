@@ -10,16 +10,20 @@
  * field and without baking in that one specific fallback rule.
  */
 
+import { percentileSpread, filterRelativeOutliers } from './spread.js'
+
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 
-function quantile(sorted, p) {
-  const a = [...sorted].sort((x, y) => x - y)
-  return a[Math.min(a.length - 1, Math.floor(p * a.length))]
-}
-
-// Sanity ceilings per metric — a peer quote glitch (or a genuinely distressed
-// name trading at some absurd multiple) shouldn't drag the whole band with it.
-const SANITY_MAX = { pe: 100, forwardPe: 100, pb: 30 }
+// A peer quote glitch (or a genuinely distressed name trading at some absurd
+// multiple) shouldn't drag the whole band with it — but a flat universal
+// ceiling (this used to be pe/forwardPe: 100, pb: 30) is a judgement about
+// what a peer is allowed to trade at that has no basis, and would silently
+// discard a real peer's real multiple the same way a fixed band already did
+// for this stock's OWN multiple history (see estimate.js's forwardPeBand).
+// Measured against the peer GROUP's own median instead: a peer more than 4x
+// (or less than a quarter of) what its peers trade at is far more likely bad
+// data than a real, wildly-differently-priced comparable.
+const OUTLIER_MULTIPLE = 4
 
 /**
  * @param peers  [{ pe, forwardPe, pb, ... }] — from src/api/peersClient.js
@@ -29,13 +33,14 @@ const SANITY_MAX = { pe: 100, forwardPe: 100, pb: 30 }
  *          few to describe a range, same threshold rerating.js already used.
  */
 export function peerBand(peers = [], metric = 'pe') {
-  const max = SANITY_MAX[metric] ?? 100
-  const vals = peers.map(p => p?.[metric]).filter(v => v > 0 && v < max).sort((a, b) => a - b)
-  if (vals.length < 3) return null
+  const raw = peers.map(p => p?.[metric]).filter(v => v > 0)
+  const cleaned = filterRelativeOutliers(raw, { multiple: OUTLIER_MULTIPLE, minKeep: 3 })
+  const ps = percentileSpread(cleaned, { lowP: 0.25, highP: 0.75, minSamples: 3 })
+  if (!ps) return null
   return {
-    low: round(quantile(vals, 0.25), 1),
-    median: round(quantile(vals, 0.5), 1),
-    high: round(quantile(vals, 0.75), 1),
-    count: vals.length,
+    low: round(ps.low, 1),
+    median: round(ps.median, 1),
+    high: round(ps.high, 1),
+    count: ps.count,
   }
 }

@@ -23,6 +23,7 @@
 
 import { targetMultiple } from './targetMultiple.js'
 import { justifiedMultiples, preferredForm, averagePayoutPct } from './justifiedMultiple.js'
+import { percentileSpread, filterRelativeOutliers } from './spread.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -63,13 +64,10 @@ function priceDispersion(priceHistory = [], days = 500) {
   const closes = (priceHistory || [])
     .filter(p => p?.date && p.close > 0 && Date.parse(p.date) >= cutoff)
     .map(p => p.close)
-  if (closes.length < 100) return null
-  const sorted = [...closes].sort((a, b) => a - b)
-  const q = f => sorted[Math.min(sorted.length - 1, Math.floor(f * sorted.length))]
-  const med = q(0.5)
-  if (!(med > 0)) return null
+  const ps = percentileSpread(closes, { minSamples: 100 })
+  if (!ps || !(ps.median > 0)) return null
   // The 15th-85th band as a fraction of the median, halved to a ± figure.
-  const half = ((q(0.85) - q(0.15)) / med) / 2
+  const half = ((ps.high - ps.low) / ps.median) / 2
 
   // A steadily-priced stock genuinely has a narrow dispersion, and rejecting it
   // for being small was the same mistake as capping a high P/E — it discarded
@@ -187,30 +185,18 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   // near-zero denominator) puts an entire cluster of ratios at the same wrong
   // level — not isolated single-day noise percentile trimming alone would
   // catch, since percentiles only shave the most extreme individual points,
-  // not a whole block sitting together away from the rest. OUTLIER_MULTIPLE
-  // was declared for exactly this and never actually wired in; the function
-  // relied on percentile trimming alone. Filtering on distance from the RAW
-  // median first (median is itself robust to a contaminated MINORITY of the
-  // data — the exact shape a single bad year produces among several years of
-  // paired data) removes that cluster before the percentiles are measured.
-  const rawSorted = [...ratios].sort((a, b) => a - b)
-  const rawMedian = rawSorted[Math.floor(rawSorted.length / 2)]
-  const filtered = (rawMedian > 0)
-    ? ratios.filter(pe => pe >= rawMedian / OUTLIER_MULTIPLE && pe <= rawMedian * OUTLIER_MULTIPLE)
-    : ratios
-  // If filtering throws out most of the data, the "outlier" cluster is more
-  // likely the dominant regime than a genuine artifact (a re-rating this
-  // stock actually went through) — trust the raw distribution over a thin,
-  // possibly-unreliable cleaned remainder rather than compound one judgement
-  // call on top of another.
-  const cleaned = filtered.length >= Math.max(20, ratios.length * 0.5) ? filtered : ratios
-
-  cleaned.sort((a, b) => a - b)
-  const q = p => cleaned[Math.min(cleaned.length - 1, Math.floor(p * cleaned.length))]
+  // not a whole block sitting together away from the rest. Filtering on
+  // distance from the RAW median first (median is itself robust to a
+  // contaminated MINORITY of the data — the exact shape a single bad year
+  // produces among several years of paired data) removes that cluster before
+  // the percentiles are measured. Shared with pbBand and peerBand — see
+  // spread.js.
+  const cleaned = filterRelativeOutliers(ratios, { multiple: OUTLIER_MULTIPLE, minKeep: 20 })
+  const ps = percentileSpread(cleaned, { minSamples: 1 })
   // Percentiles, not min/max: one panic day or one melt-up shouldn't define the
   // band the whole projection hangs off.
-  return { low: round(q(0.15), 1), median: round(q(0.50), 1), high: round(q(0.85), 1),
-           samples: cleaned.length,
+  return { low: round(ps.low, 1), median: round(ps.median, 1), high: round(ps.high, 1),
+           samples: ps.count,
            // How many years the band actually spans, so a three-year window and
            // a nine-year one can be told apart downstream.
            spanYears: pairedYears }
@@ -270,18 +256,12 @@ export function pbBand(priceHistory = [], balanceHistory = [], incomeHistory = [
   // silently discard every real observation for a stock that genuinely
   // trades outside it (a high-growth compounder above 12x book is unusual
   // but real, not a data artifact) — exactly the mistake already found and
-  // fixed for P/E. Measured from the stock's OWN distribution instead.
-  const rawSorted = [...ratios].sort((a, b) => a - b)
-  const rawMedian = rawSorted[Math.floor(rawSorted.length / 2)]
-  const filtered = (rawMedian > 0)
-    ? ratios.filter(pb => pb >= rawMedian / OUTLIER_MULTIPLE && pb <= rawMedian * OUTLIER_MULTIPLE)
-    : ratios
-  const cleaned = filtered.length >= Math.max(20, ratios.length * 0.5) ? filtered : ratios
-
-  cleaned.sort((a, b) => a - b)
-  const q = p => cleaned[Math.min(cleaned.length - 1, Math.floor(p * cleaned.length))]
-  return { low: round(q(0.15), 2), median: round(q(0.50), 2), high: round(q(0.85), 2),
-           samples: cleaned.length }
+  // fixed for P/E. Measured from the stock's OWN distribution instead;
+  // shared implementation in spread.js.
+  const cleaned = filterRelativeOutliers(ratios, { multiple: OUTLIER_MULTIPLE, minKeep: 20 })
+  const ps = percentileSpread(cleaned, { minSamples: 1 })
+  return { low: round(ps.low, 2), median: round(ps.median, 2), high: round(ps.high, 2),
+           samples: ps.count }
 }
 
 /**
@@ -473,16 +453,12 @@ export function multipleSpread(priceHistory = [], incomeHistory = [], field = 'e
       ratios.push(c.close / denom)
     }
   }
-  if (ratios.length < 60) return null
-
-  ratios.sort((a, b) => a - b)
-  const q = p => ratios[Math.min(ratios.length - 1, Math.floor(p * ratios.length))]
-  const median = q(0.5)
-  if (!(median > 0)) return null
-  const lo = q(0.15) / median, hi = q(0.85) / median
+  const ps = percentileSpread(ratios, { minSamples: 60 })
+  if (!ps || !(ps.median > 0)) return null
+  const lo = ps.low / ps.median, hi = ps.high / ps.median
   // A degenerate spread (all observations identical) would collapse the range.
   if (!(lo > 0.3) || !(hi < 3) || hi <= lo) return null
-  return { lo, hi, samples: ratios.length }
+  return { lo, hi, samples: ps.count }
 }
 
 export function revenueCagr(history = [], { label } = {}) {
