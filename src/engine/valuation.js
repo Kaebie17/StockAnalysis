@@ -13,7 +13,7 @@
 import { getApplicableModels } from './stage.js'
 import { computePeg } from './peg.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
-import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvSales as getSectorEvSales } from './sectorMultiples.js'
+import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvSales as getSectorEvSales, financialPb } from './sectorMultiples.js'
 import { peerBand } from './peerBands.js'
 import { justifiedMultiples } from './justifiedMultiple.js'
 
@@ -138,7 +138,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
       targetPb = pbBand.median
       pbNote = `Book x ${targetPb.toFixed(1)}x (peer median PB, ${pbBand.count} peers)`
     } else if (isFinancialSector) {
-      targetPb = 2.0
+      targetPb = financialPb(sectorType)
       pbNote = `Book x ${targetPb.toFixed(1)}x (sector median PB)`
     } else {
       // Last resort — no peer P/B data and no non-financial sector-PB table.
@@ -350,14 +350,32 @@ function isApplicable(m, meta) { return meta.applicable.includes(m) || meta.caut
 // comes from the same shared ERP_BY_MARKET justifiedMultiple.js now uses —
 // this used to be a second, independently-hardcoded 5.5% here vs 6.5% there,
 // silently disagreeing for no stated reason.
-// Result is clamped to a sane 8–16% band so a freak beta can't produce nonsense.
-function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRate = 0.25 } = {}) {
+//
+// taxRate: statutory corporate rate by market, not a flat guess applied to
+// both alike. India: 22% base + 10% surcharge + 4% cess = 25.17% effective
+// under Section 115BAA, the regime most large listed companies have adopted.
+// US: 21% flat federal rate (Tax Cuts and Jobs Act, 2017) — state tax varies
+// 0-11% and isn't modelled, a documented simplification rather than a silent
+// one.
+const TAX_RATE_BY_MARKET = { IN: 0.2517, US: 0.21 }
+
+// Result is clamped to a wide sanity band, NOT a "typical range" — CAPM's own
+// beta bound (capmCostOfEquity clamps beta to (0,3), else assumes 1) already
+// limits Ke to a principled [riskFree, riskFree + 3×ERP] span (~7-26.5% for
+// India, ~4.5-24% for the US), so a genuinely high-beta company's real cost
+// of equity is legitimate, not "nonsense" — a tight 8-16% clamp on top of
+// that would systematically understate required return (and so OVERVALUE)
+// exactly the volatile, small-cap names where getting this right matters
+// most. This band only catches truly broken inputs (a data glitch, not a
+// real high-beta stock), sitting outside CAPM's own natural range on both ends.
+function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRate = null } = {}) {
   const riskFree = liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
+  const tax = taxRate ?? TAX_RATE_BY_MARKET[market] ?? TAX_RATE_BY_MARKET.IN
   const beta = (r?.ratios?.beta?.value != null && r.ratios.beta.value > 0) ? r.ratios.beta.value : 1.0
   const E = r?.marketCap > 0 ? r.marketCap : null
   const D = r?.totalDebt > 0 ? r.totalDebt : 0
   const ke = capmCostOfEquity({ riskFreeRate: riskFree, beta, erp, market }).r
-  if (E == null) return clamp(ke, 0.08, 0.16)          // no market cap → all-equity proxy
+  if (E == null) return clamp(ke, 0.04, 0.28)          // no market cap → all-equity proxy
   // Cost of debt has to be MEASURED (interest / debt) — a flat 9% dressed up
   // as this company's WACC was the same "invented figure feeding a fair
   // value" problem the DCF section below already refuses for FCF/CapEx.
@@ -368,8 +386,8 @@ function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRat
     kd = clamp(r.interest / D, 0.04, 0.18)
   }
   const V = E + D
-  const wacc = (E / V) * ke + (D / V) * kd * (1 - taxRate)
-  return clamp(wacc, 0.08, 0.16)
+  const wacc = (E / V) * ke + (D / V) * kd * (1 - tax)
+  return clamp(wacc, 0.04, 0.28)
 }
 
 

@@ -75,6 +75,43 @@ export const SECTOR_EVEB_MAP = {
   'default': 10,
 }
 
+// Sector median EV/FCF multiples — same sector keys as the tables above.
+// FCF is a smaller, more scrutinized base than EBITDA or earnings (net of
+// capex, tax and working-capital), so quality/asset-light sectors that
+// convert most of their earnings to cash (FMCG, tech, pharma) command the
+// richest multiples here; capital-intensive sectors with heavy ongoing capex
+// (telecom, power, energy) sit lowest, same relative ordering as EV/EBITDA
+// but shifted for FCF's own conversion economics. Replaces a single flat 18x
+// Market Expectation previously applied to every sector alike.
+export const SECTOR_FCF_MAP = {
+  'energy': 10, 'oil': 10, 'petroleum': 10, 'refineries': 10, 'gas': 11,
+  'insurance': 15, 'life insurance': 15, 'general insurance': 15,
+  'bank': 13, 'banking': 13, 'nbfc': 13, 'finance': 13, 'financial services': 13,
+  'technology': 25, 'software': 25, 'information technology': 25,
+  'automobile': 14, 'auto': 14, 'automotive': 14,
+  'mining': 9, 'metals': 9, 'steel': 8, 'iron': 8, 'aluminium': 9,
+  'fmcg': 28, 'consumer': 22, 'beverages': 25, 'food': 18,
+  'pharma': 20, 'healthcare': 19, 'hospitals': 18,
+  'real estate': 12, 'realty': 12,
+  'power': 11, 'utilities': 11, 'infrastructure': 10,
+  'chemicals': 13, 'cement': 13,
+  'telecom': 10,
+  'default': 18,
+}
+
+// P/B multiples for leveraged financials — indexed by the already-resolved
+// sectorType enum (bank/nbfc/insurance from stage.js's detectSectorType),
+// not text-matched like the tables above, since sectorType is reliably
+// resolved by the time any P/B model needs this. Previously a single flat
+// 2.0x covered all three, despite them trading in genuinely different
+// ranges: banks price close to book (ROE-driven premium/discount over 1x);
+// NBFCs typically carry a growth premium over banks; life insurers command
+// the richest P/B of the three because embedded-value growth compounds
+// faster than reported accounting book value.
+export const FINANCIAL_PB_BY_SECTOR_TYPE = { bank: 2.0, nbfc: 2.5, insurance: 3.0 }
+
+export function financialPb(sectorType) { return FINANCIAL_PB_BY_SECTOR_TYPE[sectorType] ?? 2.0 }
+
 function lookupSectorTable(table, data) {
   const combined = [data?.meta?.sector, data?.meta?.industry, data?.name]
     .filter(Boolean).join(' ').toLowerCase()
@@ -92,3 +129,6 @@ export function sectorEvSales(data) { return lookupSectorTable(SECTOR_SALES_MAP,
 
 /** Sector median EV/EBITDA — fallback only, see module docblock. */
 export function sectorEvEbitda(data) { return lookupSectorTable(SECTOR_EVEB_MAP, data) }
+
+/** Sector median EV/FCF — fallback only, see module docblock. */
+export function sectorEvFcf(data) { return lookupSectorTable(SECTOR_FCF_MAP, data) }

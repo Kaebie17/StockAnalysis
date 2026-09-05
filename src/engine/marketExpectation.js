@@ -20,7 +20,7 @@
 
 import { SECTOR_TYPES } from './stage.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
-import { sectorPe, sectorEvSales } from './sectorMultiples.js'
+import { sectorPe, sectorEvSales, sectorEvFcf } from './sectorMultiples.js'
 import { reverseDcfGrowth } from './valuation.js'
 
 // ─── Default assumptions by stage + sector ───────────────────────────────────
@@ -52,10 +52,12 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   const capm = capmCostOfEquity({ riskFreeRate: riskFree, beta: opts.beta, market })
   const discountRate = capm.r
 
-  // Terminal FCF multiple — was hardcoded inline in the FCF variant with no
-  // override path at all; pulled up here so it goes through the same
-  // overrides mechanism as the other two terminal multiples.
-  const terminalFcfMultiple = 18
+  // Terminal FCF multiple — was a single flat 18x for every sector alike (and
+  // before that, hardcoded inline in the FCF variant with no override path at
+  // all). Now anchors on the stock's own actual FCF conversion when a usable
+  // one exists, else the sector median table (same two-tier pattern as the
+  // Sales/P/E multiples above).
+  const terminalFcfMultiple = getFcfMultiple(sectorType, ratios, data)
 
   return {
     terminalSalesMultiple,
@@ -67,7 +69,7 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
     rationale: {
       terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple),
       terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple),
-      terminalFcfMultiple:   `${terminalFcfMultiple}× FCF is the assumed terminal FCF multiple — what the market will pay per rupee of free cash flow at maturity. Mature cash-generative businesses typically trade at 15-25× FCF. Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.`,
+      terminalFcfMultiple:   `${terminalFcfMultiple}× FCF is the assumed terminal FCF multiple — what the market will pay per rupee of free cash flow at maturity, anchored on this company's own current FCF conversion where measurable, else this sector's typical range. Asset-light, high-conversion sectors (tech, FMCG, pharma) trade richest; capital-intensive sectors (telecom, power, energy) trade lowest. Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.`,
       discountRate:          getDiscountRationale(stage, discountRate, capm),
       horizon:               'Standard investment horizon of 10 years. Long enough to smooth out cycles, short enough to be meaningful. Change to 5 years for faster-moving sectors.'
     }
@@ -96,6 +98,19 @@ function getPeMultiple(sectorType, ratios, data) {
   if (sectorType === SECTOR_TYPES.BANK)      return 16
   if (sectorType === SECTOR_TYPES.NBFC)      return 16
   return sectorPe(data)
+}
+
+// EV/FCF anchor — same two-tier pattern as Sales/P/E above: the stock's own
+// actual FCF conversion first (via fcfYield, FCF/MarketCap — the same rough,
+// not EV-adjusted, precision the "actual" tier already has for Sales/P/E
+// above), sector median EV/FCF table (sectorMultiples.js) otherwise. Was
+// previously a single flat 18x for every sector alike, with no per-company
+// anchor tier at all.
+function getFcfMultiple(sectorType, ratios, data) {
+  const fcfYield = ratios?.fcfYield?.value
+  const actual = (fcfYield != null && fcfYield > 0) ? 100 / fcfYield : null
+  if (actual != null && actual > 0 && actual < 50) return Math.round(actual)
+  return sectorEvFcf(data)
 }
 
 function getMultipleRationale(type, sectorType, value) {

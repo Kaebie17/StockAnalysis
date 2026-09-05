@@ -635,10 +635,19 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
   // the same error as freezing the payout in the two-stage model, and it
   // understates a debt-heavy business by roughly the free cash it retains.
   //
-  // The retained share is approximated from EBITDA rather than assumed: what
-  // survives tax, interest and maintenance capex, less anything paid out.
+  // The retained share is measured from this company's own FCF/EBITDA
+  // conversion where available (what actually survived tax, interest and
+  // capex last period) rather than an invented flat 35% — that number had no
+  // stated derivation and applied identically to a near-zero-capex software
+  // business and a heavy-capex manufacturer alike. Falls back to 35% (a
+  // reasonable industrial-economy midpoint) only when FCF genuinely isn't
+  // measurable.
   const payoutFrac = (ratioResult?.ratios?.dividendPayout?.value ?? 0) / 100
-  const retainedCash = ebitda * 0.35 * Math.max(0, 1 - payoutFrac) * years
+  const measuredEbitdaConversion = (ratioResult?.fcf > 0) ? ratioResult.fcf / ebitda : null
+  const ebitdaConversion = measuredEbitdaConversion != null
+    ? Math.max(0.1, Math.min(0.9, measuredEbitdaConversion))
+    : 0.35
+  const retainedCash = ebitda * ebitdaConversion * Math.max(0, 1 - payoutFrac) * years
   const forwardNetDebt = Math.max(0, netDebt - retainedCash)
 
   const toEquity = (m) => {

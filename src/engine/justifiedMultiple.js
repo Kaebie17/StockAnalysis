@@ -273,9 +273,19 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   const ebitda = ratioResult?.ebitda ?? R.ebitda?.value
   const revenue = ratioResult?.revenue
   if (ebitda > 0 && revenue > 0) {
-    // Share of EBITDA reaching investors after tax and reinvestment, bounded
-    // because an unbounded conversion would swing the multiple wildly.
-    const conversion = Math.max(0.25, Math.min(0.75, retention > 0 ? 1 - retention * 0.5 : 0.5))
+    // Share of EBITDA reaching investors after tax and reinvestment. Prefer
+    // this company's own MEASURED FCF/EBITDA conversion (real capex and real
+    // tax already baked in) over a guess — `1 - retention x 0.5` was an
+    // invented halving with no derivation behind it, kept now only as the
+    // fallback for when FCF genuinely isn't available. Bounded either way
+    // because an unbounded conversion would swing the multiple wildly; the
+    // measured case gets a wider band since a real, differentiated business
+    // (near-zero-capex software vs. heavy-capex manufacturing) can
+    // legitimately sit outside the heuristic's tighter guess-range.
+    const measuredConversion = (ratioResult?.fcf > 0) ? ratioResult.fcf / ebitda : null
+    const conversion = measuredConversion != null
+      ? Math.max(0.15, Math.min(0.85, measuredConversion))
+      : Math.max(0.25, Math.min(0.75, retention > 0 ? 1 - retention * 0.5 : 0.5))
     const evEbitda = twoStage
       ? twoStageEvMultiple({ conversion, g, r })
       : (r - g > 0 ? conversion / (r - g) : null)
@@ -286,8 +296,8 @@ export function justifiedMultiples(ratioResult, opts = {}) {
         steps: twoStage
           ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
              `explicitly for ${STAGE_1_YEARS} years then faded to ${round(TERMINAL_GROWTH_CAP * 100, 1)}%`,
-             `${round(conversion * 100, 0)}% of EBITDA reaching investors, applied to EBITDA at each stage`]
-          : [`${round(conversion * 100, 0)}% of EBITDA reaching investors / (${round(r * 100, 1)}% required - ${round(g * 100, 1)}% growth)`,
+             `${round(conversion * 100, 0)}% of EBITDA reaching investors (${measuredConversion != null ? 'this company\'s own measured FCF/EBITDA' : 'estimated — FCF not available'}), applied to EBITDA at each stage`]
+          : [`${round(conversion * 100, 0)}% of EBITDA reaching investors (${measuredConversion != null ? 'this company\'s own measured FCF/EBITDA' : 'estimated — FCF not available'}) / (${round(r * 100, 1)}% required - ${round(g * 100, 1)}% growth)`,
              `EBITDA margin ${round((ebitda / revenue) * 100, 1)}%`],
       }
     }
