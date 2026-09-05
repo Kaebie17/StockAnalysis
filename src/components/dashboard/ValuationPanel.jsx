@@ -7,6 +7,7 @@ import FactInputModal from './FactInputModal.jsx'
 import { useNewsFacts, keyOf, leverOf } from '../../store/useNewsFacts.js'
 import { computeFact } from '../../engine/factImpact.js'
 import { extractSegmentShares } from '../../engine/segmentShare.js'
+import { TERMINAL_GROWTH_RATE } from '../../engine/requiredReturn.js'
 
 // Dot bar: 5 dots, filled based on upside magnitude
 // Green dots = upside, red dots = downside
@@ -42,9 +43,14 @@ export default function ValuationPanel({ open, onClose }) {
   const cur      = data?.currency === 'INR' ? '₹' : '$'
   const price    = ratioResult?.price
   const { models, modelMeta, fairValue, rangeLow, rangeHigh, upside,
-          signal, impliedGrowth, assumptions } = valuation
+          signal, assumptions } = valuation
 
-  const DEFAULT_ASSUMPTIONS = { wacc: 0.10, termGrowth: 0.03, growthRate: 0.08, sectorPe: 20, sectorEvEb: 12 }
+  // Last-resort display fallbacks only — real values come from valuation.defaults
+  // (engine). wacc/growthRate still have genuine null paths (unmeasurable cost of
+  // debt; no CAGR basis), so they're kept here. termGrowth/sectorPe/sectorEvEb no
+  // longer have a null path in the engine, so their slider fallbacks below are
+  // inline safety nets, not a fourth source of truth.
+  const DEFAULT_ASSUMPTIONS = { wacc: 0.10, growthRate: 0.08 }
 
   const updateAssumption = (key, value) => {
     const next = { ...localAssumptions, [key]: value }
@@ -171,17 +177,6 @@ export default function ValuationPanel({ open, onClose }) {
         </div>
       </div>
 
-      {/* Reverse DCF */}
-      {impliedGrowth != null && (
-        <div className="text-xs text-slate-400 bg-navy-800/40 px-3 py-2 rounded-lg">
-          <span className="text-slate-300">Reverse DCF: </span>
-          At CMP {cur}{price?.toFixed(0)}, market prices in{' '}
-          <span className="text-accent font-semibold">{impliedGrowth.toFixed(1)}%/yr</span> FCF growth over 10 years.
-          {impliedGrowth > 30 && <span className="text-bear ml-1">(High expectation)</span>}
-          {impliedGrowth < 0  && <span className="text-bull ml-1">(Market pricing contraction)</span>}
-        </div>
-      )}
-
       {/* Edit Assumptions / Restore Defaults */}
       <div className="flex items-center gap-3">
         <button onClick={() => setShowSliders(!showSliders)}
@@ -200,10 +195,10 @@ export default function ValuationPanel({ open, onClose }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
           {[
             { key: 'wacc',       label: 'WACC',             min: 5,  max: 20, step: 0.5, pct: true,  def: DEFAULT_ASSUMPTIONS.wacc * 100 },
-            { key: 'termGrowth', label: 'Terminal Growth',  min: 1,  max: 6,  step: 0.5, pct: true,  def: DEFAULT_ASSUMPTIONS.termGrowth * 100 },
+            { key: 'termGrowth', label: 'Terminal Growth',  min: 1,  max: 6,  step: 0.5, pct: true,  def: TERMINAL_GROWTH_RATE * 100 },
             { key: 'growthRate', label: 'FCF Growth',       min: -5, max: 40, step: 1,   pct: true,  def: DEFAULT_ASSUMPTIONS.growthRate * 100 },
-            { key: 'sectorPe',   label: 'Sector P/E',       min: 5,  max: 60, step: 1,   pct: false, def: DEFAULT_ASSUMPTIONS.sectorPe },
-            { key: 'sectorEvEb', label: 'Sector EV/EBITDA', min: 4,  max: 30, step: 0.5, pct: false, def: DEFAULT_ASSUMPTIONS.sectorEvEb },
+            { key: 'sectorPe',   label: 'Sector P/E',       min: 5,  max: 60, step: 1,   pct: false, def: 20 },
+            { key: 'sectorEvEb', label: 'Sector EV/EBITDA', min: 4,  max: 30, step: 0.5, pct: false, def: 12 },
           ].map(s => {
             const seed = assumptions[s.key] ?? valuation.defaults?.[s.key]
             const curVal = s.pct
