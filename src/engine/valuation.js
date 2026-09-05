@@ -607,6 +607,15 @@ function solveGrowth(fcf0, tEV, wacc, tg, yrs) {
   return g * 100
 }
 
+// H-model linear fade (Fuller & Hsia, 1984, Financial Analysts Journal —
+// standard CFA-curriculum practice): growth declines by a constant AMOUNT
+// each year from the starting rate to the terminal rate, reaching it exactly
+// by the last projection year — not an arbitrary geometric decay. This
+// replaces a bare `Math.pow(0.85, step)` (15%/yr compounding decay) that had
+// no stated derivation anywhere and, being geometric rather than linear,
+// asymptotically approached the terminal rate rather than reaching it
+// smoothly by design, relying on a floor (Math.max(..., tg)) to force the
+// last mile rather than arriving there on its own.
 function dcfEV(f, g, w, tg, yrs, ntGrowth = null, ntYears = 0) {
   let pv = 0, cf = f
   for (let i = 1; i <= yrs; i++) {
@@ -614,9 +623,16 @@ function dcfEV(f, g, w, tg, yrs, ntGrowth = null, ntYears = 0) {
     if (ntYears > 0 && i <= ntYears) {
       gi = ntGrowth                                   // explicit near-term (guidance) window
     } else {
-      const fadeStart = ntYears > 0 ? ntGrowth : g    // fade from the near-term rate, else base
-      const step      = ntYears > 0 ? (i - ntYears) : (i - 1)
-      gi = Math.max(fadeStart * Math.pow(0.85, step), tg)
+      const fadeStart     = ntYears > 0 ? ntGrowth : g    // fade from the near-term rate, else base
+      const step          = ntYears > 0 ? (i - ntYears) : (i - 1)
+      const totalFadeYears = yrs - ntYears
+      // step runs 0..totalFadeYears-1; linearly interpolate so the LAST
+      // projection year lands exactly on tg, matching the terminal-value
+      // formula's own assumption that growth is tg from year yrs+1 onward —
+      // a smooth handoff instead of a floor forcing a late, sudden jump.
+      gi = totalFadeYears > 1
+        ? fadeStart - (fadeStart - tg) * (step / (totalFadeYears - 1))
+        : tg
     }
     cf *= (1 + gi)
     pv += cf / Math.pow(1 + w, i)
