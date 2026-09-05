@@ -572,8 +572,20 @@ function estimateGrowth(r) {
   // intentionally conservative stance, not a missed allowance. The 60% cap
   // on `g` a few lines up already keeps this from ever mattering for a
   // very-high-ROE company. So: the plain formula, no extra multiplier or
-  // band layered on top of it. Falls back to the previous flat 20% only when
-  // ROE isn't available at all.
+  // band layered on top of it.
+  //
+  // When ROE isn't positive — missing data OR a currently loss-making
+  // company — there's no earnings-funded growth capacity to compute a
+  // ceiling FROM; the formula doesn't degrade gracefully here, it simply
+  // doesn't apply. An earlier version substituted a flat 20% in that case,
+  // which conflated "we don't know" with "we know it's currently negative"
+  // and produced a backwards result: a loss-making company could land a more
+  // generous ceiling than a modestly-profitable one (e.g. 15% ROE, full
+  // retention -> 15%, tighter than the flat 20%). Rather than invent an
+  // unrelated substitute number, decline to add a fundamentals-based ceiling
+  // at all in that case and fall through to the CAGR's own -30%/+60%
+  // plausibility bound above, same as this function does for every other
+  // case where it has no basis to impose a tighter number.
   const roe = r.ratios?.roe?.value
   const payoutPct = r.ratios?.dividendPayout?.value
   // No reported payout -> treated as retaining everything, the same
@@ -581,9 +593,8 @@ function estimateGrowth(r) {
   const retention = (payoutPct != null && payoutPct >= 0 && payoutPct <= 100)
     ? 1 - payoutPct / 100 : 1
   const sustainable = (roe > 0) ? (roe / 100) * retention : null
-  const ceiling = sustainable != null ? sustainable : 0.20
 
-  return Math.min(g, ceiling)
+  return sustainable != null ? Math.min(g, sustainable) : g
 }
 
 // Enterprise PV → equity value per share, with a growth fade toward terminal.
