@@ -560,16 +560,20 @@ function estimateGrowth(r) {
   // fast a company can grow funding itself without raising fresh capital —
   // is already computed elsewhere in this codebase for a different purpose
   // (estimate.js's financeabilityNote) and was never connected to this
-  // ceiling. A real company CAN grow faster than pure self-funded capacity
-  // by raising capital, so this isn't a hard cutoff at the sustainable rate
-  // itself — it's a multiple of it, bounded to a sane range so neither a
-  // very-low-ROE nor a very-high-ROE company produces a silly number. The
-  // 1.5x multiplier and the 10-40% band are a disclosed judgement call, not
-  // derived — there's no rigorous way to say exactly how much external
-  // financing a company "should" be assumed capable of — but the ceiling now
-  // scales with THIS company's own fundamentals instead of being one flat
-  // rule for every business alike. Falls back to the previous flat 20% only
-  // when ROE isn't available at all.
+  // ceiling.
+  //
+  // An earlier version of this also multiplied the result by 1.5x and
+  // clamped it to a 10-40% band, meant to allow for growth funded by raising
+  // outside capital rather than pure retained earnings. Neither number had a
+  // real derivation, and both were unnecessary: the ceiling only ever binds
+  // when the company's OWN measured CAGR already exceeds it, so a company
+  // that genuinely grew faster via external financing shows up as a high
+  // CAGR being capped back toward its fundamentals-implied rate — an
+  // intentionally conservative stance, not a missed allowance. The 60% cap
+  // on `g` a few lines up already keeps this from ever mattering for a
+  // very-high-ROE company. So: the plain formula, no extra multiplier or
+  // band layered on top of it. Falls back to the previous flat 20% only when
+  // ROE isn't available at all.
   const roe = r.ratios?.roe?.value
   const payoutPct = r.ratios?.dividendPayout?.value
   // No reported payout -> treated as retaining everything, the same
@@ -577,7 +581,7 @@ function estimateGrowth(r) {
   const retention = (payoutPct != null && payoutPct >= 0 && payoutPct <= 100)
     ? 1 - payoutPct / 100 : 1
   const sustainable = (roe > 0) ? (roe / 100) * retention : null
-  const ceiling = sustainable != null ? clamp(sustainable * 1.5, 0.10, 0.40) : 0.20
+  const ceiling = sustainable != null ? sustainable : 0.20
 
   return Math.min(g, ceiling)
 }
