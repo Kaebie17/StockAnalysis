@@ -313,7 +313,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     const scenBase = { growthRate: scenGrowthDefault, wacc: waccDefault, termGrowth, projYears }
     scenarios = {}
     for (const key of ['bear', 'base', 'bull']) {
-      const sa    = scenarioAssumptions(key, scenBase)
+      const sa    = scenarioAssumptions(key, scenBase, data)
       const dcfPs = dcfPerShare(cfBaseDcf, sa.growthRate, sa.wacc, sa.termGrowth, sa.projYears, r.cash, r.totalDebt, r.shares)
       scenarios[key] = {
         label: SCENARIO_PRESETS[key].label,
@@ -589,24 +589,68 @@ function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYea
 
 // Scenario presets shift the SAME growth / WACC / terminal the sliders drive —
 // no parallel model. Bear = lower growth + higher discount; Bull = the opposite.
+// WACC and terminal-growth shifts are a narrative risk adjustment ("how much
+// riskier does the market feel in a downturn"), not something with a natural
+// per-company measurement the way growth volatility has one below — these
+// stay a disclosed, undented convention rather than a spurious "measurement"
+// invented to look more rigorous than they are.
 export const SCENARIO_PRESETS = {
   base: { label: 'Base', growthMul: 1.00, waccAdd:  0.000, termAdd:  0.000 },
   bear: { label: 'Bear', growthMul: 0.50, waccAdd:  0.020, termAdd: -0.005 },
   bull: { label: 'Bull', growthMul: 1.40, waccAdd: -0.015, termAdd:  0.005 },
 }
 
+// Bear/Bull growth spread, measured from this company's OWN year-over-year
+// revenue growth history — same "measure it from the company's own
+// distribution" principle already used for OUTLIER_MULTIPLE, priceDispersion
+// and targetMultiple's spreadLow/spreadHigh, rather than one flat 50%/140%
+// multiplier applied to every company alike (a steady, predictable business
+// gets an unrealistically wide Bear/Bull range under a flat multiplier; a
+// genuinely volatile one gets an unrealistically narrow one). Returns null
+// when there's too little revenue history to measure real volatility, in
+// which case the caller falls back to the fixed multiplier.
+function growthScenarioSpread(data) {
+  const yearOf = row => {
+    const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
+    return m ? Number(m[0]) : null
+  }
+  const series = (data?.incomeHistory || [])
+    .filter(row => !row?.synthetic)
+    .map(row => ({ year: yearOf(row), value: row?.revenue?.value }))
+    .filter(p => p.year != null && p.value > 0)
+    .sort((a, b) => a.year - b.year)
+
+  const yoy = []
+  for (let i = 1; i < series.length; i++) yoy.push(series[i].value / series[i - 1].value - 1)
+  if (yoy.length < 4) return null   // too little history for a real spread
+
+  yoy.sort((a, b) => a - b)
+  const q = p => yoy[Math.min(yoy.length - 1, Math.floor(p * yoy.length))]
+  const spread = (q(0.85) - q(0.15)) / 2
+  return (spread > 0 && isFinite(spread)) ? spread : null
+}
+
 // Given a base assumptions set, return the assumptions for a named scenario.
-// The UI applies this via the existing recalc(assumptions) path.
-export function scenarioAssumptions(preset, base) {
+// The UI applies this via the existing recalc(assumptions) path. `data`
+// (optional) enables the measured growth spread above; omitted, this falls
+// back to the fixed multiplier exactly as before.
+export function scenarioAssumptions(preset, base, data = null) {
   const p = SCENARIO_PRESETS[preset] || SCENARIO_PRESETS.base
   const termGrowth = clamp((base.termGrowth ?? TERMINAL_GROWTH_RATE) + p.termAdd, 0.0, 0.06)
-  return {
+  const measuredSpread = preset !== 'base' ? growthScenarioSpread(data) : null
+  let growthRate = null
+  if (base.growthRate != null) {
     // null base growth/wacc (no measured CAGR, no computable WACC) stays
     // null through every scenario rather than falling back to a flat
     // 8%/10% — dcfPerShare declines cleanly on a null input; it must NOT
     // receive a number nobody measured just because a scenario multiplier
     // was applied to it.
-    growthRate: base.growthRate != null ? clamp(base.growthRate * p.growthMul, 0.02, 0.30) : null,
+    growthRate = measuredSpread != null
+      ? clamp(base.growthRate + (preset === 'bear' ? -measuredSpread : measuredSpread), 0.02, 0.30)
+      : clamp(base.growthRate * p.growthMul, 0.02, 0.30)
+  }
+  return {
+    growthRate,
     wacc:       base.wacc != null ? clamp(base.wacc + p.waccAdd, termGrowth + 0.01, 0.34) : null,
     termGrowth,
     projYears:  base.projYears ?? 10,

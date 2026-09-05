@@ -31,7 +31,7 @@ export default function DCFScenarioPanel({ compact = false }) {
 
   const applyScenario = (key) => {
     setActive(key)
-    if (defaults) recalc(scenarioAssumptions(key, defaults), {})
+    if (defaults) recalc(scenarioAssumptions(key, defaults, data), {})
   }
 
   const ScenarioButtons = (
