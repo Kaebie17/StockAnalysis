@@ -20,7 +20,7 @@ export default function ScoringStudio({ open, onClose }) {
   const [growthPct, setGrowthPct] = useState('')        // e.g. "20"
   const [targetRev, setTargetRev] = useState('')        // absolute target in display unit (Cr / M)
   const [horizon, setHorizon] = useState('multi')       // 'next' | 'multi' | 'unspecified'
-  const [years, setYears]     = useState(3)
+  const [years, setYears]     = useState(1)
   const [notes, setNotes]     = useState('')
 
   if (!open) return null
@@ -29,8 +29,12 @@ export default function ScoringStudio({ open, onClose }) {
   const div  = state.data?.currency === 'INR' ? 1e7 : 1e6
   const unit = state.data?.currency === 'INR' ? 'Cr' : 'M'
 
-  // Effective explicit-window length. Unspecified → 3 yrs (flagged as assumed).
-  const effYears = horizon === 'next' ? 1 : (horizon === 'unspecified' ? 3 : Math.max(1, +years || 3))
+  // Effective explicit-window length. Unspecified information deserves the
+  // SHORTEST assumed persistence, not the longest — a vaguer claim is weaker
+  // evidence, so it earns less runway before fading to terminal, not more.
+  // "Over N years" remains the only way a longer window is ever used, and
+  // only when the user explicitly says so.
+  const effYears = horizon === 'next' ? 1 : (horizon === 'unspecified' ? 1 : Math.max(1, +years || 1))
 
   // Resolve guidance to a single growth rate (decimal).
   const currentRev = r?.revenue
@@ -53,7 +57,7 @@ export default function ScoringStudio({ open, onClose }) {
     const tr = over.targetRev ?? targetRev
     const h  = over.horizon   ?? horizon
     const y  = over.years     ?? years
-    const yy = h === 'next' ? 1 : (h === 'unspecified' ? 3 : Math.max(1, +y || 3))
+    const yy = h === 'next' ? 1 : (h === 'unspecified' ? 1 : Math.max(1, +y || 1))
     let g = null
     if (m === 'growth' && gp !== '' && !isNaN(+gp)) g = +gp / 100
     else if (m === 'target' && tr !== '' && !isNaN(+tr) && currentRev > 0) {
@@ -159,7 +163,7 @@ export default function ScoringStudio({ open, onClose }) {
               </div>
             )}
             {horizon === 'unspecified' && (
-              <p className="text-[10px] text-neutral mt-1">⚠ No period given — assuming a 3-year window (fades to terminal after).</p>
+              <p className="text-[10px] text-neutral mt-1">⚠ No period given — assuming a 1-year window (fades to terminal after). Pick "Over N years" if you have a longer view.</p>
             )}
           </div>
 
