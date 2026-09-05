@@ -14,6 +14,7 @@
  *     standing growth assumption if it doesn't — labelled so the two can't blur
  */
 import { assessGuidance, seasonalityFrom, resolveIfComplete } from './guidanceTracking.js'
+import { percentileSpread } from './spread.js'
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
@@ -70,6 +71,18 @@ export function assessFromQuarterly(quarterlyData, opts = {}) {
   const learnRows = complete.filter(fy => fy !== targetFy).flatMap(fy => byFy.get(fy))
   const seasonality = seasonalityFrom(learnRows)
 
+  // Annual revenue growth history, from the SAME quarterly data already
+  // being judged — used by growthDriftSuggestion() below to set a
+  // per-company significance threshold instead of one flat number applied
+  // to every business alike.
+  const annualByFy = complete
+    .map(fy => ({ year: fy, revenue: byFy.get(fy).reduce((s, r) => s + r.revenue, 0) }))
+    .sort((a, b) => a.year - b.year)
+  const annualGrowthHistory = []
+  for (let i = 1; i < annualByFy.length; i++) {
+    annualGrowthHistory.push(annualByFy[i].revenue / annualByFy[i - 1].revenue - 1)
+  }
+
   const assessment = assessGuidance(opts.guidance, current, {
     modelGrowth: opts.modelGrowth ?? null,
     priorFyRevenue,
@@ -82,6 +95,7 @@ export function assessFromQuarterly(quarterlyData, opts = {}) {
     priorFyRevenue,
     quartersReported: current.length,
     seasonalityLearnedFrom: complete.filter(fy => fy !== targetFy),
+    annualGrowthHistory,
     // Ready to persist when the year has fully reported — the caller decides
     // whether to write it, but the verdict is computed here.
     resolution: resolveIfComplete(opts.guidance, assessment),
@@ -96,9 +110,30 @@ export function assessFromQuarterly(quarterlyData, opts = {}) {
  */
 export function growthDriftSuggestion(assessment, modelGrowth) {
   if (!assessment || modelGrowth == null) return null
-  if (assessment.reported < 2) return null                 // one quarter is noise
   if (assessment.fullYearGapPct == null) return null
-  if (Math.abs(assessment.fullYearGapPct) < 5) return null  // inside tolerance
+  const gapPct = Math.abs(assessment.fullYearGapPct)
+
+  // Significance threshold, measured from THIS company's own historical
+  // annual revenue growth volatility (half its 15th-85th percentile spread,
+  // in points) rather than a flat 5% applied to every business alike — a
+  // steady, predictable company should be flagged on a smaller surprise than
+  // a volatile, cyclical one, because "5% off" means something completely
+  // different for each. Floored at 3pts so even a very steady business needs
+  // more than routine reporting noise to trigger. Falls back to the flat 5%
+  // only when there's under 4 years of annual history to measure a real
+  // spread from.
+  const ps = percentileSpread(assessment.annualGrowthHistory, { minSamples: 4 })
+  const thresholdPct = ps ? Math.max(3, ((ps.high - ps.low) / 2) * 100) : 5
+
+  // A surprise several multiples beyond the company's own normal volatility
+  // is acted on immediately, same as a real analyst reacts fast to an
+  // obviously extraordinary print — otherwise, one quarter is still noise
+  // and a second is required before calling it a trend. "2.5x the threshold"
+  // is a judgement call, disclosed as one: there's no data-derived way to
+  // say exactly how extreme is extreme enough to skip the confirmation wait.
+  const isExtreme = ps != null && gapPct >= thresholdPct * 2.5
+  if (assessment.reported < 2 && !isExtreme) return null
+  if (gapPct < thresholdPct) return null
 
   // Implied growth from the run-rate: what the year is actually tracking at.
   const implied = (assessment.runRateFullYear / assessment.priorFyRevenue) - 1
@@ -108,9 +143,16 @@ export function growthDriftSuggestion(assessment, modelGrowth) {
     lever: 'growth',
     from: modelGrowth,
     to: implied,
+    // A quarter's run-rate is evidence about the year in progress, not a
+    // multi-year view — the DCF near-term window this feeds should only
+    // hold for 1 year, not longer than the evidence actually supports.
+    years: 1,
     steps: [
       `${assessment.reported} of ${assessment.quartersInYear} quarters reported for ${assessment.targetFy}`,
       `Run-rate implies ${(implied * 100).toFixed(1)}% for the year, vs ${(modelGrowth * 100).toFixed(1)}% assumed`,
+      ps
+        ? `Significance threshold: ${thresholdPct.toFixed(1)} pts, from this company's own historical growth volatility`
+        : `Significance threshold: flat 5 pts (not enough annual history to measure this company's own volatility)`,
     ],
     reason: `Quarterly results running ${assessment.fullYearGapPct > 0 ? 'ahead of' : 'behind'} the assumption`,
   }
