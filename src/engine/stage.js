@@ -144,7 +144,7 @@ export function getApplicableModels(stage, sectorType) {
       applicable:    ['pb', 'pe'],
       weights:       { pb: 3, pe: 2 },
       caution:       ['ps'],
-      notApplicable: ['dcf', 'evEbitda', 'graham', 'evGrossProfit'],
+      notApplicable: ['dcf', 'evEbitda', 'graham'],
       note: 'Insurance companies use P/E and P/B as primary valuation metrics. DCF and EV/EBITDA are not applicable.'
     }
   }
@@ -153,23 +153,25 @@ export function getApplicableModels(stage, sectorType) {
       applicable:    ['pb', 'pe'],
       weights:       { pb: 3, pe: 2 },
       caution:       ['ps'],
-      notApplicable: ['dcf', 'evEbitda', 'graham', 'evGrossProfit'],
+      notApplicable: ['dcf', 'evEbitda', 'graham'],
       note: 'Banks and NBFCs are valued on P/E and P/B. EV-based models are not meaningful for leveraged financial institutions.'
     }
   }
   switch (stage) {
     case 'PRE_REVENUE':
       return {
-        applicable:    ['evGrossProfit', 'ps'],
-        weights:       { evGrossProfit: 2, ps: 1.5 },
+        // evGrossProfit (flat opProfit x 8, no sector/company basis) dropped —
+        // P/S alone remains for this stage.
+        applicable:    ['ps'],
+        weights:       { ps: 1.5 },
         caution:       ['dcf'],
         notApplicable: ['pe', 'evEbitda', 'pb', 'graham'],
-        note: 'Pre-revenue: P/S and EV/Gross Profit most relevant. DCF range is very wide.'
+        note: 'Pre-revenue: P/S most relevant. DCF range is very wide.'
       }
     case 'GROWTH':
       return {
-        applicable:    ['evEbitda', 'evGrossProfit', 'ps', 'peg'],
-        weights:       { evEbitda: 3, evGrossProfit: 2, ps: 1, peg: 1.5 },
+        applicable:    ['evEbitda', 'ps', 'peg'],
+        weights:       { evEbitda: 3, ps: 1, peg: 1.5 },
         caution:       ['dcf'],
         notApplicable: ['pe', 'graham', 'pb'],
         note: 'Growth stage: EV/EBITDA and revenue multiples most relevant. P/E not meaningful yet.'
@@ -179,7 +181,7 @@ export function getApplicableModels(stage, sectorType) {
         applicable:    ['evEbitda', 'dcf', 'pe', 'ps', 'peg'],
         weights:       { evEbitda: 3, dcf: 2.5, pe: 2, ps: 1, peg: 1.5 },
         caution:       ['graham'],
-        notApplicable: ['evGrossProfit'],
+        notApplicable: [],
         note: 'Transitioning to profitability: blend of revenue and earnings-based models.'
       }
     case 'ESTABLISHED':
@@ -188,7 +190,7 @@ export function getApplicableModels(stage, sectorType) {
         applicable:    ['dcf', 'evEbitda', 'pe', 'pb', 'graham'],
         weights:       { dcf: 3, evEbitda: 2.5, pe: 2, pb: 1.5, graham: 1 },
         caution:       ['ps'],
-        notApplicable: ['evGrossProfit'],
+        notApplicable: [],
         note: 'Established: full suite of valuation models applicable.'
       }
   }

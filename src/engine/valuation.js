@@ -158,13 +158,6 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     results.graham = { value: r.grahamNumber, note: 'sqrt(22.5 x EPS x Book Value per Share)' }
   }
 
-  // ── EV / Operating Profit ─────────────────────────────────────────────────────
-  if (isApplicable('evGrossProfit', modelMeta) && r.opProfit > 0 && r.shares && r.totalDebt != null) {
-    const impliedEV = r.opProfit * 8
-    const perShare  = (impliedEV + r.cash - r.totalDebt) / r.shares
-    if (perShare > 0) results.evGrossProfit = { value: perShare, note: 'Op.Profit × 8×' }
-  }
-
   // ── PEG (growth-stage only; gated by stage.js applicable list) ──────────────
   if (isApplicable('peg', modelMeta) && r.eps > 0) {
     const peg = computePeg(r, {
@@ -195,7 +188,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
 
   const MODEL_NAMES = {
     dcf: 'DCF', pe: 'P/E', evEbitda: 'EV/EBITDA', pb: 'P/B',
-    ps: 'P/S', graham: 'Graham', evGrossProfit: 'EV/Gross Profit', peg: 'PEG',
+    ps: 'P/S', graham: 'Graham', peg: 'PEG',
   }
 
   // Primary = the highest-WEIGHTED model among the ones that actually have

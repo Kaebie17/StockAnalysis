@@ -28,7 +28,6 @@ const MODEL_DISPLAY = {
   pb:           { name: 'P/B Based',         weight: '●○○' },
   ps:           { name: 'P/S Based',         weight: '●○○' },
   graham:       { name: 'Graham Number',     weight: '●○○' },
-  evGrossProfit:{ name: 'EV/Op.Profit',      weight: '●○○' },
   peg:          { name: 'PEG (growth)',      weight: '●●○' },
 }
 
