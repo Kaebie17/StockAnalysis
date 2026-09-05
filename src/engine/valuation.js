@@ -552,11 +552,33 @@ function estimateGrowth(r) {
   if (cagr == null) return null
   const g = cagr / 100
   if (g < -0.3 || g > 0.6) return null
-  // A ceiling only, not a floor: caps how high a temporary growth burst is
-  // treated as DCF's sustainable BASE rate over its full horizon, which errs
-  // conservative (lower fair value) — the safe direction. Unlike a floor,
-  // this never overrides a company's real, measured decline.
-  return Math.min(g, 0.20)
+
+  // Ceiling scaled to what THIS company's own fundamentals can plausibly
+  // sustain, not a flat 20% applied to every business alike. Sustainable
+  // growth — ROE x retention, the standard corporate-finance measure of how
+  // fast a company can grow funding itself without raising fresh capital —
+  // is already computed elsewhere in this codebase for a different purpose
+  // (estimate.js's financeabilityNote) and was never connected to this
+  // ceiling. A real company CAN grow faster than pure self-funded capacity
+  // by raising capital, so this isn't a hard cutoff at the sustainable rate
+  // itself — it's a multiple of it, bounded to a sane range so neither a
+  // very-low-ROE nor a very-high-ROE company produces a silly number. The
+  // 1.5x multiplier and the 10-40% band are a disclosed judgement call, not
+  // derived — there's no rigorous way to say exactly how much external
+  // financing a company "should" be assumed capable of — but the ceiling now
+  // scales with THIS company's own fundamentals instead of being one flat
+  // rule for every business alike. Falls back to the previous flat 20% only
+  // when ROE isn't available at all.
+  const roe = r.ratios?.roe?.value
+  const payoutPct = r.ratios?.dividendPayout?.value
+  // No reported payout -> treated as retaining everything, the same
+  // convention justifiedMultiple.js's sustainableGrowth() already uses.
+  const retention = (payoutPct != null && payoutPct >= 0 && payoutPct <= 100)
+    ? 1 - payoutPct / 100 : 1
+  const sustainable = (roe > 0) ? (roe / 100) * retention : null
+  const ceiling = sustainable != null ? clamp(sustainable * 1.5, 0.10, 0.40) : 0.20
+
+  return Math.min(g, ceiling)
 }
 
 // Enterprise PV → equity value per share, with a growth fade toward terminal.
