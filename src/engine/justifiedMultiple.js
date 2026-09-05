@@ -173,11 +173,21 @@ function twoStagePbMultiple({ roe, g, r, years = STAGE_1_YEARS, terminalG = TERM
     bookAtStart *= (1 + g)
   }
 
-  // Terminal: book value has compounded to bookAtStart by the time growth
-  // fades. Terminal payout rises — same substitution twoStageMultiple (P/E)
-  // already uses — since a slower-growing business needs to retain less.
+  // Terminal: bookAtStart already IS the book value at the START of the
+  // terminal year (year `years`+1) — the loop above updates it AFTER each
+  // dividend is taken, so by the time it exits, bookAtStart has already
+  // compounded one step past the last explicit stage-1 dividend. Earnings for
+  // that terminal year are bookAtStart x ROE directly; no extra (1+terminalG)
+  // step is needed here (unlike twoStageMultiple's P/E form, whose `earningsAtT`
+  // is deliberately computed as the level AT year `years`, one step short of
+  // the terminal year, and does need that step). Multiplying by (1+terminalG)
+  // here was a copy-paste of that P/E shape onto a variable with a different
+  // convention — it silently overstated the terminal component (and so the
+  // whole two-stage P/B multiple) by a factor of (1+terminalG), confirmed by
+  // checking that the correct decomposition exactly reproduces the known-good
+  // single-stage formula (ROE-g)/(r-g) when g == terminalG.
   const terminalPayout = (roeDec > terminalG) ? Math.max(0, Math.min(1, 1 - terminalG / roeDec)) : payout
-  const terminal = (bookAtStart * roeDec * (1 + terminalG) * terminalPayout) / (r - terminalG)
+  const terminal = (bookAtStart * roeDec * terminalPayout) / (r - terminalG)
   pv += terminal / Math.pow(1 + r, years)
   return pv
 }

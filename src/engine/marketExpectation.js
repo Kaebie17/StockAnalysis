@@ -319,13 +319,21 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   }
 
   // ── FCF-based ────────────────────────────────────────────────────────────────
+  // FCF here is firm-level (opCF - capex, before financing), so it has to be
+  // solved against enterprise value (evTarget = marketCap + net debt), the
+  // same bridge the Sales variant already uses and for the same reason —
+  // equity market cap ignores net debt, which would overstate the implied
+  // growth for a levered firm. Comparing firm-level cash flow to a bare
+  // equity market cap while calling the multiple "EV/FCF" was a units
+  // mismatch: pairing an enterprise-value-denominated multiple with an
+  // equity-value target.
   const fcfBase = fcf ?? opCF
-  if (fcfBase != null && fcfBase > 0 && marketCap) {
+  if (fcfBase != null && fcfBase > 0 && evTarget != null) {
     // For FCF we use EV/FCF terminal multiple — typically 15-25×
     const termFcfMult = assumptions.terminalFcfMultiple
-    const impliedG = solveImpliedGrowth(fcfBase, marketCap, termFcfMult, discountRate, horizon)
+    const impliedG = solveImpliedGrowth(fcfBase, evTarget, termFcfMult, discountRate, horizon)
     const sanity   = impliedG != null
-      ? buildSanityTable(fcfBase, marketCap, termFcfMult, discountRate, horizon, impliedG)
+      ? buildSanityTable(fcfBase, evTarget, termFcfMult, discountRate, horizon, impliedG)
       : null
 
     variants.fcf = {
@@ -356,7 +364,9 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
         ? (isFinancial
             ? 'Operating CF is negative — this is structurally normal for banks/insurers (loan disbursements count as operating outflow) and does not indicate financial distress. Use Earnings-based instead.'
             : 'FCF and Operating CF are negative — FCF-based method not applicable')
-        : 'Free Cash Flow not available (needs CapEx — see the data gaps banner)'
+        : fcfBase == null
+        ? 'Free Cash Flow not available (needs CapEx — see the data gaps banner)'
+        : 'Debt and/or cash not available — needed to bridge market cap to enterprise value'
     }
   }
 

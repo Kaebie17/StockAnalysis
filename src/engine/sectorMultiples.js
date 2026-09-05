@@ -52,6 +52,29 @@ export const SECTOR_SALES_MAP = {
   'default': 3.0,
 }
 
+// Sector median EV/EBITDA multiples — same sector keys as the tables above.
+// Telecom/infrastructure/power sit relatively HIGH here despite modest P/E,
+// because EV/EBITDA is the standard metric for capital-intensive, high-D&A
+// businesses precisely where P/E is least informative; commodity/metals sit
+// low, consistent with their cyclical P/E; banks/nbfc/insurance are excluded
+// from this model entirely in stage.js (leveraged financials aren't valued on
+// EV/EBITDA at all), so their entries here are nominal and never read.
+export const SECTOR_EVEB_MAP = {
+  'energy': 6, 'oil': 6, 'petroleum': 6, 'refineries': 6, 'gas': 7,
+  'insurance': 12, 'life insurance': 12, 'general insurance': 12,
+  'bank': 10, 'banking': 10, 'nbfc': 10, 'finance': 10, 'financial services': 10,
+  'technology': 18, 'software': 18, 'information technology': 18,
+  'automobile': 11, 'auto': 11, 'automotive': 11,
+  'mining': 7, 'metals': 7, 'steel': 6, 'iron': 6, 'aluminium': 7,
+  'fmcg': 22, 'consumer': 18, 'beverages': 20, 'food': 16,
+  'pharma': 17, 'healthcare': 16, 'hospitals': 16,
+  'real estate': 11, 'realty': 11,
+  'power': 9, 'utilities': 9, 'infrastructure': 9,
+  'chemicals': 11, 'cement': 11,
+  'telecom': 8,
+  'default': 10,
+}
+
 function lookupSectorTable(table, data) {
   const combined = [data?.meta?.sector, data?.meta?.industry, data?.name]
     .filter(Boolean).join(' ').toLowerCase()
@@ -66,3 +89,6 @@ export function sectorPe(data) { return lookupSectorTable(SECTOR_PE_MAP, data) }
 
 /** Sector median EV/Sales — fallback only, see module docblock. */
 export function sectorEvSales(data) { return lookupSectorTable(SECTOR_SALES_MAP, data) }
+
+/** Sector median EV/EBITDA — fallback only, see module docblock. */
+export function sectorEvEbitda(data) { return lookupSectorTable(SECTOR_EVEB_MAP, data) }

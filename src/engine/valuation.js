@@ -5,13 +5,15 @@
  * KEY FIXES:
  * 1. sectorPe uses SECTOR MEDIAN not stock's own PE (using own PE is circular —
  *    EPS × own_PE always returns current price)
- * 2. sectorEvEb uses stock's actual EV/EBITDA as baseline (clamped), not generic 12×
+ * 2. sectorEvEb uses SECTOR MEDIAN EV/EBITDA (src/engine/sectorMultiples.js),
+ *    not the stock's own multiple — that was the same circularity as (1), and
+ *    the specific bug that triggered this file's valuation audit.
  * 3. DCF runs on real FCF only — no opCF proxy, no invented CapEx
  */
 import { getApplicableModels } from './stage.js'
 import { computePeg } from './peg.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
-import { sectorPe as getSectorPe } from './sectorMultiples.js'
+import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda } from './sectorMultiples.js'
 import { peerBand } from './peerBands.js'
 import { justifiedMultiples } from './justifiedMultiple.js'
 
@@ -20,9 +22,15 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
 
   // sectorPe: sector median (NOT stock's own PE — that's circular)
   const sectorPeDefault = getSectorPe(data)
-  // sectorEvEb: stock's actual EV/EBITDA clamped to 5-20× (NOT generic 12×)
-  const actualEvEb = r.ratios?.evEbitda?.value
-  const sectorEvEbDefault = actualEvEb != null ? clamp(actualEvEb, 5, 20) : 12
+  // sectorEvEb: sector median EV/EBITDA (NOT the stock's own multiple — that
+  // was circular: EBITDA x its own current multiple always reproduces close
+  // to today's price, clamped or not, and can never independently say the
+  // stock is over/undervalued. This was the exact mechanism that made Dixon
+  // Technologies' "Fair Value via EV/EBITDA" read as cheap-relative-to-nothing
+  // and triggered this whole valuation audit. Peer EV/EBITDA data isn't
+  // fetched (needs a per-peer quoteSummary() call the free batched quote()
+  // doesn't carry — confirmed, deferred) so the sector table is the anchor.
+  const sectorEvEbDefault = getSectorEvEbitda(data)
 
   // liveRiskFree/market: threaded from AppContext's shared fetch (Phase 8) —
   // null until that resolves, which is fine, computeWacc() always falls back
@@ -89,13 +97,14 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     results.pe = { value: r.eps * targetPe, note }
   }
 
-  // ── EV/EBITDA ── uses stock's actual multiple as anchor ───────────────────────
+  // ── EV/EBITDA ── sector-median multiple as anchor (peer EV/EBITDA data
+  // isn't fetched — see sectorEvEbDefault above) ────────────────────────────
   if (isApplicable('evEbitda', modelMeta) && r.ebitda > 0 && r.shares && r.totalDebt != null) {
     const impliedEV = r.ebitda * sectorEvEb
     const impliedEq = impliedEV + r.cash - r.totalDebt
     const perShare  = impliedEq / r.shares
     if (perShare > 0) {
-      results.evEbitda = { value: perShare, note: `EBITDA × ${sectorEvEb.toFixed(1)}× (actual EV/EBITDA)` }
+      results.evEbitda = { value: perShare, note: `EBITDA × ${sectorEvEb.toFixed(1)}× sector median EV/EBITDA` }
     }
   }
 
