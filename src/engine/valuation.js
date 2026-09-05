@@ -489,13 +489,30 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
 
 function estimateGrowth(r) {
   // The single dynamic windowed CAGR — same figure every consumer uses, so the
-  // user's window now reaches the DCF. Clamp is a sanity bound on a REAL
-  // measured rate, not a source: no revCagr means no growth rate, not a flat
-  // 8% dressed up as one. Callers (DCF, scenarios, reverse-DCF) decline
+  // user's window now reaches the DCF. No revCagr means no growth rate, not a
+  // flat 8% dressed up as one. Callers (DCF, scenarios, reverse-DCF) decline
   // rather than substitute when this comes back null.
+  //
+  // Declines (null) rather than substituting when the rate itself is outside
+  // a plausible range to project forward — same -30%/+60% bound seriesCagr
+  // already uses elsewhere in this codebase (estimate.js), chosen there
+  // because a CAGR beyond it is a recovery from a collapsed base or a
+  // one-off, not a real sustainable rate. This used to be clamp(g, 0.02,
+  // 0.20) — a FLOOR that substituted +2% for any decline, including a real,
+  // measured one: a company with an actual -8%/yr revenue CAGR had its DCF
+  // forced to assume +2% growth instead. That's the "dangerous direction"
+  // (silently more optimistic) this codebase explicitly tries to avoid
+  // elsewhere, and it directly contradicted this function's own comment
+  // above ("decline rather than substitute").
   const cagr = r.ratios?.revCagr?.value
   if (cagr == null) return null
-  return clamp(cagr / 100, 0.02, 0.20)
+  const g = cagr / 100
+  if (g < -0.3 || g > 0.6) return null
+  // A ceiling only, not a floor: caps how high a temporary growth burst is
+  // treated as DCF's sustainable BASE rate over its full horizon, which errs
+  // conservative (lower fair value) — the safe direction. Unlike a floor,
+  // this never overrides a company's real, measured decline.
+  return Math.min(g, 0.20)
 }
 
 // Enterprise PV → equity value per share, with a growth fade toward terminal.
