@@ -71,6 +71,7 @@ const NBFC_KEYWORDS   = ['finance', 'financial', 'housing finance', 'microfinanc
 const INSURANCE_KEYWORDS = ['insurance', 'life insur', 'general insur', 'reinsur']
 
 export function detectSectorType(data) {
+  data = data || {}
   const ticker   = (data.ticker || '').toUpperCase()
   const sector   = (data.meta?.sector   || '').toLowerCase()
   const industry = (data.meta?.industry || '').toLowerCase()
@@ -99,7 +100,7 @@ export function detectSectorType(data) {
 }
 
 export function detectStage(data, ratioResult) {
-  const inc = data.incomeHistory || []
+  const inc = data?.incomeHistory || []
   const rev = ratioResult?.revenue
 
   if (!rev || rev <= 0) return 'PRE_REVENUE'

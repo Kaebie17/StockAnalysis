@@ -44,6 +44,10 @@ const MIN_DEVIATION = 0.08
  * @param peerBand      { median, ... } optional
  */
 export function detectRerating(priceHistory = [], incomeHistory = [], band = null, opts = {}) {
+  // Default params only cover `undefined` — a caller passing an explicit
+  // `null` (a realistic shape for unset state in this app) would bypass them.
+  priceHistory = priceHistory || []
+  incomeHistory = incomeHistory || []
   const { peerBand = null, currentEps = null, monthsWindow = 6 } = opts
   if (!band?.median || !(band.median > 0)) {
     return { detected: false, reason: 'No historical multiple band to compare against' }
@@ -180,7 +184,7 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
  * behavior, zero callers touched.
  */
 export function peerBandFrom(peers = []) {
-  const withFallback = peers.map(p => ({ ...p, pe: p.forwardPe ?? p.pe }))
+  const withFallback = (peers || []).map(p => ({ ...p, pe: p.forwardPe ?? p.pe }))
   return peerBand(withFallback, 'pe')
 }
 

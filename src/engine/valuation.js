@@ -18,6 +18,13 @@ import { peerBand } from './peerBands.js'
 import { justifiedMultiples } from './justifiedMultiple.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
+  // Every call site guards on state.data being truthy, not state.ratioResult
+  // specifically — the two are set together in practice, but "in practice"
+  // isn't a guarantee, and every field access below already assumes r is at
+  // least an object. Guarding here means a genuinely missing ratioResult
+  // declines cleanly (fairValue: null, signal: 'UNKNOWN') like any other
+  // missing-data case, instead of throwing.
+  r = r || {}
   const modelMeta = getApplicableModels(stage, sectorType)
 
   // sectorPe: sector median (NOT stock's own PE — that's circular)
