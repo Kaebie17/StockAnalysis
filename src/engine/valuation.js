@@ -158,7 +158,19 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
         riskFreeRate: assumptions.liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN,
         beta: r?.ratios?.beta?.value, market,
       })
-      targetPb = jm?.forms?.pb?.multiple ?? null
+      // Same instability guard as estimate.js's buildJustifiedEstimate — this
+      // reuses the SAME single-stage formula, so it has the SAME blow-up
+      // condition (required return - growth going thin relative to required
+      // return) and had no protection against it at all here, unlike the
+      // sibling call site. Found by tracing where else justifiedMultiples()
+      // is consumed after fixing that one: a non-financial stock with no
+      // peer/sector P/B data and growth close to its required return
+      // produced "Book x 111.7x" (₹5,586 fair value on a ₹1,000 stock) with
+      // nothing to catch it.
+      const jmGapFraction = (jm?.requiredReturn?.r > 0)
+        ? (jm.requiredReturn.r - jm.growth.g) / jm.requiredReturn.r : null
+      const jmStable = jm?.twoStage || jmGapFraction == null || jmGapFraction >= 0.1
+      targetPb = jmStable ? (jm?.forms?.pb?.multiple ?? null) : null
       if (targetPb != null) {
         pbNote = `Book x ${targetPb.toFixed(1)}x (no peer/sector P/B data — the fundamentals-based Justified form, used as a last resort)`
       }
