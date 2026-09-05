@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { useApp } from './AppContext.jsx'
 import { listRevisions, appendRevision, saveEstimate, currentEstimate } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
 import { buildEstimate, buildJustifiedEstimate, scoreEstimate, sanityCheck } from '../engine/estimate.js'
@@ -78,6 +79,7 @@ async function ensureRiskFree(market, userKey, { force = false } = {}) {
 }
 
 export function useEstimate(state, opts = {}) {
+  const { recalc } = useApp()
   const [overrides, setOverrides] = useState({})
   const [peers, setPeers] = useState([])
   const [revisions, setRevisions] = useState([])
@@ -262,15 +264,44 @@ export function useEstimate(state, opts = {}) {
   // resurface on the next poll.
   const handledKeys = new Set(revisions.map(r => r.sourceKey).filter(Boolean))
 
-  /** Record a revision and re-apply. `disposition` is 'revised' | 'dismissed' | 'deferred'. */
+  /**
+   * Record a revision and re-apply. `disposition` is 'revised' | 'dismissed' | 'deferred'.
+   *
+   * A growth revision — from any source (quarterly drift, a news fact, a
+   * manually-resolved conflict) — used to only reach App Target's own growth
+   * ladder via the revision log below. DCF's near-term window
+   * (nearTermGrowth/nearTermYears) stayed completely unaware a revision ever
+   * happened, even though it's the exact mechanism built for this. Every
+   * source that produces a growth revision funnels through this ONE
+   * function, so the fix lives here once rather than needing to be repeated
+   * at each call site (auto-apply, manual tap, and conflict-resolution all
+   * already call this same commit()).
+   *
+   * `entry.years` is the duration THIS fact/signal itself supports (a
+   * contract's delivery period, a capacity ramp) — never assumed beyond what
+   * was actually stated. Undo naturally reverts this too: an undo re-commits
+   * with disposition 'revised' and the old value as the new one, so it hits
+   * the same branch and pushes nearTermGrowth back to what it was.
+   * Dismiss/defer use a different disposition and never reach this at all.
+   */
   const commit = useCallback(async (entry) => {
     if (!ticker) return null
     const rec = await appendRevision({ ...entry, ticker })
     queuePush(`revisions:${rec.id}`, rec)
     await reload()
     bumpRevisionVersion()      // every other instance reloads too
+
+    if (entry.lever === 'growth' && entry.disposition === 'revised' && entry.newValue != null) {
+      // No duration stated by the source itself -> the minimum (1 year), same
+      // "unspecified means assume the least, not the most" rule applied
+      // everywhere else this session — a longer window only ever appears
+      // when something explicitly says so.
+      const years = (entry.years > 0) ? entry.years : 1
+      recalc({ nearTermGrowth: entry.newValue, nearTermYears: years }, {})
+    }
+
     return rec
-  }, [ticker, reload])
+  }, [ticker, reload, recalc])
 
   /** Freeze the current estimate as a dated claim. */
   const freeze = useCallback(async (trigger = 'manual') => {

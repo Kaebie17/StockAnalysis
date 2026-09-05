@@ -59,7 +59,7 @@ export const FACT_TYPES = [
       return apply('growth', ctx.growth, ctx.growth + delta, [
         `${money(f.value, ctx)} over ${years} yr → ${money(annual, ctx)}/yr`,
         `on revenue of ${money(ctx.revenue, ctx)} → ${sign > 0 ? '+' : ''}${pct(delta)}% to growth`,
-      ])
+      ], years)
     },
   },
 
@@ -84,7 +84,7 @@ export const FACT_TYPES = [
       return apply('growth', ctx.growth, ctx.growth + perYear, [
         `+${f.addedPct}% capacity at ${f.utilisation || 100}% utilisation → +${pct(totalLift)}% revenue`,
         `spread over ${years} yr → +${pct(perYear)}%/yr to growth`,
-      ])
+      ], years)
     },
   },
 
@@ -105,7 +105,7 @@ export const FACT_TYPES = [
       return apply('growth', ctx.growth, ctx.growth - lost, [
         `${f.segmentPct}% of revenue${f.retained ? `, keeping ${f.retained}% of it` : ''} → −${pct(lost)}% revenue`,
         'Applied as a one-off level drop within the projection year',
-      ])
+      ], 1)
     },
   },
 
@@ -137,7 +137,7 @@ export const FACT_TYPES = [
       // point most capex announcements gloss over.
       if (f.revenueWhenLive > 0 && (+f.yearsToLive || 0) <= 1) {
         const g = (+f.revenueWhenLive) / ctx.revenue
-        out.second = { lever: 'growth', from: ctx.growth, to: ctx.growth + g,
+        out.second = { lever: 'growth', from: ctx.growth, to: ctx.growth + g, years: 1,
           steps: [`+${money(f.revenueWhenLive, ctx)} revenue once live → +${pct(g)}% growth`] }
       } else if (f.revenueWhenLive > 0) {
         steps.push(`Revenue of ${money(f.revenueWhenLive, ctx)} arrives in ~${f.yearsToLive} yr — beyond this projection, so not counted yet`)
@@ -408,18 +408,21 @@ export const FACT_TYPES = [
         return apply('growth', ctx.growth, to, [
           `${money(ctx.revenue, ctx)} → ${money(f.targetRevenue, ctx)} over ${yrs} yr`,
           `implies ${pct(to)}% a year`,
-        ])
+        ], yrs)
       }
       if (!(f.growthPct !== '' && isFinite(+f.growthPct))) return fail('Enter the guided growth.')
       to = (+f.growthPct) / 100
       const who = f.speaker === 'third-party' ? 'A broker forecast of'
         : f.speaker === 'management' ? 'Management guides'
         : 'Guidance of'
+      // Only a STATED duration is used — no default here beyond what commit()
+      // itself falls back to, since a bare "guided X% for FY27" with no
+      // explicit years is closer to unspecified than to a real multi-year claim.
       return apply('growth', ctx.growth, to, [
         `${who} ${f.growthPct}%${f.fiscalYear ? ` for ${f.fiscalYear}` : ''}`,
         ...(f.speaker === 'third-party'
           ? ['Third-party estimate — weaker than the company committing to a number itself.'] : []),
-      ])
+      ], (+f.years > 0) ? +f.years : null)
     },
   },
 ]
@@ -443,7 +446,13 @@ export function computeFact(typeId, fields, ctx) {
   catch (e) { return { error: String(e?.message || e) } }
 }
 
-function apply(lever, from, to, steps) { return { lever, from, to, steps } }
+// years: how long this fact's effect should be treated as holding, when the
+// fact itself states one (a contract's delivery period, a capacity ramp).
+// null when the fact carries no duration of its own — the caller (commit(),
+// useEstimate.js) then falls back to the minimum (1 year), same as any
+// other unspecified-duration input, rather than assuming persistence the
+// fact never actually claimed.
+function apply(lever, from, to, steps, years = null) { return { lever, from, to, steps, years } }
 function fail(error) { return { error } }
 function note(msg) { return { note: msg } }
 

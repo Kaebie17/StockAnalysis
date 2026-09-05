@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useRef } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { fmtPct, fmtPctPlain } from '../../utils/format.js'
 import DCFScenarioPanel from './DCFScenarioPanel.jsx'
@@ -433,6 +433,20 @@ function EstimateRevisions({ state }) {
     guidanceAssessment, quarterlySuggestion, score, handledKeys, deferredLevers, relative,
   } = useEstimate(state)
 
+  // growthDriftSuggestion() returns a fresh object on every render (never
+  // memoized), so the auto-apply effect below saw its dependency "change" on
+  // every render until overrides.growth caught up asynchronously — several
+  // renders can happen in that window, each re-firing the effect and
+  // committing the SAME suggestion again. This tracks the last suggestion
+  // actually committed (by its content, not its object reference) so a
+  // reference-different-but-value-identical re-render can't double-apply it.
+  const lastAppliedSuggestionRef = useRef(null)
+  // Same fix, for the news-fact auto-apply effect below: a.key is stable
+  // per-headline (keyOf() in useNewsFacts.js), so tracking which keys this
+  // session has already auto-applied blocks a duplicate commit for the same
+  // item during the same async gap before handledKeys catches up.
+  const autoAppliedKeysRef = useRef(new Set())
+
   const r = state.ratioResult
   const ctx = r ? {
     revenue: r.revenue, netProfit: r.netProfit, totalAssets: r.totalAssets,
@@ -483,7 +497,7 @@ function EstimateRevisions({ state }) {
     const entries = [a.impact, a.impact.second].filter(Boolean)
     for (const imp of entries) {
       await commit({
-        lever: imp.lever, oldValue: imp.from ?? null, newValue: imp.to,
+        lever: imp.lever, oldValue: imp.from ?? null, newValue: imp.to, years: imp.years ?? null,
         disposition: 'revised', trigger: auto ? 'news-auto' : 'news',
         factType: a.parsed.typeId, factFields: a.parsed.fields, steps: imp.steps,
         reason: a.item.title, sourceKey: a.key,
@@ -504,6 +518,11 @@ function EstimateRevisions({ state }) {
   //
   // `handledKeys` comes from the revision log, so a committed item drops out of
   // `actionable` on the next read — that's what stops this re-firing each poll.
+  // That exclusion only takes effect once reload() completes, though, and
+  // `actionable` is a freshly-built array every render regardless of whether
+  // its contents actually changed — the same gap that let the quarterly-auto
+  // effect above double-commit before its own gate closed. Guarded by key,
+  // synchronously, for the same reason.
   React.useEffect(() => {
     if (actionable.length === 0) return
     let cancelled = false
@@ -513,6 +532,8 @@ function EstimateRevisions({ state }) {
         // A conflict has no defensible automatic answer — it's the one case
         // where the app has done all it legitimately can and the choice is real.
         if (a.impact?.conflict) continue
+        if (autoAppliedKeysRef.current.has(a.key)) continue
+        autoAppliedKeysRef.current.add(a.key)
         await applyItem(a, true)
       }
     })()
@@ -522,7 +543,7 @@ function EstimateRevisions({ state }) {
   // Undo appends a reverting entry rather than deleting: the log is append-only,
   // and "this was applied then undone" is worth keeping.
   const undo = (x) => commit({
-    lever: x.lever, oldValue: x.newValue, newValue: x.oldValue,
+    lever: x.lever, oldValue: x.newValue, newValue: x.oldValue, years: x.years ?? null,
     disposition: 'revised', trigger: 'undo',
     reason: `Undone: ${x.reason || 'auto-applied revision'}`,
     sourceKey: x.sourceKey ? `${x.sourceKey}:undone` : undefined,
@@ -543,11 +564,19 @@ function EstimateRevisions({ state }) {
   // user pasted themselves, is the same mistake as the news prompt was.
   React.useEffect(() => {
     if (!quarterlySuggestion) return
+    // Guard by CONTENT, checked synchronously before the async commit starts —
+    // a content-identical suggestion re-rendered with a fresh object reference
+    // (see lastAppliedSuggestionRef above) must not re-trigger commit() even
+    // though the effect's own dependency array sees it as "changed".
+    const signature = `${quarterlySuggestion.lever}:${quarterlySuggestion.from}:${quarterlySuggestion.to}`
+    if (lastAppliedSuggestionRef.current === signature) return
+    lastAppliedSuggestionRef.current = signature
+
     let cancelled = false
     ;(async () => {
       if (cancelled) return
       await commit({
-        lever: quarterlySuggestion.lever,
+        lever: quarterlySuggestion.lever, years: quarterlySuggestion.years ?? null,
         oldValue: quarterlySuggestion.from, newValue: quarterlySuggestion.to,
         disposition: 'revised', trigger: 'quarterly-auto',
         steps: quarterlySuggestion.steps, reason: quarterlySuggestion.reason,
@@ -555,7 +584,9 @@ function EstimateRevisions({ state }) {
     })()
     return () => { cancelled = true }
     // Once committed, the override exists and growthDriftSuggestion returns null
-    // (it is gated on !overrides.growth), so this cannot re-fire.
+    // (it is gated on !overrides.growth), so this stops recomputing a truthy
+    // suggestion at all once that catches up — the ref above only covers the
+    // async gap until it does.
   }, [quarterlySuggestion, commit])
 
   return (
