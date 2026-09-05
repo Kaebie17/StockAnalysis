@@ -126,10 +126,8 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   }
 
   // ── P/B ── ROE-derived target multiple ────────────────────────────────────────
-  // Skip PB for asset-light companies where actual PB > 10x (e.g. Apple, high-buyback cos)
-  // book value is meaningless for them — distorts consensus
   const actualPb = r.ratios?.pb?.value
-  const pbDistorted = actualPb != null && actualPb > 10
+  const pbDistorted = detectBookValueDistortion(data, actualPb)
   const isFinancialSector = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   const roe = r.ratios?.roe?.value
   // No fabricated 12%-ROE stand-in: a target multiple built on a number
@@ -356,6 +354,51 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
 }
 
 function isApplicable(m, meta) { return meta.applicable.includes(m) || meta.caution.includes(m) }
+
+// Book value going "meaningless" (the reason P/B and Graham get skipped) is a
+// real, specific mechanism — heavy buybacks or dividends returning more to
+// shareholders than the business retains, so book shrinks even while the
+// business earns well. This tests that mechanism directly: has the company
+// been profitable in every year of available history while book-per-share
+// still failed to grow? A snapshot "P/B > 10" (the previous check) can't
+// tell a stock the market richly (but legitimately) prices from one whose
+// book value has actually been hollowed out by capital returns — it would
+// exclude a genuine high-ROE, high-growth compounder for the same reason it
+// correctly excludes an Apple-style buyback story, just because both trade
+// above 10x book.
+//
+// Falls back to the old snapshot threshold only when there isn't enough
+// balance-sheet history (fewer than 3 usable years) to measure the real
+// trend — a weaker signal, but better than skipping the check outright.
+function detectBookValueDistortion(data, actualPb) {
+  const yearOf = row => {
+    const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
+    return m ? Number(m[0]) : null
+  }
+  const bal = (data?.balanceHistory || []).filter(row => !row?.synthetic)
+  const inc = (data?.incomeHistory  || []).filter(row => !row?.synthetic)
+
+  const points = []
+  for (const bRow of bal) {
+    const y = yearOf(bRow)
+    const eq = bRow?.totalEquity?.value
+    if (y == null || !(eq > 0)) continue
+    const iRow = inc.find(row => yearOf(row) === y)
+    const np  = iRow?.netProfit?.value
+    const eps = iRow?.eps?.value
+    const shares = (np > 0 && eps > 0) ? np / eps : null
+    if (!(shares > 0)) continue
+    points.push({ year: y, bps: eq / shares, netProfit: np })
+  }
+  points.sort((a, b) => a.year - b.year)
+
+  const FALLBACK_PB_THRESHOLD = 10
+  if (points.length < 3) return actualPb != null && actualPb > FALLBACK_PB_THRESHOLD
+
+  const allProfitable = points.every(p => p.netProfit > 0)
+  const bookShrank = points[points.length - 1].bps < points[0].bps
+  return allProfitable && bookShrank
+}
 
 // Company-specific WACC via CAPM, the professional standard (vs a flat rate):
 //   Cost of equity  Ke = riskFree + beta × equityRiskPremium   (see requiredReturn.js)
