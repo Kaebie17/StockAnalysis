@@ -183,12 +183,34 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
                : `prices and earnings overlap for ${pairedYears} year${pairedYears === 1 ? '' : 's'} — paste the Screener tables to extend it` }
   }
 
-  ratios.sort((a, b) => a - b)
-  const q = p => ratios[Math.min(ratios.length - 1, Math.floor(p * ratios.length))]
+  // A contaminated YEAR (a mid-year EPS restatement, a stub year producing a
+  // near-zero denominator) puts an entire cluster of ratios at the same wrong
+  // level — not isolated single-day noise percentile trimming alone would
+  // catch, since percentiles only shave the most extreme individual points,
+  // not a whole block sitting together away from the rest. OUTLIER_MULTIPLE
+  // was declared for exactly this and never actually wired in; the function
+  // relied on percentile trimming alone. Filtering on distance from the RAW
+  // median first (median is itself robust to a contaminated MINORITY of the
+  // data — the exact shape a single bad year produces among several years of
+  // paired data) removes that cluster before the percentiles are measured.
+  const rawSorted = [...ratios].sort((a, b) => a - b)
+  const rawMedian = rawSorted[Math.floor(rawSorted.length / 2)]
+  const filtered = (rawMedian > 0)
+    ? ratios.filter(pe => pe >= rawMedian / OUTLIER_MULTIPLE && pe <= rawMedian * OUTLIER_MULTIPLE)
+    : ratios
+  // If filtering throws out most of the data, the "outlier" cluster is more
+  // likely the dominant regime than a genuine artifact (a re-rating this
+  // stock actually went through) — trust the raw distribution over a thin,
+  // possibly-unreliable cleaned remainder rather than compound one judgement
+  // call on top of another.
+  const cleaned = filtered.length >= Math.max(20, ratios.length * 0.5) ? filtered : ratios
+
+  cleaned.sort((a, b) => a - b)
+  const q = p => cleaned[Math.min(cleaned.length - 1, Math.floor(p * cleaned.length))]
   // Percentiles, not min/max: one panic day or one melt-up shouldn't define the
   // band the whole projection hangs off.
   return { low: round(q(0.15), 1), median: round(q(0.50), 1), high: round(q(0.85), 1),
-           samples: ratios.length,
+           samples: cleaned.length,
            // How many years the band actually spans, so a three-year window and
            // a nine-year one can be told apart downstream.
            spanYears: pairedYears }
@@ -237,15 +259,29 @@ export function pbBand(priceHistory = [], balanceHistory = [], incomeHistory = [
     for (const c of closes) {
       if (c.t < start || c.t > end) continue
       const pb = c.close / bps
-      if (pb > 0.2 && pb < 12) ratios.push(pb)
+      if (pb > 0) ratios.push(pb)
     }
   }
   if (ratios.length < 20) return null
 
-  ratios.sort((a, b) => a - b)
-  const q = p => ratios[Math.min(ratios.length - 1, Math.floor(p * ratios.length))]
+  // Same relative outlier filter as forwardPeBand, for the same reason: a
+  // fixed absolute ceiling (this used to be a flat 0.2-12x) is a judgement
+  // about what the market is allowed to pay that has no basis, and would
+  // silently discard every real observation for a stock that genuinely
+  // trades outside it (a high-growth compounder above 12x book is unusual
+  // but real, not a data artifact) — exactly the mistake already found and
+  // fixed for P/E. Measured from the stock's OWN distribution instead.
+  const rawSorted = [...ratios].sort((a, b) => a - b)
+  const rawMedian = rawSorted[Math.floor(rawSorted.length / 2)]
+  const filtered = (rawMedian > 0)
+    ? ratios.filter(pb => pb >= rawMedian / OUTLIER_MULTIPLE && pb <= rawMedian * OUTLIER_MULTIPLE)
+    : ratios
+  const cleaned = filtered.length >= Math.max(20, ratios.length * 0.5) ? filtered : ratios
+
+  cleaned.sort((a, b) => a - b)
+  const q = p => cleaned[Math.min(cleaned.length - 1, Math.floor(p * cleaned.length))]
   return { low: round(q(0.15), 2), median: round(q(0.50), 2), high: round(q(0.85), 2),
-           samples: ratios.length }
+           samples: cleaned.length }
 }
 
 /**
@@ -954,8 +990,18 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
   // A justified multiple in the hundreds means growth has converged on the
   // required return and the formula is dividing by almost nothing. That is the
   // model failing, not a valuation.
-  const CEILING = { pe: 60, pb: 12, evEbitda: 30, evSales: 15 }
-  if (chosen && chosen.multiple > (CEILING[form] ?? 60)) {
+  //
+  // Tests the actual mathematical cause directly — (required return − growth)
+  // thin relative to the required return itself, the single-stage Gordon-growth
+  // denominator's real degeneracy condition — rather than four independently-
+  // guessed ceiling values (one per multiple type) that were each standing in
+  // for the same underlying test. Only applies to the single-stage form:
+  // twoStage forms fade to TERMINAL_GROWTH_RATE (4%) well below the required
+  // return by construction (justifiedMultiple.js requires r > terminalG to even
+  // run), so they don't have this instability at all.
+  const rr_ = jm.requiredReturn?.r
+  const gapFraction = (rr_ > 0) ? (rr_ - jm.growth.g) / rr_ : null
+  if (chosen && !jm.twoStage && gapFraction != null && gapFraction < 0.1) {
     return { ok: false, model: 'justified',
              note: `Growth (${jm.growth.gPct}%) is too close to the required return ` +
                    `(${round(jm.requiredReturn.r * 100, 1)}%) for a stable ${FORM_NAMES[form]} — ` +
