@@ -13,7 +13,7 @@
 import { getApplicableModels } from './stage.js'
 import { computePeg } from './peg.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
-import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda } from './sectorMultiples.js'
+import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvSales as getSectorEvSales } from './sectorMultiples.js'
 import { peerBand } from './peerBands.js'
 import { justifiedMultiples } from './justifiedMultiple.js'
 
@@ -31,6 +31,15 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // fetched (needs a per-peer quoteSummary() call the free batched quote()
   // doesn't carry — confirmed, deferred) so the sector table is the anchor.
   const sectorEvEbDefault = getSectorEvEbitda(data)
+  // sectorPs: sector median EV/Sales (NOT the stock's own net margin ÷ 8 —
+  // that was a heuristic with no peer/sector anchor at all, despite P/S being
+  // conceptually a relative-multiple model. It also required netM > 0 to
+  // compute anything, which disqualified exactly the loss-making companies
+  // P/S exists to serve — PRE_REVENUE and GROWTH stages weight this model
+  // specifically because their earnings aren't usable yet. Same sector table
+  // (sectorMultiples.js) valuation.js's EV/EBITDA model and Market
+  // Expectation's Sales variant already use.
+  const sectorPsDefault = getSectorEvSales(data)
 
   // liveRiskFree/market: threaded from AppContext's shared fetch (Phase 8) —
   // null until that resolves, which is fine, computeWacc() always falls back
@@ -45,6 +54,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     projYears  = 10,
     sectorPe   = sectorPeDefault,
     sectorEvEb = sectorEvEbDefault,
+    sectorPs   = sectorPsDefault,
     growthRate = estimateGrowth(r),
     // Optional near-term (guidance) window: grow at nearTermGrowth for
     // nearTermYears, then fade toward terminal. Drives the FORWARD DCF only;
@@ -151,14 +161,19 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     }
   }
 
-  // ── P/S ──────────────────────────────────────────────────────────────────────
-  // Same principle: a target multiple needs this company's own net margin.
-  // A flat 5%-margin stand-in isn't this company's margin, and DCF/P&L
-  // already gets its own consistency from ratios.js never assuming one.
-  const netM = r.ratios?.netMargin?.value
-  if (isApplicable('ps', modelMeta) && r.revenue > 0 && r.shares && netM > 0) {
-    const targetPs = clamp(netM / 8, 0.3, 6)
-    results.ps = { value: (r.revenue / r.shares) * targetPs, note: `Revenue/Share × ${targetPs.toFixed(1)}× (margin-derived)` }
+  // ── P/S ── sector-median EV/Sales as anchor (peer EV/Sales data isn't
+  // fetched — same reasoning as EV/EBITDA above) ────────────────────────────
+  // No netMargin gate: P/S is weighted specifically for PRE_REVENUE/GROWTH
+  // stages (stage.js) precisely because those companies' earnings aren't
+  // usable yet — gating this model on positive margin would disqualify the
+  // exact companies it exists to serve.
+  if (isApplicable('ps', modelMeta) && r.revenue > 0 && r.shares && r.totalDebt != null) {
+    const impliedEV = r.revenue * sectorPs
+    const impliedEq = impliedEV + r.cash - r.totalDebt
+    const perShare  = impliedEq / r.shares
+    if (perShare > 0) {
+      results.ps = { value: perShare, note: `Revenue × ${sectorPs.toFixed(1)}× sector median EV/Sales` }
+    }
   }
 
   // ── Graham Number ─────────────────────────────────────────────────────────────
@@ -179,12 +194,23 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   }
 
     // ── Applicable models & primary selection ─────────────────────────────────────
-  // No weighted blend: averaging models that disagree by era (a turnaround's
-  // EV/EBITDA vs its pre-turnaround revenue multiples) produces a number no model
-  // supports. Fair value is the PRIMARY model — the highest-weighted one for this
-  // stage/sector among those with valid inputs (see byWeightDesc below) — with the
-  // other models shown as a range for context. A reliability gate drops models
-  // whose inputs are meaningless for this stock.
+  // Fair Value now means one specific thing: relative valuation against peers/
+  // sector — P/E, P/B, EV/EBITDA, P/S. DCF and Graham are genuinely different
+  // methods (cash-flow discounting; a fixed heuristic ceiling) that used to
+  // compete in the SAME weighted race and could silently win it — for an
+  // ESTABLISHED company DCF (weight 3) usually beat every peer/sector model,
+  // so "Fair Value" was frequently just DCF wearing a different label, and the
+  // two were impossible to tell apart from the headline number alone. They're
+  // surfaced as their own separate headline figures instead (intrinsicValue,
+  // secondaryChecks below) — never blended into this number or its range.
+  const EXTRINSIC_MODELS = ['pe', 'pb', 'evEbitda', 'ps']
+  // No weighted blend even within the extrinsic group: averaging models that
+  // disagree by era (a turnaround's EV/EBITDA vs its pre-turnaround revenue
+  // multiples) produces a number no model supports. Fair value is the
+  // PRIMARY model — the highest-weighted extrinsic one for this stage/sector
+  // among those with valid inputs (see byWeightDesc below) — with the others
+  // shown as a range for context. A reliability gate drops models whose
+  // inputs are meaningless for this stock.
   const netMargin = r?.ratios?.netMargin?.value
   const inputValid = (m) => {
     if ((m === 'pe' || m === 'graham' || m === 'peg') && !(netMargin > 0)) return false
@@ -193,22 +219,25 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     if (m === 'pb' && !isFinancialSector && !(roe > 0)) return false
     return true
   }
-  const validKeys = modelMeta.applicable.filter(m => results[m]?.value > 0 && inputValid(m))
+  const validKeys = modelMeta.applicable.filter(m =>
+    EXTRINSIC_MODELS.includes(m) && results[m]?.value > 0 && inputValid(m))
 
   const MODEL_NAMES = {
     dcf: 'DCF', pe: 'P/E', evEbitda: 'EV/EBITDA', pb: 'P/B',
     ps: 'P/S', graham: 'Graham', peg: 'PEG',
   }
 
-  // Primary = the highest-WEIGHTED model among the ones that actually have
-  // valid inputs for this ticker — modelMeta.weights is the stage/sector
-  // domain judgement of which model to trust most (e.g. DCF=3, EV/EBITDA=2.5,
-  // P/E=2 for an established company); ranking by it, rather than by array
-  // position in `applicable`, is what makes this "the most appropriate model
-  // for the ticker" rather than an accident of how the list happened to be
-  // typed. That accident was real: GROWTH and TRANSITION both list `ps`
-  // (weight 1) before `peg` (weight 1.5) in `applicable`, so array-order
-  // selection picked the LOWER-weighted model whenever both were valid.
+  // Primary = the highest-WEIGHTED extrinsic model among the ones that
+  // actually have valid inputs for this ticker — modelMeta.weights is the
+  // stage/sector domain judgement of which model to trust most; ranking by
+  // it, rather than by array position in `applicable`, is what makes this
+  // "the most appropriate PEER/SECTOR model for the ticker" rather than an
+  // accident of how the list happened to be typed. That accident was real:
+  // GROWTH and TRANSITION both list `ps` (weight 1) before `peg` (weight 1.5)
+  // in `applicable`, so array-order selection once picked the LOWER-weighted
+  // model whenever both were valid — weighting fixed that, and restricting
+  // the pool to EXTRINSIC_MODELS here is the separate, later fix that stops
+  // an intrinsic model (peg, or previously dcf) from winning this race at all.
   // Filtering to validKeys first, then ranking, is also the cascade for a
   // missing result: if the top-weighted model's inputs aren't there, it's
   // simply not in validKeys, and the next-highest-weighted valid one wins —
@@ -221,10 +250,27 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     : null
   const fairValue = primaryModel?.value ?? null
 
-  // Range across all valid models — context only, shown in details.
+  // Range across valid EXTRINSIC models only — context only, shown in
+  // details. Was previously across every applicable model including DCF/
+  // Graham, which meant "Fair Value's range" silently mixed a cash-flow
+  // model and a heuristic ceiling into what was supposed to be a peer/sector
+  // comparison range.
   const modelValues = validKeys.map(m => results[m].value)
   const rangeLow    = modelValues.length > 1 ? Math.min(...modelValues) : fairValue
   const rangeHigh   = modelValues.length > 1 ? Math.max(...modelValues) : fairValue
+
+  // ── Intrinsic Value (DCF) & secondary heuristic checks (Graham, PEG) ──────────
+  // Own headline figures, never folded into Fair Value's primary/range above.
+  // DCF is the rigorous cash-flow-discounting method; Graham/PEG are simple,
+  // no-required-return heuristic formulas (a fixed sanity ceiling; "fair P/E
+  // = growth rate") — shown as supporting checks, not peers of DCF's rigor.
+  const intrinsicValue = results.dcf
+    ? { key: 'dcf', name: 'DCF', value: results.dcf.value, note: results.dcf.note }
+    : null
+  const secondaryChecks = {
+    graham: results.graham ? { value: results.graham.value, note: results.graham.note } : null,
+    peg:    results.peg    ? { value: results.peg.value,    note: results.peg.note }    : null,
+  }
 
   // ── Sensitivity + scenarios (DCF is the growth/WACC-sensitive model) ──────────
   // Both axes need REAL base values — a sensitivity grid built by sweeping
@@ -280,11 +326,13 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     rangeHigh,
     upside,
     signal,
+    intrinsicValue,
+    secondaryChecks,
     impliedGrowth,
     sensitivity,
     scenarios,
-    assumptions: { wacc, termGrowth, projYears, growthRate, sectorPe, sectorEvEb },
-    defaults: { wacc: waccDefault, termGrowth: TERMINAL_GROWTH_RATE, projYears: 10, growthRate: estimateGrowth(r), sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault }
+    assumptions: { wacc, termGrowth, projYears, growthRate, sectorPe, sectorEvEb, sectorPs },
+    defaults: { wacc: waccDefault, termGrowth: TERMINAL_GROWTH_RATE, projYears: 10, growthRate: estimateGrowth(r), sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault, sectorPs: sectorPsDefault }
   }
 }
 

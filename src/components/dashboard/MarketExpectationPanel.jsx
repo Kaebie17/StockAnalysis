@@ -295,48 +295,53 @@ export default function MarketExpectationPanel({ open, onClose }) {
         <span>Price: <span className="text-white font-mono">{cur}{ratioResult?.price?.toFixed(2)}</span></span>
       </div>
 
-      {/* Four variants — applicable ones normal, N/A ones greyed at bottom.
-          reverseDcf is stage-agnostic (no sales-vs-earnings hide rule
-          applies to it), always shown, appended after the other three. */}
-      <div className="space-y-3">
-        {/* Applicable variants first */}
-        {['sales', 'earnings', 'fcf', 'reverseDcf']
-          .filter(k => variants[k]?.applicable)
-          .filter(k => {
-            const isGrowth = state.stage === 'GROWTH' || state.stage === 'PRE_REVENUE'
-            if (k === 'sales' && !isGrowth) return false      // hide Sales for established
-            if (k === 'earnings' && isGrowth) return false     // hide Earnings for growth/pre-profit
-            return true
-          })
-          .map(k => (
-            <VariantBlock
-              key={k}
-              name={k}
-              variant={variants[k]}
-              cur={cur}
-              marketCap={marketCap}
-              terminalMultipleKey={TERMINAL_KEY[k]}
-              onAssumptionChange={onAssumptionChange}
-            />
-          ))
-        }
+      {/* Four variants, three tiers:
+            1. Primary — applicable AND the stage's preferred base metric.
+            2. Secondary — applicable but stage-deprioritized (e.g. a GROWTH
+               company that happens to already be profitable still computes
+               a real "earnings" variant; it just isn't this stage's default
+               read). Shown, not hidden — a computed real number silently
+               disappearing was a genuine gap: it used to fail BOTH filters
+               below (applicable, so excluded from N/A; stage-deprioritized,
+               so excluded from primary) and vanish from the panel entirely.
+            3. N/A — genuinely inapplicable (missing data), greyed at bottom.
+          reverseDcf and fcf are stage-agnostic (no sales-vs-earnings
+          preference applies to them). */}
+      {(() => {
+        const isGrowth = state.stage === 'GROWTH' || state.stage === 'PRE_REVENUE'
+        const stageDeprioritized = k => (k === 'sales' && !isGrowth) || (k === 'earnings' && isGrowth)
+        const keys = ['sales', 'earnings', 'fcf', 'reverseDcf']
+        const primary   = keys.filter(k => variants[k]?.applicable && !stageDeprioritized(k))
+        const secondary = keys.filter(k => variants[k]?.applicable && stageDeprioritized(k))
+        const notApplicable = keys.filter(k => !variants[k]?.applicable)
+        const block = k => (
+          <VariantBlock
+            key={k}
+            name={k}
+            variant={variants[k]}
+            cur={cur}
+            marketCap={marketCap}
+            terminalMultipleKey={TERMINAL_KEY[k]}
+            onAssumptionChange={onAssumptionChange}
+          />
+        )
+        return (
+          <div className="space-y-3">
+            {primary.map(block)}
 
-        {/* N/A variants greyed at bottom */}
-        {['sales', 'earnings', 'fcf', 'reverseDcf']
-          .filter(k => !variants[k]?.applicable)
-          .map(k => (
-            <VariantBlock
-              key={k}
-              name={k}
-              variant={variants[k]}
-              cur={cur}
-              marketCap={marketCap}
-              terminalMultipleKey={TERMINAL_KEY[k]}
-              onAssumptionChange={onAssumptionChange}
-            />
-          ))
-        }
-      </div>
+            {secondary.length > 0 && (
+              <div className="space-y-3 opacity-70">
+                <div className="text-xs text-slate-500">
+                  Also computed (secondary for this stage):
+                </div>
+                {secondary.map(block)}
+              </div>
+            )}
+
+            {notApplicable.map(block)}
+          </div>
+        )
+      })()}
 
       <div className="text-xs text-slate-600 border-t border-navy-800 pt-3">
         This analysis is forward-looking and based on assumptions. It shows what the market

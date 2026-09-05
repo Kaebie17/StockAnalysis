@@ -43,7 +43,7 @@ export default function ValuationPanel({ open, onClose }) {
   const cur      = data?.currency === 'INR' ? '₹' : '$'
   const price    = ratioResult?.price
   const { models, modelMeta, fairValue, rangeLow, rangeHigh, upside,
-          signal, assumptions } = valuation
+          signal, intrinsicValue, secondaryChecks, assumptions } = valuation
 
   // Last-resort display fallbacks only — real values come from valuation.defaults
   // (engine). wacc/growthRate still have genuine null paths (unmeasurable cost of
@@ -158,7 +158,10 @@ export default function ValuationPanel({ open, onClose }) {
       {/* DCF scenarios — moved OUT of the table (was invalid inside tbody) */}
       <DCFScenarioPanel />
 
-      {/* Consensus row */}
+      {/* Consensus row — Fair Value means ONE thing: peer/sector relative
+          valuation (P/E, P/B, EV/EBITDA, P/S). DCF and Graham are genuinely
+          different methods and are never blended into this number or its
+          range — they get their own rows below instead. */}
       <div className="flex flex-wrap items-center justify-between gap-2 py-2 px-3 bg-navy-800/50 rounded-lg">
         <div>
           <div className="flex items-center text-xs text-slate-400">
@@ -167,7 +170,7 @@ export default function ValuationPanel({ open, onClose }) {
                   ? <span className="font-mono text-slate-300 ml-1">{cur}{rangeLow.toFixed(0)}</span>
                   : <span className="font-mono text-slate-300 ml-1">{cur}{rangeLow.toFixed(0)} – {cur}{rangeHigh.toFixed(0)}</span>)
               : <span className="ml-1">—</span>}
-            <span className="text-slate-600 ml-1">(lowest to highest model)</span>
+            <span className="text-slate-600 ml-1">(lowest to highest peer/sector model)</span>
           </div>
         </div>
         <div className="text-right">
@@ -176,6 +179,33 @@ export default function ValuationPanel({ open, onClose }) {
           </span>
         </div>
       </div>
+
+      {/* Intrinsic Value (DCF) — a different question from Fair Value above
+          ("what do peers/sector pay" vs "what do this company's own cash
+          flows justify"), so it gets its own row rather than competing to be
+          the headline number. */}
+      {intrinsicValue && (
+        <div className="flex items-center justify-between gap-2 py-2 px-3 bg-navy-800/30 rounded-lg">
+          <span className="text-xs text-slate-400">Intrinsic Value <span className="text-slate-600">(DCF)</span></span>
+          <span className="font-mono text-sm text-white">{cur}{intrinsicValue.value.toFixed(0)}</span>
+        </div>
+      )}
+
+      {/* Secondary heuristic checks — Graham and PEG are simple formulas with
+          no required-return/CAPM rigor behind them (a fixed sanity ceiling;
+          "fair P/E = growth rate"), shown as supporting reference points, not
+          peers of DCF's or Fair Value's analysis. */}
+      {(secondaryChecks?.graham || secondaryChecks?.peg) && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 px-3 bg-navy-800/20 rounded-lg text-xs">
+          <span className="text-slate-600">Heuristic checks:</span>
+          {secondaryChecks.graham && (
+            <span className="text-slate-400">Graham <span className="font-mono text-slate-300">{cur}{secondaryChecks.graham.value.toFixed(0)}</span></span>
+          )}
+          {secondaryChecks.peg && (
+            <span className="text-slate-400">PEG <span className="font-mono text-slate-300">{cur}{secondaryChecks.peg.value.toFixed(0)}</span></span>
+          )}
+        </div>
+      )}
 
       {/* Edit Assumptions / Restore Defaults */}
       <div className="flex items-center gap-3">
@@ -197,14 +227,15 @@ export default function ValuationPanel({ open, onClose }) {
             { key: 'wacc',       label: 'WACC',             min: 5,  max: 20, step: 0.5, pct: true,  def: DEFAULT_ASSUMPTIONS.wacc * 100 },
             { key: 'termGrowth', label: 'Terminal Growth',  min: 1,  max: 6,  step: 0.5, pct: true,  def: TERMINAL_GROWTH_RATE * 100 },
             { key: 'growthRate', label: 'FCF Growth',       min: -5, max: 40, step: 1,   pct: true,  def: DEFAULT_ASSUMPTIONS.growthRate * 100 },
-            { key: 'sectorPe',   label: 'Sector P/E',       min: 5,  max: 60, step: 1,   pct: false, def: 20 },
-            { key: 'sectorEvEb', label: 'Sector EV/EBITDA', min: 4,  max: 30, step: 0.5, pct: false, def: 12 },
+            { key: 'sectorPe',   label: 'Sector P/E',       min: 5,   max: 60, step: 1,   pct: false, def: 20 },
+            { key: 'sectorEvEb', label: 'Sector EV/EBITDA', min: 4,   max: 30, step: 0.5, pct: false, def: 12 },
+            { key: 'sectorPs',   label: 'Sector EV/Sales',  min: 0.5, max: 10, step: 0.5, pct: false, def: 3 },
           ].map(s => {
             const seed = assumptions[s.key] ?? valuation.defaults?.[s.key]
             const curVal = s.pct
               ? ((localAssumptions[s.key] ?? seed ?? s.def / 100) * 100)
               : (localAssumptions[s.key] ?? seed ?? s.def)
-            const display = s.pct ? curVal.toFixed(1) + '%' : curVal.toFixed(s.key === 'sectorEvEb' ? 1 : 0) + '×'
+            const display = s.pct ? curVal.toFixed(1) + '%' : curVal.toFixed(s.key === 'sectorPe' ? 0 : 1) + '×'
             return (
               <div key={s.key}>
                 <div className="flex justify-between text-xs text-slate-400 mb-1">
