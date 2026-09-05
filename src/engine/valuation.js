@@ -267,15 +267,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     : 'FAIRLY_VALUED'
 
   // ── Reverse DCF ───────────────────────────────────────────────────────────────
-  let impliedGrowth = null
-  const cfForRev = (r.fcf > 0 && !r.fcfMaintenanceOnly) ? r.fcf : null   // same rule as the DCF above
-  // wacc discounts every cash flow in the solve below — a null wacc silently
-  // coerces to 0 in arithmetic (no discounting at all), which would return a
-  // confidently wrong implied growth rather than none. Requires a real WACC.
-  if (cfForRev && r.price > 0 && r.shares && r.totalDebt != null && wacc != null) {
-    const targetEV = r.price * r.shares + r.totalDebt - r.cash
-    impliedGrowth  = solveGrowth(cfForRev, targetEV, wacc, termGrowth, projYears)
-  }
+  const impliedGrowth = reverseDcfGrowth(r, { wacc, termGrowth, projYears })
 
     return {
     models: results,
@@ -472,6 +464,24 @@ export function scenarioAssumptions(preset, base) {
 }
 
 function clamp(v, min, max) { return v == null ? null : Math.max(min, Math.min(max, v)) }
+
+/**
+ * What growth rate would the DCF need to assume for its output to land
+ * exactly on today's market price? Exported so marketExpectation.js can
+ * present this as its own fourth variant (the DCF fade-to-terminal-growth
+ * convention, alongside its other three variants' flat-growth-then-exit-
+ * multiple convention) — runValuation()'s own impliedGrowth is just a call
+ * to this, same output as before.
+ */
+export function reverseDcfGrowth(r, { wacc, termGrowth, projYears = 10 } = {}) {
+  const cfForRev = (r.fcf > 0 && !r.fcfMaintenanceOnly) ? r.fcf : null   // same rule as the forward DCF
+  // wacc discounts every cash flow in the solve below — a null wacc silently
+  // coerces to 0 in arithmetic (no discounting at all), which would return a
+  // confidently wrong implied growth rather than none. Requires a real WACC.
+  if (!(cfForRev && r.price > 0 && r.shares && r.totalDebt != null && wacc != null)) return null
+  const targetEV = r.price * r.shares + r.totalDebt - r.cash
+  return solveGrowth(cfForRev, targetEV, wacc, termGrowth, projYears)
+}
 
 function solveGrowth(fcf0, tEV, wacc, tg, yrs) {
   const LO = -0.9, HI = 3.0        // wide bounds: let the maths return the real rate

@@ -139,17 +139,35 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, termi
       <div className="space-y-2 pt-1 border-t border-navy-800/50">
         <div className="text-xs text-slate-500 font-medium">Assumptions</div>
 
-        <div className="flex items-center justify-between gap-2 text-xs">
-          <div className="flex items-center text-slate-400">Terminal Multiple
-            <InfoTip text={variant.assumptions.terminalMultiple.rationale} /></div>
-          <div className="flex items-center gap-1">
-            <input type="number" step="0.5" min="0.5" max="60"
-              value={variant.assumptions.terminalMultiple.value}
-              onChange={e => { const v = +e.target.value; if (isFinite(v) && v > 0) onAssumptionChange?.(terminalMultipleKey, v) }}
-              className="w-16 bg-navy-800 border border-navy-700 rounded px-1.5 py-0.5 text-right font-mono text-slate-200 text-xs" />
-            <span className="text-slate-500">×</span>
+        {/* Terminal Multiple (exit-multiple convention) OR Terminal Growth
+            (perpetuity-growth convention, Reverse DCF) — a variant has one or
+            the other, never both. Reading variant.assumptions.terminalMultiple
+            unconditionally crashed on Reverse DCF, which has no such field. */}
+        {variant.assumptions.terminalMultiple ? (
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <div className="flex items-center text-slate-400">Terminal Multiple
+              <InfoTip text={variant.assumptions.terminalMultiple.rationale} /></div>
+            <div className="flex items-center gap-1">
+              <input type="number" step="0.5" min="0.5" max="60"
+                value={variant.assumptions.terminalMultiple.value}
+                onChange={e => { const v = +e.target.value; if (isFinite(v) && v > 0) onAssumptionChange?.(terminalMultipleKey, v) }}
+                className="w-16 bg-navy-800 border border-navy-700 rounded px-1.5 py-0.5 text-right font-mono text-slate-200 text-xs" />
+              <span className="text-slate-500">×</span>
+            </div>
           </div>
-        </div>
+        ) : variant.assumptions.termGrowth ? (
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <div className="flex items-center text-slate-400">Terminal Growth
+              <InfoTip text={variant.assumptions.termGrowth.rationale} /></div>
+            <div className="flex items-center gap-1">
+              <input type="number" step="0.5" min="0" max="6"
+                value={Math.round(variant.assumptions.termGrowth.value * 1000) / 10}
+                onChange={e => { const v = +e.target.value; if (isFinite(v) && v >= 0) onAssumptionChange?.('reverseDcfTermGrowth', v / 100) }}
+                className="w-16 bg-navy-800 border border-navy-700 rounded px-1.5 py-0.5 text-right font-mono text-slate-200 text-xs" />
+              <span className="text-slate-500">%</span>
+            </div>
+          </div>
+        ) : null}
         <div className="flex items-center justify-between gap-2 text-xs">
           <div className="flex items-center text-slate-400">Discount Rate
             <InfoTip text={variant.assumptions.discountRate.rationale} /></div>
@@ -174,12 +192,17 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, termi
         </div>
       </div>
 
-      {/* Sanity check toggle */}
-      <button
-        onClick={() => setShowSanity(!showSanity)}
-        className="text-xs text-accent hover:text-accent-light">
-        {showSanity ? '▲ Hide' : '▼ Sanity check at different growth rates'}
-      </button>
+      {/* Sanity check toggle — only for variants that HAVE one. Reverse DCF's
+          perpetuity-growth convention doesn't translate to this exit-multiple
+          table, so it carries no sanityTable at all rather than an empty one;
+          showing an "expand" toggle that reveals nothing would be confusing. */}
+      {variant.sanityTable && (
+        <button
+          onClick={() => setShowSanity(!showSanity)}
+          className="text-xs text-accent hover:text-accent-light">
+          {showSanity ? '▲ Hide' : '▼ Sanity check at different growth rates'}
+        </button>
+      )}
 
       {showSanity && variant.sanityTable && (
         <SanityTable rows={variant.sanityTable} marketCap={marketCap} cur={cur} />
@@ -219,7 +242,20 @@ export default function MarketExpectationPanel({ open, onClose }) {
 
   const marketExpectation = useMemo(() => {
     if (!hasOverrides) return state.marketExpectation
-    return runMarketExpectation(data, ratioResult, state.stage, state.sectorType, overrides)
+    // Preserve whatever live-resolved defaults state.marketExpectation
+    // already has (discountRate especially — CAPM-based, sourced from
+    // AppContext's shared live risk-free rate) UNDERNEATH the user's local
+    // slider edits. Without this, touching just ONE slider here recomputed
+    // via getDefaultAssumptions()'s own non-live fallback for every OTHER
+    // assumption the user didn't touch, silently reverting them.
+    const liveBase = {
+      discountRate: state.marketExpectation?.assumptions?.discountRate,
+      terminalSalesMultiple: state.marketExpectation?.assumptions?.terminalSalesMultiple,
+      terminalPeMultiple: state.marketExpectation?.assumptions?.terminalPeMultiple,
+      terminalFcfMultiple: state.marketExpectation?.assumptions?.terminalFcfMultiple,
+      horizon: state.marketExpectation?.assumptions?.horizon,
+    }
+    return runMarketExpectation(data, ratioResult, state.stage, state.sectorType, { ...liveBase, ...overrides })
   }, [overrides, hasOverrides, state.marketExpectation, data, ratioResult, state.stage, state.sectorType])
 
   if (!open || !marketExpectation) return null
@@ -259,10 +295,12 @@ export default function MarketExpectationPanel({ open, onClose }) {
         <span>Price: <span className="text-white font-mono">{cur}{ratioResult?.price?.toFixed(2)}</span></span>
       </div>
 
-      {/* Three variants — applicable ones normal, N/A ones greyed at bottom */}
+      {/* Four variants — applicable ones normal, N/A ones greyed at bottom.
+          reverseDcf is stage-agnostic (no sales-vs-earnings hide rule
+          applies to it), always shown, appended after the other three. */}
       <div className="space-y-3">
         {/* Applicable variants first */}
-        {['sales', 'earnings', 'fcf']
+        {['sales', 'earnings', 'fcf', 'reverseDcf']
           .filter(k => variants[k]?.applicable)
           .filter(k => {
             const isGrowth = state.stage === 'GROWTH' || state.stage === 'PRE_REVENUE'
@@ -284,7 +322,7 @@ export default function MarketExpectationPanel({ open, onClose }) {
         }
 
         {/* N/A variants greyed at bottom */}
-        {['sales', 'earnings', 'fcf']
+        {['sales', 'earnings', 'fcf', 'reverseDcf']
           .filter(k => !variants[k]?.applicable)
           .map(k => (
             <VariantBlock

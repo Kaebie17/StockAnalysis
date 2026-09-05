@@ -19,8 +19,9 @@
  */
 
 import { SECTOR_TYPES } from './stage.js'
-import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET } from './requiredReturn.js'
+import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
 import { sectorPe, sectorEvSales } from './sectorMultiples.js'
+import { reverseDcfGrowth } from './valuation.js'
 
 // ─── Default assumptions by stage + sector ───────────────────────────────────
 
@@ -356,6 +357,51 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
             ? 'Operating CF is negative — this is structurally normal for banks/insurers (loan disbursements count as operating outflow) and does not indicate financial distress. Use Earnings-based instead.'
             : 'FCF and Operating CF are negative — FCF-based method not applicable')
         : 'Free Cash Flow not available (needs CapEx — see the data gaps banner)'
+    }
+  }
+
+  // ── Reverse DCF ──────────────────────────────────────────────────────────────
+  // The fourth way of asking the same inverse question ("what does the
+  // current price already assume?"), but through the FULL DCF fade-to-
+  // terminal-growth mechanics — a genuinely different, also legitimate
+  // terminal-value convention from the other three variants' flat-growth-
+  // then-exit-multiple approach, kept visibly distinct rather than blended
+  // in. Uses THIS tab's own discount rate (not valuation.js's separate DCF
+  // WACC slider) so the tab stays self-contained: two different rates
+  // sharing one label would show two different numbers as if they agreed.
+  if (fcf > 0 && price > 0 && marketCap && r?.shares && r?.totalDebt != null) {
+    // Its own override key (not shared with the other variants' terminal-
+    // multiple overrides, which are a different convention) — editable via
+    // the same onAssumptionChange mechanism the panel already uses.
+    const reverseDcfTermGrowth = overrides.reverseDcfTermGrowth ?? TERMINAL_GROWTH_RATE
+    const impliedG = reverseDcfGrowth(r, { wacc: discountRate, termGrowth: reverseDcfTermGrowth, projYears: horizon })
+    variants.reverseDcf = {
+      applicable: impliedG != null,
+      label: 'Reverse DCF',
+      note: 'Uses the full DCF fade-to-terminal-growth mechanics (perpetuity-growth convention) — unlike the exit-multiple convention the other three variants use, and using this tab\'s own discount rate, not the Valuation tab\'s DCF WACC.',
+      base: fcf,
+      baseLabel: r?.fcfEstimated ? 'Free Cash Flow (estimated)' : 'Free Cash Flow',
+      impliedGrowth: impliedG,
+      // The exit-multiple sanity table (buildSanityTable/impliedMarketCap)
+      // doesn't translate to a perpetuity-growth DCF — skipped rather than
+      // force-fitted onto a convention it wasn't built for.
+      sanityTable: null,
+      conclusion: impliedG != null ? getConclusion(impliedG, historicalRevGrowth, stage, 'FCF') : null,
+      assumptions: {
+        // termGrowth, not terminalMultiple — this variant has no terminal
+        // multiple at all (perpetuity-growth convention, not exit-multiple).
+        // VariantBlock renders whichever of the two is present.
+        termGrowth:   { value: reverseDcfTermGrowth, rationale: `${(reverseDcfTermGrowth * 100).toFixed(1)}% is the terminal growth rate cash flows fade to once the explicit projection window ends — defaults to the same rate DCF's Fair Value model uses.` },
+        discountRate: { value: discountRate, rationale: assumptions.rationale.discountRate },
+        horizon:      { value: horizon,      rationale: assumptions.rationale.horizon },
+      },
+    }
+    if (impliedG == null) variants.reverseDcf.reason = 'DCF inputs insufficient to solve (needs positive FCF, a real WACC, and a price above what maximal growth could support).'
+  } else {
+    variants.reverseDcf = {
+      applicable: false,
+      reason: !(fcf > 0) ? 'Free Cash Flow not available (needs CapEx — see the data gaps banner)'
+        : 'Insufficient data (needs shares outstanding and debt)',
     }
   }
 
