@@ -1443,9 +1443,16 @@ export function buildEstimate(ratioResult, opts = {}) {
   // never gave rerating.js (built for distinguishing the two) a chance to
   // weigh in. Kept and disclosed instead, same as the current-multiple
   // divergence check above.
+  // Width, not either edge in isolation: `low >= base*0.97 || high <= base*1.03`
+  // (the previous formula) fires whenever EITHER edge sits close to base, even
+  // with a real, wide gap on the OTHER side — which is exactly the shape a
+  // genuine re-rating produces (a stock flat for most of the window, then a
+  // real jump in the last year or two: the untouched years cluster the low
+  // percentile near the median while the high percentile correctly captures
+  // the real outlier). That's informative, not degenerate. A band is only
+  // genuinely collapsed when its TOTAL width is near zero.
   const degenerate = !(multiples.base > 0)
-    || multiples.low >= multiples.base * 0.97
-    || multiples.high <= multiples.base * 1.03
+    || (multiples.high - multiples.low) < multiples.base * 0.06
   const wideRatio = multiples.low > 0 && (multiples.high / multiples.low) > 2.5
   // `degraded` isn't built until later in this function — flagged here,
   // pushed there, same as divergesFromCurrent above.
@@ -1454,9 +1461,18 @@ export function buildEstimate(ratioResult, opts = {}) {
   if (degenerate) {
     // The rejected band's real numbers, disclosed rather than silently
     // dropped — "too erratic to use" told the user nothing about what was
-    // actually seen before this fell back to a weaker basis.
-    const rejected = `(rejected: ${round(multiples.low, 1)}×–${round(multiples.high, 1)}× ` +
-      `from ${multipleBasis}${own?.samples ? `, ${own.samples} samples over ${own.spanYears}y` : ''})`
+    // actually seen before this fell back to a weaker basis. Sample
+    // provenance depends on which source actually produced it — `own`
+    // (forwardPeBand, daily-ratio samples) and `fitted`/`historical-median`
+    // (targetMultiple, yearly observations) aren't the same kind of count,
+    // so naming the wrong one here would just be a different inaccuracy.
+    const rejectedSampleNote =
+      multipleBasis === 'observed' && own?.samples
+        ? `, ${own.samples} samples over ${own.spanYears}y`
+        : (multipleBasis === 'fitted' || multipleBasis === 'historical-median') && fitted?.observations
+        ? `, ${fitted.observations} years observed`
+        : ''
+    const rejected = `(rejected: ${round(multiples.low, 1)}×–${round(multiples.high, 1)}× from ${multipleBasis}${rejectedSampleNote})`
     thinMultiple = false   // the rejected band's thinness no longer applies to whatever replaces it
     if (currentPe > 0) {
       const c = currentPe
