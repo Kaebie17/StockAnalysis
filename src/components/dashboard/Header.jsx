@@ -313,7 +313,10 @@ function DataVintageBadge({ data, state, onNormalize }) {
   // Everything the app knows about the quality of this history — adjustments it
   // applied, years it can't explain, breaks in comparability. Gathered in one
   // place rather than surfacing wherever a metric happens to look odd.
-  const quality = assessDataQuality(data.incomeHistory || [])
+  const quality = assessDataQuality(data.incomeHistory || [], {
+    balanceHistory: data.balanceHistory || [],
+    cashflowHistory: data.cashflowHistory || [],
+  })
 
   return (
     <span className={`text-xs flex items-center gap-1 ${isStale ? 'text-neutral' : 'text-slate-600'}`}>

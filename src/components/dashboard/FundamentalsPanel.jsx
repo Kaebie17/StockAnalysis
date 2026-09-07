@@ -3,33 +3,18 @@ import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip as RTooltip,
          ResponsiveContainer, CartesianGrid } from 'recharts'
 import { useApp } from '../../store/AppContext.jsx'
 import { useEstimate } from '../../store/useEstimate.js'
-import { fmtPctPlain, fmtMultiple, fmtCurrency, resolutionBadge, fmtTagged } from '../../utils/format.js'
-
-// Small tooltip showing formula/resolution on hover
-function ResTag({ tagged }) {
-  const badge = resolutionBadge(tagged)
-  if (!badge || tagged?.status === 'source') return null
-  return (
-    <span className="relative group ml-1 cursor-help">
-      <span className={`text-xs ${badge.color}`}>{badge.icon}</span>
-      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 rounded bg-navy-700
-                  text-xs text-slate-200 whitespace-normal z-50 invisible group-hover:visible
-                  border border-navy-600 shadow-lg max-w-[90vw] w-max text-center">
-        {badge.tooltip}
-      </span>
-    </span>
-  )
-}
+import { fmtPctPlain, fmtMultiple, fmtCurrency } from '../../utils/format.js'
+import ProvenanceTag from '../ProvenanceTag.jsx'
+import { tierFromStatus } from '../../engine/methodologyTier.js'
 
 function RatioCard({ label, tagged, fmt }) {
   const display = tagged?.value != null ? fmt(tagged.value) : '—'
-  const badge   = resolutionBadge(tagged)
   return (
     <div className="card-sm group relative">
       <div className="text-xs text-slate-400">{label}</div>
       <div className="font-mono text-white text-sm font-semibold flex items-center gap-1">
         {display}
-        <ResTag tagged={tagged} />
+        <ProvenanceTag tier={tierFromStatus(tagged?.status)} method={tagged?.formula} compact />
       </div>
       {tagged?.value == null && tagged?.status === 'unavailable' && (
         <div className="text-xs text-slate-600 mt-0.5">Not available</div>
@@ -56,7 +41,7 @@ function PredictorRow({ predictor }) {
         </span>
         <span className="text-xs text-slate-300 flex-1">{label}</span>
         <span className="text-xs font-mono text-slate-300 w-16 text-right">{valStr}</span>
-        {tagged && <ResTag tagged={tagged} />}
+        {tagged && <ProvenanceTag tier={tierFromStatus(tagged.status)} method={tagged.formula} compact />}
       </div>
       {value != null && (
         <div className="flex items-center gap-2 pl-7">
@@ -162,7 +147,6 @@ export default function FundamentalsPanel({ open, onClose }) {
 
       <div className="flex flex-wrap gap-3 text-xs text-slate-500">
         <span><span className="text-accent/70">⚙</span> Calculated by StockAnalyzr</span>
-        <span><span className="text-neutral/70">T</span> TTM from source</span>
         <span><span className="text-neutral/70">~</span> Proxy value</span>
         <span><span className="text-accent/70">↔</span> Cross-source fill</span>
       </div>

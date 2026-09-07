@@ -84,6 +84,13 @@ export default async function handler(req, res) {
             `confident of a current figure, reply {"rate": null}.` }] },
           contents: [{ role: 'user', parts: [{ text:
             `What is the current yield on the ${bounds.name}?` }] }],
+          // Grounds the answer in an actual live search rather than the
+          // model's training-data recollection of what the yield "usually"
+          // is — naming the specific instrument (above) tells it WHAT to
+          // retrieve; this tells it to actually go retrieve it rather than
+          // recall it, which is the difference between a fresh number and a
+          // confidently-stated stale one from training-cutoff memory.
+          tools: [{ google_search: {} }],
           generationConfig: {
             temperature: 0,
             // 2.5-flash is a thinking model: it spends output tokens reasoning
@@ -93,7 +100,12 @@ export default async function handler(req, res) {
             // about — and the ceiling raised so the answer can't be clipped.
             maxOutputTokens: 512,
             thinkingConfig: { thinkingBudget: 0 },
-            responseMimeType: 'application/json',
+            // responseMimeType: 'application/json' is NOT compatible with
+            // tools in the Gemini API (the two are mutually exclusive) — a
+            // grounded call ignores this field silently rather than erroring,
+            // so parseRate()'s prose fallback (matching a bare "N.NN%") is
+            // now the primary path, not a last resort, for a grounded
+            // response that returns cited prose instead of bare JSON.
           },
         }),
       })

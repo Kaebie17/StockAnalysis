@@ -37,8 +37,8 @@ export const TABLE_INFO = {
 
 /**
  * The resolved scalars, keyed by dictionary name. These come off ratioResult, so
- * every fallback (statement -> TTM -> derived) has already been applied: a metric
- * only shows up as a gap if it is genuinely unrecoverable.
+ * every fallback already available (statement -> derived) has already been
+ * applied: a metric only shows up as a gap if it is genuinely unrecoverable.
  */
 function resolvedValues(r, data) {
   const latestI = data?.incomeHistory?.[data.incomeHistory.length - 1] || {}

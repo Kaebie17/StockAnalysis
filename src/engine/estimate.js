@@ -64,7 +64,7 @@ function priceDispersion(priceHistory = [], days = 500) {
   const closes = (priceHistory || [])
     .filter(p => p?.date && p.close > 0 && Date.parse(p.date) >= cutoff)
     .map(p => p.close)
-  const ps = percentileSpread(closes, { minSamples: 100 })
+  const ps = percentileSpread(closes, { preferredSamples: 100 })
   if (!ps || !(ps.median > 0)) return null
   // The 15th-85th band as a fraction of the median, halved to a ± figure.
   const half = ((ps.high - ps.low) / ps.median) / 2
@@ -75,7 +75,9 @@ function priceDispersion(priceHistory = [], days = 500) {
   // so wide the sample must span two regimes) is refused; the rest is used, with
   // a small floor so a range never collapses to a single number.
   if (!(half > 0) || half > 1) return null
-  return Math.max(half, 0.03)
+  // Real data, computed regardless — a dispersion from fewer than 100 closes
+  // is disclosed as thin, not hidden.
+  return { half: Math.max(half, 0.03), thin: ps.thin }
 }
 
 // A one-off share-count jump — a merger, a large QIP — must not be projected
@@ -168,7 +170,7 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   // span travels with the band, so a two-year window is visible as one and can
   // be weighed accordingly.
   const MIN_PAIRED_YEARS = 2
-  if (ratios.length < 20 || pairedYears < MIN_PAIRED_YEARS) {
+  if (pairedYears < MIN_PAIRED_YEARS) {
     return { insufficient: true, pairedYears, samples: ratios.length,
              earningsYears: epsByYear.size, priceDays: closes.length,
              // Name the fix, not the shortfall. "Only 4 years of reported
@@ -192,14 +194,26 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   // the percentiles are measured. Shared with pbBand and peerBand — see
   // spread.js.
   const cleaned = filterRelativeOutliers(ratios, { multiple: OUTLIER_MULTIPLE, minKeep: 20 })
-  const ps = percentileSpread(cleaned, { minSamples: 1 })
+  const ps = percentileSpread(cleaned, { preferredSamples: 100 })
+  // Below percentileSpread's own structural floor despite enough paired
+  // years — practically unreachable (each paired year contributes up to a
+  // year's worth of daily ratios), but not assumed.
+  if (!ps) {
+    return { insufficient: true, pairedYears, samples: ratios.length,
+             earningsYears: epsByYear.size, priceDays: closes.length,
+             reason: `only ${ratios.length} priced day${ratios.length === 1 ? '' : 's'} overlap the paired years — too few to measure a range` }
+  }
   // Percentiles, not min/max: one panic day or one melt-up shouldn't define the
   // band the whole projection hangs off.
   return { low: round(ps.low, 1), median: round(ps.median, 1), high: round(ps.high, 1),
            samples: ps.count,
            // How many years the band actually spans, so a three-year window and
            // a nine-year one can be told apart downstream.
-           spanYears: pairedYears }
+           spanYears: pairedYears,
+           // Real data, computed regardless — but a band from fewer than 100
+           // pooled daily observations is disclosed as thinner than ideal
+           // rather than hidden.
+           thin: ps.thin }
 }
 
 /**
@@ -248,8 +262,6 @@ export function pbBand(priceHistory = [], balanceHistory = [], incomeHistory = [
       if (pb > 0) ratios.push(pb)
     }
   }
-  if (ratios.length < 20) return null
-
   // Same relative outlier filter as forwardPeBand, for the same reason: a
   // fixed absolute ceiling (this used to be a flat 0.2-12x) is a judgement
   // about what the market is allowed to pay that has no basis, and would
@@ -259,9 +271,13 @@ export function pbBand(priceHistory = [], balanceHistory = [], incomeHistory = [
   // fixed for P/E. Measured from the stock's OWN distribution instead;
   // shared implementation in spread.js.
   const cleaned = filterRelativeOutliers(ratios, { multiple: OUTLIER_MULTIPLE, minKeep: 20 })
-  const ps = percentileSpread(cleaned, { minSamples: 1 })
+  const ps = percentileSpread(cleaned, { preferredSamples: 100 })
+  if (!ps) return null
   return { low: round(ps.low, 2), median: round(ps.median, 2), high: round(ps.high, 2),
-           samples: ps.count }
+           samples: ps.count,
+           // Real data, computed regardless — a band from fewer than 100
+           // pooled daily observations is disclosed as thin, not hidden.
+           thin: ps.thin }
 }
 
 /**
@@ -312,11 +328,22 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
   const band = pbBand(priceHistory, balanceHistory,
     opts.reportedIncomeHistory?.length ? opts.reportedIncomeHistory : incomeHistory)
   const currentPb = ratioResult?.ratios?.pb?.value ?? (price > 0 ? price / bps : null)
-  let multiples, multipleBasis, multipleLabel
+  // Spread width when no measured P/B band exists: this stock's own price
+  // dispersion (needs only closes, not paired book value — clears where the
+  // stricter pbBand can't) rather than a flat ±25% that says the same thing
+  // about every company. Declines (null — the caller falls through to the
+  // generic chain) when even that isn't measurable, rather than guessing.
+  let multiples, multipleBasis, multipleLabel, thinDispersion = false
   if (multipleOverride > 0) {
-    const spread = band && band.median > 0
+    let spread = band && band.median > 0
       ? { lo: band.low / band.median, hi: band.high / band.median }
-      : { lo: 0.75, hi: 1.25 }
+      : null
+    if (!spread) {
+      const dd = priceDispersion(priceHistory)
+      if (dd == null) return null
+      spread = { lo: 1 - dd.half, hi: 1 + dd.half }
+      thinDispersion = dd.thin
+    }
     multiples = { low: round(multipleOverride * spread.lo, 2), base: round(multipleOverride, 2),
                   high: round(multipleOverride * spread.hi, 2) }
     multipleBasis = 'revision'; multipleLabel = `your re-rating (${round(multipleOverride, 2)}× book)`
@@ -324,9 +351,14 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
     multiples = { low: band.low, base: band.median, high: band.high }
     multipleBasis = 'observed'
     multipleLabel = `its own P/B range (${band.samples} days)`
+    thinDispersion = !!band.thin
   } else if (currentPb > 0) {
-    multiples = { low: round(currentPb * 0.75, 2), base: round(currentPb, 2), high: round(currentPb * 1.25, 2) }
-    multipleBasis = 'current'; multipleLabel = "today's P/B ±25% (no usable price history)"
+    const dd = priceDispersion(priceHistory)
+    if (dd == null) return null
+    const d = dd.half
+    thinDispersion = dd.thin
+    multiples = { low: round(currentPb * (1 - d), 2), base: round(currentPb, 2), high: round(currentPb * (1 + d), 2) }
+    multipleBasis = 'current'; multipleLabel = `today's P/B ±${Math.round(d * 100)}% (its own price dispersion, no usable multiple history)`
   } else return null
 
   const target = {
@@ -345,6 +377,8 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
     degraded.push(`Multiple from ${multipleLabel}`)
   if (payout == null && histPayout != null)
     degraded.push(`Payout from the ${round(histPayout, 0)}% average this company has paid, not the latest year`)
+  if (thinDispersion)
+    degraded.push('Spread width from a thinner-than-usual sample of trading days')
 
   return {
     ok: true, model: 'lender',
@@ -395,7 +429,7 @@ export function windowedCagr(history = [], years, field = 'revenue') {
   if (!(start.v > 0) || !(end.v > 0)) return null
 
   const growth = Math.pow(end.v / start.v, 1 / span) - 1
-  if (!isFinite(growth) || growth > 0.6 || growth < -0.3) return null
+  if (!isFinite(growth)) return null
 
   return {
     growth,
@@ -403,6 +437,10 @@ export function windowedCagr(history = [], years, field = 'revenue') {
     requested: years,
     truncated: span < years,
     from: start.y, to: end.y,
+    // A rate outside this range is unusual — likely a recovery from a
+    // collapsed base or a one-off — but it's real, computed data, not a
+    // reason to hide it. Flagged so the caller can decide, not discarded.
+    unusual: growth > 0.6 || growth < -0.3,
     label: span === years
       ? `${span}-yr revenue CAGR`
       : `${span}-yr revenue CAGR (asked for ${years}, history has ${pts.length})`,
@@ -422,11 +460,12 @@ export function seriesCagr(history = [], field = 'revenue', label = null) {
   const growth = Math.pow(last.v / first.v, 1 / years) - 1
   if (!isFinite(growth)) return null
 
-  // A CAGR outside this band is a recovery from a collapsed base or a one-off,
-  // not a rate to project forward.
-  if (growth > 0.6 || growth < -0.3) return null
+  // A CAGR outside this range is unusual — likely a recovery from a
+  // collapsed base or a one-off — but it's real, computed data, not a
+  // reason to hide it. Flagged so the caller can decide, not discarded.
+  const unusual = growth > 0.6 || growth < -0.3
 
-  return { growth, label: label || `${field} CAGR`, years, from: first.year, to: last.year }
+  return { growth, label: label || `${field} CAGR`, years, from: first.year, to: last.year, unusual }
 }
 
 /**
@@ -440,7 +479,7 @@ export function multipleSpread(priceHistory = [], incomeHistory = [], field = 'e
     .filter(p => p?.date && p.close > 0)
     .map(p => ({ t: Date.parse(p.date), close: p.close }))
     .filter(p => isFinite(p.t))
-  if (closes.length < 100) return null
+  if (closes.length === 0) return null
 
   const ratios = []
   for (const row of incomeHistory || []) {
@@ -453,12 +492,14 @@ export function multipleSpread(priceHistory = [], incomeHistory = [], field = 'e
       ratios.push(c.close / denom)
     }
   }
-  const ps = percentileSpread(ratios, { minSamples: 60 })
+  const ps = percentileSpread(ratios, { preferredSamples: 100 })
   if (!ps || !(ps.median > 0)) return null
   const lo = ps.low / ps.median, hi = ps.high / ps.median
   // A degenerate spread (all observations identical) would collapse the range.
   if (!(lo > 0.3) || !(hi < 3) || hi <= lo) return null
-  return { lo, hi, samples: ps.count }
+  // Real data, computed regardless — a spread from fewer than 100 pooled
+  // ratio observations is disclosed as thin, not hidden.
+  return { lo, hi, samples: ps.count, thin: ps.thin }
 }
 
 export function revenueCagr(history = [], { label } = {}) {
@@ -537,13 +578,27 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
   const bandHistory = opts.reportedIncomeHistory?.length ? opts.reportedIncomeHistory : incomeHistory
   const bandRaw = forwardPeBand(priceHistory, bandHistory)
   const band = bandRaw?.insufficient ? null : bandRaw
-  let multiples, multipleBasis, multipleLabel
+  // Spread width: the real through-cycle band's own shape when one exists
+  // (this override branch previously ignored `band` even when available and
+  // always used a flat ±15% instead) — falls back to this stock's own price
+  // dispersion, then declines rather than guessing a width.
+  let multiples, multipleBasis, multipleLabel, thinDispersion = false
   if (multipleOverride > 0) {
-    multiples = { low: multipleOverride * 0.85, base: multipleOverride, high: multipleOverride * 1.15 }
+    let spread = band && band.median > 0
+      ? { lo: band.low / band.median, hi: band.high / band.median }
+      : null
+    if (!spread) {
+      const dd = priceDispersion(priceHistory)
+      if (dd == null) return null
+      spread = { lo: 1 - dd.half, hi: 1 + dd.half }
+      thinDispersion = dd.thin
+    }
+    multiples = { low: round(multipleOverride * spread.lo, 1), base: multipleOverride, high: round(multipleOverride * spread.hi, 1) }
     multipleBasis = 'revision'; multipleLabel = `your re-rating (${round(multipleOverride, 1)}×)`
   } else if (band) {
     multiples = { low: band.low, base: band.median, high: band.high }
     multipleBasis = 'observed'; multipleLabel = `through-cycle P/E (${band.samples} days)`
+    thinDispersion = !!band.thin
   } else if (peerBand?.median > 0) {
     multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
     multipleBasis = 'peer'; multipleLabel = 'peer multiples'
@@ -589,7 +644,12 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
     dilutionPct: 0, dilutionLabel: 'not modelled for a cyclical',
     multiples, multipleBasis, multipleLabel,
     target, upside,
-    degraded: [],
+    degraded: [
+      ...(growthInfo.unusual
+        ? [`Growth rate (${round(growth * 100, 0)}%) is well outside a typical range — likely a recovery from a collapsed base or a one-off`]
+        : []),
+      ...(thinDispersion ? ['Spread width from a thinner-than-usual sample of trading days'] : []),
+    ],
     basisSummary: `Mid-cycle margin ${round(midCycleMargin * 100, 1)}% (currently ${round(currentMargin * 100, 1)}%, ${cyclePosition}) · ${multipleLabel}`,
   }
 }
@@ -653,12 +713,15 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
   // stated derivation and applied identically to a near-zero-capex software
   // business and a heavy-capex manufacturer alike. Falls back to 35% (a
   // reasonable industrial-economy midpoint) only when FCF genuinely isn't
-  // measurable.
+  // measurable. No clamp on the measured case: a real, differentiated
+  // business can legitimately convert outside any asserted band (a
+  // near-zero-capex software company above 90%, a heavy-capex one below
+  // 10%), and forcing a real measured ratio into a guessed range replaces
+  // real data with a guess — the same fix already applied to
+  // justifiedMultiple.js's identical clamp this session.
   const payoutFrac = (ratioResult?.ratios?.dividendPayout?.value ?? 0) / 100
   const measuredEbitdaConversion = (ratioResult?.fcf > 0) ? ratioResult.fcf / ebitda : null
-  const ebitdaConversion = measuredEbitdaConversion != null
-    ? Math.max(0.1, Math.min(0.9, measuredEbitdaConversion))
-    : 0.35
+  const ebitdaConversion = measuredEbitdaConversion ?? 0.35
   const retainedCash = ebitda * ebitdaConversion * Math.max(0, 1 - payoutFrac) * years
   const forwardNetDebt = Math.max(0, netDebt - retainedCash)
 
@@ -666,10 +729,19 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
     const impliedEv = forwardEbitda * m
     return (impliedEv - forwardNetDebt) / shares
   }
-  // Range width from how much this company's OWN multiple has actually varied,
-  // not a fixed ±15%. A steadily-rated business gets a tight range and a
-  // volatile one a wide range, which is the information a fixed spread erases.
-  const sp = multipleSpread(opts.priceHistory, opts.incomeHistory, 'ebitda') || { lo: 0.85, hi: 1.15 }
+  // Range width from how much this company's OWN multiple has actually varied.
+  // Falls back to this stock's own price dispersion (needs only closes, not
+  // paired EBITDA — clears where multipleSpread can't) rather than a flat
+  // ±15%; declines (null, caller falls through to the generic chain) if
+  // even that isn't measurable.
+  let sp = multipleSpread(opts.priceHistory, opts.incomeHistory, 'ebitda')
+  let thinSpread = !!sp?.thin
+  if (!sp) {
+    const dd = priceDispersion(opts.priceHistory)
+    if (dd == null) return null
+    sp = { lo: 1 - dd.half, hi: 1 + dd.half }
+    thinSpread = dd.thin
+  }
   const target = {
     low:  round(toEquity(multiple * sp.lo)),
     base: round(toEquity(multiple)),
@@ -698,7 +770,13 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
     dilutionPct: 0, dilutionLabel: 'not modelled',
     multiples: { low: round(multiple * sp.lo, 1), base: round(multiple, 1), high: round(multiple * sp.hi, 1) },
     multipleBasis, multipleLabel,
-    target, upside, degraded: [],
+    target, upside,
+    degraded: [
+      ...(thinSpread ? ['Spread width from a thinner-than-usual sample of trading days'] : []),
+      ...(growthInfo.unusual
+        ? [`Growth rate (${round(growth * 100, 0)}%) is well outside a typical range — likely a recovery from a collapsed base or a one-off`]
+        : []),
+    ],
     basisSummary: `EBITDA ${round(forwardEbitda)} × ${round(multiple, 1)}× less net debt ${round(forwardNetDebt)} · ${multipleLabel}`,
   }
 }
@@ -740,7 +818,17 @@ export function buildEvSalesEstimate(ratioResult, opts = {}) {
   const forwardNetDebt = netDebt + burn
   const toEquity = m => ((forwardRevenue * m) - forwardNetDebt) / shares
 
-  const sp = multipleSpread(opts.priceHistory, opts.incomeHistory, 'revenue') || { lo: 0.75, hi: 1.25 }
+  // Same fallback chain as the other models: this stock's own measured
+  // multiple spread, else its price dispersion, else decline rather than
+  // assert a flat ±25%.
+  let sp = multipleSpread(opts.priceHistory, opts.incomeHistory, 'revenue')
+  let thinSpread = !!sp?.thin
+  if (!sp) {
+    const dd = priceDispersion(opts.priceHistory)
+    if (dd == null) return null
+    sp = { lo: 1 - dd.half, hi: 1 + dd.half }
+    thinSpread = dd.thin
+  }
   const target = {
     low:  round(toEquity(multiple * sp.lo)),
     base: round(toEquity(multiple)),
@@ -769,15 +857,20 @@ export function buildEvSalesEstimate(ratioResult, opts = {}) {
     },
     // Stated rather than implied: this is the weakest method here, used because
     // the company has no earnings to value.
-    degraded: ['No profit — valued on sales, which ignores whether they convert to cash'],
+    degraded: [
+      'No profit — valued on sales, which ignores whether they convert to cash',
+      ...(growthInfo.unusual ? [`Growth rate (${round(growth * 100, 0)}%) is well outside a typical range — likely a recovery from a collapsed base or a one-off`] : []),
+      ...(thinSpread ? ['Spread width from a thinner-than-usual sample of trading days'] : []),
+    ],
     basisSummary: `Revenue ${round(forwardRevenue)} × ${round(multiple, 2)}× sales, less net debt`,
   }
 }
 
 const netProfitOf = rr => (rr?.netProfit ?? 0)
 
-/** Growth ladder: guidance → 5y CAGR → recent median → any CAGR → nothing. */
 /**
+ * Growth ladder: guidance → revenue CAGR over the user's chosen window → nothing.
+ *
  * Growth for the projection: which rate is applied, and what the alternatives
  * said.
  *
@@ -972,7 +1065,7 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
   // denominator's real degeneracy condition — rather than four independently-
   // guessed ceiling values (one per multiple type) that were each standing in
   // for the same underlying test. Only applies to the single-stage form:
-  // twoStage forms fade to TERMINAL_GROWTH_RATE (4%) well below the required
+  // twoStage forms fade to the market's terminal growth rate (2.5-5%) well below the required
   // return by construction (justifiedMultiple.js requires r > terminalG to even
   // run), so they don't have this instability at all.
   const rr_ = jm.requiredReturn?.r
@@ -1073,6 +1166,7 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
     multipleBasis: 'justified',
     multipleLabel: chosen.label,
     multipleSteps: chosen.steps,
+    tier: chosen.tier,
     availableForms: Object.keys(jm.forms),
     formLabels: Object.fromEntries(Object.entries(jm.forms).map(([k, f]) => [k, f.label])),
     growth: g, growthPct: jm.growth.gPct,
@@ -1258,26 +1352,38 @@ export function buildEstimate(ratioResult, opts = {}) {
     }
   }
 
-  let multiples, multipleBasis, multipleLabel
+  let multiples, multipleBasis, multipleLabel, thinMultiple = false
   if (multipleOverride != null && multipleOverride > 0) {
     const c = multipleOverride
     // Keep whatever spread the measured band had, so a re-rating moves the
     // CENTRE of the range without also pretending the future got more certain.
+    // If neither the band nor price dispersion can supply one, decline
+    // rather than dereference a null spread (own && !priceHistory produced a
+    // real crash here — the override is real, but there is nothing to size
+    // a range around it with).
+    const dd = own && own.median > 0 ? null : priceDispersion(priceHistory)
     const spread = own && own.median > 0
       ? { lo: own.low / own.median, hi: own.high / own.median }
-      : (() => { const d = priceDispersion(priceHistory)
-                 return d != null ? { lo: 1 - d, hi: 1 + d } : null })()
+      : dd != null ? { lo: 1 - dd.half, hi: 1 + dd.half } : null
+    if (!spread) {
+      return blank(
+        'You set a multiple, but there is no measured band and no price history to size a range around it.',
+        { price })
+    }
+    thinMultiple = own && own.median > 0 ? !!own.thin : !!dd?.thin
     multiples = { low: round(c * spread.lo, 1), base: round(c, 1), high: round(c * spread.hi, 1) }
     multipleBasis = 'revision'
     multipleLabel = `your re-rating (${round(c, 1)}×)`
   } else if (fitted && fitted.source === 'fitted') {
     multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
     multipleBasis = 'fitted'
+    thinMultiple = !!fitted.thin
     multipleLabel = `${fitted.anchor}× historical anchor, adjusted for returns and growth`
     fittedSteps = fitted.steps
   } else if (own) {
     multiples = { low: own.low, base: own.median, high: own.high }
     multipleBasis = 'observed'
+    thinMultiple = !!own.thin
     // Name the span, not just the sample count. A band from three years and one
     // from nine both looked identical as "its own forward P/E range"; the first
     // describes a recent regime and the second a genuine range.
@@ -1288,6 +1394,7 @@ export function buildEstimate(ratioResult, opts = {}) {
   } else if (fitted?.multiple > 0 && fitted.source === 'historical-median') {
     multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
     multipleBasis = 'historical-median'
+    thinMultiple = !!fitted.thin
     multipleLabel = `its own median multiple over ${fitted.observations} years`
     fittedSteps = fitted.steps
   } else if (fitted?.multiple > 0 && fitted.source === 'peers') {
@@ -1308,13 +1415,15 @@ export function buildEstimate(ratioResult, opts = {}) {
     multipleLabel = 'peer multiples (no usable history for this stock)'
   } else if (currentPe > 0) {
     const c = currentPe
-    const sp = priceDispersion(priceHistory)
-    if (sp == null) {
+    const dd = priceDispersion(priceHistory)
+    if (dd == null) {
       return blank(
         'No price history for this stock, so there is no way to measure how wide a range should be. ' +
         'The fundamentals-based estimate does not need price history and is shown instead.',
         { price })
     }
+    const sp = dd.half
+    thinMultiple = dd.thin
     multiples = { low: round(c * (1 - sp), 1), base: round(c, 1),
                   high: round(c * (1 + sp), 1) }
     multipleBasis = 'current'
@@ -1352,15 +1461,18 @@ export function buildEstimate(ratioResult, opts = {}) {
     || multiples.high <= multiples.base * 1.03
   const implausible = multiples.low > 0 && (multiples.high / multiples.low) > 2.5
   if (degenerate || implausible) {
+    thinMultiple = false   // the rejected band's thinness no longer applies to whatever replaces it
     if (currentPe > 0) {
       const c = currentPe
-      const sp = priceDispersion(priceHistory)
-      if (sp == null) {
+      const dd = priceDispersion(priceHistory)
+      if (dd == null) {
         return blank(
           'Its multiple history is unusable and there is no price history to measure a range from. ' +
           'The fundamentals-based estimate covers this case.',
           { price })
       }
+      const sp = dd.half
+      thinMultiple = dd.thin
       multiples = { low: round(c * (1 - sp), 1), base: round(c, 1), high: round(c * (1 + sp), 1) }
       multipleBasis = 'current'
       multipleLabel = `today's P/E ±${Math.round(sp * 100)}% — its own history was too thin or too erratic to use`
@@ -1394,6 +1506,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     degraded.push(`Margin from ${marginBasis.label}`)
   if (multipleBasis !== 'observed' && multipleBasis !== 'revision')
     degraded.push(`Multiple from ${multipleLabel}`)
+  if (thinMultiple) degraded.push('Multiple from a thinner-than-usual sample of trading days')
   if (epsPath.startsWith('EPS compounded')) degraded.push('Margins assumed flat')
   if (growthBasis.expiredGuidance) degraded.push('Your guidance has expired')
 
@@ -1541,8 +1654,6 @@ export function scoreEstimate(estimate, currentPrice) {
     vsBasePct: round(((currentPrice - target.base) / target.base) * 100, 1),
   }
 }
-
-function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)) }
 
 function blank(note, extra = {}) {
   return {

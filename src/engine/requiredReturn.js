@@ -29,8 +29,15 @@ export const DEFAULT_RISK_FREE_BY_MARKET = { IN: 0.07, US: 0.045 }
 
 // Terminal growth cannot exceed the economy forever — a company growing
 // faster than nominal GDP in perpetuity eventually becomes the economy.
-// Shared by DCF's terminal value and Justified Multiple's two-stage fade.
-export const TERMINAL_GROWTH_RATE = 0.04
+// Split by market, not flat: India's long-run nominal GDP growth (real
+// growth + inflation) runs meaningfully higher than the US's, so one shared
+// rate either overstates a mature US company's terminal value or understates
+// an Indian one's. Not live-fetched like Rf/ERP — there's no market that
+// prices "the long-run perpetual growth rate"; it's a modeling assumption
+// bounded by a constraint, not an observable quote. Shared by DCF's terminal
+// value, Justified Multiple's two-stage fade, and Market Expectation's
+// reverse-DCF variant.
+export const TERMINAL_GROWTH_BY_MARKET = { IN: 0.05, US: 0.025 }
 
 export const marketOf = (currency) => (currency === 'INR' ? 'IN' : 'US')
 
@@ -45,14 +52,20 @@ export const marketOf = (currency) => (currency === 'INR' ? 'IN' : 'US')
 // a smooth, defensible transformation.
 const BLUME_WEIGHT = 2 / 3   // adjusted = (2/3) x raw + (1/3) x 1.0
 
-// A raw beta outside this window isn't "real but extreme" — it's far more
-// likely bad data (a too-short regression window, an unadjusted stock
-// split/spin-off, an illiquid stock's erratic prints). Beta = correlation x
-// (stock volatility / market volatility), and correlation is capped at 1, so
-// a genuinely liquid single stock essentially never clears ~4-5x market
-// volatility AND near-perfect correlation at once — 5 is a generous outer
-// bound past which the reading is treated as unusable data rather than
-// forced through a formula it would only distort further.
+// A raw beta at or above this is statistically implausible for a liquid
+// single stock (beta = correlation x (stock volatility / market volatility),
+// and correlation is capped at 1, so clearing ~5x market volatility AND
+// near-perfect correlation at once essentially never happens for a real,
+// liquid name). That used to be grounds for silently discarding the reading
+// and substituting a flat 1.0 — but the app has no way to actually verify
+// WHY a given reading is extreme (corrupted data vs. a genuinely thin,
+// erratic small-cap that really does carry that much measured risk), so
+// deciding FOR the user which is true and substituting a different number
+// they never asked for is the same "the model prefers a different number
+// than reality gave it" mistake this codebase removes everywhere else. The
+// real beta is used regardless; this threshold now only controls an
+// informational flag telling the user to verify it — it never changes what
+// gets fed into the formula.
 const MAX_PLAUSIBLE_RAW_BETA = 5
 
 /**
@@ -60,6 +73,11 @@ const MAX_PLAUSIBLE_RAW_BETA = 5
  *   r = risk-free + adjustedBeta x equity risk premium
  * Beta is Yahoo's own reported figure (ratios.beta); the equity risk premium
  * is the one genuine assumption here and is surfaced rather than buried.
+ * The real reported beta is always used — see MAX_PLAUSIBLE_RAW_BETA above,
+ * this never substitutes a different number. When beta itself is missing
+ * (not merely unusual — genuinely absent), there is nothing to Blume-adjust,
+ * so 1.0 (average market risk) is used as a stated absence-of-data default,
+ * not a correction of a real reading.
  * Returns null iff riskFreeRate isn't a usable positive number — this
  * function ships no fallback of its own; each caller decides its own policy
  * (justifiedMultiple.js declines gracefully, valuation.js falls back to
@@ -68,14 +86,23 @@ const MAX_PLAUSIBLE_RAW_BETA = 5
 export function capmCostOfEquity({ riskFreeRate, beta, erp = null, market = 'IN' } = {}) {
   if (!(riskFreeRate > 0)) return null
   const premium = erp ?? ERP_BY_MARKET[market] ?? ERP_BY_MARKET.IN
-  const rawUsable = beta > 0 && beta < MAX_PLAUSIBLE_RAW_BETA
-  const b = rawUsable ? (BLUME_WEIGHT * beta + (1 - BLUME_WEIGHT)) : 1
+  const hasBeta = beta > 0
+  const b = hasBeta ? (BLUME_WEIGHT * beta + (1 - BLUME_WEIGHT)) : 1
   const r = riskFreeRate + b * premium
+  const betaFlag = (hasBeta && beta >= MAX_PLAUSIBLE_RAW_BETA)
+    ? `Reported beta of ${round(beta, 2)} is statistically unusual for a liquid single stock — verify against another source before trusting this cost of equity.`
+    : null
   return {
-    r, beta: b, rawBeta: rawUsable ? beta : null, betaAssumed: !rawUsable,
+    r, beta: b, rawBeta: hasBeta ? beta : null, betaFlag,
+    // betaAssumed: true only when beta was genuinely absent, not when a real
+    // reading was merely unusual — estimate.js's "Beta unavailable" note
+    // means the former; it would previously fire on the latter too, which
+    // was a different, misleading claim (a present-but-extreme beta isn't
+    // "unavailable").
+    betaAssumed: !hasBeta,
     riskFreeRate, equityRiskPremium: premium, market,
-    label: rawUsable
+    label: hasBeta
       ? `${round(riskFreeRate * 100, 1)}% risk-free + ${round(b, 2)} beta (Blume-adjusted from ${round(beta, 2)}) x ${round(premium * 100, 1)}% premium`
-      : `${round(riskFreeRate * 100, 1)}% risk-free + ${round(b, 2)} beta (assumed — reported beta unusable) x ${round(premium * 100, 1)}% premium`,
+      : `${round(riskFreeRate * 100, 1)}% risk-free + 1.00 beta (assumed — no reported beta) x ${round(premium * 100, 1)}% premium`,
   }
 }

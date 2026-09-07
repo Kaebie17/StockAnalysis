@@ -67,15 +67,18 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
   const ratios = ratioResult?.ratios
 
   // Moat/Quality snapshot for the tile — same engine + inputs the detail panel uses.
+  const costOfCapital = valuation?.assumptions?.wacc != null ? valuation.assumptions.wacc * 100 : null
   const moatResult = useMemo(() => {
     if (!ratioResult) return null
     try {
       return assessMoatQuality(state.data, ratioResult, {
         holdings: state.holdingsData || null,
         arData: state.arData || null,
+        sectorType: state.sectorType || null,
+        costOfCapital,
       })
     } catch { return null }
-  }, [state.data, ratioResult, state.holdingsData, state.arData])
+  }, [state.data, ratioResult, state.holdingsData, state.arData, state.sectorType, costOfCapital])
 
   if (!valuation || !valuation.models) return null
 

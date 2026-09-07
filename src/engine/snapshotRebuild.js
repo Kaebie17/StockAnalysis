@@ -32,7 +32,11 @@ function cagrOf(rows = []) {
   const years = pts[pts.length - 1].y - pts[0].y
   if (years < 2) return null
   const g = Math.pow(pts[pts.length - 1].v / pts[0].v, 1 / years) - 1
-  if (!isFinite(g) || g > 0.6 || g < -0.3) return null
+  // No plausibility band: the live revCagr this reconstructs (ratios.js's
+  // windowedCagr()) has none either — a reconstructed snapshot dropping the
+  // field for exactly the companies where the live figure shows a real,
+  // if unusual, number would silently disagree with itself.
+  if (!isFinite(g)) return null
   return g * 100
 }
 

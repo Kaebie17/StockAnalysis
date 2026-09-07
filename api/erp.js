@@ -84,11 +84,21 @@ export default async function handler(req, res) {
               `— his mature market (US) implied ERP plus his India country risk premium, added together?`
             : `What is Aswath Damodaran's most recently published implied equity risk premium for the ` +
               `US (mature market)?` }] }],
+          // Grounds the answer in an actual live search of Damodaran's current
+          // published page rather than the model's training-data recollection
+          // of what his figure "usually" is — naming the specific published
+          // source (above) says WHAT to retrieve; this makes it actually go
+          // retrieve it instead of recalling a stale remembered figure.
+          tools: [{ google_search: {} }],
           generationConfig: {
             temperature: 0,
             maxOutputTokens: 512,
             thinkingConfig: { thinkingBudget: 0 },
-            responseMimeType: 'application/json',
+            // responseMimeType: 'application/json' removed — the Gemini API
+            // does not support structured-output mode together with tools
+            // (grounding), it's silently ignored rather than erroring. See
+            // parseErp()'s prose fallback below, now the primary path for a
+            // grounded response's cited prose rather than a last resort.
           },
         }),
       })

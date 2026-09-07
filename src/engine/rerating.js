@@ -62,12 +62,25 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   const trailingEps = currentEps ?? latestEps(incomeHistory)
   if (!(trailingEps > 0)) return { detected: false, reason: 'No EPS to measure the current multiple' }
   const g = opts.growth
-  const eps = (g != null && isFinite(g) && g > -0.5) ? trailingEps * (1 + g) : trailingEps
-  if (g == null) {
+  if (g == null || !isFinite(g)) {
     // Without a growth rate the two aren't comparable at all; saying so beats
     // reporting a re-rating that is really just the growth gap.
     return { detected: false, reason: 'No growth rate available to compare like with like' }
   }
+  // Structural floor, not a plausibility judgment: 1+g must stay positive for
+  // a forward EPS — and so a multiple off it — to mean anything at all. Below
+  // this the math is undefined, not merely unusual. An unusual-but-computable
+  // g (a real -40% collapse, a real +80% recovery) is used as-is and flagged
+  // below, not hidden — a measured number beats a guess about whether it's
+  // trustworthy.
+  if (!(g > -1)) {
+    return { detected: false, reason: `Growth rate (${round(g * 100, 0)}%) makes forward EPS non-positive — can't compute a multiple from it` }
+  }
+  // Flagged, not gated: this is real, measured data even when it sits well
+  // outside a typical range — the caller decides whether to trust it, the
+  // detector doesn't decide for them by hiding the reading.
+  const growthUnusual = g > 0.6 || g < -0.3
+  const eps = trailingEps * (1 + g)
 
   const cutoff = Date.now() - monthsWindow * 30 * DAY
   const recent = (priceHistory || [])
@@ -76,22 +89,26 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
     .filter(p => isFinite(p.t) && p.pe > 0)
     .sort((a, b) => a.t - b.t)
 
-  if (recent.length < 30) {
+  if (recent.length === 0) {
     return { detected: false, reason: 'Not enough recent prices to judge a re-rating' }
   }
+  // A median is the most sample-efficient statistic there is — real even from
+  // a thin window — so it's computed and disclosed as thin rather than the
+  // reading being withheld below some invented day-count.
+  const thinReading = recent.length < 30
 
   const median = q(recent.map(r => r.pe), 0.5)
   const below = median < band.low
   const above = median > band.high
   if (!below && !above) {
-    return { detected: false, current: round(median), band,
+    return { detected: false, current: round(median), band, thin: thinReading,
              reason: 'Trading within its usual multiple range' }
   }
 
   const edge = below ? band.low : band.high
   const deviation = (median - edge) / edge
   if (Math.abs(deviation) < MIN_DEVIATION) {
-    return { detected: false, current: round(median), band, reason: 'Only marginally outside its range' }
+    return { detected: false, current: round(median), band, thin: thinReading, reason: 'Only marginally outside its range' }
   }
 
   // How long has it stayed on this side? Walk back to the last close that was
@@ -110,7 +127,7 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   // earns, is waiting for confirmation of something already confirmed.
   const cause = opts.cause || null
   if (!cause && heldMonths < MIN_MONTHS_UNEXPLAINED) {
-    return { detected: false, current: round(median), band, heldDays,
+    return { detected: false, current: round(median), band, heldDays, thin: thinReading,
              reason: `Outside its range for ${Math.round(heldDays)} days with nothing explaining it — ` +
                      `too soon to tell a drawdown from a re-rating` }
   }
@@ -161,15 +178,23 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
     heldDays, heldMonths: round(heldMonths, 0),
     cause,
     peerContext, sectorContext,
+    // The growth rate this reading's forward EPS is built on — always shown,
+    // not just when it's unusual, so the basis for "current" is never a black
+    // box. growthUnusual flags rather than hides an extreme-but-real reading.
+    growthUsedPct: round(g * 100, 0),
+    growthUnusual,
+    thin: thinReading,
     proposal: {
       multiple: round(median, 1),
       label: `Adopt ${round(median, 1)}× as the base multiple`,
     },
-    summary: cause
+    summary: (cause
       ? `The market has repriced this to about ${round(median, 1)}×, ${below ? 'below' : 'above'} its usual ` +
         `${band.low}–${band.high}× range — following ${cause.label}.`
       : `The market has paid about ${round(median, 1)}× for ${Math.round(heldMonths)} months, ` +
-        `${below ? 'below' : 'above'} the ${band.low}–${band.high}× range this stock used to trade in.`,
+        `${below ? 'below' : 'above'} the ${band.low}–${band.high}× range this stock used to trade in.`)
+      + (growthUnusual ? ` (based on a ${round(g * 100, 0)}% growth rate, well outside a typical range — check this before acting on it.)` : '')
+      + (thinReading ? ` (based on only ${recent.length} recent trading days, a thinner sample than usual.)` : ''),
   }
 }
 

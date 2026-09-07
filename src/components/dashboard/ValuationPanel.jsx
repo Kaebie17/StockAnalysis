@@ -7,7 +7,9 @@ import FactInputModal from './FactInputModal.jsx'
 import { useNewsFacts, keyOf, leverOf } from '../../store/useNewsFacts.js'
 import { computeFact } from '../../engine/factImpact.js'
 import { extractSegmentShares } from '../../engine/segmentShare.js'
-import { TERMINAL_GROWTH_RATE } from '../../engine/requiredReturn.js'
+import { TERMINAL_GROWTH_BY_MARKET } from '../../engine/requiredReturn.js'
+import { TIER } from '../../engine/methodologyTier.js'
+import ProvenanceTag from '../ProvenanceTag.jsx'
 
 // Dot bar: 5 dots, filled based on upside magnitude
 // Green dots = upside, red dots = downside
@@ -141,8 +143,9 @@ export default function ValuationPanel({ open, onClose }) {
               </div>
               {/* Mobile: fair value + vs CMP on line 2 (full width, no wrap) */}
               <div className="flex items-center justify-between gap-3 sm:contents">
-                <span className="font-mono text-white whitespace-nowrap tabular-nums sm:text-right sm:w-20">
+                <span className="font-mono text-white whitespace-nowrap tabular-nums sm:text-right sm:w-20 flex items-center justify-end gap-1">
                   {fvText}
+                  <ProvenanceTag tier={result?.tier} compact />
                 </span>
                 <span className={`font-mono font-semibold whitespace-nowrap tabular-nums sm:text-right sm:w-16 ${upColor}`}>
                   {upText}
@@ -187,7 +190,10 @@ export default function ValuationPanel({ open, onClose }) {
       {intrinsicValue && (
         <div className="flex items-center justify-between gap-2 py-2 px-3 bg-navy-800/30 rounded-lg">
           <span className="text-xs text-slate-400">Intrinsic Value <span className="text-slate-600">(DCF)</span></span>
-          <span className="font-mono text-sm text-white">{cur}{intrinsicValue.value.toFixed(0)}</span>
+          <span className="font-mono text-sm text-white flex items-center gap-1">
+            {cur}{intrinsicValue.value.toFixed(0)}
+            <ProvenanceTag tier={intrinsicValue.tier} compact />
+          </span>
         </div>
       )}
 
@@ -199,10 +205,12 @@ export default function ValuationPanel({ open, onClose }) {
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 px-3 bg-navy-800/20 rounded-lg text-xs">
           <span className="text-slate-600">Heuristic checks:</span>
           {secondaryChecks.graham && (
-            <span className="text-slate-400">Graham <span className="font-mono text-slate-300">{cur}{secondaryChecks.graham.value.toFixed(0)}</span></span>
+            <span className="text-slate-400">Graham <span className="font-mono text-slate-300">{cur}{secondaryChecks.graham.value.toFixed(0)}</span>
+              <ProvenanceTag tier={secondaryChecks.graham.tier} compact /></span>
           )}
           {secondaryChecks.peg && (
-            <span className="text-slate-400">PEG <span className="font-mono text-slate-300">{cur}{secondaryChecks.peg.value.toFixed(0)}</span></span>
+            <span className="text-slate-400">PEG <span className="font-mono text-slate-300">{cur}{secondaryChecks.peg.value.toFixed(0)}</span>
+              <ProvenanceTag tier={secondaryChecks.peg.tier} compact /></span>
           )}
         </div>
       )}
@@ -224,12 +232,12 @@ export default function ValuationPanel({ open, onClose }) {
       {showSliders && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
           {[
-            { key: 'wacc',       label: 'WACC',             min: 5,  max: 34, step: 0.5, pct: true,  def: DEFAULT_ASSUMPTIONS.wacc * 100 },
-            { key: 'termGrowth', label: 'Terminal Growth',  min: 1,  max: 6,  step: 0.5, pct: true,  def: TERMINAL_GROWTH_RATE * 100 },
-            { key: 'growthRate', label: 'FCF Growth',       min: -5, max: 40, step: 1,   pct: true,  def: DEFAULT_ASSUMPTIONS.growthRate * 100 },
-            { key: 'sectorPe',   label: 'Sector P/E',       min: 5,   max: 60, step: 1,   pct: false, def: 20 },
-            { key: 'sectorEvEb', label: 'Sector EV/EBITDA', min: 4,   max: 30, step: 0.5, pct: false, def: 12 },
-            { key: 'sectorPs',   label: 'Sector EV/Sales',  min: 0.5, max: 10, step: 0.5, pct: false, def: 3 },
+            { key: 'wacc',       label: 'WACC',             min: 5,  max: 34, step: 0.5, pct: true,  def: DEFAULT_ASSUMPTIONS.wacc * 100, tier: TIER.DERIVED },
+            { key: 'termGrowth', label: 'Terminal Growth',  min: 1,  max: 6,  step: 0.5, pct: true,  def: TERMINAL_GROWTH_BY_MARKET.IN * 100, tier: TIER.DERIVED },
+            { key: 'growthRate', label: 'FCF Growth',       min: -5, max: 40, step: 1,   pct: true,  def: DEFAULT_ASSUMPTIONS.growthRate * 100, tier: TIER.DERIVED },
+            { key: 'sectorPe',   label: 'Sector P/E',       min: 5,   max: 60, step: 1,   pct: false, def: 20, tier: TIER.ASSUMED },
+            { key: 'sectorEvEb', label: 'Sector EV/EBITDA', min: 4,   max: 30, step: 0.5, pct: false, def: 12, tier: TIER.ASSUMED },
+            { key: 'sectorPs',   label: 'Sector EV/Sales',  min: 0.5, max: 10, step: 0.5, pct: false, def: 3, tier: TIER.ASSUMED },
           ].map(s => {
             const seed = assumptions[s.key] ?? valuation.defaults?.[s.key]
             const curVal = s.pct
@@ -239,7 +247,7 @@ export default function ValuationPanel({ open, onClose }) {
             return (
               <div key={s.key}>
                 <div className="flex justify-between text-xs text-slate-400 mb-1">
-                  <span>{s.label}</span>
+                  <span className="flex items-center gap-1">{s.label}<ProvenanceTag tier={s.tier} compact /></span>
                   <span className="text-white font-mono">{display}</span>
                 </div>
                 <input type="range" min={s.min} max={s.max} step={s.step} value={curVal}
@@ -836,6 +844,7 @@ function TwoEstimates({ state }) {
   const { estimate, justified, form, setForm, sanity, riskFree, refreshRate } = useEstimate(state)
   const cur = state.data?.currency === 'INR' ? '₹' : '$'
   const n = v => (v == null ? '—' : Math.round(v).toLocaleString('en-IN'))
+  const [showSteps, setShowSteps] = useState(false)
 
   if (!estimate && !justified) return null
 
@@ -844,7 +853,10 @@ function TwoEstimates({ state }) {
       {/* Estimate 1 */}
       <div>
         <div className="flex items-baseline justify-between gap-2 min-w-0">
-          <span className="text-slate-500 shrink-0">Justified Multiples</span>
+          <span className="text-slate-500 shrink-0 flex items-center gap-1">
+            Justified Multiples
+            {justified?.ok && <ProvenanceTag tier={justified.tier} compact />}
+          </span>
           {justified?.ok ? (
             <span className="font-mono text-slate-200 text-right">
               {cur}{n(justified.target.low)} – {cur}{n(justified.target.high)}
@@ -884,6 +896,25 @@ function TwoEstimates({ state }) {
                 {FORM_SHORT[f] || f}
               </button>
             ))}
+          </div>
+        )}
+
+        {/* The derivation was already computed (justified.multipleSteps) but
+            never rendered anywhere — surfacing it here rather than adding a
+            second, separate narrative. */}
+        {justified?.ok && justified.multipleSteps?.length > 0 && (
+          <div className="mt-1.5">
+            <button onClick={() => setShowSteps(v => !v)}
+              className="text-[10px] text-slate-500 hover:text-slate-300">
+              {showSteps ? '▲' : '▼'} why
+            </button>
+            {showSteps && (
+              <ul className="mt-1 space-y-0.5">
+                {justified.multipleSteps.map((s, i) => (
+                  <li key={i} className="text-[10px] text-slate-500">{s}</li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
       </div>

@@ -37,7 +37,6 @@ export const MQ_CONFIG = {
   icr:    { strong: 8, ok: 4 },
   incRoce:{ high: 18, ok: 10 },
   marginTrendEps: 0.05,      // ±5% of mean over window = expanding/contracting
-  grossMarginWeight: 1.5,    // gross-margin stability weighted higher than operating
 }
 
 // ── public entry ──────────────────────────────────────────────────────────────
@@ -47,6 +46,19 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
     arData = null,       // document intelligence (pledgeTrend, rptTrend, …)
     moatOverride = null, // { tier, reason }
     config = MQ_CONFIG,
+    // sectorType (stage.js's detectSectorType()): leverage/coverage thresholds
+    // built for an industrial company are wrong for a bank/NBFC/insurer, whose
+    // business model IS high leverage — skipped for those rather than run
+    // against the wrong bar, same as valuation.js already declines DCF/
+    // EV-EBITDA for financials instead of forcing a wrong number through.
+    sectorType = null,
+    // costOfCapital (this company's own Ke/WACC, percent — e.g. requiredReturn.js's
+    // capmCostOfEquity() or valuation.js's computeWacc()): a moat means sustaining
+    // returns ABOVE what capital actually costs THIS company (the standard
+    // economic-profit test), not above a flat number that's the same whether the
+    // company's real cost of capital is 9% or 28%. Falls back to the flat config
+    // floor when not supplied — decline gracefully, don't fabricate.
+    costOfCapital = null,
   } = opts
 
   // Gate: enough data to be meaningful = promoter holdings present AND at least
@@ -96,8 +108,8 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
     flags.push('governance_locked')        // needs Screener holdings + a document
   }
 
-  // ── MOAT tier (ROCE level+consistency + margin trend; gross weighted higher) ─
-  const moat = deriveMoat({ roce, gm, om, config })
+  // ── MOAT tier (ROCE level+consistency + margin trend) ───────────────────────
+  const moat = deriveMoat({ roce, gm, om, config, costOfCapital })
   if (moatOverride?.tier) {
     moat.tier = moatOverride.tier
     moat.source = 'override'
@@ -107,6 +119,7 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
   // ── QUALITY tier (your High/Medium/Low table) ───────────────────────────────
   const quality = deriveQuality({
     roe, fcfConv, de, icr, incRoce, dilution, pledge, rptSignal, bothPresent, config,
+    sectorType, costOfCapital,
   })
 
   // ── Implication (pure lookup on Moat × Quality) ─────────────────────────────
@@ -221,11 +234,26 @@ function trendSignal(series) {
 }
 
 // ── tier derivation ───────────────────────────────────────────────────────────
-function deriveMoat({ roce, gm, om, config }) {
+// A hit-rate computed from too few years is a coin flip dressed as a track
+// record — n=1 gives a hitRate of either 0% or 100%, with nothing to confirm
+// it holds up over time. Reuses this codebase's existing convention for "how
+// many points before a distribution means anything" (targetMultiple.js's
+// MIN_YEARS_FOR_BAND/MIN_OBSERVATIONS = 3-4) rather than picking an
+// independent number for the same kind of question.
+const MIN_CONSISTENCY_SAMPLE = 3
+
+function deriveMoat({ roce, gm, om, config, costOfCapital = null }) {
   const ev = []
   const rc = config.roce
   const level = roce.median
-  const consistent = roce.hitRate
+  const consistentConfirmed = roce.n >= MIN_CONSISTENCY_SAMPLE
+  const consistent = consistentConfirmed ? roce.hitRate : null
+  // Gross margin preferred over operating: it isolates pricing power
+  // (revenue minus direct input costs, the closer proxy for what "moat"
+  // means), where operating margin conflates that with operating-expense
+  // decisions (marketing, SG&A, cost control) that are management execution,
+  // not competitive position. Falls back to operating margin's trend only
+  // when gross margin data isn't available at all.
   const marginTrend = gm.trend || om.trend
   const marginOk = marginTrend === 'expanding' || marginTrend === 'stable'
 
@@ -234,17 +262,30 @@ function deriveMoat({ roce, gm, om, config }) {
              evidence: [{ ok: false, text: 'ROCE series unavailable — moat cannot be evidenced from returns.' }] }
   }
 
+  // Floor is this company's own cost of capital when known — a moat means
+  // sustaining returns above what capital actually costs THIS company, not
+  // above a flat number that's the same whether its real WACC is 9% or 28%.
+  // Falls back to the flat config floor only when WACC isn't available.
+  const floor = costOfCapital ?? rc.narrow
+
   ev.push({ ok: level >= rc.wide, text: `ROCE median ${level}% (${roce.n} yrs)` })
-  if (consistent != null) ev.push({ ok: consistent >= rc.hitPct, text: `ROCE ≥ ${rc.narrow}% in ${consistent}% of years` })
+  if (!consistentConfirmed) {
+    ev.push({ ok: null, text: `Only ${roce.n} year${roce.n === 1 ? '' : 's'} of ROCE history — too few to confirm consistency` })
+  } else {
+    ev.push({ ok: consistent >= rc.hitPct, text: `ROCE ≥ ${round(floor, 1)}% in ${consistent}% of years` })
+  }
   ev.push({ ok: marginOk, text: `Gross/operating margin ${marginTrend || 'n/a'}` })
 
   let tier, veryWideEligible = false
-  if (level >= rc.wide && (consistent == null || consistent >= rc.hitPct) && marginOk) {
+  if (consistentConfirmed && level >= rc.wide && consistent >= rc.hitPct && marginOk) {
     tier = 'Wide'
-    if (level >= rc.veryWide && (consistent == null || consistent >= 90) && gm.trend !== 'contracting') {
+    if (level >= rc.veryWide && consistent >= 90 && gm.trend !== 'contracting') {
       veryWideEligible = true   // numbers qualify; needs qualitative overlay to elevate
     }
-  } else if (level >= rc.narrow || (level >= rc.wide && !marginOk)) {
+  } else if (level >= floor) {
+    // A company without enough history to confirm consistency (or one whose
+    // margin trend disqualifies Wide) caps here rather than reaching Wide on
+    // a single strong year.
     tier = 'Narrow'
   } else {
     tier = 'None'
@@ -252,9 +293,11 @@ function deriveMoat({ roce, gm, om, config }) {
   return { tier, veryWideEligible, source: 'computed', evidence: ev }
 }
 
-function deriveQuality({ roe, fcfConv, de, icr, incRoce, dilution, pledge, rptSignal, bothPresent, config }) {
+function deriveQuality({ roe, fcfConv, de, icr, incRoce, dilution, pledge, rptSignal, bothPresent, config,
+                          sectorType = null, costOfCapital = null }) {
   const ev = []
   let good = 0, bad = 0, critical = 0
+  const isFinancialSector = ['bank', 'nbfc', 'insurance'].includes(sectorType)
 
   // Every `ok` below is genuinely three-state (true/false/null) and matches
   // EXACTLY what good++/bad++ counts — not a plain boolean that happened to
@@ -262,11 +305,16 @@ function deriveQuality({ roe, fcfConv, de, icr, incRoce, dilution, pledge, rptSi
   // wash. A value that's neither strong enough to help nor weak enough to
   // hurt now shows as neutral instead of a misleading pass or fail.
 
-  // ROE level + consistency
+  // ROE level + consistency. Weak floor is this company's own cost of
+  // capital when known (same reasoning as deriveMoat's ROCE floor — ROE
+  // below what equity actually costs isn't creating value, regardless of
+  // whether it clears a flat number), falling back to the config floor when
+  // WACC isn't available.
   if (roe.median != null) {
+    const weakFloor = costOfCapital ?? config.roe.ok
     const strong = roe.median >= config.roe.high && (roe.hitRate == null || roe.hitRate >= config.roe.hitPct)
-    const weak = roe.median < config.roe.ok
-    ev.push({ ok: strong ? true : weak ? false : null, text: `ROE median ${roe.median}%${roe.hitRate != null ? `, ${roe.hitRate}% of yrs ≥ ${config.roe.ok}%` : ''}` })
+    const weak = roe.median < weakFloor
+    ev.push({ ok: strong ? true : weak ? false : null, text: `ROE median ${roe.median}%${roe.hitRate != null ? `, ${roe.hitRate}% of yrs ≥ ${round(weakFloor, 1)}%` : ''}` })
     strong ? good++ : (weak ? bad++ : null)
   }
   // FCF conversion
@@ -276,8 +324,13 @@ function deriveQuality({ roe, fcfConv, de, icr, incRoce, dilution, pledge, rptSi
     ev.push({ ok: strong ? true : weak ? false : null, text: `FCF conversion ${round(fcfConv, 0)}%` })
     strong ? good++ : (weak ? bad++ : null)
   }
-  // Leverage OR coverage
-  if (de != null || icr != null) {
+  // Leverage OR coverage — skipped for financials. High leverage IS a bank/
+  // NBFC/insurer's business model; a D/E or interest-coverage bar built for
+  // an industrial company would misread a healthy financial institution as
+  // weak. Leverage quality for financials needs a different metric this app
+  // doesn't currently compute (capital adequacy, NPA ratios) — the honest
+  // move is to not run this check for them, not run the wrong one.
+  if (!isFinancialSector && (de != null || icr != null)) {
     const lowLev = de != null && de < config.de.low
     const strongCov = icr != null && icr >= config.icr.strong
     const strong = lowLev || strongCov
@@ -329,9 +382,22 @@ function deriveQuality({ roe, fcfConv, de, icr, incRoce, dilution, pledge, rptSi
     ev.push({ ok: null, text: '🔒 Promoter pledge & related-party pending Screener holdings + annual report' })
   }
 
+  // Low used to trigger on a flat `bad >= 2` regardless of how many signals
+  // were evaluated — 2 bad out of 4 checked read identically to 2 bad out of
+  // 8, which meant a company with MORE available data (more checks run) was
+  // structurally more likely to hit Low by chance, while a company with LESS
+  // data (fewer checks even ran) had an easier time dodging it — a
+  // data-availability bias unrelated to actual quality. Made proportional as
+  // the complement of the High bar's own 0.6 constant already below, rather
+  // than introducing an unrelated new percentage; `critical > 0` stays an
+  // absolute override (a single serious red flag reasonably disqualifies
+  // regardless of proportion — that's a presence/absence check, not a
+  // magnitude anyone picked). Math.max(2, ...) keeps the original "2" as a
+  // floor so a tiny evaluated set still needs at least 2 bad marks, not 1.
+  const evaluated = ev.filter(e => e.ok !== null).length
   let tier
-  if (critical > 0 || bad >= 2) tier = 'Low'
-  else if (bad === 0 && good >= Math.max(3, Math.ceil(ev.filter(e => e.ok !== null).length * 0.6))) tier = 'High'
+  if (critical > 0 || bad >= Math.max(2, Math.ceil(evaluated * 0.4))) tier = 'Low'
+  else if (bad === 0 && good >= Math.max(3, Math.ceil(evaluated * 0.6))) tier = 'High'
   else tier = 'Medium'
 
   return { tier, evidence: ev, signals: { good, bad, critical } }

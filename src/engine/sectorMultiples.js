@@ -112,6 +112,19 @@ export const FINANCIAL_PB_BY_SECTOR_TYPE = { bank: 2.0, nbfc: 2.5, insurance: 3.
 
 export function financialPb(sectorType) { return FINANCIAL_PB_BY_SECTOR_TYPE[sectorType] ?? 2.0 }
 
+// Same reasoning and same indexing (resolved sectorType, not text-matched) as
+// FINANCIAL_PB_BY_SECTOR_TYPE above — marketExpectation.js used to carry its
+// own separate copy of these exact numbers inline (getPeMultiple/
+// getSalesMultiple), typed a second time rather than read from here. The
+// values agreed by coincidence, not by construction: nothing kept them in
+// sync if one changed without the other, the same duplicate-constant risk
+// this file's own docblock describes for the text-matched tables above.
+export const FINANCIAL_PE_BY_SECTOR_TYPE    = { bank: 16, nbfc: 16, insurance: 18 }
+export const FINANCIAL_SALES_BY_SECTOR_TYPE = { bank: 2.0, nbfc: 2.5, insurance: 1.5 }
+
+export function financialPe(sectorType)    { return FINANCIAL_PE_BY_SECTOR_TYPE[sectorType] ?? 16 }
+export function financialSales(sectorType) { return FINANCIAL_SALES_BY_SECTOR_TYPE[sectorType] ?? 2.0 }
+
 function lookupSectorTable(table, data) {
   const combined = [data?.meta?.sector, data?.meta?.industry, data?.name]
     .filter(Boolean).join(' ').toLowerCase()

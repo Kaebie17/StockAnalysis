@@ -18,6 +18,9 @@
  * a made-up scaling factor is worse than none, because it looks like analysis.
  */
 
+import { percentileSpread } from './spread.js'
+import { TIER } from './methodologyTier.js'
+
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
 const yearOf = row => {
@@ -31,7 +34,13 @@ const MIN_OBSERVATIONS = 4
 
 // A fit that explains almost nothing shouldn't drive anything. Below this the
 // multiple and the fundamental simply didn't move together for this company.
-const MIN_R2 = 0.30
+// Raised from 0.30: the adjustment used to also be capped at half the anchor
+// regardless of fit quality, a second damper against a weak-but-passing fit
+// swinging the result too far. That cap was removed (an asserted percentage
+// with no derivation, doing the same job this threshold should do on its
+// own) — with it gone, this bar carries the whole job of keeping a genuinely
+// noisy fit from being trusted, so it needs to do more work than before.
+const MIN_R2 = 0.4
 
 /**
  * Ordinary least squares on (x, y), returning slope, intercept and R².
@@ -91,8 +100,12 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
     const start = Date.UTC(y - 1, fyEndMonth, 1)
     const end = Date.UTC(y, fyEndMonth, 0)
     const inYear = closes.filter(c => c.t >= start && c.t <= end).map(c => c.close).sort((a, b) => a - b)
-    if (inYear.length < 20) continue
+    if (inYear.length === 0) continue
     const medianClose = inYear[Math.floor(inYear.length / 2)]
+    // A median is the most sample-efficient statistic there is — real even from
+    // a thin year (a listing year, a data gap) — so it's used and disclosed as
+    // thin rather than the whole year being silently dropped.
+    const thinYear = inYear.length < 30
 
     // Fundamentals as of that year, computed the same way every year so the
     // series is internally consistent even if it differs slightly from the
@@ -106,6 +119,7 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
       roe, margin,
       eps, revenue, bps,
       price: medianClose,
+      thin: thinYear,
     })
   }
 
@@ -140,21 +154,36 @@ export function targetMultiple(opts = {}) {
   // the minimum that can describe a range at all.
   const MIN_YEARS_FOR_BAND = 3
   if (obs.length < MIN_YEARS_FOR_BAND) {
+    // DERIVED — real peer data plus a percentile formula, same standing as
+    // the primary anchor below, not a weaker fallback in provenance terms.
     return peerBand?.median > 0
       ? { multiple: peerBand.median, low: peerBand.low, high: peerBand.high,
-          basis, source: 'peers', observations: obs.length,
+          basis, source: 'peers', observations: obs.length, tier: TIER.DERIVED,
           steps: [`Only ${obs.length} year${obs.length === 1 ? '' : 's'} of multiple history — ` +
                   `too few to describe a range, so peers are used instead.`] }
       : null
   }
 
-  // Anchor: the stock's own median multiple across the observed years.
-  const sorted = [...obs].map(o => o.multiple).sort((a, b) => a - b)
-  const anchor = sorted[Math.floor(sorted.length / 2)]
-  const spreadLow = sorted[Math.floor(sorted.length * 0.15)] / anchor
-  const spreadHigh = sorted[Math.floor(sorted.length * 0.85)] / anchor
+  // Anchor: the stock's own median multiple across the observed years. Uses
+  // the shared percentileSpread() (src/engine/spread.js) rather than a fifth
+  // inline reimplementation of "sort, take a percentile" — this was the one
+  // spread.js's own docblock still missed when it unified the other four.
+  // Safe here without a separate length guard: percentileSpread's own
+  // minSamples:3 default is already satisfied by MIN_YEARS_FOR_BAND above.
+  const ps = percentileSpread(obs.map(o => o.multiple), { lowP: 0.15, highP: 0.85 })
+  const anchor = ps.median
+  const spreadLow = ps.low / anchor
+  const spreadHigh = ps.high / anchor
 
   const steps = [`Anchor: ${round(anchor)}× — this stock's median over ${obs.length} year${obs.length > 1 ? 's' : ''}`]
+  // A thin year (fewer than 30 trading days — a listing year, a data gap) is
+  // still a real median, just a noisier one, so it's included, not dropped —
+  // but disclosed, since a thin year counting toward the 3-year minimum above
+  // is not the same guarantee as three fully-traded years.
+  const thinYears = obs.filter(o => o.thin).length
+  if (thinYears > 0) {
+    steps.push(`${thinYears} of ${obs.length} year${obs.length > 1 ? 's' : ''} used ha${thinYears === 1 ? 's' : 've'} a thin trading record`)
+  }
   let adjusted = anchor
   const fits = []
 
@@ -184,16 +213,8 @@ export function targetMultiple(opts = {}) {
     }
 
     const gap = clamped - fit.meanX
-    let delta = fit.slope * gap
+    const delta = fit.slope * gap
 
-    // However good the fit, one factor should not move the multiple by more than
-    // half the anchor — beyond that the adjustment, not the anchor, is doing the
-    // valuing, and the anchor is the part with real evidence behind it.
-    const limit = anchor * 0.5
-    if (Math.abs(delta) > limit) {
-      steps.push(`${label}: adjustment capped at ${delta > 0 ? '+' : '−'}${round(limit)}× — a single factor shouldn't outweigh the anchor`)
-      delta = Math.sign(delta) * limit
-    }
     if (!isFinite(delta) || Math.abs(delta) < 0.01) return
     adjusted += delta
     fits.push({ key, slope: fit.slope, r2: fit.r2, gap, delta })
@@ -228,12 +249,20 @@ export function targetMultiple(opts = {}) {
     }
   }
 
-  // Never negative or absurd, whatever the fit produced.
-  const floor = basis === 'pb' ? 0.2 : 4
-  const cap = basis === 'pb' ? 15 : 80
-  const finalMultiple = Math.min(cap, Math.max(floor, adjusted))
-  if (finalMultiple !== adjusted) {
-    steps.push(`Bounded to ${round(finalMultiple)}× — the fitted value fell outside what this kind of business trades at.`)
+  // Structural check only: a multiple can't be zero or negative — that isn't
+  // "an unusual valuation," it's the fitted adjustment(s) producing something
+  // that cannot be a real multiple. No plausibility ceiling either (a flat
+  // 80x/15x cap here would still have clamped Trent's own real ~117x P/E,
+  // the exact case that motivated widening this bound before it was removed
+  // entirely — a real, observed anchor being overridden by an asserted
+  // market-wide number was the actual bug, not a number that was merely
+  // still too low). If the adjustment breaks the structural floor, discard
+  // it and fall back to the anchor alone — the stock's own real historical
+  // median is still valid on its own.
+  let finalMultiple = adjusted
+  if (!(finalMultiple > 0)) {
+    steps.push(`The fitted adjustment produced a non-positive multiple — discarded, reverting to the ${round(anchor)}× anchor alone.`)
+    finalMultiple = anchor
   }
 
   return {
@@ -246,6 +275,13 @@ export function targetMultiple(opts = {}) {
     basis, anchor: round(anchor), observations: obs.length,
     fits, peerPulled,
     source: fits.length > 0 ? 'fitted' : 'historical-median',
+    thin: thinYears > 0,
+    // DERIVED in effectively every case here: the anchor is this stock's
+    // own real historical multiple, any adjustment is a disclosed
+    // regression bounded to its own measured range, and a peer pull only
+    // ever moves it toward other real market data — no branch produces an
+    // unanchored number.
+    tier: TIER.DERIVED,
     steps,
   }
 }

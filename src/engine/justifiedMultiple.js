@@ -21,16 +21,17 @@
  * reading arrived at independently, not an error in either.
  */
 
-import { capmCostOfEquity, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
+import { capmCostOfEquity, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
+import { TIER } from './methodologyTier.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
 // Terminal growth cannot exceed the economy forever — a company growing faster
 // than nominal GDP in perpetuity eventually becomes the economy. Shared with
-// DCF's own terminal growth (src/engine/requiredReturn.js) — these used to be
-// two different, undocumented-reason constants (3% vs 6%) for the same idea.
-const TERMINAL_GROWTH_CAP = TERMINAL_GROWTH_RATE
+// DCF's own terminal growth (src/engine/requiredReturn.js), split by market
+// there for the same reason it's resolved per-market here (see
+// justifiedMultiples() below) rather than as one module-level constant.
 
 // Explicit high-growth window before the fade. Five to ten years is the usual
 // range in practice; the shorter end is used because a longer window compounds
@@ -68,7 +69,7 @@ export function sustainableGrowth({ roe, payoutPct } = {}) {
  * negative. That isn't a flaw to work around — it's the model correctly refusing
  * an impossible assumption, since no company outgrows its discount rate forever.
  */
-function twoStageMultiple({ payout, g, r, roe, years = STAGE_1_YEARS, terminalG = TERMINAL_GROWTH_CAP }) {
+function twoStageMultiple({ payout, g, r, roe, years = STAGE_1_YEARS, terminalG }) {
   if (!(r > terminalG)) return null
 
   // Stage 1: dividends at the CURRENT payout, growing at g.
@@ -117,7 +118,7 @@ function twoStageMultiple({ payout, g, r, roe, years = STAGE_1_YEARS, terminalG 
  * reinvestment-need calculation. Holding it constant is a reasonable
  * simplification; it is not the gap this function exists to close.
  */
-function twoStageEvMultiple({ conversion, g, r, years = STAGE_1_YEARS, terminalG = TERMINAL_GROWTH_CAP }) {
+function twoStageEvMultiple({ conversion, g, r, years = STAGE_1_YEARS, terminalG }) {
   if (!(r > terminalG)) return null
 
   // Stage 1: cash reaching investors, per unit of TODAY's EBITDA/revenue,
@@ -156,7 +157,7 @@ function twoStageEvMultiple({ conversion, g, r, years = STAGE_1_YEARS, terminalG
  * the first place, just solved for the other variable). That's what lets
  * this stay payout-data-free, like the single-stage P/B form already is.
  */
-function twoStagePbMultiple({ roe, g, r, years = STAGE_1_YEARS, terminalG = TERMINAL_GROWTH_CAP }) {
+function twoStagePbMultiple({ roe, g, r, years = STAGE_1_YEARS, terminalG }) {
   if (!(r > terminalG)) return null
   const roeDec = roe / 100
   if (!(roeDec > 0)) return null
@@ -198,7 +199,12 @@ function twoStagePbMultiple({ roe, g, r, years = STAGE_1_YEARS, terminalG = TERM
  * reason is more useful than a number nobody can trace.
  */
 export function justifiedMultiples(ratioResult, opts = {}) {
-  const { riskFreeRate, equityRiskPremium, beta, incomeHistory = [] } = opts
+  // market was previously accepted here but never read — every call (even
+  // from valuation.js's US-ticker path) silently defaulted to requiredReturn's
+  // own 'IN' default inside capmCostOfEquity. Harmless while ERP_BY_MARKET's
+  // IN/US values were identical, but a real bug once terminal growth (below)
+  // is split by market instead of shared.
+  const { riskFreeRate, equityRiskPremium, beta, incomeHistory = [], market = 'IN' } = opts
   const R = ratioResult?.ratios || {}
 
   const roe = R.roe?.value
@@ -207,8 +213,9 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     dividendYield: R.dividendYield?.value ?? null,
     pe: R.pe?.value ?? null,
   })
-  const rr = requiredReturn({ riskFreeRate, beta, equityRiskPremium })
+  const rr = requiredReturn({ riskFreeRate, beta, equityRiskPremium, market })
   const sg = sustainableGrowth({ roe, payoutPct })
+  const terminalG = TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN
 
   const missing = []
   if (!rr) missing.push('risk-free rate')
@@ -227,16 +234,16 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   // valuation. Those are better served by P/B, so this returns nothing.
   if (payoutPct > 0) {
     const payout = payoutPct / 100
-    const pe = twoStage ? twoStageMultiple({ payout, g, r, roe: roe / 100 })
+    const pe = twoStage ? twoStageMultiple({ payout, g, r, roe: roe / 100, terminalG })
                         : (payout * (1 + g)) / (r - g)
     if (pe > 0 && isFinite(pe)) {
       forms.pe = {
-        multiple: round(pe, 1), basis: 'pe',
+        multiple: round(pe, 1), basis: 'pe', tier: TIER.DERIVED,
         label: twoStage ? 'Justified P/E (two-stage)' : 'Justified P/E',
         steps: twoStage
           ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
-             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(TERMINAL_GROWTH_CAP * 100, 1)}%`,
-             `Payout rises from ${round(payoutPct, 0)}% to ${round((1 - TERMINAL_GROWTH_CAP / (roe / 100)) * 100, 0)}% once growth slows`,
+             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(terminalG * 100, 1)}%`,
+             `Payout rises from ${round(payoutPct, 0)}% to ${round((1 - terminalG / (roe / 100)) * 100, 0)}% once growth slows`,
              `— a company that stops reinvesting pays out what it no longer needs`]
           : [`Payout ${round(payoutPct, 0)}% / (${round(r * 100, 1)}% required - ${round(g * 100, 1)}% growth)`],
       }
@@ -251,15 +258,15 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   if (roe != null) {
     const roeDec = roe / 100
     const pb = twoStage
-      ? twoStagePbMultiple({ roe, g, r })
+      ? twoStagePbMultiple({ roe, g, r, terminalG })
       : (r - g > 0 ? (roeDec - g) / (r - g) : null)
     if (pb > 0 && isFinite(pb)) {
       forms.pb = {
-        multiple: round(pb, 2), basis: 'pb',
+        multiple: round(pb, 2), basis: 'pb', tier: TIER.DERIVED,
         label: twoStage ? 'Justified P/B (two-stage)' : 'Justified P/B',
         steps: twoStage
           ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
-             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(TERMINAL_GROWTH_CAP * 100, 1)}%`,
+             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(terminalG * 100, 1)}%`,
              `Implied payout rises as growth fades, same as the Justified P/E basis`]
           : [`(ROE ${round(roe, 1)}% - growth ${round(g * 100, 1)}%) / (required ${round(r * 100, 1)}% - growth ${round(g * 100, 1)}%)`,
              roeDec > r ? 'Earning above its cost of equity, so worth more than book.'
@@ -277,25 +284,33 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     // this company's own MEASURED FCF/EBITDA conversion (real capex and real
     // tax already baked in) over a guess — `1 - retention x 0.5` was an
     // invented halving with no derivation behind it, kept now only as the
-    // fallback for when FCF genuinely isn't available. Bounded either way
-    // because an unbounded conversion would swing the multiple wildly; the
-    // measured case gets a wider band since a real, differentiated business
-    // (near-zero-capex software vs. heavy-capex manufacturing) can
-    // legitimately sit outside the heuristic's tighter guess-range.
+    // fallback for when FCF genuinely isn't available. No bound on the
+    // measured case: a real, differentiated business (near-zero-capex
+    // software vs. heavy-capex manufacturing) can legitimately sit anywhere
+    // in a wide range, and clamping a real measured ratio to fit an assumed
+    // band replaces real data with a guess. The estimated fallback keeps a
+    // sanity floor only against nonsense (a retention outside [0,1] would
+    // otherwise produce a negative or >100% conversion), not a plausibility
+    // judgment about what's "too high" or "too low" for this business.
     const measuredConversion = (ratioResult?.fcf > 0) ? ratioResult.fcf / ebitda : null
     const conversion = measuredConversion != null
-      ? Math.max(0.15, Math.min(0.85, measuredConversion))
-      : Math.max(0.25, Math.min(0.75, retention > 0 ? 1 - retention * 0.5 : 0.5))
+      ? measuredConversion
+      : Math.max(0, Math.min(1, retention > 0 ? 1 - retention * 0.5 : 0.5))
     const evEbitda = twoStage
-      ? twoStageEvMultiple({ conversion, g, r })
+      ? twoStageEvMultiple({ conversion, g, r, terminalG })
       : (r - g > 0 ? conversion / (r - g) : null)
     if (evEbitda > 0 && isFinite(evEbitda)) {
       forms.evEbitda = {
         multiple: round(evEbitda, 1), basis: 'evEbitda',
+        // DERIVED when the real measured FCF/EBITDA ratio anchors it;
+        // ASSUMED when the estimated-fallback conversion is used — the
+        // comment above already calls that "an invented halving with no
+        // derivation behind it."
+        tier: measuredConversion != null ? TIER.DERIVED : TIER.ASSUMED,
         label: twoStage ? 'Justified EV/EBITDA (two-stage)' : 'Justified EV/EBITDA',
         steps: twoStage
           ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
-             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(TERMINAL_GROWTH_CAP * 100, 1)}%`,
+             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(terminalG * 100, 1)}%`,
              `${round(conversion * 100, 0)}% of EBITDA reaching investors (${measuredConversion != null ? 'this company\'s own measured FCF/EBITDA' : 'estimated — FCF not available'}), applied to EBITDA at each stage`]
           : [`${round(conversion * 100, 0)}% of EBITDA reaching investors (${measuredConversion != null ? 'this company\'s own measured FCF/EBITDA' : 'estimated — FCF not available'}) / (${round(r * 100, 1)}% required - ${round(g * 100, 1)}% growth)`,
              `EBITDA margin ${round((ebitda / revenue) * 100, 1)}%`],
@@ -309,15 +324,19 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   if (netMargin > 0 && revenue > 0) {
     const conversion = netMargin / 100
     const evSales = twoStage
-      ? twoStageEvMultiple({ conversion, g, r })
+      ? twoStageEvMultiple({ conversion, g, r, terminalG })
       : (r - g > 0 ? conversion / (r - g) : null)
     if (evSales > 0 && isFinite(evSales)) {
       forms.evSales = {
         multiple: round(evSales, 2), basis: 'evSales',
+        // ASSUMED — net margin standing in for cash conversion has no
+        // formula backing (this file's own "weak by construction" framing
+        // above), unlike EV/EBITDA's measured-FCF path.
+        tier: TIER.ASSUMED,
         label: twoStage ? 'Justified EV/Sales (two-stage)' : 'Justified EV/Sales',
         steps: twoStage
           ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
-             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(TERMINAL_GROWTH_CAP * 100, 1)}%`,
+             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(terminalG * 100, 1)}%`,
              `Net margin ${round(netMargin, 1)}%, applied to revenue at each stage`]
           : [`Net margin ${round(netMargin, 1)}% / (${round(r * 100, 1)}% - ${round(g * 100, 1)}%)`],
       }
@@ -331,7 +350,7 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     growth: { g, gPct: round(g * 100, 1), retention, roe, payoutPct },
     twoStage,
     stageOneYears: twoStage ? STAGE_1_YEARS : null,
-    terminalGrowthPct: twoStage ? round(TERMINAL_GROWTH_CAP * 100, 1) : null,
+    terminalGrowthPct: twoStage ? round(terminalG * 100, 1) : null,
   }
 }
 

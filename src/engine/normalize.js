@@ -123,7 +123,6 @@ const CR = 1e7  // Crore to absolute INR
 
 function src(value)              { return { value, status: 'source',       formula: null } }
 function derived(value, formula) { return { value, status: 'derived',      formula } }
-function ttm(value)              { return { value, status: 'ttm',          formula: 'TTM' } }
 function unavailable()           { return { value: null, status: 'unavailable', formula: null } }
 function scaleCr(tagged) {
   if (!tagged || tagged.value == null) return tagged ?? unavailable()
@@ -187,11 +186,15 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
   // current replacement, returning one entry per fiscal-year date with
   // requested "type" fields flattened directly onto each entry.
   //
-  // Field naming is a best-effort match against Yahoo's concept taxonomy —
-  // each metric below tries multiple alias candidates since the exact
-  // names returned haven't been verified against live data yet. The
-  // DIAGNOSTIC log in api/yahoo.js shows the real keys on first deploy;
-  // update the candidate lists here if any come back empty.
+  // Field naming: each metric below tries multiple alias candidates, in
+  // priority order. The first-listed candidate for every field here was
+  // checked directly against yahoo-finance2's own published
+  // fundamentalsTimeSeries schema (its GitHub source) and is a real,
+  // correctly-cased concept key, not a guess — so a field coming back empty
+  // is more likely a genuine coverage gap (Yahoo not having that data for
+  // that ticker) than a wrong alias. The DIAGNOSTIC log in api/yahoo.js
+  // (FTS_DIAGNOSTIC=1) still shows the real per-ticker keys if a candidate
+  // ever needs correcting.
   const ftsRows = Array.isArray(fts) ? fts : []
 
   const pick = (row, ...candidates) => {
@@ -304,99 +307,17 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
   }).filter(r => r.year && r.operatingCF.value != null)
     .sort((a, b) => a.year.localeCompare(b.year))
 
-  // ── TTM from financialData ────────────────────────────────────────────────────
-  // yahoo-finance2 financialData fields are direct numbers (no .raw wrapper)
-  const ttmData = {
-    revenue:          n(fin.totalRevenue)      != null ? src(n(fin.totalRevenue))      : unavailable(),
-    grossProfit:      n(fin.grossProfits)      != null ? src(n(fin.grossProfits))      : unavailable(),
-    ebitda:           n(fin.ebitda)            != null ? ttm(n(fin.ebitda))            : unavailable(),
-    netProfit:        n(fin.netIncomeToCommon) != null ? src(n(fin.netIncomeToCommon)) : unavailable(),
-    eps:              n(fin.trailingEps) ?? n(ks.trailingEps)
-                        ? src(n(fin.trailingEps) ?? n(ks.trailingEps))              : unavailable(),
-    operatingCF:      n(fin.operatingCashflow)  != null ? src(n(fin.operatingCashflow)) : unavailable(),
-    freeCashFlow:     n(fin.freeCashflow)        != null ? src(n(fin.freeCashflow))      : unavailable(),
-    totalDebt:        n(fin.totalDebt)           != null ? src(n(fin.totalDebt))         : unavailable(),
-    cash:             n(fin.totalCash)           != null ? src(n(fin.totalCash))         : unavailable(),
-    grossMargins:     n(fin.grossMargins)        != null ? ttm(n(fin.grossMargins))      : unavailable(),
-    profitMargins:    n(fin.profitMargins)       != null ? ttm(n(fin.profitMargins))     : unavailable(),
-    ebitdaMargins:    n(fin.ebitdaMargins)       != null ? ttm(n(fin.ebitdaMargins))     : unavailable(),
-    operatingMargins: n(fin.operatingMargins)    != null ? ttm(n(fin.operatingMargins))  : unavailable(),
-    roe:              n(fin.returnOnEquity)       != null ? ttm(n(fin.returnOnEquity))    : unavailable(),
-    debtToEquity:     n(fin.debtToEquity)        != null ? ttm(n(fin.debtToEquity))      : unavailable(),
-    currentRatio:     n(fin.currentRatio)        != null ? ttm(n(fin.currentRatio))      : unavailable(),
-    revenueGrowth:    n(fin.revenueGrowth)       != null ? ttm(n(fin.revenueGrowth))     : unavailable(),
-    earningsGrowth:   n(fin.earningsGrowth)      != null ? ttm(n(fin.earningsGrowth))    : unavailable(),
-  }
-
-  // ── Synthesize from TTM when statement history is sparse ─────────────────────
-  // yahoo-finance2 sometimes returns limited statement history for Indian stocks
-  // Use TTM financialData fields to fill gaps
-  const ttmRev  = ttmData.revenue.value
-  const ttmEb   = ttmData.ebitda.value
-  const ttmNP   = ttmData.netProfit.value
-  const ttmEps  = ttmData.eps.value
-  const ttmDebt = ttmData.totalDebt.value
-  const ttmCash = ttmData.cash.value
-  const ttmROE  = ttmData.roe.value
-  const ttmDE   = ttmData.debtToEquity.value
-  const ttmOpCF = ttmData.operatingCF.value
-  const ttmFCF  = ttmData.freeCashFlow.value
-  const ttmOpM  = ttmData.operatingMargins.value
-
-  if (incomeHistory.length === 0 && (ttmRev || ttmNP)) {
-    const yr = new Date().getFullYear().toString()
-    incomeHistory.push({
-      year:            yr,
-      synthetic:       true,   // TTM-only stub — must never shadow real/pasted rows
-      revenue:         ttmRev  != null ? src(ttmRev)  : unavailable(),
-      expenses:        unavailable(),
-      grossProfit:     ttmData.grossProfit.value != null ? src(ttmData.grossProfit.value) : unavailable(),
-      cogs:            unavailable(),
-      operatingProfit: ttmRev && ttmOpM ? derived(ttmRev * ttmOpM, 'Revenue × Op.Margin (TTM)') : unavailable(),
-      ebitda:          ttmEb   != null ? ttm(ttmEb)   : unavailable(),
-      depreciation:    unavailable(),
-      interest:        unavailable(),
-      otherIncome:     unavailable(),
-      netProfit:       ttmNP   != null ? src(ttmNP)   : unavailable(),
-      eps:             ttmEps  != null ? src(ttmEps)  : unavailable(),
-    })
-  }
-
-  if (balanceHistory.length === 0 && (ttmDebt != null || ttmDE != null)) {
-    const deRatio   = ttmDE != null ? (ttmDE > 10 ? ttmDE / 100 : ttmDE) : null
-    const eqFromDE  = ttmDebt != null && deRatio ? ttmDebt / deRatio : null
-    const eqFromROE = ttmNP && ttmROE && ttmROE > 0 ? ttmNP / ttmROE : null
-    const equity    = eqFromDE ?? eqFromROE
-    const yr        = new Date().getFullYear().toString()
-    balanceHistory.push({
-      year:             yr,
-      synthetic:        true,   // TTM-only stub — must never shadow real/pasted rows
-      equityCapital:    unavailable(),
-      reserves:         unavailable(),
-      totalEquity:      equity  != null ? derived(equity, deRatio ? 'Debt ÷ D/E (TTM)' : 'Net Profit ÷ ROE (TTM)') : unavailable(),
-      totalDebt:        ttmDebt != null ? src(ttmDebt) : unavailable(),
-      cash:             ttmCash != null ? src(ttmCash) : unavailable(),
-      totalAssets:      unavailable(),
-      totalLiabilities: unavailable(),
-      fixedAssets:      unavailable(),
-      investments:      unavailable(),
-      currentAssets:    unavailable(),
-      currentLiabilities: unavailable(),
-    })
-  }
-
-  if (cashflowHistory.length === 0 && (ttmOpCF || ttmFCF)) {
-    const yr = new Date().getFullYear().toString()
-    cashflowHistory.push({
-      year:         yr,
-      synthetic:    true,   // TTM-only stub — must never shadow real/pasted rows
-      operatingCF:  ttmOpCF != null ? src(ttmOpCF) : unavailable(),
-      investingCF:  unavailable(),
-      financingCF:  unavailable(),
-      capex:        unavailable(),
-      freeCashFlow: ttmFCF  != null ? src(ttmFCF) : unavailable(),
-    })
-  }
+  // A genuinely empty statement history (fundamentalsTimeSeries returned
+  // nothing usable) used to be papered over with a single synthetic
+  // current-year row built from Yahoo's financialData TTM snapshot. That
+  // stub couldn't feed a CAGR, a multiple band, or anything requiring a
+  // trend regardless of why the history was empty, and it was itself
+  // sourced from the same shaky post-Nov-2024-migration pipeline as the
+  // primary data — not a more reliable substitute, just a weaker one
+  // dressed up as an answer. Removed: an empty history now stays empty and
+  // every dependent ratio/model correctly declines (`unavailable()`)
+  // instead. `ratios.js`'s `coalesceLatest()` already handles an empty
+  // array by returning `{}`, so nothing downstream assumed the stub existed.
 
   return {
     ticker,
@@ -411,7 +332,6 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
     incomeHistory,
     balanceHistory,
     cashflowHistory,
-    ttm: ttmData,
     meta: {
       sector:    ap.sector    || null,
       industry:  ap.industry  || null,
@@ -479,10 +399,6 @@ function normalizeScreener(raw) {
   const mcapCr   = ks['marketcap']?.value    ?? null
   const marketCap = mcapCr != null ? mcapCr * CR : null
 
-  const latestInc = inc[inc.length - 1] || {}
-  const latestBal = bal[bal.length - 1] || {}
-  const latestCF  = cf[cf.length - 1]  || {}
-
   return {
     ticker:   raw.ticker,
     name:     raw.name || raw.ticker,
@@ -496,17 +412,6 @@ function normalizeScreener(raw) {
     incomeHistory:  inc,
     balanceHistory: bal,
     cashflowHistory: cf,
-    ttm: {
-      revenue:       latestInc.revenue,
-      netProfit:     latestInc.netProfit,
-      ebitda:        latestInc.ebitda,
-      operatingCF:   latestCF.operatingCF,
-      freeCashFlow:  latestCF.freeCashFlow,
-      totalDebt:     latestBal.totalDebt,
-      grossMargins:  unavailable(),
-      profitMargins: unavailable(),
-      ebitdaMargins: unavailable(),
-    },
     meta: {
       sector: null, industry: null, website: null, exchange: 'NSE/BSE',
       pe: ks['stockpe']?.value ?? null,
@@ -588,7 +493,7 @@ function normalizeMerged({ yahoo, screener }) {
 
   const used = sc.incomeHistory?.length || 0
   return {
-    ...y,                                   // price, mcap, shares, priceHistory, beta, TTM
+    ...y,                                   // price, mcap, shares, priceHistory, beta
     source:       used > 0 ? 'merged' : 'yahoo',
     deepSource:   used > 0 ? 'screener' : null,
     historyYears: incomeHistory.length - (y.incomeHistory?.length || 0),
@@ -607,7 +512,7 @@ function normalizeMerged({ yahoo, screener }) {
 
 // ── SEC (US tickers) ─────────────────────────────────────────────────────────
 // SEC EDGAR fills the same slot Screener fills for Indian tickers: deep annual
-// history. Yahoo still supplies price / marketCap / priceHistory / meta / ttm.
+// history. Yahoo still supplies price / marketCap / priceHistory / meta.
 //
 // Same merge contract as normalizeMerged: the DEEP source wins field by field.
 // SEC is a read of the filings and Yahoo is a vendor feed, so where both have a

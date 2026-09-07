@@ -12,11 +12,11 @@
  */
 import { getApplicableModels } from './stage.js'
 import { computePeg } from './peg.js'
-import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
+import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvSales as getSectorEvSales, financialPb } from './sectorMultiples.js'
 import { peerBand } from './peerBands.js'
-import { justifiedMultiples } from './justifiedMultiple.js'
 import { percentileSpread } from './spread.js'
+import { TIER } from './methodologyTier.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // Every call site guards on state.data being truthy, not state.ratioResult
@@ -54,16 +54,21 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // to a usable default rather than going blank.
   const market = assumptions.market ?? 'IN'
   // WACC default is computed per company (CAPM), not a flat rate — see computeWacc.
-  const waccDefault = computeWacc(r, { liveRiskFree: assumptions.liveRiskFree ?? null, erp: assumptions.liveErp ?? null, market })
+  const waccResult = computeWacc(r, { liveRiskFree: assumptions.liveRiskFree ?? null, erp: assumptions.liveErp ?? null, market })
+  const waccDefault = waccResult.wacc
+  const waccBetaFlag = waccResult.betaFlag
+  // Computed once, reused for both the default below and the scenario base
+  // further down — was previously called twice with identical inputs.
+  const growthResult = estimateGrowth(r)
 
   const {
     wacc       = waccDefault,
-    termGrowth = TERMINAL_GROWTH_RATE,
+    termGrowth = TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN,
     projYears  = 10,
     sectorPe   = sectorPeDefault,
     sectorEvEb = sectorEvEbDefault,
     sectorPs   = sectorPsDefault,
-    growthRate = estimateGrowth(r),
+    growthRate = growthResult.growth,
     // Optional near-term (guidance) window: grow at nearTermGrowth for
     // nearTermYears, then fade toward terminal. Drives the FORWARD DCF only;
     // the reverse-DCF (market-implied) stays independent so the comparison holds.
@@ -84,15 +89,31 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   if (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf) {
     const perShare = dcfPerShare(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntG, ntY)
     if (perShare != null) {
+      // Growth caveats only apply when the DCF is actually running on the
+      // measured default — a user-overridden slider value has its own
+      // number and these flags (computed from the measured CAGR) wouldn't
+      // describe what's actually being used.
+      const usedDefaultGrowth = assumptions.growthRate == null
       const caveats = [
         r.fcfEstimated && 'FCF estimated (CapEx ≈ Depreciation) — no CapEx reported',
         r.cashEstimated && 'Cash not reported — assumed nil, fair value understated',
         r.debtEstimated && 'Debt estimated from Equity × D/E',
+        waccBetaFlag,
+        usedDefaultGrowth && growthResult.unusual &&
+          `Growth rate (${(growthRate * 100).toFixed(0)}%) is well outside a typical range — likely a recovery from a collapsed base or a one-off`,
+        usedDefaultGrowth && growthResult.aboveSustainable &&
+          `Growth rate (${(growthRate * 100).toFixed(0)}%) exceeds what ${(growthResult.sustainable * 100).toFixed(0)}% ROE-funded growth alone can sustain — implies raising capital or more leverage`,
       ].filter(Boolean)
       results.dcf = {
         value: perShare,
         note: caveats.length ? caveats.join('; ') : 'FCF-based',
         estimated: caveats.length > 0,
+        // DERIVED — after this session's fixes (WACC clamp removed, beta
+        // used as-reported, terminal growth anchored to RBI/Fed targets),
+        // every component in this chain is either REPORTED (FCF, cash,
+        // debt) or DERIVED (CAPM WACC, anchored terminal growth) — no
+        // ASSUMED component remains.
+        tier: TIER.DERIVED,
       }
     }
   }
@@ -112,7 +133,10 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     const note = peBand
       ? `EPS × peer median ${targetPe}× P/E (${peBand.count} peers)`
       : `EPS × sector median ${targetPe}× P/E`
-    results.pe = { value: r.eps * targetPe, note }
+    // DERIVED when a real peer band anchors it (real data + a percentile
+    // formula); ASSUMED when it falls to the static sector table, which has
+    // no anchor beyond this app's own directional judgment.
+    results.pe = { value: r.eps * targetPe, note, tier: peBand ? TIER.DERIVED : TIER.ASSUMED }
   }
 
   // ── EV/EBITDA ── sector-median multiple as anchor (peer EV/EBITDA data
@@ -122,7 +146,10 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     const impliedEq = impliedEV + r.cash - r.totalDebt
     const perShare  = impliedEq / r.shares
     if (perShare > 0) {
-      results.evEbitda = { value: perShare, note: `EBITDA × ${sectorEvEb.toFixed(1)}× sector median EV/EBITDA` }
+      // Always ASSUMED today — peer EV/EBITDA isn't fetched at all (see the
+      // comment on sectorEvEbDefault above), so this model has no DERIVED
+      // path to take yet.
+      results.evEbitda = { value: perShare, note: `EBITDA × ${sectorEvEb.toFixed(1)}× sector median EV/EBITDA`, tier: TIER.ASSUMED }
     }
   }
 
@@ -140,43 +167,28 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
       (isFinancialSector || roe > 0)) {
     const pbBand = peerBand(peers, 'pb')
     let targetPb = null, pbNote = null
+    let pbTier = TIER.DERIVED
     if (pbBand) {
       targetPb = pbBand.median
       pbNote = `Book x ${targetPb.toFixed(1)}x (peer median PB, ${pbBand.count} peers)`
     } else if (isFinancialSector) {
       targetPb = financialPb(sectorType)
       pbNote = `Book x ${targetPb.toFixed(1)}x (sector median PB)`
-    } else {
-      // Last resort — no peer P/B data and no non-financial sector-PB table.
-      // Reuses justifiedMultiple.js's own P/B form (already two-stage-fixed)
-      // rather than a second, divergent implementation of the same formula.
-      // Labeled distinctly so a coincidental match with the Justified
-      // Multiples tab's own number is never mistaken for something else —
-      // it's the SAME calculation here on purpose, not a coincidence.
-      const jm = justifiedMultiples(r, {
-        riskFreeRate: assumptions.liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN,
-        equityRiskPremium: assumptions.liveErp ?? null,
-        beta: r?.ratios?.beta?.value, market,
-      })
-      // Same instability guard as estimate.js's buildJustifiedEstimate — this
-      // reuses the SAME single-stage formula, so it has the SAME blow-up
-      // condition (required return - growth going thin relative to required
-      // return) and had no protection against it at all here, unlike the
-      // sibling call site. Found by tracing where else justifiedMultiples()
-      // is consumed after fixing that one: a non-financial stock with no
-      // peer/sector P/B data and growth close to its required return
-      // produced "Book x 111.7x" (₹5,586 fair value on a ₹1,000 stock) with
-      // nothing to catch it.
-      const jmGapFraction = (jm?.requiredReturn?.r > 0)
-        ? (jm.requiredReturn.r - jm.growth.g) / jm.requiredReturn.r : null
-      const jmStable = jm?.twoStage || jmGapFraction == null || jmGapFraction >= 0.1
-      targetPb = jmStable ? (jm?.forms?.pb?.multiple ?? null) : null
-      if (targetPb != null) {
-        pbNote = `Book x ${targetPb.toFixed(1)}x (no peer/sector P/B data — the fundamentals-based Justified form, used as a last resort)`
-      }
+      // financialPb() is a flat asserted number per sector type (bank/nbfc/
+      // insurance) — same category as the sector tables, no external anchor.
+      pbTier = TIER.ASSUMED
     }
+    // No peer data and not a financial sector: P/B simply doesn't compute
+    // here, same as any other model whose real inputs aren't available. This
+    // used to fall back to justifiedMultiple.js's CAPM/ROE-derived form —
+    // but that number is a genuinely different (intrinsic, fundamentals-
+    // derived) method than what EXTRINSIC_MODELS below is supposed to mean:
+    // relative valuation against real peers or a sector benchmark. Folding
+    // it in here let a non-relative number quietly win "Fair Value (relative)"
+    // and duplicated a figure already shown correctly, under its own label,
+    // in the Justified Multiples panel.
     if (targetPb != null) {
-      results.pb = { value: r.bookPerShare * targetPb, note: pbNote }
+      results.pb = { value: r.bookPerShare * targetPb, note: pbNote, tier: pbTier }
     }
   }
 
@@ -191,14 +203,18 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     const impliedEq = impliedEV + r.cash - r.totalDebt
     const perShare  = impliedEq / r.shares
     if (perShare > 0) {
-      results.ps = { value: perShare, note: `Revenue × ${sectorPs.toFixed(1)}× sector median EV/Sales` }
+      // Always ASSUMED today — same reason as EV/EBITDA above, no peer
+      // EV/Sales data is fetched, so this model always falls to the table.
+      results.ps = { value: perShare, note: `Revenue × ${sectorPs.toFixed(1)}× sector median EV/Sales`, tier: TIER.ASSUMED }
     }
   }
 
   // ── Graham Number ─────────────────────────────────────────────────────────────
   // Skip Graham for asset-light/high-PB companies — distorted book value breaks it
   if (isApplicable('graham', modelMeta) && r.grahamNumber > 0 && !pbDistorted) {
-    results.graham = { value: r.grahamNumber, note: 'sqrt(22.5 x EPS x Book Value per Share)' }
+    // DERIVED — 22.5 is Graham's own published constant, not this app's
+    // guess, applied to real EPS/book value.
+    results.graham = { value: r.grahamNumber, note: 'sqrt(22.5 x EPS x Book Value per Share)', tier: TIER.DERIVED }
   }
 
   // ── PEG (growth-stage only; gated by stage.js applicable list) ──────────────
@@ -208,7 +224,9 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
       mode: assumptions.pegMode || 'blend',
     })
     if (peg.applicable && peg.fairValue > 0) {
-      results.peg = { value: peg.fairValue, note: peg.note, meta: peg }
+      // DERIVED — Lynch's "fair P/E ≈ growth rate" is a named, universal
+      // heuristic, not an app-invented number, applied to real EPS/growth.
+      results.peg = { value: peg.fairValue, note: peg.note, meta: peg, tier: TIER.DERIVED }
     }
   }
 
@@ -284,11 +302,11 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // no-required-return heuristic formulas (a fixed sanity ceiling; "fair P/E
   // = growth rate") — shown as supporting checks, not peers of DCF's rigor.
   const intrinsicValue = results.dcf
-    ? { key: 'dcf', name: 'DCF', value: results.dcf.value, note: results.dcf.note }
+    ? { key: 'dcf', name: 'DCF', value: results.dcf.value, note: results.dcf.note, tier: results.dcf.tier }
     : null
   const secondaryChecks = {
-    graham: results.graham ? { value: results.graham.value, note: results.graham.note } : null,
-    peg:    results.peg    ? { value: results.peg.value,    note: results.peg.note }    : null,
+    graham: results.graham ? { value: results.graham.value, note: results.graham.note, tier: results.graham.tier } : null,
+    peg:    results.peg    ? { value: results.peg.value,    note: results.peg.note,    tier: results.peg.tier }    : null,
   }
 
   // ── Sensitivity + scenarios (DCF is the growth/WACC-sensitive model) ──────────
@@ -305,7 +323,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // (wrong-looking, still misleading) "0%" rather than not showing the card
   // at all. Gating the whole block here means "no scenarios" instead.
   let scenarios = null
-  const scenGrowthDefault = estimateGrowth(r)
+  const scenGrowthDefault = growthResult.growth
   if (cfBaseDcf && r.shares && scenGrowthDefault != null && waccDefault != null) {
     // termGrowth: the RESOLVED value (respects a user-adjusted slider), not a
     // separate hardcoded 3% — this was a second, independent copy of the
@@ -315,7 +333,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     const scenBase = { growthRate: scenGrowthDefault, wacc: waccDefault, termGrowth, projYears }
     scenarios = {}
     for (const key of ['bear', 'base', 'bull']) {
-      const sa    = scenarioAssumptions(key, scenBase, data)
+      const sa    = scenarioAssumptions(key, scenBase, data, market)
       const dcfPs = dcfPerShare(cfBaseDcf, sa.growthRate, sa.wacc, sa.termGrowth, sa.projYears, r.cash, r.totalDebt, r.shares)
       scenarios[key] = {
         label: SCENARIO_PRESETS[key].label,
@@ -326,11 +344,24 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     }
   }
 
-  // Signal from the primary model's value vs CMP.
+  // Signal from the primary model's value vs CMP. Deadband scaled to how much
+  // the valid extrinsic models actually disagree for THIS stock (rangeHigh vs
+  // rangeLow) rather than a flat percentage assumed to fit every company
+  // alike — a ±2% band sat inside the ordinary noise of any relative-
+  // valuation estimate (WACC, multiple selection and model choice each
+  // individually carry more uncertainty than that), so the label was
+  // flipping on routine price moves, not on anything the model was actually
+  // confident about. Floored at 10% — a disclosed, conservative minimum,
+  // not a measurement — for the single-model case (rangeLow == rangeHigh),
+  // where there's nothing of this company's own to derive a wider band from;
+  // never goes narrower than that even when models happen to agree tightly.
+  const modelSpreadPct = (fairValue > 0 && rangeHigh != null && rangeLow != null)
+    ? ((rangeHigh - rangeLow) / fairValue) / 2 : null
+  const deadband = Math.max(0.10, modelSpreadPct ?? 0)
   const upside = fairValue != null && r.price > 0 ? ((fairValue - r.price) / r.price) * 100 : null
   const signal = (fairValue == null || r.price <= 0) ? 'UNKNOWN'
-    : r.price < fairValue * 0.98 ? 'UNDERVALUED'
-    : r.price > fairValue * 1.02 ? 'OVERVALUED'
+    : r.price < fairValue * (1 - deadband) ? 'UNDERVALUED'
+    : r.price > fairValue * (1 + deadband) ? 'OVERVALUED'
     : 'FAIRLY_VALUED'
 
   // ── Reverse DCF ───────────────────────────────────────────────────────────────
@@ -351,7 +382,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     sensitivity,
     scenarios,
     assumptions: { wacc, termGrowth, projYears, growthRate, sectorPe, sectorEvEb, sectorPs },
-    defaults: { wacc: waccDefault, termGrowth: TERMINAL_GROWTH_RATE, projYears: 10, growthRate: estimateGrowth(r), sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault, sectorPs: sectorPsDefault }
+    defaults: { wacc: waccDefault, termGrowth: TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN, projYears: 10, growthRate: growthResult.growth, sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault, sectorPs: sectorPsDefault }
   }
 }
 
@@ -423,38 +454,43 @@ function detectBookValueDistortion(data, actualPb) {
 // one.
 const TAX_RATE_BY_MARKET = { IN: 0.2517, US: 0.21 }
 
-// Result is clamped to a wide sanity band, NOT a "typical range" — CAPM's own
-// beta handling (requiredReturn.js: raw beta outside (0, 5) is treated as
-// unusable data rather than used; a usable one is Blume-adjusted toward 1,
-// adjusted = (2/3) x raw + 1/3) already bounds Ke to roughly [riskFree +
-// 0.33×ERP, riskFree + 3.67×ERP] — about 9-31% for India, 7-28% for the US
-// at the DEFAULT risk-free rates (a live rate shifts this slightly, not
-// structurally). A genuinely high-beta company's real cost of equity sitting
-// near that upper end is legitimate, not "nonsense" — a tight clamp that cut
-// it down would systematically understate required return (and so OVERVALUE)
-// exactly the volatile, small-cap names where getting this right matters
-// most. This band only catches truly broken inputs (a data glitch, not a
-// real high-beta stock), sitting outside that natural range on both ends.
+// No output clamp. WACC/Ke is shown exactly as CAPM computes it from real
+// inputs (risk-free, beta, ERP, measured cost of debt) — a clamp here would
+// silently overwrite a real, formula-derived number with a boundary value
+// whenever a genuinely high-beta stock (or an unusual rate environment)
+// pushed it past a band this app asserted. Checked against this app's own
+// live sanity bounds on Rf/ERP (api/riskfree.js, api/erp.js): a high-beta
+// Indian stock in an elevated-rate environment can legitimately compute
+// Ke above 50%; a low-beta US stock in a near-zero-rate environment can
+// legitimately fall under 2%. Both are real CAPM outputs from in-bounds
+// inputs, not broken data — clamping either would replace a real number
+// with a guess. The one thing that CAN make this number worth a second
+// look — an unusual beta reading — is surfaced via betaFlag (see
+// requiredReturn.js) without altering the computed value.
 function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRate = null } = {}) {
   const riskFree = liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
   const tax = taxRate ?? TAX_RATE_BY_MARKET[market] ?? TAX_RATE_BY_MARKET.IN
   const beta = (r?.ratios?.beta?.value != null && r.ratios.beta.value > 0) ? r.ratios.beta.value : 1.0
   const E = r?.marketCap > 0 ? r.marketCap : null
   const D = r?.totalDebt > 0 ? r.totalDebt : 0
-  const ke = capmCostOfEquity({ riskFreeRate: riskFree, beta, erp, market }).r
-  if (E == null) return clamp(ke, 0.04, 0.34)          // no market cap → all-equity proxy
+  const capm = capmCostOfEquity({ riskFreeRate: riskFree, beta, erp, market })
+  const ke = capm.r
+  const betaFlag = capm.betaFlag
+  if (E == null) return { wacc: ke, betaFlag }          // no market cap → all-equity proxy
   // Cost of debt has to be MEASURED (interest / debt) — a flat 9% dressed up
   // as this company's WACC was the same "invented figure feeding a fair
   // value" problem the DCF section below already refuses for FCF/CapEx.
   // D == 0 means debt carries no weight in WACC at all, so kd is moot there.
+  // No clamp here either, same reasoning as the WACC output above — real
+  // distressed or subsidised debt legitimately sits outside any flat band.
   let kd = 0
   if (D > 0) {
-    if (!(r?.interest > 0)) return null      // real debt, no way to measure its cost
-    kd = clamp(r.interest / D, 0.04, 0.18)
+    if (!(r?.interest > 0)) return { wacc: null, betaFlag }      // real debt, no way to measure its cost
+    kd = r.interest / D
   }
   const V = E + D
   const wacc = (E / V) * ke + (D / V) * kd * (1 - tax)
-  return clamp(wacc, 0.04, 0.34)
+  return { wacc, betaFlag }
 }
 
 
@@ -537,64 +573,46 @@ function estimateGrowth(r) {
   // user's window now reaches the DCF. No revCagr means no growth rate, not a
   // flat 8% dressed up as one. Callers (DCF, scenarios, reverse-DCF) decline
   // rather than substitute when this comes back null.
-  //
-  // Declines (null) rather than substituting when the rate itself is outside
-  // a plausible range to project forward — same -30%/+60% bound seriesCagr
-  // already uses elsewhere in this codebase (estimate.js), chosen there
-  // because a CAGR beyond it is a recovery from a collapsed base or a
-  // one-off, not a real sustainable rate. This used to be clamp(g, 0.02,
-  // 0.20) — a FLOOR that substituted +2% for any decline, including a real,
-  // measured one: a company with an actual -8%/yr revenue CAGR had its DCF
-  // forced to assume +2% growth instead. That's the "dangerous direction"
-  // (silently more optimistic) this codebase explicitly tries to avoid
-  // elsewhere, and it directly contradicted this function's own comment
-  // above ("decline rather than substitute").
   const cagr = r.ratios?.revCagr?.value
-  if (cagr == null) return null
+  if (cagr == null) return { growth: null, unusual: false, sustainable: null, aboveSustainable: false }
   const g = cagr / 100
-  if (g < -0.3 || g > 0.6) return null
 
-  // Ceiling scaled to what THIS company's own fundamentals can plausibly
-  // sustain, not a flat 20% applied to every business alike. Sustainable
-  // growth — ROE x retention, the standard corporate-finance measure of how
-  // fast a company can grow funding itself without raising fresh capital —
-  // is already computed elsewhere in this codebase for a different purpose
-  // (estimate.js's financeabilityNote) and was never connected to this
-  // ceiling.
+  // A rate outside this range is unusual — likely a recovery from a
+  // collapsed base or a one-off — but it's real, measured data, not a
+  // reason to hide it. Used as-is and flagged (see the DCF caveats this
+  // feeds), not discarded: this used to decline outright here, which meant
+  // a company with a genuine severe decline (or a genuine outsized
+  // recovery) got no DCF at all rather than a real number with a caveat
+  // attached. Before that, it was clamp(g, 0.02, 0.20) — a FLOOR that
+  // substituted +2% for any decline, including a real, measured one. Both
+  // were the same mistake in different directions: swapping a real number
+  // for one this function preferred instead of showing what was measured.
+  const unusual = g < -0.3 || g > 0.6
+
+  // Sustainable growth — ROE x retention, the standard corporate-finance
+  // measure of how fast a company can grow funding itself without raising
+  // fresh capital — is surfaced as a flagged comparison, not used to cap
+  // the returned growth rate. A company genuinely growing faster than this
+  // is really growing that fast; whether it can keep funding that by
+  // raising capital or leverage is a separate question from what the
+  // measured rate is. Silently substituting the lower, "sustainable"
+  // figure whenever it undercut the real one was the same fabricated-
+  // number problem as the +2% floor above — just conservative instead of
+  // optimistic, which doesn't make it not a substitution.
   //
-  // An earlier version of this also multiplied the result by 1.5x and
-  // clamped it to a 10-40% band, meant to allow for growth funded by raising
-  // outside capital rather than pure retained earnings. Neither number had a
-  // real derivation, and both were unnecessary: the ceiling only ever binds
-  // when the company's OWN measured CAGR already exceeds it, so a company
-  // that genuinely grew faster via external financing shows up as a high
-  // CAGR being capped back toward its fundamentals-implied rate — an
-  // intentionally conservative stance, not a missed allowance. The 60% cap
-  // on `g` a few lines up already keeps this from ever mattering for a
-  // very-high-ROE company. So: the plain formula, no extra multiplier or
-  // band layered on top of it.
-  //
-  // When ROE isn't positive — missing data OR a currently loss-making
-  // company — there's no earnings-funded growth capacity to compute a
-  // ceiling FROM; the formula doesn't degrade gracefully here, it simply
-  // doesn't apply. An earlier version substituted a flat 20% in that case,
-  // which conflated "we don't know" with "we know it's currently negative"
-  // and produced a backwards result: a loss-making company could land a more
-  // generous ceiling than a modestly-profitable one (e.g. 15% ROE, full
-  // retention -> 15%, tighter than the flat 20%). Rather than invent an
-  // unrelated substitute number, decline to add a fundamentals-based ceiling
-  // at all in that case and fall through to the CAGR's own -30%/+60%
-  // plausibility bound above, same as this function does for every other
-  // case where it has no basis to impose a tighter number.
-  const roe = r.ratios?.roe?.value
-  const payoutPct = r.ratios?.dividendPayout?.value
   // No reported payout -> treated as retaining everything, the same
   // convention justifiedMultiple.js's sustainableGrowth() already uses.
+  // When ROE isn't positive (missing data, or a currently loss-making
+  // company) there's no earnings-funded capacity to compare against, so no
+  // comparison is made — never a fabricated substitute for "we don't know."
+  const roe = r.ratios?.roe?.value
+  const payoutPct = r.ratios?.dividendPayout?.value
   const retention = (payoutPct != null && payoutPct >= 0 && payoutPct <= 100)
     ? 1 - payoutPct / 100 : 1
   const sustainable = (roe > 0) ? (roe / 100) * retention : null
+  const aboveSustainable = sustainable != null && g > sustainable
 
-  return sustainable != null ? Math.min(g, sustainable) : g
+  return { growth: g, unusual, sustainable, aboveSustainable }
 }
 
 // Enterprise PV → equity value per share, with a growth fade toward terminal.
@@ -617,8 +635,15 @@ function dcfPerShare(cfBase, g, wacc, tg, yrs, cash, debt, shares, ntGrowth = nu
 // near-term rate so the centre cell matches the applied DCF.
 function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYears = 0) {
   if (!(cfBase > 0) || !(shares > 0)) return null
-  const growthAxis = [-0.04, -0.02, 0, 0.02, 0.04].map(d => clamp(gBase + d, 0, 0.30))
-  const waccAxis   = [-0.02, -0.01, 0, 0.01, 0.02].map(d => clamp(wBase + d, tg + 0.01, 0.34))
+  // No floor/ceiling on the growth axis: gBase is already sanity-bounded by
+  // estimateGrowth() upstream, and flooring the sweep at 0% used to collapse
+  // every column to an identical value for any company with base growth
+  // below about -4% — destroying the sensitivity table for exactly the
+  // declining/turnaround companies where seeing the range matters most.
+  // WACC axis keeps only the structural floor (wacc must exceed terminal
+  // growth or the terminal-value term is undefined); no separate ceiling.
+  const growthAxis = [-0.04, -0.02, 0, 0.02, 0.04].map(d => gBase + d)
+  const waccAxis   = [-0.02, -0.01, 0, 0.01, 0.02].map(d => Math.max(wBase + d, tg + 0.01))
   const grid = growthAxis.map(g =>
     waccAxis.map(w => ntYears > 0
       ? dcfPerShare(cfBase, g, w, tg, yrs, cash, debt, shares, g, ntYears)
@@ -633,10 +658,17 @@ function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYea
 // per-company measurement the way growth volatility has one below — these
 // stay a disclosed, undented convention rather than a spurious "measurement"
 // invented to look more rigorous than they are.
+//
+// growthAdd, not growthMul: a MULTIPLIER flips sign-dependent — 0.5x on a
+// positive 10% growth gives a milder 5% (correctly bearish), but 0.5x on a
+// genuinely negative -10% growth gives -5% (LESS decline — backwards for a
+// bear case). An ADDITIVE shift is sign-safe either way: bear always means
+// "a few points worse than base," bull always "a few points better,"
+// regardless of whether base itself is growth or decline.
 export const SCENARIO_PRESETS = {
-  base: { label: 'Base', growthMul: 1.00, waccAdd:  0.000, termAdd:  0.000 },
-  bear: { label: 'Bear', growthMul: 0.50, waccAdd:  0.020, termAdd: -0.005 },
-  bull: { label: 'Bull', growthMul: 1.40, waccAdd: -0.015, termAdd:  0.005 },
+  base: { label: 'Base', growthAdd:  0.00, waccAdd:  0.000, termAdd:  0.000 },
+  bear: { label: 'Bear', growthAdd: -0.05, waccAdd:  0.020, termAdd: -0.005 },
+  bull: { label: 'Bull', growthAdd:  0.05, waccAdd: -0.015, termAdd:  0.005 },
 }
 
 // Bear/Bull growth spread, measured from this company's OWN year-over-year
@@ -672,30 +704,46 @@ function growthScenarioSpread(data) {
 // The UI applies this via the existing recalc(assumptions) path. `data`
 // (optional) enables the measured growth spread above; omitted, this falls
 // back to the fixed multiplier exactly as before.
-export function scenarioAssumptions(preset, base, data = null) {
+export function scenarioAssumptions(preset, base, data = null, market = 'IN') {
   const p = SCENARIO_PRESETS[preset] || SCENARIO_PRESETS.base
-  const termGrowth = clamp((base.termGrowth ?? TERMINAL_GROWTH_RATE) + p.termAdd, 0.0, 0.06)
+  const marketTermGrowth = TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN
+  // No clamp here: ValuationPanel's own slider already constrains user-set
+  // termGrowth to 1-6%, and the market-anchored defaults (5% IN / 2.5% US)
+  // plus a ±0.5pt scenario shift never approach a range needing a backstop —
+  // the previous [0%,6%] clamp was redundant with the UI bound in every real
+  // case and, per the same reasoning applied everywhere else this session,
+  // an asserted ceiling isn't the right tool even where it would bind.
+  const termGrowth = (base.termGrowth ?? marketTermGrowth) + p.termAdd
   const measuredSpread = preset !== 'base' ? growthScenarioSpread(data) : null
   let growthRate = null
   if (base.growthRate != null) {
     // null base growth/wacc (no measured CAGR, no computable WACC) stays
     // null through every scenario rather than falling back to a flat
     // 8%/10% — dcfPerShare declines cleanly on a null input; it must NOT
-    // receive a number nobody measured just because a scenario multiplier
-    // was applied to it.
-    growthRate = measuredSpread != null
-      ? clamp(base.growthRate + (preset === 'bear' ? -measuredSpread : measuredSpread), 0.02, 0.30)
-      : clamp(base.growthRate * p.growthMul, 0.02, 0.30)
+    // receive a number nobody measured just because a scenario shift was
+    // applied to it. No plausibility floor/ceiling on the result either — a
+    // genuinely declining company's Bear case should be allowed to decline
+    // further, not get floored back toward positive growth (this was
+    // exactly the "silently more optimistic than reality" bug already
+    // identified and removed from estimateGrowth() above; it had quietly
+    // reappeared here).
+    const delta = measuredSpread != null
+      ? (preset === 'bear' ? -measuredSpread : preset === 'bull' ? measuredSpread : 0)
+      : p.growthAdd
+    growthRate = base.growthRate + delta
   }
   return {
     growthRate,
-    wacc:       base.wacc != null ? clamp(base.wacc + p.waccAdd, termGrowth + 0.01, 0.34) : null,
+    // WACC floor is structural (the Gordon-growth terminal value divides by
+    // wacc-termGrowth; below that the formula is undefined, not merely
+    // unusual) — kept. No ceiling: a real, CAPM-derived WACC shifted by a
+    // disclosed scenario adjustment doesn't need a second, separate asserted
+    // cap on top of it.
+    wacc:       base.wacc != null ? Math.max(base.wacc + p.waccAdd, termGrowth + 0.01) : null,
     termGrowth,
     projYears:  base.projYears ?? 10,
   }
 }
-
-function clamp(v, min, max) { return v == null ? null : Math.max(min, Math.min(max, v)) }
 
 /**
  * What growth rate would the DCF need to assume for its output to land

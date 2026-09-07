@@ -205,7 +205,10 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
 // Reported basis by default; normalized only when the user has restated years
   // AND toggled to it. One-offs are never silently adjusted — assessDataQuality
   // now only flags them (dq.flags); correction is manual via reconstruction.
-  const dq = assessDataQuality(data?.incomeHistory || [])
+  const dq = assessDataQuality(data?.incomeHistory || [], {
+    balanceHistory: data?.balanceHistory || [],
+    cashflowHistory: data?.cashflowHistory || [],
+  })
   // reportedIncomeHistory is a SEPARATE, persisted source — the true
   // as-reported baseline. It is seeded ONCE, on the very first computeAll
   // call a fresh fetch/paste ever sees (when genuinely absent), and left

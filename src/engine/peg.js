@@ -91,12 +91,18 @@ export function computePeg(r, opts = {}) {
 
   const peg = pe / growthPct
 
-  // Bands. Note: PEG structurally penalises genuine quality compounders, so >1
-  // is flagged, not condemned.
+  // Lynch's rule has one pivot, not three bands: PEG ≈ 1 is the fair-value
+  // line, named and external to this codebase — below it cheap, above it
+  // rich. A prior version inserted a second, unlabeled cutoff at 2.0 to call
+  // 1-2 "fair" — that number had no source; it simply doubled the threshold
+  // the rule actually specifies. The real concern behind it was legitimate
+  // (PEG structurally penalises genuine quality compounders, who rarely
+  // trade at PEG ≤ 1 and shouldn't read as automatically overpriced for it)
+  // — that's kept as a qualifier on the "rich" label, not as a second
+  // invented number pretending to be a more precise threshold.
   let band, rating
   if (peg < 1) { band = 'cheap'; rating = 'Undervalued vs growth' }
-  else if (peg <= 2) { band = 'fair'; rating = 'Fairly valued vs growth' }
-  else { band = 'rich'; rating = 'Rich vs growth (common for quality compounders)' }
+  else { band = 'rich'; rating = 'Above the Lynch fair-value pivot of 1.0 — common for genuine quality compounders, not automatically overpriced' }
 
   // Peter Lynch fair value: fair P/E ~= the growth rate, applied as stated.
   // Beyond MAX_MEANINGFUL_GROWTH the growth figure is a base effect rather than

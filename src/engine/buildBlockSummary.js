@@ -141,7 +141,12 @@ export function buildBlockSummary(state, extra = {}) {
 
 function moatQualityPayload(state, r) {
   try {
-    const mq = assessMoatQuality(state.data, r, { holdings: state.holdingsData, arData: state.arData })
+    const costOfCapital = state.valuation?.assumptions?.wacc != null
+      ? state.valuation.assumptions.wacc * 100 : null
+    const mq = assessMoatQuality(state.data, r, {
+      holdings: state.holdingsData, arData: state.arData,
+      sectorType: state.sectorType || null, costOfCapital,
+    })
     const n = x => (x == null || isNaN(x) ? null : +(+x).toFixed(2))
     const m = mq.metrics
     return {

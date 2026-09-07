@@ -66,9 +66,17 @@ function splitRow(line) {
 
 /**
  * Parse pasted text for a specific table type ('income' | 'balance' | 'cashflow').
- * Returns { years: string[], rows: [{year, ...taggedFields}], warnings: string[] }
+ * @param opts.overrides  { normalizedLabel: field } — user-confirmed mappings
+ *   for labels that match no built-in alias (src/utils/db.js's
+ *   aliasOverrides, loaded by the caller). Checked before a row is given up
+ *   on as unmatched, so a previously-confirmed label is never re-flagged.
+ * Returns { years, rows, warnings, matchedCount, shape,
+ *   unmatched: [{ rawLabel, normalizedLabel }] } — every row whose label
+ *   matched neither the built-in aliases nor an override, deduplicated by
+ *   normalized label, for the caller to offer a reconciliation step on.
  */
-export function parsePastedTable(text, tableType) {
+export function parsePastedTable(text, tableType, opts = {}) {
+  const overrides = opts.overrides || {}
   // IMPORTANT: don't .trim() each line — that strips a leading tab
   // (the empty first header cell above the label column), which
   // shifts every year by one column. Only strip trailing \r and
@@ -77,7 +85,7 @@ export function parsePastedTable(text, tableType) {
     .map(l => l.replace(/\r$/, ''))
     .filter(l => l.trim().length > 0)
   if (lines.length < 2) {
-    return { years: [], rows: [], warnings: ['Pasted content has too few rows. Make sure you copied the full table including headers.'] }
+    return { years: [], rows: [], warnings: ['Pasted content has too few rows. Make sure you copied the full table including headers.'], unmatched: [] }
   }
 
   const aliasMap = ALIASES[tableType]
@@ -172,7 +180,7 @@ export function parsePastedTable(text, tableType) {
   if (headerIdx !== -1) {
     shape = checkShape(tableType, years, colMonths, lines.slice(headerIdx + 1))
     if (!shape.ok) {
-      return { years: [], rows: [], warnings: shape.warnings, matchedCount: 0, shape, rejected: true }
+      return { years: [], rows: [], warnings: shape.warnings, matchedCount: 0, shape, rejected: true, unmatched: [] }
     }
   }
 
@@ -186,6 +194,10 @@ export function parsePastedTable(text, tableType) {
   // absolute figure then got divided by 100 as if it were still a percentage.
   const pctFlagsByYear = years.map(() => ({}))
   let matchedCount = 0
+  // Deduplicated by normalized label — a row repeated across a multi-year
+  // paste (rare, but Screener's "+"-expanded sub-rows can recur) should only
+  // prompt once.
+  const unmatchedByLabel = new Map()
 
   for (let i = 0; i < lines.length; i++) {
     if (i === headerIdx) continue
@@ -195,14 +207,23 @@ export function parsePastedTable(text, tableType) {
     const rawLabel = cells[0]
     const norm = normalizeLabel(rawLabel)
 
-    let matchedField = null
-    for (const [field, aliases] of Object.entries(aliasMap)) {
-      if (aliases.some(a => norm === a || norm.startsWith(a))) {
-        matchedField = field
-        break
+    let matchedField = overrides[norm] || null
+    if (!matchedField) {
+      for (const [field, aliases] of Object.entries(aliasMap)) {
+        if (aliases.some(a => norm === a || norm.startsWith(a))) {
+          matchedField = field
+          break
+        }
       }
     }
-    if (!matchedField) continue
+    if (!matchedField) {
+      // Only worth flagging if the row actually carries a number — a stray
+      // subtotal/note line with no data isn't a missed metric, just noise.
+      if (!unmatchedByLabel.has(norm) && cells.slice(1).some(v => parseNum(v) != null)) {
+        unmatchedByLabel.set(norm, { rawLabel, normalizedLabel: norm })
+      }
+      continue
+    }
 
     matchedCount++
     // The RAW label is the only place the percent lives — normalizeLabel strips
@@ -279,7 +300,7 @@ export function parsePastedTable(text, tableType) {
     const meta = quarterMeta(year)
     return meta ? { ...base, period: year, ...meta } : base
   })
-  return { years, rows, warnings, matchedCount, shape }
+  return { years, rows, warnings, matchedCount, shape, unmatched: [...unmatchedByLabel.values()] }
 }
 
 /**

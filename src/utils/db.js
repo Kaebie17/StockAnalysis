@@ -11,7 +11,7 @@
  */
 
 const DB_NAME    = 'stockanalyzr'
-const DB_VERSION = 8
+const DB_VERSION = 9
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
@@ -88,6 +88,16 @@ function openDB() {
       // fetch re-asking Yahoo the same question.
       if (!d.objectStoreNames.contains('tickerResolutions')) {
         d.createObjectStore('tickerResolutions', { keyPath: 'raw' })
+      }
+      // Screener row-label -> field mappings the user has confirmed by hand,
+      // for labels that matched no built-in alias ("Total Income" meaning
+      // Revenue, say). Global, not per-ticker: a label's meaning is a
+      // property of how a table is worded, not of which company it's from —
+      // the same basis the built-in alias list itself already works on.
+      // Keyed by `${tableType}:${normalizedLabel}` so a re-paste of the same
+      // wording never asks again.
+      if (!d.objectStoreNames.contains('aliasOverrides')) {
+        d.createObjectStore('aliasOverrides', { keyPath: 'id' })
       }
     }
     req.onsuccess = e => {
@@ -231,6 +241,21 @@ export async function saveResolvedTicker(raw, resolved) {
   const r = String(raw || '').trim().toUpperCase()
   if (!r || !resolved) return
   try { await txPut('tickerResolutions', { raw: r, resolved, updatedAt: Date.now() }) } catch { /* non-critical */ }
+}
+
+// ── Screener alias overrides (user-confirmed row-label -> field mappings) ─────
+// See the aliasOverrides store comment in openDB() above for why this is
+// global rather than per-ticker.
+export async function saveAliasOverride({ tableType, normalizedLabel, rawLabel, field }) {
+  if (!tableType || !normalizedLabel || !field) return
+  const rec = { id: `${tableType}:${normalizedLabel}`, tableType, normalizedLabel, rawLabel, field, updatedAt: Date.now() }
+  try { await txPut('aliasOverrides', rec) } catch { /* non-critical */ }
+}
+export async function getAliasOverrides(tableType) {
+  try {
+    const rows = await txGetAll('aliasOverrides')
+    return rows.filter(r => r.tableType === tableType)
+  } catch { return [] }
 }
 
 // ── AI verdict cache ─────────────────────────────────────────────────────────

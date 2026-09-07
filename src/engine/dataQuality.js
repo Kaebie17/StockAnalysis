@@ -188,35 +188,83 @@ const SPIKE_FIELDS = [
   ['netProfit',    'Net profit'],
 ]
 
+// Watched on the BALANCE SHEET. A jump here often isn't bad data at all — it's
+// a real financing event (a large loan drawn or repaid mid-year). But it's
+// exactly what makes interest ÷ debt (cost of debt, used in WACC) misleading
+// for that year: a company that borrowed heavily in Q4 shows a full year's
+// low average debt against a much smaller interest charge, understating what
+// its actual current cost of debt now is. Flag it the same way a P&L spike is
+// flagged — not corrected, just surfaced, so a ratio built on that year is
+// read with the right context.
+const BALANCE_SPIKE_FIELDS = [
+  ['totalDebt', 'Total debt'],
+]
+
+// Watched on the CASH FLOW STATEMENT, same reasoning as BALANCE_SPIKE_FIELDS
+// but for the EV/EBITDA and Justified EV/EBITDA conversion ratio (FCF ÷
+// EBITDA): a one-off working-capital swing (a large customer prepayment, a
+// change in supplier credit terms) moves operating cash flow and free cash
+// flow without changing the business's real, ongoing cash conversion at all.
+// There's no separate "change in working capital" line in this codebase's
+// data model — it's already folded into operatingCF — so operatingCF and
+// freeCashFlow themselves are the two lines a working-capital swing shows up
+// on.
+const CASHFLOW_SPIKE_FIELDS = [
+  ['operatingCF', 'Operating cash flow'],
+  ['freeCashFlow', 'Free cash flow'],
+]
+
 /**
- * Flag any major year-over-year spike on any P&L line — reverting or not.
- * Detection only. User acts by choosing the CAGR window. "Major" = >4x the line's
- * own usual (median) year-to-year change.
+ * Flag any major year-over-year spike on a watched line — reverting or not.
+ * Detection only, never a correction: the year stays exactly as reported.
+ * "Major" = >4x the line's own usual (median) year-to-year change.
+ *
+ * Shared by pnlSpikes() (income statement), balanceSheetSpikes() and
+ * cashFlowSpikes() below — the same "compare a line's move against its own
+ * usual move" test, extracted once it needed to run against three different
+ * statements rather than reimplemented per statement (the exact class of
+ * risk this module's docblock and spread.js already describe: a fix to one
+ * copy silently missing its siblings).
  */
-export function pnlSpikes(incomeHistory = []) {
-  const rows = (incomeHistory || []).slice().sort((a, b) => (yearOf(a) - yearOf(b)))
+function lineSpikes(rows, fields, kind) {
+  const sorted = (rows || []).slice().sort((a, b) => (yearOf(a) - yearOf(b)))
   const out = []
-  for (const [field, label] of SPIKE_FIELDS) {
-    const pts = rows
+  for (const [field, label] of fields) {
+    const pts = sorted
       .map(r => ({ year: yearOf(r), v: val(r?.[field]) }))
       .filter(p => p.year != null && p.v != null && p.v > 0)
     if (pts.length < 4) continue
     const steps = []
     for (let i = 1; i < pts.length; i++) steps.push(pts[i].v / pts[i - 1].v - 1)
-    const sorted = [...steps].sort((a, b) => a - b)
-    const median = sorted[Math.floor(sorted.length / 2)]
+    const sortedSteps = [...steps].sort((a, b) => a - b)
+    const median = sortedSteps[Math.floor(sortedSteps.length / 2)]
     const scale  = Math.max(Math.abs(median), 0.02)
     for (let i = 0; i < steps.length; i++) {
       if (Math.abs(steps[i]) < scale * 4) continue
       out.push({
         year: pts[i + 1].year,
-        kind: 'pnl-spike',
+        kind,
         field,
         note: `${label} ${steps[i] > 0 ? 'jumped' : 'dropped'} ${Math.abs(round(steps[i] * 100, 0))}% in ${pts[i + 1].year}, well beyond its usual year-to-year change`,
       })
     }
   }
   return out.sort((a, b) => (b.year || 0) - (a.year || 0))
+}
+
+/** Income-statement version — unchanged behavior, now backed by the shared helper. */
+export function pnlSpikes(incomeHistory = []) {
+  return lineSpikes(incomeHistory, SPIKE_FIELDS, 'pnl-spike')
+}
+
+/** Balance-sheet version — see BALANCE_SPIKE_FIELDS above. */
+export function balanceSheetSpikes(balanceHistory = []) {
+  return lineSpikes(balanceHistory, BALANCE_SPIKE_FIELDS, 'balance-spike')
+}
+
+/** Cash-flow-statement version — see CASHFLOW_SPIKE_FIELDS above. */
+export function cashFlowSpikes(cashflowHistory = []) {
+  return lineSpikes(cashflowHistory, CASHFLOW_SPIKE_FIELDS, 'cashflow-spike')
 }
 
 export function assessDataQuality(incomeHistory = [], opts = {}) {
@@ -228,9 +276,15 @@ export function assessDataQuality(incomeHistory = [], opts = {}) {
   // exceptionals, surfaced as information). Its mutated rows are discarded.
   const { adjustments } = normaliseIncome(incomeHistory)
 
+  // balanceHistory/cashflowHistory are optional — callers that only have the
+  // income statement (or haven't been updated to pass the others yet) still
+  // get everything they got before; the balance/cash-flow checks just don't
+  // run without their input, same as any other "not enough data" decline.
   const detected = [
     ...suspectYears(rows, { alreadyAdjusted: adjustments.map(a => a.year) }),
     ...pnlSpikes(rows),
+    ...balanceSheetSpikes(opts.balanceHistory || []),
+    ...cashFlowSpikes(opts.cashflowHistory || []),
   ]
   const userFlags = Object.entries(opts.flags || {})
     .map(([year, note]) => ({ year: Number(year), kind: 'user-flagged', note }))

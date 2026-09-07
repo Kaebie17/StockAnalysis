@@ -4,6 +4,8 @@ import { expandHints as expandersFor, METRICS } from '../../engine/metrics.js'
 import { parseHoldings } from '../../engine/parseHoldings.js'
 import { useApp } from '../../store/AppContext.jsx'
 import { createPortal } from 'react-dom'
+import { getAliasOverrides, saveAliasOverride } from '../../utils/db.js'
+import AliasReconcile from './AliasReconcile.jsx'
 
 const ALL_METRICS = Object.keys(METRICS)
 
@@ -60,6 +62,10 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
   // quietly kept at its old value. This makes both the skip and the opt-in
   // to override it explicit in the preview instead.
   const [overwrite, setOverwrite] = useState(false)
+  // Screener row-label -> field mappings the user has already confirmed,
+  // keyed by table. Loaded fresh each time the modal opens so a mapping
+  // confirmed in a previous session is already applied silently.
+  const [overridesByTable, setOverridesByTable] = useState({})
 
   // Scroll to the table the caller asked for. A data-quality flag names where
   // the answer lives, and dropping the user at the top of a five-table modal
@@ -79,6 +85,15 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
     setResults(null)
     setApplied(false)
     setOverwrite(false)
+    ;(async () => {
+      const next = {}
+      for (const t of TABLES) {
+        if (t.key === 'holdings') continue
+        const rows = await getAliasOverrides(t.key)
+        next[t.key] = Object.fromEntries(rows.map(r => [r.normalizedLabel, r.field]))
+      }
+      setOverridesByTable(next)
+    })()
   }, [open])
 
   if (!open) return null
@@ -114,9 +129,32 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
     for (const t of TABLES) {
       const text = pasteText[t.key].trim()
       if (!text) continue
-      out[t.key] = t.key === 'holdings' ? parseHoldings(text) : parsePastedTable(text, t.key)
+      out[t.key] = t.key === 'holdings' ? parseHoldings(text)
+        : parsePastedTable(text, t.key, { overrides: overridesByTable[t.key] })
     }
     setResults(out)
+  }
+
+  // A row's meaning confirmed in the reconciliation prompt: save it (so the
+  // exact same wording never asks again) and re-parse just that table with
+  // the mapping applied. `field === null` means "ignore this row" — not
+  // persisted, since that's a per-paste call rather than a durable fact
+  // about what the label means.
+  const handleMap = async (tableKey, u, field) => {
+    let nextForTable = overridesByTable[tableKey] || {}
+    if (field) {
+      await saveAliasOverride({ tableType: tableKey, normalizedLabel: u.normalizedLabel, rawLabel: u.rawLabel, field })
+      nextForTable = { ...nextForTable, [u.normalizedLabel]: field }
+      setOverridesByTable(prev => ({ ...prev, [tableKey]: nextForTable }))
+    }
+    const text = pasteText[tableKey].trim()
+    if (!text) return
+    setResults(prev => ({
+      ...prev,
+      [tableKey]: field
+        ? parsePastedTable(text, tableKey, { overrides: nextForTable })
+        : { ...prev[tableKey], unmatched: (prev[tableKey]?.unmatched || []).filter(x => x.normalizedLabel !== u.normalizedLabel) },
+    }))
   }
 
   const handleConfirm = () => {
@@ -294,6 +332,16 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
 
             {results && (
               <>
+                {/* Unrecognized rows — offered regardless of whether anything
+                    else in this table matched, since a table that matched
+                    nothing at all is exactly where this matters most. */}
+                {Object.entries(results).map(([k, r]) => (
+                  k === 'holdings' || !r.unmatched?.length ? null : (
+                    <AliasReconcile key={`reconcile-${k}`} tableType={k} unmatched={r.unmatched}
+                      onMap={(u, field) => handleMap(k, u, field)} />
+                  )
+                ))}
+
                 {/* Financial preview */}
                 {Object.entries(results).map(([k, r]) => {
                   if (k === 'holdings' || !r.rows?.length || r.matchedCount === 0) return null

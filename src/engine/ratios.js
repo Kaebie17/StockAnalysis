@@ -8,12 +8,12 @@
  *
  * Each output ratio carries resolution metadata:
  *   { value, status, formula }
- *   status: 'calculated' | 'ttm-fallback' | 'unavailable'
+ *   status: 'calculated' | 'unavailable'
  *
  * Derivation hierarchy for each ratio:
  *   1. Calculate from historical statement data
- *   2. Fall back to TTM financialData if history sparse
- *   3. Mark unavailable — never silently return null
+ *   2. Mark unavailable — never silently return null, never substitute a
+ *      weaker snapshot figure for a genuine gap
  */
 
 /**
@@ -33,18 +33,17 @@ export function grossProfitOf(row) {
 
 export function calcRatios(data, opts = {}) {
   const { price, marketCap: marketCapRaw, shares: sharesRaw, incomeHistory,
-          balanceHistory, cashflowHistory, ttm, meta } = data
+          balanceHistory, cashflowHistory, meta } = data
 
   // Which ratios even apply is sector-dependent — see NIM below.
   const sectorType = detectSectorType(data)
 
-  // ── Latest-year snapshot (synthetic-aware, gap-filled) ──────────────────────
-  // Real fiscal-year rows always take precedence over the synthetic current-year
-  // TTM stub that normalize.js may append (flagged `synthetic:true`). The snapshot
-  // is anchored on the most recent REAL row; any field still missing there is
-  // back-filled from older real rows, then finally from the TTM stub. This is what
-  // lets pasted/merged Screener rows actually drive the dashboard instead of being
-  // shadowed by a fabricated current-year row that only carried a few TTM fields.
+  // ── Latest-year snapshot (gap-filled across real rows) ──────────────────────
+  // The snapshot is anchored on the most recent row; any field still missing
+  // there is back-filled from older rows. `synthetic` guards against a
+  // fabricated stub row shadowing a real one — normalize.js no longer
+  // produces one (the old TTM-only stub was removed), but the guard costs
+  // nothing to keep for any row a future source flags the same way.
   const realRows = arr => {
     const real = (arr || []).filter(r => !r.synthetic)
     return real.length ? real : (arr || [])
@@ -61,7 +60,7 @@ export function calcRatios(data, opts = {}) {
       }
     }
     for (let i = real.length - 2; i >= 0; i--) fill(real[i])   // back-fill from older real rows
-    for (const r of rows) if (r.synthetic) fill(r)             // last resort: TTM stub
+    for (const r of rows) if (r.synthetic) fill(r)             // last resort: any flagged stub row
     return base
   }
 
@@ -83,11 +82,11 @@ export function calcRatios(data, opts = {}) {
     return m ? Number(m[0]) : null
   }
   // ── Core raw values ────────────────────────────────────────────────────────
-  const revenue     = val(latestI.revenue)     ?? val(ttm?.revenue)
+  const revenue     = val(latestI.revenue)
   const opProfit    = val(latestI.operatingProfit)
   const depreciation= val(latestI.depreciation)
   const interest    = val(latestI.interest)
-  const netProfit   = val(latestI.netProfit)   ?? val(ttm?.netProfit)
+  const netProfit   = val(latestI.netProfit)
   const otherIncome = val(latestI.otherIncome)
   let pbt = val(latestI.profitBeforeTax) ?? val(latestI.pbt)
   let tax = val(latestI.tax)
@@ -98,36 +97,33 @@ export function calcRatios(data, opts = {}) {
   if (tax == null && pbt != null && netProfit != null) {
     tax = pbt - netProfit
   }
-  // totalEquity: statement → derive from TTM D/E ratio → derive from TTM ROE
+  // totalEquity: statement only. This used to also derive equity from a TTM
+  // D/E ratio or TTM ROE when the statement had no equity line — but both
+  // inputs to that derivation came from the same shaky post-migration Yahoo
+  // snapshot as everything else TTM touches, so it wasn't a more reliable
+  // number, just a more indirect one. Removed rather than kept as the one
+  // exception.
   const rawEquity = val(latestB.totalEquity)
-  const ttmDebt2  = val(latestB.totalDebt) ?? val(ttm?.totalDebt) ?? 0
-  const ttmDE     = val(ttm?.debtToEquity)
-  const deRatio   = ttmDE != null ? (ttmDE > 10 ? ttmDE / 100 : ttmDE) : null
-  const equityFromDE  = ttmDebt2 > 0 && deRatio ? ttmDebt2 / deRatio : null
-  const equityFromROE = val(ttm?.netProfit) && val(ttm?.roe) && val(ttm?.roe) > 0
-    ? val(ttm.netProfit) / val(ttm.roe) : null
-  const totalEquity = rawEquity ?? equityFromDE ?? equityFromROE
-  // Debt: statement -> TTM -> equity x (D/E). The last one is an ESTIMATE and is
-  // flagged, unlike the old `?? 0` which fabricated a debt-free balance sheet and
-  // tagged it 'source' — inflating ROCE and understating EV on any ticker whose
-  // debt line we failed to read.
-  let totalDebt      = val(latestB.totalDebt) ?? val(ttm?.totalDebt) ?? null
+  const totalEquity = rawEquity
+  // Debt: statement only. `debtEstimated` stays available as general
+  // disclosure scaffolding (surfaced in valuation.js/marketExpectation.js)
+  // for any future real source of an estimated-debt figure; nothing sets it
+  // true anymore now that the TTM-based Equity × D/E derivation is gone —
+  // unlike the old `?? 0` this replaced, a genuinely missing debt figure
+  // stays missing rather than being fabricated as zero or estimated from a
+  // weak source.
+  let totalDebt      = val(latestB.totalDebt) ?? null
   let debtEstimated  = false
-  if (totalDebt == null) {
-    const de = val(ttm?.debtToEquity)
-    const eq = val(latestB.totalEquity) ?? val(ttm?.totalEquity)
-    if (de != null && eq != null && de >= 0) { totalDebt = eq * (de / 100); debtEstimated = true }
-  }
-  // Cash: statement -> TTM -> nothing. No assumed zero.
+  // Cash: statement only. No assumed zero.
   //
   // There is no honest estimate for a cash LEVEL. The roll-forward (last year's
   // cash + the three cash flows) is exact but needs a cash balance to start from
   // — and if we had one, cash wouldn't be missing. Nothing else in the statements
   // pins down a level. Assuming nil would silently overstate EV and net debt and
   // understate DCF fair value, which is a wrong valuation, not a cautious one.
-  const cash          = val(latestB.cash) ?? val(ttm?.cash) ?? null
+  const cash          = val(latestB.cash) ?? null
   const cashEstimated = false
-  const opCF        = val(latestCF.operatingCF) ?? val(ttm?.operatingCF)
+  const opCF        = val(latestCF.operatingCF)
 
   // CapEx, in order of how much we actually know:
   //   1. reported
@@ -168,15 +164,12 @@ export function calcRatios(data, opts = {}) {
              : capexBasis === 'delta-fixed-assets' ? 'estimated-total'
              : 'estimated-maintenance'
   }
-  if (fcf == null) { const t = val(ttm?.freeCashFlow); if (t != null) { fcf = t; fcfBasis = 'ttm' } }
-
   const fcfEstimated       = fcfBasis === 'estimated-total' || fcfBasis === 'estimated-maintenance'
   const fcfMaintenanceOnly = fcfBasis === 'estimated-maintenance'
   const fcfNote = fcfBasis === 'reported' ? 'Reported Free Cash Flow'
     : fcfBasis === 'derived' ? 'Operating CF − CapEx'
     : fcfBasis === 'estimated-total' ? 'Operating CF − CapEx (CapEx ≈ Δ Fixed Assets + Depreciation)'
     : fcfBasis === 'estimated-maintenance' ? 'Operating CF − Depreciation (maintenance CapEx only — growth CapEx excluded, so FCF is overstated)'
-    : fcfBasis === 'ttm' ? 'TTM Free Cash Flow'
     : null
   FCF_BASIS = { estimated: fcfEstimated, note: fcfNote || 'FCF unavailable' }
   BS_BASIS  = {
@@ -198,24 +191,21 @@ export function calcRatios(data, opts = {}) {
   const shares    = sharesRaw ?? ((marketCapRaw && price) ? marketCapRaw / price : null)
   const marketCap = marketCapRaw ?? ((price != null && shares != null) ? price * shares : null)
 
-  // EPS: statement → TTM → derive
-  const epsRaw = val(latestI.eps) ?? val(ttm?.eps)
+  // EPS: statement → derive
+  const epsRaw = val(latestI.eps)
   const eps = epsRaw ?? calc('Net Profit ÷ Shares', netProfit, shares, (n, s) => n / s)
 
   // ── EBITDA ─────────────────────────────────────────────────────────────────
-  // Priority: direct from source → Op.Profit + Dep → TTM → Op.Profit alone
+  // Priority: direct from source → Op.Profit + Dep → Op.Profit alone
   const ebitdaDirect = val(latestI.ebitda)
   const ebitdaCalc   = opProfit != null && depreciation != null ? opProfit + depreciation : null
-  const ebitdaTTM    = val(ttm?.ebitda)
-  const ebitda       = ebitdaDirect ?? ebitdaCalc ?? ebitdaTTM ?? opProfit
+  const ebitda       = ebitdaDirect ?? ebitdaCalc ?? opProfit
 
   const ebitdaStatus = ebitdaDirect  != null ? 'source'
     : ebitdaCalc   != null ? 'calculated'
-    : ebitdaTTM    != null ? 'ttm-fallback'
     : opProfit     != null ? 'proxy'  // using op profit as proxy
     : 'unavailable'
   const ebitdaFormula = ebitdaCalc  != null ? 'Operating Profit + Depreciation'
-    : ebitdaTTM    != null ? 'TTM from Yahoo financialData'
     : opProfit     != null ? 'Operating Profit (Depreciation unavailable)'
     : null
 
@@ -247,26 +237,22 @@ export function calcRatios(data, opts = {}) {
   // Note: Indian P&L has no "Gross Profit" line — Operating Profit IS the first
   // meaningful margin. We flag grossMargin as "Operating Margin (Indian P&L format)"
   const operatingMargin = pct(opProfit, revenue)
-  const ebitdaMargin    = pct(ebitda, revenue)  ?? pct100(val(ttm?.ebitdaMargins))
-  const netMargin       = pct(netProfit, revenue) ?? pct100(val(ttm?.profitMargins))
+  const ebitdaMargin    = pct(ebitda, revenue)
+  const netMargin       = pct(netProfit, revenue)
   // Gross margin — ONE formula, switching on what is available. {revenue, cogs,
   // grossProfit} is a group: any two give the third. Sources emit raw fields only;
   // the derivation lives here, not in api/sec.js or the parser.
   //   1. grossProfit reported      -> calculated
   //   2. revenue - cogs            -> calculated
-  //   3. Yahoo TTM gross margin    -> ttm-fallback
-  //   4. operating-margin proxy    -> ONLY where there is genuinely no COGS line
+  //   3. operating-margin proxy    -> ONLY where there is genuinely no COGS line
   //      (Indian P&L). Never on a US filer that simply failed a tag lookup.
   const gpHist          = grossProfitOf(latestI)
   const gpFormula       = val(latestI.grossProfit) != null
     ? 'Gross Profit ÷ Revenue × 100'
     : 'Gross Profit (Revenue − COGS) ÷ Revenue × 100'
-  const grossMarginRaw  = val(ttm?.grossMargins)
   const indianPL        = data.deepSource === 'screener' || data.source === 'screener'
   const grossMargin     = (gpHist != null && revenue)
     ? { value: pct(gpHist, revenue), status: 'calculated', formula: gpFormula }
-    : grossMarginRaw != null
-    ? { value: grossMarginRaw * 100, status: 'ttm-fallback', formula: 'From Yahoo financialData' }
     : (indianPL && operatingMargin != null)
     ? { value: operatingMargin, status: 'proxy', formula: 'Operating Margin (Indian P&L — no separate Gross Profit line)' }
     : { value: null, status: 'unavailable', formula: null }
@@ -276,7 +262,7 @@ export function calcRatios(data, opts = {}) {
   const prevEquity = val(balanceReal[balanceReal.length - 2]?.totalEquity)
   const avgEquity  = totalEquity != null && prevEquity != null
     ? (totalEquity + prevEquity) / 2 : totalEquity
-  const roe  = pct(netProfit, avgEquity) ?? pct100(val(ttm?.roe))
+  const roe  = pct(netProfit, avgEquity)
 
   // ROCE = EBIT / Capital Employed × 100
   // Capital Employed = Total Assets - Current Liabilities
@@ -342,8 +328,8 @@ export function calcRatios(data, opts = {}) {
   // ── Growth ─────────────────────────────────────────────────────────────────
   const prevRev    = val(prevI.revenue)
   const prevNP     = val(prevI.netProfit)
-  const revGrowthYoY = pct(revenue - (prevRev || 0), prevRev) ?? pct100(val(ttm?.revenueGrowth))
-  const npGrowthYoY  = pct(netProfit - (prevNP || 0), prevNP)  ?? pct100(val(ttm?.earningsGrowth))
+  const revGrowthYoY = pct(revenue - (prevRev || 0), prevRev)
+  const npGrowthYoY  = pct(netProfit - (prevNP || 0), prevNP)
 
   return {
     // Scalars (used by valuation engine)
@@ -360,10 +346,10 @@ export function calcRatios(data, opts = {}) {
       // Margins
       grossMargin,
       operatingMargin: tag(operatingMargin, 'calculated', 'Operating Profit ÷ Revenue × 100'),
-      ebitdaMargin:    tag(ebitdaMargin,    ebitdaMargin != null ? (val(ttm?.ebitdaMargins) != null && ebitdaDirect == null ? 'ttm-fallback' : 'calculated') : 'unavailable', 'EBITDA ÷ Revenue × 100'),
+      ebitdaMargin:    tag(ebitdaMargin,    ebitdaMargin != null ? 'calculated' : 'unavailable', 'EBITDA ÷ Revenue × 100'),
       netMargin:       tag(netMargin,       'calculated', 'Net Profit ÷ Revenue × 100'),
       // Returns
-      roe:             tag(roe,             roe != null ? (pct(netProfit, avgEquity) != null ? 'calculated' : 'ttm-fallback') : 'unavailable', 'Net Profit ÷ Avg Equity × 100'),
+      roe:             tag(roe,             roe != null ? 'calculated' : 'unavailable', 'Net Profit ÷ Avg Equity × 100'),
       roce:            tag(roce,            'calculated', 'EBIT ÷ (Total Equity + Total Debt) × 100'),
       roa:             tag(roa,             'calculated', 'Net Profit ÷ Total Assets × 100'),
       nim:             isLender

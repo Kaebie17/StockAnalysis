@@ -17,15 +17,28 @@
 /**
  * Percentile band from a raw numeric series — the shared shape behind
  * "median plus a low/high band" wherever this codebase needs one.
- * @returns { low, median, high, count } or null if fewer than minSamples
- *          usable values exist.
+ *
+ * minSamples is a genuine structural floor: a percentile BAND (low/high)
+ * from fewer points than this isn't a noisy estimate, it's degenerate — at
+ * n=2 the formula below picks nothing but the two raw endpoints (see
+ * targetMultiple.js's cited Trent failure). Below it, decline (null), the
+ * same standing as any other structural requirement in this codebase, not
+ * a plausibility judgment.
+ *
+ * preferredSamples is different: below it the result is still computed and
+ * returned, tagged `thin: true` — real data, disclosed as a smaller sample
+ * than ideal, not hidden.
+ *
+ * @returns { low, median, high, count, thin } or null if fewer than
+ *          minSamples usable values exist.
  */
-export function percentileSpread(values, { lowP = 0.15, highP = 0.85, minSamples = 3 } = {}) {
+export function percentileSpread(values, { lowP = 0.15, highP = 0.85, minSamples = 3, preferredSamples = minSamples } = {}) {
   const clean = (values || []).filter(v => v != null && isFinite(v))
   if (clean.length < minSamples) return null
   const sorted = [...clean].sort((a, b) => a - b)
   const q = p => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))]
-  return { low: q(lowP), median: q(0.5), high: q(highP), count: sorted.length }
+  return { low: q(lowP), median: q(0.5), high: q(highP), count: sorted.length,
+           thin: sorted.length < preferredSamples }
 }
 
 /**

@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { runMarketExpectation } from '../../engine/marketExpectation.js'
 import { fmtCurrency, fmtNum } from '../../utils/format.js'
+import ProvenanceTag from '../ProvenanceTag.jsx'
 
 // ⓘ Info tooltip component
 function InfoTip({ text }) {
@@ -146,7 +147,8 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, termi
         {variant.assumptions.terminalMultiple ? (
           <div className="flex items-center justify-between gap-2 text-xs">
             <div className="flex items-center text-slate-400">Terminal Multiple
-              <InfoTip text={variant.assumptions.terminalMultiple.rationale} /></div>
+              <InfoTip text={variant.assumptions.terminalMultiple.rationale} />
+              <ProvenanceTag tier={variant.assumptions.terminalMultiple.tier} compact /></div>
             <div className="flex items-center gap-1">
               <input type="number" step="0.5" min="0.5" max="60"
                 value={variant.assumptions.terminalMultiple.value}
@@ -158,7 +160,8 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, termi
         ) : variant.assumptions.termGrowth ? (
           <div className="flex items-center justify-between gap-2 text-xs">
             <div className="flex items-center text-slate-400">Terminal Growth
-              <InfoTip text={variant.assumptions.termGrowth.rationale} /></div>
+              <InfoTip text={variant.assumptions.termGrowth.rationale} />
+              <ProvenanceTag tier={variant.assumptions.termGrowth.tier} compact /></div>
             <div className="flex items-center gap-1">
               <input type="number" step="0.5" min="0" max="6"
                 value={Math.round(variant.assumptions.termGrowth.value * 1000) / 10}
@@ -170,7 +173,8 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, termi
         ) : null}
         <div className="flex items-center justify-between gap-2 text-xs">
           <div className="flex items-center text-slate-400">Discount Rate
-            <InfoTip text={variant.assumptions.discountRate.rationale} /></div>
+            <InfoTip text={variant.assumptions.discountRate.rationale} />
+            <ProvenanceTag tier={variant.assumptions.discountRate.tier} compact /></div>
           <div className="flex items-center gap-1">
             <input type="number" step="1" min="1" max="40"
               value={Math.round(variant.assumptions.discountRate.value * 100)}

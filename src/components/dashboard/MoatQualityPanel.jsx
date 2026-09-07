@@ -3,6 +3,7 @@ import { useApp } from '../../store/AppContext.jsx'
 import { assessMoatQuality } from '../../engine/moatQuality.js'
 import GuidanceModal from './GuidanceModal.jsx'
 import ProvenanceTag from '../ProvenanceTag.jsx'
+import { TIER } from '../../engine/methodologyTier.js'
 
 /**
  * MoatQualityPanel — Block 5 (Quality & Moat overlay).
@@ -26,6 +27,13 @@ export default function MoatQualityPanel({ open, onClose }) {
   const [editing, setEditing] = useState(false)
   const [guidanceOpen, setGuidanceOpen] = useState(false)
 
+  // sectorType/costOfCapital are already computed for every stock in
+  // computeAll() (state.sectorType, state.valuation.assumptions.wacc) — read
+  // them rather than recomputing, and convert wacc from decimal to the
+  // percent scale MQ_CONFIG's thresholds use.
+  const costOfCapital = state.valuation?.assumptions?.wacc != null
+    ? state.valuation.assumptions.wacc * 100 : null
+
   // Strict gate is derived inside the engine (promoter holdings + document data).
   const result = useMemo(() => {
     if (!ratioResult) return null
@@ -33,8 +41,10 @@ export default function MoatQualityPanel({ open, onClose }) {
       holdings: state.holdingsData || null,
       arData: state.arData || null,
       moatOverride: override,
+      sectorType: state.sectorType || null,
+      costOfCapital,
     })
-  }, [data, ratioResult, state.holdingsData, state.arData, override])
+  }, [data, ratioResult, state.holdingsData, state.arData, override, state.sectorType, costOfCapital])
 
   if (!open || !result) return null
   const { moat, quality, implication, metrics, dataFlags } = result
@@ -98,19 +108,19 @@ export default function MoatQualityPanel({ open, onClose }) {
 
       {/* Metric strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-        <Metric label="ROCE (median)" tier="calculated" val={pctTxt(metrics.roce.median)} sub={metrics.roce.hitRate != null ? `${metrics.roce.hitRate}% yrs ≥ thr` : null} />
+        <Metric label="ROCE (median)" tier={TIER.DERIVED} val={pctTxt(metrics.roce.median)} sub={metrics.roce.hitRate != null ? `${metrics.roce.hitRate}% yrs ≥ thr` : null} />
         <Metric label={metrics.grossMargin.median != null ? (metrics.grossMargin.derived ? 'Gross margin (docs)' : 'Gross margin') : 'Op. margin'}
-          tier={metrics.grossMargin.median != null ? (metrics.grossMargin.estimated ? 'estimated' : 'calculated') : 'calculated'}
+          tier={metrics.grossMargin.median != null ? (metrics.grossMargin.estimated ? TIER.ASSUMED : TIER.DERIVED) : TIER.DERIVED}
           method={metrics.grossMargin.estimated ? 'estimated from documents' : metrics.grossMargin.derived ? 'from documents' : null}
           val={metrics.grossMargin.median != null ? (metrics.grossMargin.trend || '—') : (metrics.opMargin.trend || '—')}
           sub={metrics.grossMargin.median != null ? pctTxt(metrics.grossMargin.median)
             : (metrics.opMargin.median != null ? `${pctTxt(metrics.opMargin.median)} · gross n/a` : 'gross n/a')} />
-        <Metric label="ROE (median)" tier="calculated" val={pctTxt(metrics.roe.median)} sub={metrics.roe.hitRate != null ? `${metrics.roe.hitRate}% yrs` : null} />
-        <Metric label="FCF conversion" tier="calculated" val={pctTxt(metrics.fcfConv, 0)} />
-        <Metric label="Leverage (D/E)" tier="calculated" val={numTxt(metrics.de, 2)} />
-        <Metric label="Coverage" tier="calculated" val={metrics.icr != null ? `${numTxt(metrics.icr, 1)}×` : '—'} />
-        <Metric label="Incremental ROCE" tier="calculated" val={metrics.incRoce.quality || '—'} />
-        <Metric label="Dilution" tier="calculated" val={metrics.dilution.trend || '—'} sub={metrics.dilution.pct != null ? `${metrics.dilution.pct > 0 ? '+' : ''}${metrics.dilution.pct}%` : null} />
+        <Metric label="ROE (median)" tier={TIER.DERIVED} val={pctTxt(metrics.roe.median)} sub={metrics.roe.hitRate != null ? `${metrics.roe.hitRate}% yrs` : null} />
+        <Metric label="FCF conversion" tier={TIER.DERIVED} val={pctTxt(metrics.fcfConv, 0)} />
+        <Metric label="Leverage (D/E)" tier={TIER.DERIVED} val={numTxt(metrics.de, 2)} />
+        <Metric label="Coverage" tier={TIER.DERIVED} val={metrics.icr != null ? `${numTxt(metrics.icr, 1)}×` : '—'} />
+        <Metric label="Incremental ROCE" tier={TIER.DERIVED} val={metrics.incRoce.quality || '—'} />
+        <Metric label="Dilution" tier={TIER.DERIVED} val={metrics.dilution.trend || '—'} sub={metrics.dilution.pct != null ? `${metrics.dilution.pct > 0 ? '+' : ''}${metrics.dilution.pct}%` : null} />
       </div>
 
       {/* Captured qualitative context from documents / notes (context only — does

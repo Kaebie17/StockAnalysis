@@ -1,6 +1,6 @@
 
 /**
- * src/utils/format.js — formatters + resolution badge helpers
+ * src/utils/format.js — number/currency/percent formatters and signal colors.
  */
 
 export function fmtNum(v, dec = 1, currency = null) {
@@ -64,44 +64,6 @@ export function signalBadgeClass(s) {
   return 'badge-neutral'
 }
 
-/**
- * Resolution badge for a tagged field { value, status, formula }
- * Returns { icon, color, tooltip }
- */
-export function resolutionBadge(tagged) {
-  if (!tagged) return null
-  switch (tagged.status) {
-    case 'source':
-      return { icon: '●', color: 'text-slate-500', tooltip: 'Directly from source' }
-    case 'calculated':
-    case 'derived':
-      return { icon: '⚙', color: 'text-accent/70', tooltip: tagged.formula ? `Calculated: ${tagged.formula}` : 'Calculated' }
-    case 'positional':
-      return { icon: '⚙', color: 'text-neutral/70', tooltip: tagged.formula ? `Positional fallback: ${tagged.formula}` : 'Positional parse' }
-    case 'cross-source':
-      return { icon: '↔', color: 'text-accent/70', tooltip: tagged.formula || 'From alternate source' }
-    case 'ttm':
-    case 'ttm-fallback':
-      return { icon: 'T', color: 'text-neutral/70', tooltip: 'TTM value from Yahoo financialData' }
-    case 'document':
-      return { icon: '📄', color: 'text-accent', tooltip: tagged.formula || 'Read from a filing you uploaded' }
-    case 'estimated':
-      // An assumption, shown as one. The old opCF x 0.7 FCF proxy carried no tag
-      // at all — it looked exactly like a reported number, which is why it sat
-      // unnoticed in the DCF for so long.
-      return { icon: '≈', color: 'text-neutral', tooltip: tagged.formula ? `Estimated: ${tagged.formula}` : 'Estimated' }
-    case 'proxy':
-      return { icon: '~', color: 'text-neutral/70', tooltip: tagged.formula || 'Proxy value' }
-    case 'source-reference':
-      return { icon: '◎', color: 'text-slate-600', tooltip: `Reference from source: ${tagged.formula || ''}` }
-    case 'unavailable':
-    default:
-      return { icon: '—', color: 'text-slate-600', tooltip: 'Not available' }
-  }
-}
-
-/** Format a tagged ratio for display */
-export function fmtTagged(tagged, formatter) {
-  if (!tagged || tagged.value == null) return '—'
-  return formatter(tagged.value)
-}
+// Resolution badge / fmtTagged removed — superseded by
+// src/engine/methodologyTier.js's tierFromStatus() + <ProvenanceTag>, the
+// one provenance system now used everywhere (see that file's docblock).

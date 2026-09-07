@@ -19,9 +19,10 @@
  */
 
 import { SECTOR_TYPES } from './stage.js'
-import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_RATE } from './requiredReturn.js'
-import { sectorPe, sectorEvSales, sectorEvFcf } from './sectorMultiples.js'
+import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
+import { sectorPe, sectorEvSales, sectorEvFcf, financialPe, financialSales } from './sectorMultiples.js'
 import { reverseDcfGrowth } from './valuation.js'
+import { TIER } from './methodologyTier.js'
 
 // ─── Default assumptions by stage + sector ───────────────────────────────────
 
@@ -42,10 +43,12 @@ import { reverseDcfGrowth } from './valuation.js'
 export function getDefaultAssumptions(stage, sectorType, ratios, data = null, opts = {}) {
   // Terminal Sales multiple — what the market will value the company at maturity
   // Based on sector median EV/Sales for mature companies in that sector
-  const terminalSalesMultiple = getSalesMultiple(sectorType, ratios, data)
+  const salesResult = getSalesMultiple(sectorType, ratios, data)
+  const terminalSalesMultiple = salesResult.value
 
   // Terminal PE multiple — what earnings multiple a mature company deserves
-  const terminalPeMultiple = getPeMultiple(sectorType, ratios, data)
+  const peResult = getPeMultiple(sectorType, ratios, data)
+  const terminalPeMultiple = peResult.value
 
   const market = opts.market ?? 'IN'
   const riskFree = opts.liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
@@ -57,7 +60,8 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   // all). Now anchors on the stock's own actual FCF conversion when a usable
   // one exists, else the sector median table (same two-tier pattern as the
   // Sales/P/E multiples above).
-  const terminalFcfMultiple = getFcfMultiple(sectorType, ratios, data)
+  const fcfResult = getFcfMultiple(sectorType, ratios, data)
+  const terminalFcfMultiple = fcfResult.value
 
   return {
     terminalSalesMultiple,
@@ -65,6 +69,17 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
     terminalFcfMultiple,
     discountRate,
     horizon: 10,
+    // DERIVED when the stock's own actual ratio anchors the multiple; ASSUMED
+    // when it falls to the sector/financial table. discountRate is always
+    // DERIVED — CAPM applied to real inputs, no asserted constant in the
+    // chain. horizon carries no tier — a structural modeling choice, not a
+    // value.
+    tiers: {
+      terminalSalesMultiple: salesResult.tier,
+      terminalPeMultiple:    peResult.tier,
+      terminalFcfMultiple:   fcfResult.tier,
+      discountRate:          TIER.DERIVED,
+    },
     // Rationale strings shown in ⓘ tooltips
     rationale: {
       terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple),
@@ -79,25 +94,24 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
 function getSalesMultiple(sectorType, ratios, data) {
   // If we have the stock's actual EV/Revenue, use it as anchor (clamped to reasonable range)
   const actual = ratios?.evRevenue?.value
-  if (actual != null && actual > 0) return Math.round(Math.max(1.5, Math.min(actual, 8)) * 2) / 2
+  if (actual != null && actual > 0) return { value: Math.round(Math.max(1.5, Math.min(actual, 8)) * 2) / 2, tier: TIER.DERIVED }
 
-  // Sector median, from the SAME shared table valuation.js uses — replaces
-  // the old 3-bucket-plus-one-flat-default fallback. Financial sub-types keep
-  // their own values (identical to before: insurance 1.5, bank 2.0, nbfc
-  // 2.5) since those aren't reliably distinguishable by name-matching alone.
-  if (sectorType === SECTOR_TYPES.INSURANCE) return 1.5
-  if (sectorType === SECTOR_TYPES.BANK)      return 2.0
-  if (sectorType === SECTOR_TYPES.NBFC)      return 2.5
-  return sectorEvSales(data)
+  // Sector median, from the SAME shared table valuation.js uses. Financial
+  // sub-types read from sectorMultiples.js's own FINANCIAL_SALES_BY_SECTOR_TYPE
+  // (indexed by the already-resolved sectorType, not text-matched) instead of
+  // retyping the same numbers here a second time — this file used to carry
+  // its own separate copy that happened to agree, with nothing keeping the
+  // two in sync if either changed. Both branches here are ASSUMED — flat
+  // asserted numbers, no external anchor.
+  const isFinancial = [SECTOR_TYPES.INSURANCE, SECTOR_TYPES.BANK, SECTOR_TYPES.NBFC].includes(sectorType)
+  return { value: isFinancial ? financialSales(sectorType) : sectorEvSales(data), tier: TIER.ASSUMED }
 }
 
 function getPeMultiple(sectorType, ratios, data) {
   const actual = ratios?.pe?.value
-  if (actual != null && actual > 0 && actual < 60) return Math.round(actual)
-  if (sectorType === SECTOR_TYPES.INSURANCE) return 18
-  if (sectorType === SECTOR_TYPES.BANK)      return 16
-  if (sectorType === SECTOR_TYPES.NBFC)      return 16
-  return sectorPe(data)
+  if (actual != null && actual > 0 && actual < 60) return { value: Math.round(actual), tier: TIER.DERIVED }
+  const isFinancial = [SECTOR_TYPES.INSURANCE, SECTOR_TYPES.BANK, SECTOR_TYPES.NBFC].includes(sectorType)
+  return { value: isFinancial ? financialPe(sectorType) : sectorPe(data), tier: TIER.ASSUMED }
 }
 
 // EV/FCF anchor — same two-tier pattern as Sales/P/E above: the stock's own
@@ -109,8 +123,8 @@ function getPeMultiple(sectorType, ratios, data) {
 function getFcfMultiple(sectorType, ratios, data) {
   const fcfYield = ratios?.fcfYield?.value
   const actual = (fcfYield != null && fcfYield > 0) ? 100 / fcfYield : null
-  if (actual != null && actual > 0 && actual < 50) return Math.round(actual)
-  return sectorEvFcf(data)
+  if (actual != null && actual > 0 && actual < 50) return { value: Math.round(actual), tier: TIER.DERIVED }
+  return { value: sectorEvFcf(data), tier: TIER.ASSUMED }
 }
 
 function getMultipleRationale(type, sectorType, value) {
@@ -284,8 +298,8 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       sanityTable: sanity,
       conclusion: getConclusion(impliedG, historicalRevGrowth, stage, 'sales'),
       assumptions: {
-        terminalMultiple: { value: terminalSalesMultiple, rationale: assumptions.rationale.terminalSalesMultiple },
-        discountRate:     { value: discountRate,          rationale: assumptions.rationale.discountRate },
+        terminalMultiple: { value: terminalSalesMultiple, rationale: assumptions.rationale.terminalSalesMultiple, tier: assumptions.tiers.terminalSalesMultiple },
+        discountRate:     { value: discountRate,          rationale: assumptions.rationale.discountRate,          tier: assumptions.tiers.discountRate },
         horizon:          { value: horizon,                rationale: assumptions.rationale.horizon }
       }
     }
@@ -320,8 +334,8 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       sanityTable: sanity,
       conclusion: getConclusion(impliedG, historicalNPGrowth, stage, 'earnings'),
       assumptions: {
-        terminalMultiple: { value: terminalPeMultiple, rationale: assumptions.rationale.terminalPeMultiple },
-        discountRate:     { value: discountRate,        rationale: assumptions.rationale.discountRate },
+        terminalMultiple: { value: terminalPeMultiple, rationale: assumptions.rationale.terminalPeMultiple, tier: assumptions.tiers.terminalPeMultiple },
+        discountRate:     { value: discountRate,        rationale: assumptions.rationale.discountRate,       tier: assumptions.tiers.discountRate },
         horizon:          { value: horizon,              rationale: assumptions.rationale.horizon }
       }
     }
@@ -368,8 +382,8 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       sanityTable: sanity,
       conclusion: getConclusion(impliedG, historicalRevGrowth, stage, 'FCF'),
       assumptions: {
-        terminalMultiple: { value: termFcfMult, rationale: assumptions.rationale.terminalFcfMultiple },
-        discountRate:     { value: discountRate, rationale: assumptions.rationale.discountRate },
+        terminalMultiple: { value: termFcfMult, rationale: assumptions.rationale.terminalFcfMultiple, tier: assumptions.tiers.terminalFcfMultiple },
+        discountRate:     { value: discountRate, rationale: assumptions.rationale.discountRate,         tier: assumptions.tiers.discountRate },
         horizon:          { value: horizon,       rationale: assumptions.rationale.horizon }
       }
     }
@@ -399,7 +413,8 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
     // Its own override key (not shared with the other variants' terminal-
     // multiple overrides, which are a different convention) — editable via
     // the same onAssumptionChange mechanism the panel already uses.
-    const reverseDcfTermGrowth = overrides.reverseDcfTermGrowth ?? TERMINAL_GROWTH_RATE
+    const market = opts.market ?? 'IN'
+    const reverseDcfTermGrowth = overrides.reverseDcfTermGrowth ?? (TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN)
     const impliedG = reverseDcfGrowth(r, { wacc: discountRate, termGrowth: reverseDcfTermGrowth, projYears: horizon })
     variants.reverseDcf = {
       applicable: impliedG != null,
@@ -417,8 +432,8 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
         // termGrowth, not terminalMultiple — this variant has no terminal
         // multiple at all (perpetuity-growth convention, not exit-multiple).
         // VariantBlock renders whichever of the two is present.
-        termGrowth:   { value: reverseDcfTermGrowth, rationale: `${(reverseDcfTermGrowth * 100).toFixed(1)}% is the terminal growth rate cash flows fade to once the explicit projection window ends — defaults to the same rate DCF's Fair Value model uses.` },
-        discountRate: { value: discountRate, rationale: assumptions.rationale.discountRate },
+        termGrowth:   { value: reverseDcfTermGrowth, rationale: `${(reverseDcfTermGrowth * 100).toFixed(1)}% is the terminal growth rate cash flows fade to once the explicit projection window ends — defaults to the same rate DCF's Fair Value model uses.`, tier: TIER.DERIVED },
+        discountRate: { value: discountRate, rationale: assumptions.rationale.discountRate, tier: assumptions.tiers.discountRate },
         horizon:      { value: horizon,      rationale: assumptions.rationale.horizon },
       },
     }

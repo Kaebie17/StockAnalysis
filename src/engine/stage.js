@@ -170,12 +170,21 @@ export function getApplicableModels(stage, sectorType) {
         note: 'Pre-revenue: P/S most relevant. DCF range is very wide.'
       }
     case 'GROWTH':
+      // Revenue multiples (P/S), not EV/EBITDA, are the conventional primary
+      // lens for early-stage, not-yet-consistently-profitable growth names —
+      // EBITDA is often small, negative, or not yet a stable base at this
+      // stage, which is exactly why TRANSITION (below) is where EV/EBITDA
+      // earns primacy instead, once earnings have actually stabilized. PEG
+      // stays available but weighted below ps: it only computes at all for
+      // GROWTH-stage names with eps>0 (see valuation.js), the edge case
+      // rather than the norm for a stage defined by NOT being consistently
+      // profitable yet.
       return {
         applicable:    ['evEbitda', 'ps', 'peg'],
-        weights:       { evEbitda: 3, ps: 1, peg: 1.5 },
+        weights:       { ps: 3, evEbitda: 1.5, peg: 1.5 },
         caution:       ['dcf'],
         notApplicable: ['pe', 'graham', 'pb'],
-        note: 'Growth stage: EV/EBITDA and revenue multiples most relevant. P/E not meaningful yet.'
+        note: 'Growth stage: revenue multiples most relevant — EBITDA is often too small or unstable this early. P/E not meaningful yet.'
       }
     case 'TRANSITION':
       return {
