@@ -1452,6 +1452,11 @@ export function buildEstimate(ratioResult, opts = {}) {
   const wideMultipleRange = wideRatio && !degenerate
     ? { low: multiples.low, high: multiples.high } : null
   if (degenerate) {
+    // The rejected band's real numbers, disclosed rather than silently
+    // dropped — "too erratic to use" told the user nothing about what was
+    // actually seen before this fell back to a weaker basis.
+    const rejected = `(rejected: ${round(multiples.low, 1)}×–${round(multiples.high, 1)}× ` +
+      `from ${multipleBasis}${own?.samples ? `, ${own.samples} samples over ${own.spanYears}y` : ''})`
     thinMultiple = false   // the rejected band's thinness no longer applies to whatever replaces it
     if (currentPe > 0) {
       const c = currentPe
@@ -1466,11 +1471,11 @@ export function buildEstimate(ratioResult, opts = {}) {
       thinMultiple = dd.thin
       multiples = { low: round(c * (1 - sp), 1), base: round(c, 1), high: round(c * (1 + sp), 1) }
       multipleBasis = 'current'
-      multipleLabel = `today's P/E ±${Math.round(sp * 100)}% — its own history was too thin or too erratic to use`
+      multipleLabel = `today's P/E ±${Math.round(sp * 100)}% — its own history was too thin or too erratic to use ${rejected}`
     } else if (peerBand?.median > 0) {
       multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
       multipleBasis = 'peer'
-      multipleLabel = 'peer multiples — its own history was unusable'
+      multipleLabel = `peer multiples — its own history was unusable ${rejected}`
     } else {
       return blank('No usable multiple: this stock\'s own history is too thin and no peers are available.',
                    { price })
