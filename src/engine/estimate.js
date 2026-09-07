@@ -1325,24 +1325,24 @@ export function buildEstimate(ratioResult, opts = {}) {
   const bandReason = ownRaw?.insufficient ? ownRaw.reason : null
   let own = ownRaw?.insufficient ? null : ownRaw
 
-  // A measured band should bracket, or at least neighbour, the multiple the
-  // stock trades at today. When it sits several times away, the band is not
-  // describing the current business: a company whose EPS jumped between the
-  // early years in the sample (a recent listing, a loss year, a demerger)
-  // produces historic ratios that have no bearing on what a forward multiple
-  // should be. LIC's band came out at 60-75x against a stock trading near 14x,
-  // and multiplying forward EPS by that gave a target five times the price.
-  //
-  // Rejecting it falls through to peers, then to today's multiple widened —
-  // both weaker bases, but weak and roughly right beats precise and absurd.
+  // A measured band sitting far from today's multiple (LIC: band 60-75x
+  // against a stock trading near 14x) used to be discarded outright — but
+  // "the band disagrees with today's price" is exactly what a genuine
+  // re-rating looks like, not only what a bad sample (a recent listing, a
+  // loss year, a demerger) looks like, and this had no way to tell the two
+  // apart before throwing the real measured data away. rerating.js exists
+  // specifically to make that distinction (how long the deviation has
+  // persisted, whether the sector moved too) — silently discarding the band
+  // here never gave it the chance. Kept and disclosed instead: the real
+  // band, with the gap named as a caveat rather than hidden behind a weaker
+  // fallback.
+  let ownDivergesFromCurrent = false
   if (own && currentPe > 0) {
     const ratio = own.median / currentPe
-    if (ratio > 2.5 || ratio < 0.4) {
-      own = null
-    }
+    ownDivergesFromCurrent = ratio > 2.5 || ratio < 0.4
   }
 
-  let multiples, multipleBasis, multipleLabel, thinMultiple = false
+  let multiples, multipleBasis, multipleLabel, thinMultiple = false, divergesFromCurrent = false
   if (multipleOverride != null && multipleOverride > 0) {
     const c = multipleOverride
     // Keep whatever spread the measured band had, so a re-rating moves the
@@ -1374,6 +1374,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     multiples = { low: own.low, base: own.median, high: own.high }
     multipleBasis = 'observed'
     thinMultiple = !!own.thin
+    divergesFromCurrent = ownDivergesFromCurrent
     // Name the span, not just the sample count. A band from three years and one
     // from nine both looked identical as "its own forward P/E range"; the first
     // describes a recent regime and the second a genuine range.
@@ -1427,30 +1428,30 @@ export function buildEstimate(ratioResult, opts = {}) {
     return blank('No usable P/E — nothing to anchor a multiple on.', { price })
   }
 
-  // A band has to actually be one, and has to be plausible. Two failures are
-  // caught here, both of which produced estimates several times the traded
-  // price:
+  // A band has to actually be one — DEGENERATE means the percentiles have
+  // collapsed onto each other, so the "range" is one number with noise
+  // beside it, which is a real structural problem (n=2-style degeneracy),
+  // not a judgment call. "Effectively equal" rather than strictly equal: a
+  // low of 79.99 against a base of 80 passes a `>=` test while being the
+  // same number, and renders as a range whose lower half is meaningless.
+  // Anything inside 3% counts as collapsed.
   //
-  //  DEGENERATE — the percentiles have collapsed onto each other, so the "range"
-  //  is one number with noise beside it. The previous version WIDENED these from
-  //  the price history, which multiplied an error built on too little data
-  //  rather than removing it.
-  //
-  //  IMPLAUSIBLE — a high/low ratio beyond about 2.5× isn't a multiple range,
-  //  it's two different regimes averaged together (a re-listing, a loss year, a
-  //  collapse in earnings). Trent's 59–171× came out this way.
-  //
-  // Either way the band is discarded and the caller falls through to peers or to
-  // today's multiple — weaker anchors, but ones that can't be absurd.
-  // "Effectively equal" rather than strictly equal: a low of 79.99 against a
-  // base of 80 passes a `>=` test while being the same number, and renders as a
-  // range whose lower half is meaningless. Anything inside 3% counts as
-  // collapsed.
+  // A high/low ratio beyond ~2.5× used to be discarded here too
+  // (IMPLAUSIBLE — "two different regimes averaged together," Trent's
+  // 59-171x cited as the motivating case) — but a wide ratio is also
+  // exactly what a genuine re-rating looks like, and discarding it here
+  // never gave rerating.js (built for distinguishing the two) a chance to
+  // weigh in. Kept and disclosed instead, same as the current-multiple
+  // divergence check above.
   const degenerate = !(multiples.base > 0)
     || multiples.low >= multiples.base * 0.97
     || multiples.high <= multiples.base * 1.03
-  const implausible = multiples.low > 0 && (multiples.high / multiples.low) > 2.5
-  if (degenerate || implausible) {
+  const wideRatio = multiples.low > 0 && (multiples.high / multiples.low) > 2.5
+  // `degraded` isn't built until later in this function — flagged here,
+  // pushed there, same as divergesFromCurrent above.
+  const wideMultipleRange = wideRatio && !degenerate
+    ? { low: multiples.low, high: multiples.high } : null
+  if (degenerate) {
     thinMultiple = false   // the rejected band's thinness no longer applies to whatever replaces it
     if (currentPe > 0) {
       const c = currentPe
@@ -1497,6 +1498,12 @@ export function buildEstimate(ratioResult, opts = {}) {
   if (multipleBasis !== 'observed' && multipleBasis !== 'revision')
     degraded.push(`Multiple from ${multipleLabel}`)
   if (thinMultiple) degraded.push('Multiple from a thinner-than-usual sample of trading days')
+  if (divergesFromCurrent)
+    degraded.push(`Historical multiple (${round(own.median, 1)}×) differs substantially from today's (${round(currentPe, 1)}×) — ` +
+      `could be a real re-rating rather than a bad sample; check the rerating flag before relying on this`)
+  if (wideMultipleRange)
+    degraded.push(`Historical multiple range is unusually wide (${round(wideMultipleRange.low, 1)}×–${round(wideMultipleRange.high, 1)}×) — ` +
+      `could reflect a genuine re-rating rather than noise; check the rerating flag before relying on the low end`)
   if (epsPath.startsWith('EPS compounded')) degraded.push('Margins assumed flat')
   if (growthBasis.expiredGuidance) degraded.push('Your guidance has expired')
 
