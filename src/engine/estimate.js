@@ -143,9 +143,25 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
 
   const ratios = []
   let pairedYears = 0
+  // Consecutive-pair count — a year only has a forward EPS to price against if
+  // y+1 is ALSO on record, which is the precondition for pairing at all,
+  // separate from whether price history happens to overlap that window. A
+  // gapped paste (years present but not consecutive) fails here even with a
+  // long price history; thin price coverage fails at the overlap check below
+  // even with a full consecutive run. Tracked separately so the diagnostic
+  // below can tell the two apart instead of naming one wrong remedy for both.
+  let consecutivePairs = 0
+  // A missing y+1 only counts as a genuine gap if the series continues PAST
+  // it — the most recent year on record naturally has no "next" year yet
+  // (it hasn't happened), which isn't a gap, just where the series ends.
+  const sortedYears = [...epsByYear.keys()].sort((a, b) => a - b)
+  const missingYears = sortedYears.slice(0, -1)
+    .filter(y => !epsByYear.has(y + 1))
+    .map(y => y + 1)
   for (const [y] of epsByYear) {
     const nextEps = epsByYear.get(y + 1)
-    if (!(nextEps > 0)) continue                  // no forward year to price against
+    if (!(nextEps > 0)) continue
+    consecutivePairs++
     const end   = Date.UTC(y, fyEndMonth, 0)
     const start = Date.UTC(y - 1, fyEndMonth, 1)
     let any = false
@@ -157,30 +173,34 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
     if (any) pairedYears++
   }
 
-  // Diagnose WHY a band can't be built, because the two causes need different
-  // fixes and the UI has been reporting the wrong one. Extending the price
-  // fetch to ten years did nothing for a stock whose incomeHistory carries four
-  // annual rows: this pairs each year's prices with the NEXT year's EPS, so N
-  // years of earnings yield at most N-1 usable pairs however many prices exist.
-  // Two paired years — the arithmetic minimum, not a judgement.
+  // Diagnose WHY a band can't be built — three distinct causes, three
+  // different remedies, and only the first two are things pasting more data
+  // fixes at all:
+  //   1. Too few years of earnings on record at all.
+  //   2. Enough years, but gaps between them break the year-to-year+1 pairing.
+  //   3. A full consecutive run of years, but price history still doesn't
+  //      overlap enough of them — not something pasting statements can fix
+  //      (there's no price history to paste), most often because the pasted
+  //      years reach back further than this stock has actually traded.
   //
-  // A percentile needs a distribution; one year gives a single point with no
-  // low and no high. Every threshold above that was me deciding what counts as
-  // "enough" history, which is a call the user is better placed to make: the
-  // span travels with the band, so a two-year window is visible as one and can
-  // be weighed accordingly.
+  // Two paired years is the arithmetic minimum a percentile band needs — one
+  // year is a single point with no low and no high. Every threshold above
+  // that was a judgement call the user is better placed to make: the span
+  // travels with the band, so a two-year window is visible as one and can be
+  // weighed accordingly.
   const MIN_PAIRED_YEARS = 2
   if (pairedYears < MIN_PAIRED_YEARS) {
-    return { insufficient: true, pairedYears, samples: ratios.length,
-             earningsYears: epsByYear.size, priceDays: closes.length,
-             // Name the fix, not the shortfall. "Only 4 years of reported
-             // earnings" tells the user what is wrong without telling them what
-             // to do — and the remedy is concrete: Yahoo returns four or five
-             // annual periods, Screener carries ten or more, and pasting them
-             // widens the band immediately.
-             reason: epsByYear.size < MIN_PAIRED_YEARS + 1
-               ? `${epsByYear.size} year${epsByYear.size === 1 ? '' : 's'} of earnings gives no range to measure — paste the Screener tables for a fuller history`
-               : `prices and earnings overlap for ${pairedYears} year${pairedYears === 1 ? '' : 's'} — paste the Screener tables to extend it` }
+    const reason =
+      epsByYear.size < MIN_PAIRED_YEARS + 1
+        ? `${epsByYear.size} year${epsByYear.size === 1 ? '' : 's'} of earnings gives no range to measure — paste the Screener tables for a fuller history`
+        : consecutivePairs < MIN_PAIRED_YEARS
+        ? `${epsByYear.size} years of earnings on record, but gaps between them` +
+          `${missingYears.length ? ` (missing ${[...new Set(missingYears)].sort().join(', ')})` : ''}` +
+          ` break the year-over-year pairing — paste the missing years to fill them in`
+        : `${consecutivePairs} consecutive year${consecutivePairs === 1 ? '' : 's'} of earnings exist, but price history only overlaps ` +
+          `${pairedYears} of them — more likely this stock's trading history than its statement history; pasting more Screener tables won't extend it`
+    return { insufficient: true, pairedYears, consecutivePairs, samples: ratios.length,
+             earningsYears: epsByYear.size, priceDays: closes.length, reason }
   }
 
   // A contaminated YEAR (a mid-year EPS restatement, a stub year producing a
@@ -1119,50 +1139,24 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
              note: 'The justified multiple produces a negative value — debt exceeds what the business supports.' }
   }
 
-  // Range from the sensitivity of the formula to the required return — the one
-  // input carrying real uncertainty. A higher required return gives a lower
-  // multiple, so +1 point produces the LOW end.
-  //
-  // The formula becomes explosive as r approaches g (the denominator tends to
-  // zero), which is exactly where a ±1 point move produces a meaningless
-  // number: a TCS-like case gave a base of 529× and a "high" below its "low".
-  // So the perturbed values are used only when they stay within a sane multiple
-  // of the base, and the band is sorted rather than assumed to be ordered.
+  // A justified multiple (payout/(r-g), and its EV/EBITDA, EV/Sales analogs)
+  // is a single deterministic formula output for one (r, g, payout) — it has
+  // no natural low/high the way a peer comparable's real dispersion does, or
+  // a DCF's genuinely different bear/base/bull scenarios do. This used to
+  // manufacture one anyway: perturb r by ±1pt, keep the result only inside an
+  // unexplained 0.4-2.5x window of the base, substitute a different
+  // unexplained ±15% when it didn't. Two arbitrary numbers standing in for
+  // what was never a real range. The formula's actual sensitivity is already
+  // disclosed properly below (`steps`, states r/g/payout explicitly) — a
+  // manufactured band never added anything a fabricated number doesn't.
   const rr = jm.requiredReturn
-  const alt = (dr) => {
-    const j2 = justifiedMultiples(ratioResult, { ...opts, riskFreeRate: rr.riskFreeRate + dr })
-    const m2 = j2.forms?.[form]?.multiple
-    if (!(m2 > 0)) return null
-    const ratio = m2 / chosen.multiple
-    return (ratio > 0.4 && ratio < 2.5) ? m2 : null    // beyond this the formula has gone unstable
-  }
-  const mHigher = alt(-0.01)   // lower required return -> higher multiple
-  const mLower  = alt(+0.01)   // higher required return -> lower multiple
-
-  const ends = [
-    mLower  != null ? toPrice(mLower)  : mid * 0.85,
-    mHigher != null ? toPrice(mHigher) : mid * 1.15,
-  ].filter(x => x > 0).sort((a, b) => a - b)
-
-  const target = {
-    low:  round(ends[0] ?? mid * 0.85),
-    base: round(mid),
-    high: round(ends[ends.length - 1] ?? mid * 1.15),
-  }
-  // A base outside its own band means the perturbation was unusable; fall back
-  // to a proportional band around the base rather than shipping an inverted one.
-  if (target.low > target.base || target.high < target.base) {
-    target.low = round(mid * 0.85)
-    target.high = round(mid * 1.15)
-  }
 
   return {
     ok: true, model: 'justified', form,
     kind: 'valuation',              // not a projection — no horizon
     createdAt: Date.now(),
     priceAtEstimate: round(price),
-    multiples: { low: round(mLower ?? chosen.multiple * 0.85, 2), base: chosen.multiple,
-                 high: round(mHigher ?? chosen.multiple * 1.15, 2) },
+    multiples: { base: chosen.multiple },
     multipleBasis: 'justified',
     multipleLabel: chosen.label,
     multipleSteps: chosen.steps,
@@ -1176,12 +1170,8 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
     requiredReturnLabel: rr.label,
     twoStage: jm.twoStage,
     base: round(base), baseLabel,
-    target,
-    upside: price > 0 ? {
-      low:  round(((target.low - price) / price) * 100, 1),
-      base: round(((target.base - price) / price) * 100, 1),
-      high: round(((target.high - price) / price) * 100, 1),
-    } : null,
+    target: { base: round(mid) },
+    upside: price > 0 ? { base: round(((mid - price) / price) * 100, 1) } : null,
     degraded: rr.betaAssumed ? ['Beta unavailable — assumed 1.0'] : [],
     missing: jm.missing,
     basisSummary: `${chosen.label} ${chosen.multiple}× on ${baseLabel} · ${rr.label}`,

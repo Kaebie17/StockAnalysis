@@ -1,7 +1,6 @@
 import React, { useState, useMemo } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { signalColor, signalBadgeClass } from '../../utils/format.js'
-import DCFScenarioPanel from './DCFScenarioPanel.jsx'
 import { expectationInsight, primaryExpectation } from '../../engine/valuation.js'
 import AIVerdict from './AIVerdict.jsx'
 import NewsModal from './NewsModal.jsx'
@@ -90,11 +89,6 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
 
   return (
     <div className="flex flex-col gap-3 lg:gap-4">
-      {/* ── SCENARIOS ── mobile first, desktop last ── */}
-      <div className="order-1 lg:order-4">
-        <DCFScenarioPanel compact />
-      </div>
-
       {/* ── TILES ── a horizontally scrolled row at every width ──
           A grid at sm and above forced five tiles to share one row, so each got
           a fifth of the width and its contents wrapped and collided. Scrolling

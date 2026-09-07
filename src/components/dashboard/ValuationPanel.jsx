@@ -34,6 +34,15 @@ const MODEL_DISPLAY = {
   peg:          { name: 'PEG (growth)',      weight: '●●○' },
 }
 
+// Same boundary valuation.js's own EXTRINSIC_MODELS draws — peer/sector
+// relative models vs. DCF's cash-flow discounting and Graham/PEG's fixed
+// heuristics. The summary rows below this table (Consensus/Fair Value,
+// Intrinsic Value, Heuristic checks) already keep these apart; this table
+// listed all seven in one undifferentiated sequence, which is the one place
+// that separation never reached.
+const EXTRINSIC_MODEL_KEYS = ['pe', 'pb', 'evEbitda', 'ps']
+const OTHER_MODEL_KEYS = ['dcf', 'graham', 'peg']
+
 export default function ValuationPanel({ open, onClose }) {
   const { state, recalc } = useApp()
   const { valuation, ratioResult, data } = state
@@ -68,8 +77,11 @@ export default function ValuationPanel({ open, onClose }) {
   const signalColor = signal === 'UNDERVALUED' ? 'text-bull'
     : signal === 'OVERVALUED' ? 'text-bear' : 'text-neutral'
 
-  // All model keys in display order
-  const allModels = Object.keys(MODEL_DISPLAY)
+  // Grouped, not one flat sequence — see EXTRINSIC_MODEL_KEYS above.
+  const modelGroups = [
+    { label: 'Extrinsic — Peer/Sector Relative', keys: EXTRINSIC_MODEL_KEYS },
+    { label: 'Intrinsic & Heuristic', keys: OTHER_MODEL_KEYS },
+  ]
 
   return (
     <div className="card space-y-4">
@@ -110,52 +122,59 @@ export default function ValuationPanel({ open, onClose }) {
           <span className="text-right w-8">Wt</span>
         </div>
 
-        {allModels.map(key => {
-          const meta   = MODEL_DISPLAY[key]
-          const result = models[key]
-          const fv     = result?.value
-          const note   = result?.note
-          const up     = fv != null && price ? ((fv - price) / price) * 100 : null
-          const isNA   = modelMeta?.notApplicable?.includes(key)
-          const isCaution = modelMeta?.caution?.includes(key)
-
-          const label = isNA
-            ? <span className="line-through text-slate-600">{meta.name}</span>
-            : isCaution
-            ? <span>{key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name} <span className="text-neutral">⚠</span></span>
-            : (key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name)
-
-          const fvText = fv != null ? cur + fv.toFixed(0) : isNA ? 'N/A' : '—'
-          const upText = up != null ? fmtPct(up) : '—'
-          const upColor = up == null ? 'text-slate-500' : up >= 0 ? 'text-bull' : 'text-bear'
-
-          return (
-            <div key={key}
-              title={note || ''}
-              className={`border-b border-navy-800/40 py-2 text-xs
-                          flex flex-col gap-1
-                          sm:grid sm:grid-cols-[1fr_auto_auto_auto_auto] sm:gap-3 sm:items-center
-                          ${isNA ? 'opacity-25' : ''}`}>
-              {/* Mobile: name + weight dots on line 1 */}
-              <div className="flex items-center justify-between sm:block">
-                <span className="text-slate-300">{label}</span>
-                <span className="text-slate-600 font-mono sm:hidden">{meta.weight}</span>
-              </div>
-              {/* Mobile: fair value + vs CMP on line 2 (full width, no wrap) */}
-              <div className="flex items-center justify-between gap-3 sm:contents">
-                <span className="font-mono text-white whitespace-nowrap tabular-nums sm:text-right sm:w-20 flex items-center justify-end gap-1">
-                  {fvText}
-                  <ProvenanceTag tier={result?.tier} compact />
-                </span>
-                <span className={`font-mono font-semibold whitespace-nowrap tabular-nums sm:text-right sm:w-16 ${upColor}`}>
-                  {upText}
-                </span>
-                <span className="hidden sm:block sm:w-16"><DotBar upside={up} /></span>
-                <span className="hidden sm:block sm:text-right sm:w-8 text-slate-600 font-mono">{meta.weight}</span>
-              </div>
+        {modelGroups.map(group => (
+          <div key={group.label}>
+            <div className="text-[10px] uppercase tracking-wide text-slate-600 pt-2 pb-1">
+              {group.label}
             </div>
-          )
-        })}
+            {group.keys.map(key => {
+              const meta   = MODEL_DISPLAY[key]
+              const result = models[key]
+              const fv     = result?.value
+              const note   = result?.note
+              const up     = fv != null && price ? ((fv - price) / price) * 100 : null
+              const isNA   = modelMeta?.notApplicable?.includes(key)
+              const isCaution = modelMeta?.caution?.includes(key)
+
+              const label = isNA
+                ? <span className="line-through text-slate-600">{meta.name}</span>
+                : isCaution
+                ? <span>{key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name} <span className="text-neutral">⚠</span></span>
+                : (key === 'dcf' ? `DCF (${assumptions?.projYears ?? 10}yr)` : meta.name)
+
+              const fvText = fv != null ? cur + fv.toFixed(0) : isNA ? 'N/A' : '—'
+              const upText = up != null ? fmtPct(up) : '—'
+              const upColor = up == null ? 'text-slate-500' : up >= 0 ? 'text-bull' : 'text-bear'
+
+              return (
+                <div key={key}
+                  title={note || ''}
+                  className={`border-b border-navy-800/40 py-2 text-xs
+                              flex flex-col gap-1
+                              sm:grid sm:grid-cols-[1fr_auto_auto_auto_auto] sm:gap-3 sm:items-center
+                              ${isNA ? 'opacity-25' : ''}`}>
+                  {/* Mobile: name + weight dots on line 1 */}
+                  <div className="flex items-center justify-between sm:block">
+                    <span className="text-slate-300">{label}</span>
+                    <span className="text-slate-600 font-mono sm:hidden">{meta.weight}</span>
+                  </div>
+                  {/* Mobile: fair value + vs CMP on line 2 (full width, no wrap) */}
+                  <div className="flex items-center justify-between gap-3 sm:contents">
+                    <span className="font-mono text-white whitespace-nowrap tabular-nums sm:text-right sm:w-20 flex items-center justify-end gap-1">
+                      {fvText}
+                      <ProvenanceTag tier={result?.tier} compact />
+                    </span>
+                    <span className={`font-mono font-semibold whitespace-nowrap tabular-nums sm:text-right sm:w-16 ${upColor}`}>
+                      {upText}
+                    </span>
+                    <span className="hidden sm:block sm:w-16"><DotBar upside={up} /></span>
+                    <span className="hidden sm:block sm:text-right sm:w-8 text-slate-600 font-mono">{meta.weight}</span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        ))}
       </div>
 
       {/* DCF scenarios — moved OUT of the table (was invalid inside tbody) */}
@@ -449,11 +468,6 @@ function EstimateRevisions({ state }) {
   // actually committed (by its content, not its object reference) so a
   // reference-different-but-value-identical re-render can't double-apply it.
   const lastAppliedSuggestionRef = useRef(null)
-  // Same fix, for the news-fact auto-apply effect below: a.key is stable
-  // per-headline (keyOf() in useNewsFacts.js), so tracking which keys this
-  // session has already auto-applied blocks a duplicate commit for the same
-  // item during the same async gap before handledKeys catches up.
-  const autoAppliedKeysRef = useRef(new Set())
 
   const r = state.ratioResult
   const ctx = r ? {
@@ -501,52 +515,27 @@ function EstimateRevisions({ state }) {
     sourceKey: a.key,
   })
 
-  const applyItem = React.useCallback(async (a, auto = false) => {
+  // A fully-specified news fact used to be applied without asking — the
+  // reasoning was "the guards make it safe, not the prompt" (factImpact
+  // rejects inputs that fail a sanity check against the company's own
+  // numbers). In practice that let a single news item silently override the
+  // standing growth/margin assumption everywhere in the app with nothing on
+  // screen distinguishing "the app decided this passed its guardrails" from
+  // "you reviewed and chose this" — worth a tap regardless of how
+  // well-specified the fact is. Every actionable item now requires an
+  // explicit apply, same as the conflict-fact case already did.
+  const applyItem = React.useCallback(async (a) => {
     const entries = [a.impact, a.impact.second].filter(Boolean)
     for (const imp of entries) {
       await commit({
         lever: imp.lever, oldValue: imp.from ?? null, newValue: imp.to, years: imp.years ?? null,
-        disposition: 'revised', trigger: auto ? 'news-auto' : 'news',
+        disposition: 'revised', trigger: 'news',
         factType: a.parsed.typeId, factFields: a.parsed.fields, steps: imp.steps,
         reason: a.item.title, sourceKey: a.key,
         sourceItem: { title: a.item.title, url: a.item.url, date: a.item.date },
       })
     }
   }, [commit])
-
-  // An item that states everything needed is applied WITHOUT asking. Holding a
-  // fully-specified fact behind a tap makes the user re-derive a decision the
-  // arithmetic already made; the estimate is meant to keep itself current, not
-  // wait to be told what it can already work out.
-  //
-  // What makes this safe is the guards, not the prompt: factImpact refuses
-  // inputs that don't survive a sanity check against the company's own numbers
-  // (a 26% "margin" on a 4.7% net-margin insurer is rejected, not applied), and
-  // every auto-application is logged with an undo.
-  //
-  // `handledKeys` comes from the revision log, so a committed item drops out of
-  // `actionable` on the next read — that's what stops this re-firing each poll.
-  // That exclusion only takes effect once reload() completes, though, and
-  // `actionable` is a freshly-built array every render regardless of whether
-  // its contents actually changed — the same gap that let the quarterly-auto
-  // effect above double-commit before its own gate closed. Guarded by key,
-  // synchronously, for the same reason.
-  React.useEffect(() => {
-    if (actionable.length === 0) return
-    let cancelled = false
-    ;(async () => {
-      for (const a of actionable) {
-        if (cancelled) return
-        // A conflict has no defensible automatic answer — it's the one case
-        // where the app has done all it legitimately can and the choice is real.
-        if (a.impact?.conflict) continue
-        if (autoAppliedKeysRef.current.has(a.key)) continue
-        autoAppliedKeysRef.current.add(a.key)
-        await applyItem(a, true)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [actionable, applyItem])
 
   // Undo appends a reverting entry rather than deleting: the log is append-only,
   // and "this was applied then undone" is worth keeping.
@@ -649,7 +638,8 @@ function EstimateRevisions({ state }) {
             a.impact?.conflict
               ? <ConflictFact key={a.key} a={a}
                   onUse={() => applyItem(a)} onKeep={() => keepCurrent(a)} />
-              : <NewsFact key={a.key} a={a} applying
+              : <NewsFact key={a.key} a={a}
+                  onApply={() => applyItem(a)}
                   onDefer={() => disposeItem(a, 'deferred')}
                   onDismiss={() => disposeItem(a, 'dismissed')} />
           ))}
@@ -734,10 +724,11 @@ function EstimateRevisions({ state }) {
 }
 
 /**
- * One news-derived item. Actionable ones show the computed change and apply in a
- * tap; incomplete ones name the missing fact and open the form to supply it.
+ * One news-derived item. Actionable ones show the computed change and wait
+ * for an explicit tap to apply; incomplete ones name the missing fact and
+ * open the form to supply it.
  */
-function NewsFact({ a, applying, onOpen, onDefer, onDismiss }) {
+function NewsFact({ a, onApply, onOpen, onDefer, onDismiss }) {
   const high = a.severity === 'high'
   return (
     <div className={`rounded-lg p-2.5 space-y-1.5 border ${
@@ -764,7 +755,7 @@ function NewsFact({ a, applying, onOpen, onDefer, onDismiss }) {
 
       <div className="flex items-center gap-3 pt-0.5">
         {a.impact?.lever
-          ? <span className="text-[11px] text-slate-500">applying…</span>
+          ? <button onClick={onApply} className="text-[11px] text-accent hover:text-accent-light">Apply</button>
           : <button onClick={onOpen} className="text-[11px] text-accent hover:text-accent-light">Add the missing bit</button>}
         <button onClick={onDefer} className="text-[11px] text-slate-500 hover:text-slate-300">Defer</button>
         <button onClick={onDismiss} className="text-[11px] text-slate-600 hover:text-bear ml-auto">Not material</button>
@@ -859,7 +850,7 @@ function TwoEstimates({ state }) {
           </span>
           {justified?.ok ? (
             <span className="font-mono text-slate-200 text-right">
-              {cur}{n(justified.target.low)} – {cur}{n(justified.target.high)}
+              {cur}{n(justified.target.base)}
               {justified.upside?.base != null && (
                 <span className={`ml-1.5 text-[11px] ${justified.upside.base >= 0 ? 'text-bull' : 'text-bear'}`}>
                   {justified.upside.base >= 0 ? '+' : ''}{justified.upside.base}%

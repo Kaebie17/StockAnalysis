@@ -207,21 +207,27 @@ module.exports = async function handler(req, res) {
           modules: ['financialData', 'defaultKeyStatistics', 'summaryDetail', 'assetProfile', 'earnings']
         }, yfOpts),
 
-        // Daily OHLCV for technicals (2yr).
+        // Daily OHLCV for technicals.
         // NOTE: historical() is deprecated AND currently fails Yahoo's own
         // options validation (period2 schema) because Yahoo removed its backend.
         // chart() is the supported replacement and returns { quotes: [...] }.
-        // Ten years, matched to the fundamentals window below.
         //
-        // This was two years, which quietly capped every downstream calculation
-        // that pairs prices with fiscal years: a multiple band could never have
-        // more than two annual observations FOR ANY STOCK, however long it had
-        // been listed. Trent's "median multiple over 2 years" — which produced a
-        // 59-171x band and an absurd estimate — was this limit, not a young
-        // company. Ten years spans a full cycle for a cyclical and gives a
-        // percentile band something to be a percentile OF.
+        // This was two years, then ten — both quietly capped every downstream
+        // calculation that pairs prices with fiscal years: a multiple band
+        // could never have more annual observations than the price window
+        // allowed, however long the stock had actually been listed. Trent's
+        // "median multiple over 2 years" (a 59-171x band, an absurd estimate)
+        // was the 2yr version of this. The 10yr version has the same shape of
+        // problem, just less visible: a Screener paste routinely reaches 10-12+
+        // years of statement history, deeper than a flat 10yr price window can
+        // pair against — the oldest pasted years become structurally unpairable
+        // no matter how complete the paste is, and the "insufficient" message
+        // that results has no honest remedy to suggest. period1=epoch (Yahoo's
+        // own documented way to request everything it has) removes the ceiling
+        // instead of picking a new number that will eventually be too small
+        // again for a long-enough-listed stock.
         yf.chart(ticker, {
-          period1: new Date(Date.now() - 10 * 365 * 24 * 60 * 60 * 1000),
+          period1: new Date(0),
           period2: new Date(),
           interval: '1d'
         }, yfOpts),
@@ -267,9 +273,10 @@ module.exports = async function handler(req, res) {
         })).filter(d => d.close != null)
       }
 
-      // Fallback to Yahoo's raw chart endpoint (no crumb needed, reliably 2yr
-      // OHLCV for all tickers) whenever the library path gave us something we
-      // can't compute technicals from.
+      // Fallback to Yahoo's raw chart endpoint (no crumb needed, reliably
+      // returns OHLCV for all tickers) whenever the library path gave us
+      // something we can't compute technicals from. range=max, matching the
+      // primary yf.chart() call above — no separate, shorter ceiling here.
       //
       // The trigger used to be `length < 30`, which missed the case that
       // actually happens: chart() returns rows, but with null OHLC — a quote-only
@@ -285,7 +292,7 @@ module.exports = async function handler(req, res) {
           console.warn(`[yf2] ${ticker}: ${history.length} bars but only ${usableBars} have full OHLC — refetching`)
         }
         try {
-          const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=10y&interval=1d&includePrePost=false`
+          const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=max&interval=1d&includePrePost=false`
           const chartRes = await fetch(chartUrl, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36' }
           })

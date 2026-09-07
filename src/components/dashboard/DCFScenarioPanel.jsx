@@ -1,22 +1,33 @@
-import React, { useState } from 'react'
+import React from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { scenarioAssumptions } from '../../engine/valuation.js'
 
 /**
- * Bear / Base / Bull scenario toggle + a growth × WACC sensitivity table for the
- * DCF. Scenarios ride the SAME recalc(assumptions) path the sliders use, so there
- * is one source of truth — clicking a scenario just moves growth / WACC / terminal
- * to sensible presets (anchored on the professional defaults). The sensitivity
- * grid re-centres on whatever assumptions are currently applied.
+ * DCF sensitivity table — growth × WACC, both axes swept around the currently
+ * applied assumptions.
+ *
+ * This used to also offer a Bear/Base/Bull scenario toggle, shifting growth,
+ * WACC and terminal growth by fixed presets. Removed: the growth shift had a
+ * real per-company measurement behind it when there was enough history
+ * (growthScenarioSpread), but the WACC and terminal-growth shifts never did
+ * — flat, undefended constants applied to every company alike, with no more
+ * basis than the Justified Multiples range this session already removed for
+ * the same reason. Worse, on a low-beta stock those shifts could push the
+ * WACC right next to the terminal-growth floor, where the Gordon-growth
+ * denominator goes toward zero and the "Bull" case exploded to an absolute
+ * fair value many multiples of the real price — a real, absurd example
+ * (RELIANCE) is what surfaced this. Rather than invent a principled basis
+ * for the WACC/terminal shift or ship a disclosed-as-arbitrary convention,
+ * the feature is gone. The sensitivity grid below stays: it doesn't assert
+ * any cell is "the bear case" or "the bull case," it just shows how the same
+ * DCF formula moves across a range of inputs the user can see are inputs.
  */
-export default function DCFScenarioPanel({ compact = false }) {
-  const { state, recalc } = useApp()
+export default function DCFScenarioPanel() {
+  const { state } = useApp()
   const { valuation, ratioResult, data } = state || {}
-  const [active, setActive] = useState('base')
 
   if (!valuation) return null
-  const { scenarios, sensitivity, defaults } = valuation
-  if (!scenarios && !sensitivity) return null
+  const { sensitivity } = valuation
+  if (!sensitivity) return null
 
   const cur   = data?.currency === 'INR' ? '₹' : '$'
   const price = ratioResult?.price
@@ -29,58 +40,14 @@ export default function DCFScenarioPanel({ compact = false }) {
     return 'text-slate-300'
   }
 
-  const applyScenario = (key) => {
-    setActive(key)
-    if (defaults) recalc(scenarioAssumptions(key, defaults, data, data?.currency === 'INR' ? 'IN' : 'US'), {})
-  }
-
-  const ScenarioButtons = (
-    <div className="grid grid-cols-3 gap-2">
-      {['bear', 'base', 'bull'].map(k => {
-        const s = scenarios?.[k]
-        if (!s) return null
-        return (
-          <button
-            key={k}
-            onClick={() => applyScenario(k)}
-            className={`rounded-lg p-3 text-left border transition ${
-              active === k ? 'border-accent bg-navy-800' : 'border-navy-700 hover:border-navy-600'
-            }`}>
-            <div className="text-xs text-slate-400">{s.label}</div>
-            <div className={`text-lg font-semibold ${colorFor(s.fairValue)}`}>{money(s.fairValue)}</div>
-            <div className="text-[10px] text-slate-500 mt-1">
-              g {(s.assumptions.growthRate * 100).toFixed(0)}% · WACC {(s.assumptions.wacc * 100).toFixed(0)}% · term {(s.assumptions.termGrowth * 100).toFixed(0)}%
-            </div>
-            <div className="text-[10px] text-slate-500">DCF {money(s.dcf)}</div>
-          </button>
-        )
-      })}
-    </div>
-  )
-
-  // Compact = dashboard preset strip only (buttons + one-line hint).
-  if (compact) {
-    if (!scenarios) return null
-    return (
-      <div className="space-y-1.5">
-        <div className="text-xs font-medium text-slate-400">Valuation scenario</div>
-        {ScenarioButtons}
-      </div>
-    )
-  }
-
-  // Full = strip + sensitivity table (valuation tab).
   return (
     <div className="card space-y-4">
       <div>
-        <h3 className="font-semibold text-white">📉 DCF Scenarios &amp; Sensitivity</h3>
+        <h3 className="font-semibold text-white">📉 DCF Sensitivity</h3>
         <p className="text-xs text-slate-500 mt-0.5">
           Growth anchored on the recent 5-yr median and faded toward the terminal rate.
-          Bear / Base / Bull shift growth, discount rate and terminal growth together.
         </p>
       </div>
-
-      {scenarios && ScenarioButtons}
 
       {price != null && (
         <p className="text-xs text-slate-500">
@@ -89,43 +56,41 @@ export default function DCFScenarioPanel({ compact = false }) {
       )}
 
       {/* Sensitivity table */}
-      {sensitivity && (
-        <div className="space-y-1">
-          <div className="text-xs font-medium text-slate-300">DCF fair value — growth (rows) × WACC (columns)</div>
-          <div className="overflow-x-auto">
-            <table className="text-xs w-full">
-              <thead>
-                <tr>
-                  <th className="text-left py-1 pr-2 text-slate-500">g \ WACC</th>
-                  {sensitivity.waccAxis.map((w, i) => (
-                    <th key={i} className="text-right py-1 px-2 text-slate-500">{(w * 100).toFixed(0)}%</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sensitivity.grid.map((row, ri) => (
-                  <tr key={ri} className="border-t border-navy-800/50">
-                    <td className="py-1 pr-2 text-slate-400">{(sensitivity.growthAxis[ri] * 100).toFixed(0)}%</td>
-                    {row.map((v, ci) => {
-                      const isCenter = ri === 2 && ci === 2   // current assumptions
-                      return (
-                        <td
-                          key={ci}
-                          className={`text-right py-1 px-2 font-mono ${colorFor(v)} ${isCenter ? 'bg-navy-800 rounded font-semibold' : ''}`}>
-                          {v == null ? '—' : Math.round(v).toLocaleString('en-IN')}
-                        </td>
-                      )
-                    })}
-                  </tr>
+      <div className="space-y-1">
+        <div className="text-xs font-medium text-slate-300">DCF fair value — growth (rows) × WACC (columns)</div>
+        <div className="overflow-x-auto">
+          <table className="text-xs w-full">
+            <thead>
+              <tr>
+                <th className="text-left py-1 pr-2 text-slate-500">g \ WACC</th>
+                {sensitivity.waccAxis.map((w, i) => (
+                  <th key={i} className="text-right py-1 px-2 text-slate-500">{(w * 100).toFixed(0)}%</th>
                 ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-[10px] text-slate-600">
-            Centre cell = current assumptions. Colour = upside / downside vs current price.
-          </p>
+              </tr>
+            </thead>
+            <tbody>
+              {sensitivity.grid.map((row, ri) => (
+                <tr key={ri} className="border-t border-navy-800/50">
+                  <td className="py-1 pr-2 text-slate-400">{(sensitivity.growthAxis[ri] * 100).toFixed(0)}%</td>
+                  {row.map((v, ci) => {
+                    const isCenter = ri === 2 && ci === 2   // current assumptions
+                    return (
+                      <td
+                        key={ci}
+                        className={`text-right py-1 px-2 font-mono ${colorFor(v)} ${isCenter ? 'bg-navy-800 rounded font-semibold' : ''}`}>
+                        {v == null ? '—' : Math.round(v).toLocaleString('en-IN')}
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      )}
+        <p className="text-[10px] text-slate-600">
+          Centre cell = current assumptions. Colour = upside / downside vs current price.
+        </p>
+      </div>
     </div>
   )
 }

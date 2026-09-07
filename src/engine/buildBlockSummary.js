@@ -65,7 +65,10 @@ export function buildBlockSummary(state, extra = {}) {
     // what the fundamentals justify paying, Estimate 2 what the market has
     // actually been paying, and consensus what the Street expects.
     estimate1: extra.justified?.ok ? {
-      range: [num(extra.justified.target.low), num(extra.justified.target.high)],
+      // A single deterministic formula output for one (r, g, payout) — no
+      // natural range the way a peer comparable or a DCF scenario has, so
+      // this is a point value, not a [low, high] pair.
+      value: num(extra.justified.target.base),
       basis: extra.justified.multipleLabel,
       multiple: extra.justified.multiples?.base,
       form: extra.justified.form,

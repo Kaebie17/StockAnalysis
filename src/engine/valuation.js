@@ -15,7 +15,6 @@ import { computePeg } from './peg.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvSales as getSectorEvSales, financialPb } from './sectorMultiples.js'
 import { peerBand } from './peerBands.js'
-import { percentileSpread } from './spread.js'
 import { TIER } from './methodologyTier.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
@@ -57,8 +56,8 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const waccResult = computeWacc(r, { liveRiskFree: assumptions.liveRiskFree ?? null, erp: assumptions.liveErp ?? null, market })
   const waccDefault = waccResult.wacc
   const waccBetaFlag = waccResult.betaFlag
-  // Computed once, reused for both the default below and the scenario base
-  // further down — was previously called twice with identical inputs.
+  // Computed once, reused for the default below — was previously called
+  // twice with identical inputs.
   const growthResult = estimateGrowth(r)
 
   const {
@@ -309,40 +308,26 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     peg:    results.peg    ? { value: results.peg.value,    note: results.peg.note,    tier: results.peg.tier }    : null,
   }
 
-  // ── Sensitivity + scenarios (DCF is the growth/WACC-sensitive model) ──────────
+  // ── Sensitivity (DCF is the growth/WACC-sensitive model) ─────────────────────
   // Both axes need REAL base values — a sensitivity grid built by sweeping
   // around a fabricated 8%/flat-WACC centre is a grid of guesses, not a
   // range around this company's own numbers.
+  //
+  // A Bear/Base/Bull scenario toggle used to sit alongside this, shifting
+  // growth, WACC and terminal growth by fixed presets. Removed: the WACC and
+  // terminal-growth shifts never had a real per-company basis (flat,
+  // undefended constants — the code's own comment called them "a disclosed,
+  // undented convention," the same standing as the Justified Multiples range
+  // already removed this session), and on a low-beta stock they could push
+  // WACC right next to the terminal-growth floor, where the Gordon-growth
+  // denominator goes toward zero and "Bull" exploded to an absolute fair
+  // value many multiples of the real price (RELIANCE surfaced this live).
+  // The sensitivity grid below doesn't have this problem: it never asserts
+  // any one cell is "the bear case," it just shows the same formula's real
+  // output across a range of inputs the user can see are inputs.
   const sensitivity = (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf && growthRate != null && wacc != null)
     ? dcfSensitivity(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntY)
     : null
-
-  // Both the scenario cards and the sensitivity grid need REAL base values —
-  // without them, scenarioAssumptions() correctly returns null growth/wacc,
-  // but the panel would still render a card and format `null * 100` as a
-  // (wrong-looking, still misleading) "0%" rather than not showing the card
-  // at all. Gating the whole block here means "no scenarios" instead.
-  let scenarios = null
-  const scenGrowthDefault = growthResult.growth
-  if (cfBaseDcf && r.shares && scenGrowthDefault != null && waccDefault != null) {
-    // termGrowth: the RESOLVED value (respects a user-adjusted slider), not a
-    // separate hardcoded 3% — this was a second, independent copy of the
-    // constant Phase 1 unified, missed on the first pass and caught by
-    // actually rendering the scenario cards (they kept showing "term 3%"
-    // after the shared default moved to 4%).
-    const scenBase = { growthRate: scenGrowthDefault, wacc: waccDefault, termGrowth, projYears }
-    scenarios = {}
-    for (const key of ['bear', 'base', 'bull']) {
-      const sa    = scenarioAssumptions(key, scenBase, data, market)
-      const dcfPs = dcfPerShare(cfBaseDcf, sa.growthRate, sa.wacc, sa.termGrowth, sa.projYears, r.cash, r.totalDebt, r.shares)
-      scenarios[key] = {
-        label: SCENARIO_PRESETS[key].label,
-        assumptions: sa,
-        dcf: dcfPs,
-        fairValue: dcfPs,
-      }
-    }
-  }
 
   // Signal from the primary model's value vs CMP. Deadband scaled to how much
   // the valid extrinsic models actually disagree for THIS stock (rangeHigh vs
@@ -380,7 +365,6 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     secondaryChecks,
     impliedGrowth,
     sensitivity,
-    scenarios,
     assumptions: { wacc, termGrowth, projYears, growthRate, sectorPe, sectorEvEb, sectorPs },
     defaults: { wacc: waccDefault, termGrowth: TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN, projYears: 10, growthRate: growthResult.growth, sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault, sectorPs: sectorPsDefault }
   }
@@ -571,8 +555,8 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
 function estimateGrowth(r) {
   // The single dynamic windowed CAGR — same figure every consumer uses, so the
   // user's window now reaches the DCF. No revCagr means no growth rate, not a
-  // flat 8% dressed up as one. Callers (DCF, scenarios, reverse-DCF) decline
-  // rather than substitute when this comes back null.
+  // flat 8% dressed up as one. Callers (DCF, reverse-DCF) decline rather
+  // than substitute when this comes back null.
   const cagr = r.ratios?.revCagr?.value
   if (cagr == null) return { growth: null, unusual: false, sustainable: null, aboveSustainable: false }
   const g = cagr / 100
@@ -649,100 +633,6 @@ function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYea
       ? dcfPerShare(cfBase, g, w, tg, yrs, cash, debt, shares, g, ntYears)
       : dcfPerShare(cfBase, g, w, tg, yrs, cash, debt, shares)))
   return { growthAxis, waccAxis, grid }
-}
-
-// Scenario presets shift the SAME growth / WACC / terminal the sliders drive —
-// no parallel model. Bear = lower growth + higher discount; Bull = the opposite.
-// WACC and terminal-growth shifts are a narrative risk adjustment ("how much
-// riskier does the market feel in a downturn"), not something with a natural
-// per-company measurement the way growth volatility has one below — these
-// stay a disclosed, undented convention rather than a spurious "measurement"
-// invented to look more rigorous than they are.
-//
-// growthAdd, not growthMul: a MULTIPLIER flips sign-dependent — 0.5x on a
-// positive 10% growth gives a milder 5% (correctly bearish), but 0.5x on a
-// genuinely negative -10% growth gives -5% (LESS decline — backwards for a
-// bear case). An ADDITIVE shift is sign-safe either way: bear always means
-// "a few points worse than base," bull always "a few points better,"
-// regardless of whether base itself is growth or decline.
-export const SCENARIO_PRESETS = {
-  base: { label: 'Base', growthAdd:  0.00, waccAdd:  0.000, termAdd:  0.000 },
-  bear: { label: 'Bear', growthAdd: -0.05, waccAdd:  0.020, termAdd: -0.005 },
-  bull: { label: 'Bull', growthAdd:  0.05, waccAdd: -0.015, termAdd:  0.005 },
-}
-
-// Bear/Bull growth spread, measured from this company's OWN year-over-year
-// revenue growth history — same "measure it from the company's own
-// distribution" principle already used for OUTLIER_MULTIPLE, priceDispersion
-// and targetMultiple's spreadLow/spreadHigh, rather than one flat 50%/140%
-// multiplier applied to every company alike (a steady, predictable business
-// gets an unrealistically wide Bear/Bull range under a flat multiplier; a
-// genuinely volatile one gets an unrealistically narrow one). Returns null
-// when there's too little revenue history to measure real volatility, in
-// which case the caller falls back to the fixed multiplier.
-function growthScenarioSpread(data) {
-  const yearOf = row => {
-    const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
-    return m ? Number(m[0]) : null
-  }
-  const series = (data?.incomeHistory || [])
-    .filter(row => !row?.synthetic)
-    .map(row => ({ year: yearOf(row), value: row?.revenue?.value }))
-    .filter(p => p.year != null && p.value > 0)
-    .sort((a, b) => a.year - b.year)
-
-  const yoy = []
-  for (let i = 1; i < series.length; i++) yoy.push(series[i].value / series[i - 1].value - 1)
-
-  const ps = percentileSpread(yoy, { minSamples: 4 })
-  if (!ps) return null   // too little history for a real spread
-  const spread = (ps.high - ps.low) / 2
-  return (spread > 0 && isFinite(spread)) ? spread : null
-}
-
-// Given a base assumptions set, return the assumptions for a named scenario.
-// The UI applies this via the existing recalc(assumptions) path. `data`
-// (optional) enables the measured growth spread above; omitted, this falls
-// back to the fixed multiplier exactly as before.
-export function scenarioAssumptions(preset, base, data = null, market = 'IN') {
-  const p = SCENARIO_PRESETS[preset] || SCENARIO_PRESETS.base
-  const marketTermGrowth = TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN
-  // No clamp here: ValuationPanel's own slider already constrains user-set
-  // termGrowth to 1-6%, and the market-anchored defaults (5% IN / 2.5% US)
-  // plus a ±0.5pt scenario shift never approach a range needing a backstop —
-  // the previous [0%,6%] clamp was redundant with the UI bound in every real
-  // case and, per the same reasoning applied everywhere else this session,
-  // an asserted ceiling isn't the right tool even where it would bind.
-  const termGrowth = (base.termGrowth ?? marketTermGrowth) + p.termAdd
-  const measuredSpread = preset !== 'base' ? growthScenarioSpread(data) : null
-  let growthRate = null
-  if (base.growthRate != null) {
-    // null base growth/wacc (no measured CAGR, no computable WACC) stays
-    // null through every scenario rather than falling back to a flat
-    // 8%/10% — dcfPerShare declines cleanly on a null input; it must NOT
-    // receive a number nobody measured just because a scenario shift was
-    // applied to it. No plausibility floor/ceiling on the result either — a
-    // genuinely declining company's Bear case should be allowed to decline
-    // further, not get floored back toward positive growth (this was
-    // exactly the "silently more optimistic than reality" bug already
-    // identified and removed from estimateGrowth() above; it had quietly
-    // reappeared here).
-    const delta = measuredSpread != null
-      ? (preset === 'bear' ? -measuredSpread : preset === 'bull' ? measuredSpread : 0)
-      : p.growthAdd
-    growthRate = base.growthRate + delta
-  }
-  return {
-    growthRate,
-    // WACC floor is structural (the Gordon-growth terminal value divides by
-    // wacc-termGrowth; below that the formula is undefined, not merely
-    // unusual) — kept. No ceiling: a real, CAPM-derived WACC shifted by a
-    // disclosed scenario adjustment doesn't need a second, separate asserted
-    // cap on top of it.
-    wacc:       base.wacc != null ? Math.max(base.wacc + p.waccAdd, termGrowth + 0.01) : null,
-    termGrowth,
-    projYears:  base.projYears ?? 10,
-  }
 }
 
 /**

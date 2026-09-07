@@ -39,6 +39,10 @@ const CYCLICAL_KEYWORDS = [
   'metal', 'steel', 'aluminium', 'aluminum', 'copper', 'zinc', 'mining', 'iron ore',
   'cement', 'commodity chemical', 'fertiliser', 'fertilizer', 'sugar', 'paper',
   'shipping', 'petrochemical', 'refin', 'crude',
+  // Broader oil & gas / coal — earnings tracking a commodity price the company
+  // doesn't set applies just as much to upstream exploration and coal as it
+  // does to refining, which was the only oil & gas term here before.
+  'oil exploration', 'oil & gas', 'oil and gas', 'coal', 'natural gas',
 ]
 
 // Heavy depreciation makes net margin a poor guide; these are conventionally
@@ -46,6 +50,9 @@ const CYCLICAL_KEYWORDS = [
 const CAPITAL_INTENSIVE_KEYWORDS = [
   'telecom', 'telecommunication', 'wireless', 'tower', 'data center', 'data centre',
   'airline', 'airport', 'port', 'toll', 'highway', 'infrastructure', 'pipeline',
+  // Power/utilities: regulated, D&A-heavy, conventionally EV/EBITDA-valued —
+  // same structural reasoning as telecom/toll above, wasn't covered before.
+  'power generation', 'power', 'utility', 'utilities', 'electricity',
 ]
 
 const REALTY_KEYWORDS = ['real estate', 'realty', 'property developer', 'housing development']
