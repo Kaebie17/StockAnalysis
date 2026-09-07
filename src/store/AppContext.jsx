@@ -148,6 +148,20 @@ function reducer(s, a) {
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
+    case 'PRICE_HISTORY_UPDATE': {
+      // Replaces ONLY priceHistory — never incomeHistory/balanceHistory/
+      // cashflowHistory/reportedIncomeHistory, which is where a manually
+      // pasted Screener history (real, hand-curated work) lives. A fresh
+      // Yahoo price fetch is always safe to drop in wholesale; a fresh
+      // statement fetch is not, since it would silently discard anything
+      // the auto Screener re-scrape doesn't recapture (Screener is commonly
+      // blocked by Cloudflare, at which point the fallback is Yahoo-only).
+      if (!s.data || !Array.isArray(a.priceHistory)) return s
+      const data = { ...s.data, priceHistory: a.priceHistory }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      return { ...s, data, ...computed }
+    }
     case 'SET_GROWTH_WINDOW': {
       if (!s.data) return { ...s, growthWindowYears: a.years }
       const data = { ...s.data, growthWindowYears: a.years }   // persist on data (cached per ticker)
@@ -524,9 +538,37 @@ export function AppProvider({ children }) {
     } catch { /* ignore transient errors */ }
   }, [state.ticker, state.data])
 
+  // Re-fetch ONLY Yahoo's price history and drop it in over the existing
+  // series — never touches incomeHistory/balanceHistory/cashflowHistory, so
+  // a manually-built Screener history survives this untouched. This exists
+  // specifically because resetTicker() (delete the whole cached record, then
+  // re-fetch everything) turned out to be unsafe for exactly the tickers
+  // this needs testing on: the fresh fetch re-runs the automatic Screener
+  // scrape, which is routinely blocked by Cloudflare, and on failure falls
+  // back to Yahoo-only — silently discarding real, hand-curated paste work
+  // with no error shown. A price-history refresh has no such risk: Yahoo is
+  // the only source for it either way.
+  const refreshPriceHistory = useCallback(async () => {
+    const ticker = state.data?.ticker || state.ticker
+    if (!ticker) return { ok: false }
+    try {
+      const res = await fetch(`/api/yahoo?endpoint=all&ticker=${encodeURIComponent(ticker)}`)
+      if (!res.ok) return { ok: false }
+      const json = await res.json()
+      // api/yahoo.js already flattens chart()'s {quotes:[...]} into the same
+      // {date,open,high,low,close,adjClose,volume} shape priceHistory uses.
+      const fresh = Array.isArray(json?.history) ? json.history : null
+      if (!fresh?.length) return { ok: false }
+      dispatch({ type: 'PRICE_HISTORY_UPDATE', priceHistory: fresh })
+      return { ok: true, count: fresh.length }
+    } catch {
+      return { ok: false }
+    }
+  }, [state.ticker, state.data])
+
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBasis, applyNormalization, refreshPrice
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBasis, applyNormalization, refreshPrice, refreshPriceHistory
     }}>
       {children}
     </AppContext.Provider>

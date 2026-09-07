@@ -111,7 +111,7 @@ export default function Header() {
 }
 
 function IdentityBar() {
-    const { state, overrideStage, setBasis, refreshPrice, resetTicker, load } = useApp()
+    const { state, overrideStage, setBasis, refreshPrice, refreshPriceHistory } = useApp()
   const { data, ratioResult, stage } = state
   const [normOpen, setNormOpen] = React.useState(false)
   // Which flag (if any) opened the modal — names the year/note in its banner
@@ -141,19 +141,20 @@ function IdentityBar() {
     }
   }
 
-  // Once a ticker is cached there was previously no way to force a real
-  // refetch short of wiping every ticker's data — resetTicker() (drop just
-  // this one's cache, so the next load re-fetches fresh) existed in
-  // AppContext but nothing in the UI ever called it. "Refresh CMP" above
-  // only updates the live price; this re-fetches everything (statements,
-  // price history, meta) from source.
+  // Re-fetches ONLY the price history and merges it in — never touches
+  // incomeHistory/balanceHistory/cashflowHistory, so a manually-built
+  // Screener history is never at risk. Deliberately NOT resetTicker()+load():
+  // that deletes the whole cached record and re-fetches everything, which
+  // re-runs the automatic Screener scrape — routinely blocked by
+  // Cloudflare, silently falling back to Yahoo-only on failure. That would
+  // have discarded real, hand-curated paste work with no error shown.
+  // "Refresh CMP" above only updates the live price; this refreshes the
+  // full historical series the multiple-band calculations depend on.
   const handleFullRefresh = async () => {
     if (fullRefreshing || !data?.ticker) return
     setFullRefreshing(true)
-    const ticker = data.ticker
     try {
-      await resetTicker(ticker)
-      await load(ticker)
+      await refreshPriceHistory()
     } finally {
       setFullRefreshing(false)
     }
@@ -210,9 +211,9 @@ function IdentityBar() {
           type="button"
           onClick={handleFullRefresh}
           disabled={fullRefreshing}
-          title="Drop this ticker's cached data and re-fetch everything from source (statements, price history, meta) — not just the live price"
+          title="Re-fetch the full price history from Yahoo and merge it in — leaves statement history (Screener pastes) untouched"
           className="text-xs text-accent hover:text-accent-light whitespace-nowrap disabled:opacity-50">
-          {fullRefreshing ? '↻ refreshing…' : '↻ refresh all data'}
+          {fullRefreshing ? '↻ refreshing…' : '↻ refresh price history'}
         </button>
       </div>
 
