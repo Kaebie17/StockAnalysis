@@ -111,7 +111,7 @@ export default function Header() {
 }
 
 function IdentityBar() {
-    const { state, overrideStage, setBasis, refreshPrice } = useApp()
+    const { state, overrideStage, setBasis, refreshPrice, resetTicker, load } = useApp()
   const { data, ratioResult, stage } = state
   const [normOpen, setNormOpen] = React.useState(false)
   // Which flag (if any) opened the modal — names the year/note in its banner
@@ -120,6 +120,7 @@ function IdentityBar() {
   const basis = data?.basis || 'reported'
   const hasNorm = (data?.normalizedIncomeHistory?.length || 0) > 0
   const [refreshing, setRefreshing] = React.useState(false)
+  const [fullRefreshing, setFullRefreshing] = React.useState(false)
   // Just the held-lots label; the actions themselves live in PositionFab.
   const { positions } = usePositions(state.ticker)
   const openLots = positions.filter(p => p.status !== 'closed')
@@ -137,6 +138,24 @@ function IdentityBar() {
       await refreshPrice()
     } finally {
       setTimeout(() => setRefreshing(false), 500)
+    }
+  }
+
+  // Once a ticker is cached there was previously no way to force a real
+  // refetch short of wiping every ticker's data — resetTicker() (drop just
+  // this one's cache, so the next load re-fetches fresh) existed in
+  // AppContext but nothing in the UI ever called it. "Refresh CMP" above
+  // only updates the live price; this re-fetches everything (statements,
+  // price history, meta) from source.
+  const handleFullRefresh = async () => {
+    if (fullRefreshing || !data?.ticker) return
+    setFullRefreshing(true)
+    const ticker = data.ticker
+    try {
+      await resetTicker(ticker)
+      await load(ticker)
+    } finally {
+      setFullRefreshing(false)
     }
   }
 
@@ -187,6 +206,14 @@ function IdentityBar() {
         )}
         {mcapStr && <span className="text-xs text-slate-400 whitespace-nowrap">Mkt Cap: {mcapStr}</span>}
         {data.meta?.sector && <span className="text-xs text-slate-500 whitespace-nowrap">Sector: {data.meta.sector}</span>}
+        <button
+          type="button"
+          onClick={handleFullRefresh}
+          disabled={fullRefreshing}
+          title="Drop this ticker's cached data and re-fetch everything from source (statements, price history, meta) — not just the live price"
+          className="text-xs text-accent hover:text-accent-light whitespace-nowrap disabled:opacity-50">
+          {fullRefreshing ? '↻ refreshing…' : '↻ refresh all data'}
+        </button>
       </div>
 
       {/* Row 3: data vintage badge (its own line — it's long) */}

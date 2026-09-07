@@ -79,7 +79,9 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
         // must not strike through Estimate 1, which it never examined.
         (!isJustified && sanity?.severity === 'high')
           ? 'text-slate-500 line-through decoration-neutral/60' : 'text-white'}`}>
-        {cur}{fmt(target.low)} – {cur}{fmt(target.high)}
+        {isJustified
+          ? <>{cur}{fmt(target.base)}</>
+          : <>{cur}{fmt(target.low)} – {cur}{fmt(target.high)}</>}
       </span>
       {upside?.base != null && (
         <span className={`text-xs font-mono ${upside.base >= 0 ? 'text-bull' : 'text-bear'}`}>
@@ -107,7 +109,7 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
                     value={est.marginLabel}
                     pct={est.marginPct != null ? `${est.marginPct}%` : null} />
           <BasisRow label="Multiple" value={est.multipleLabel}
-                    pct={`${est.multiples.low}–${est.multiples.high}×`} />
+                    pct={isJustified ? `${est.multiples.base}×` : `${est.multiples.low}–${est.multiples.high}×`} />
           {est.growthAlternatives?.length > 0 && est.growthSpreadPts >= 5 && (
             <span className="block text-[11px] text-slate-500">
               Other bases: {est.growthAlternatives.map(a => `${a.pct}% ${a.label}`).join(' · ')}
