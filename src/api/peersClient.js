@@ -18,7 +18,7 @@
  */
 
 import { getCached, listCachedTickers } from '../utils/db.js'
-import { sectorIndexFor } from './marketRegime.js'
+import { sectorIndexFor, NSE_SECTORAL_INDEX_KEYS } from './marketRegime.js'
 
 // EV/Revenue, EV/FCF, EV/EBITDA, P/E and P/B all need each peer's own
 // financials, not just a live quote — and every one of them is read off
@@ -81,55 +81,98 @@ async function enrichFromCache(peers) {
 const sectorCache = new Map()   // csvSlug -> { at, constituents }
 const SECTOR_TTL_MS = 60 * 60 * 1000   // shorter than the server's day-long cache is fine to keep this simple
 
-export async function fetchSectorConstituents(meta, sectorType, excludeTicker) {
-  const idx = sectorIndexFor(meta, sectorType)
-  // Real, disclosed coverage gap: SECTOR_INDICES only covers ten buckets
-  // (bank, financial services, IT, auto, pharma, metal, fmcg, energy,
-  // realty, media). A stock outside all ten (e.g. telecom) gets nothing
-  // from this source — declines rather than guesses at a mapping.
-  if (!idx?.csvSlug) return []
+async function fetchIndexCsv(csvSlug) {
+  const hit = sectorCache.get(csvSlug)
+  if (hit && Date.now() - hit.at < SECTOR_TTL_MS) return hit.constituents
+  try {
+    const r = await fetch(`/api/nseIndices?index=${encodeURIComponent(csvSlug)}`)
+    const j = r.ok ? await r.json().catch(() => null) : null
+    const constituents = j?.constituents || []
+    sectorCache.set(csvSlug, { at: Date.now(), constituents })
+    return constituents
+  } catch {
+    return []
+  }
+}
 
-  const hit = sectorCache.get(idx.csvSlug)
-  let constituents
-  if (hit && Date.now() - hit.at < SECTOR_TTL_MS) {
-    constituents = hit.constituents
-  } else {
-    try {
-      const r = await fetch(`/api/nseIndices?index=${encodeURIComponent(idx.csvSlug)}`)
-      const j = r.ok ? await r.json().catch(() => null) : null
-      constituents = j?.constituents || []
-      sectorCache.set(idx.csvSlug, { at: Date.now(), constituents })
-    } catch {
-      return []
+export async function fetchSectorConstituents(excludeTicker) {
+  const t = String(excludeTicker || '').trim().toUpperCase()
+  // NSE only lists NSE-listed (.NS) and dual-listed-on-BSE (.BO) companies
+  // — a US ticker or anything else can never appear in these CSVs, so
+  // decline before firing ten (cheap, cached, but pointless) requests on
+  // every non-Indian ticker's load.
+  if (!/\.(NS|BO)$/.test(t)) return []
+  const bareTicker = t.replace(/\.(NS|BO)$/, '')
+
+  // Real NSE index MEMBERSHIP, not a text-classification guess: check
+  // every one of NSE's 28 published sectoral indices (small, CDN- and
+  // session-cached CSVs, cheap to check in parallel) for the ticker's own
+  // row, rather than inferring "which one index" from Yahoo's free-text
+  // sector/industry via a hand-maintained keyword regex (marketRegime.js's
+  // sectorIndexFor — kept for its own, lower-stakes use there, see that
+  // file). A regex is a judgment call sitting between two data sources
+  // with no guaranteed correspondence between their wording; checking
+  // real membership has no such gap — the ticker either is or isn't a row
+  // in a given index's own published list. (An earlier version of this
+  // checked only ten hand-picked sectors and used the broader "Nifty
+  // Energy" theme in place of a dedicated Oil & Gas index — both were
+  // guesses that turned out wrong: NSE publishes 28 real sectoral
+  // indices, not 10, and Energy isn't even one of them.)
+  const perIndex = await Promise.all(NSE_SECTORAL_INDEX_KEYS.map(fetchIndexCsv))
+
+  const matches = new Map()   // symbol -> constituent row
+  for (const constituents of perIndex) {
+    const ownRow = constituents.find(c => String(c.symbol || '').trim().toUpperCase() === bareTicker)
+    if (!ownRow) continue
+    // NSE's own per-company Industry column (already in every row of the
+    // CSV, no extra call) is a real, finer classification than "member of
+    // this Nifty index": Nifty Energy alone spans Oil Gas & Consumable
+    // Fuels, Power AND Capital Goods — three different businesses that
+    // happen to share one index (confirmed live: RELIANCE's own row is
+    // tagged "Oil Gas & Consumable Fuels", same CSV that also lists NTPC
+    // as "Power" and Siemens as "Capital Goods"). Narrow to constituents
+    // sharing the ticker's own Industry value, not the whole index.
+    for (const c of constituents) {
+      if (c.industry === ownRow.industry) matches.set(c.symbol, c)
     }
   }
 
-  const t = String(excludeTicker || '').trim().toUpperCase()
+  // Not a member of ANY NSE sectoral index at all — a real, disclosed gap
+  // (below the index's market-cap cutoff, a sector NSE doesn't publish a
+  // dedicated index for, or a BSE-only listing) rather than something to
+  // paper over with a looser guess.
+  if (matches.size === 0) return []
+
   // NSE's CSV symbols are bare (e.g. "BPCL") — this app's convention is
   // exchange-suffixed (e.g. "BPCL.NS"), same as every other ticker.
-  const mapped = constituents.map(c => ({ symbol: `${c.symbol}.NS`, name: c.name, industry: c.industry }))
+  const mapped = [...matches.values()].map(c => ({ symbol: `${c.symbol}.NS`, name: c.name, industry: c.industry }))
   const withCache = await enrichFromCache(mapped)
   return withCache.filter(p => p.symbol !== t)
 }
 
 // Every ticker this browser has ever analyzed, matched against the CURRENT
-// stock's sector — the real fallback for the coverage gaps NSE's index CSV
-// (#fetchSectorConstituents above) still has on its own: it only lists
-// NSE-listed names, so a BSE-only comparable in the exact same sector never
-// appears there no matter how thoroughly the user has researched it
-// independently. A stock the user has personally analyzed — under whatever
-// ticker/exchange suffix — gets a real chance to surface as a peer here.
+// stock's sector — the real fallback for what NSE index MEMBERSHIP
+// (#fetchSectorConstituents above) structurally can't cover at all: a
+// BSE-only comparable is never a row in any NSE CSV, no matter how
+// thoroughly the user has researched it independently, so there's no
+// membership check to run for it. A stock the user has personally
+// analyzed — under whatever ticker/exchange suffix — gets a real chance
+// to surface as a peer here instead.
 //
-// Matched on sectorIndexFor's csvSlug (the same fine-grained, ten-bucket
-// classification fetchSectorConstituents uses), not on sectorType — that's
-// a coarse valuation-methodology bucket (checked stage.js directly:
+// This is the one place in the peer pipeline that still uses
+// sectorIndexFor's text-classification regex, not real membership data —
+// unavoidably: a cached candidate with no NSE index row of its own (that's
+// the whole reason it needs this fallback) has no NSE Industry label to
+// check against either. Matched on csvSlug (not on sectorType, which is a
+// coarse valuation-methodology bucket — checked stage.js directly:
 // STANDARD/BANK/NBFC/INSURANCE/YIELD/HOLDING/REALTY/CYCLICAL/
-// CAPITAL_INTENSIVE), and RELIANCE and an unrelated IT company could both
-// land in STANDARD — matching on it here would flood the list with
-// unrelated names. Both sides must resolve to a KNOWN bucket, so this
-// declines (returns nothing extra) for a sector SECTOR_INDICES doesn't
-// cover at all, same as fetchSectorConstituents — it doesn't guess at a
-// looser match just because the precise one came up empty.
+// CAPITAL_INTENSIVE — where RELIANCE and an unrelated IT company could
+// both land in STANDARD). Both sides must resolve to a KNOWN bucket, so
+// this declines for a sector SECTOR_INDICES doesn't cover at all, same as
+// fetchSectorConstituents — it doesn't guess at a looser match just
+// because the precise one came up empty. Being the lower-confidence,
+// text-matched tier is exactly why PeerSelectModal tags these 'own-cache'
+// rather than showing an NSE industry label.
 async function fetchCachedSameSector(meta, sectorType, excludeTicker) {
   const target = sectorIndexFor(meta, sectorType)
   if (!target) return []
@@ -168,7 +211,7 @@ async function fetchCachedSameSector(meta, sectorType, excludeTicker) {
 // to review, not automatic peers.
 export async function fetchPeerCandidates({ ticker, meta, sectorType } = {}) {
   const [nse, ownCache] = await Promise.all([
-    fetchSectorConstituents(meta, sectorType, ticker),
+    fetchSectorConstituents(ticker),
     fetchCachedSameSector(meta, sectorType, ticker),
   ])
 

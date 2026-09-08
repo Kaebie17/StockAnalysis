@@ -62,14 +62,12 @@ export function clearRegimeCache() { cache = null }
  * those have very different odds of reverting. The sector index is what
  * separates them.
  */
-// csvSlug: the niftyindices.com constituent-list filename fragment (see
-// api/nseIndices.js — /api/nseIndices?index=<csvSlug> fetches
-// ind_nifty<csvSlug>list.csv). Verified live against every slug below —
-// 'finance', not the more obvious 'financialservices'/'finservice', both
-// 404. Reused for peer-candidate discovery (peersClient.js's
-// fetchSectorConstituents), not just this file's own sector-performance
-// comparison — same classification answers both "which index to compare
-// against" and "which real companies are in this stock's sector."
+// csvSlug here is NOT fetched directly (see NSE_SECTORAL_INDEX_KEYS below
+// for the real, complete fetchable set) — it only serves as an internal
+// comparison key for peersClient.js's fetchCachedSameSector (the "is this
+// OTHER cached ticker roughly the same broad sector" fallback), which has
+// no NSE index row to check membership against for either side and so
+// has no better signal than this regex than to compare against.
 const SECTOR_INDICES = [
   [/bank/i,                                    '^NSEBANK',   'Nifty Bank',              'bank'],
   [/financial|nbfc|credit|insurance|finance/i, '^CNXFIN',    'Nifty Financial Services', 'finance'],
@@ -90,6 +88,34 @@ export function sectorIndexFor(meta = {}, sectorType = null) {
   }
   return null
 }
+
+// Every one of NSE's 28 published SECTORAL indices (niftyindices.com/
+// indices/equity/sectoral-indices — enumerated and each CSV individually
+// confirmed live, 2026-09-08), keyed exactly as api/nseIndices.js's
+// INDEX_FILES expects. Deliberately NOT derived from SECTOR_INDICES above
+// (that ten-entry regex table is an approximation built by hand, without
+// first checking what NSE actually publishes — wrong to lean on for
+// anything asserting real comparability). peersClient.js's
+// fetchSectorConstituents uses this to check a ticker's REAL index
+// membership directly (is this symbol actually a row in each CSV?)
+// instead of inferring "which one index" from Yahoo's free-text sector via
+// the regex table. That regex stays right for what IT was built for —
+// relativePerformance()'s "roughly which sector to compare this stock's
+// price trend against" below, an approximation that's fine to get close
+// on — but peer discovery asserts comparability, and a text match between
+// two data sources with no guaranteed correspondence isn't a strong
+// enough basis for that; real, checked membership is. Note "Nifty Energy"
+// (SECTOR_INDICES' 'energy' row) has no equivalent here on purpose —
+// niftyindices.com files it under /thematic-indices/, not /sectoral-
+// indices/, and confirmed live it mixes Oil & Gas, Power and Capital
+// Goods (three separate real entries below) under one broader theme.
+export const NSE_SECTORAL_INDEX_KEYS = [
+  'auto', 'bank', 'capitalGoods', 'cement', 'chemicals', 'commercialTransport',
+  'construction', 'consumerDurables', 'consumerServices', 'financialServices',
+  'fmcg', 'healthcare', 'hospitals', 'housingFinance', 'insurance', 'it',
+  'media', 'metal', 'nbfc', 'oilGas', 'pharma', 'power', 'privateBank',
+  'psuBank', 'realty', 'reitsRealty', 'retail', 'telecom',
+]
 
 const relCache = new Map()   // `${symbol}:${days}` -> { change, from }
 
