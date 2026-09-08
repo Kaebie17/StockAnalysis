@@ -80,15 +80,6 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   const fcfResult = getFcfMultiple(sectorType, ratios, data)
   const terminalFcfMultiple = fcfResult.value
 
-  // Shared disclosure: every terminal multiple here defaults to this
-  // company's OWN current multiple as a proxy for what it'll trade at once
-  // mature — a common, defensible reverse-DCF simplification, but not a
-  // free one. If today's multiple is elevated BECAUSE the market already
-  // expects high growth, using it as the maturity/exit multiple too
-  // partially bakes that same growth premium into the terminal assumption,
-  // which can UNDERSTATE the growth actually being priced in.
-  const currentMultipleCaveat = ' Uses this company\'s own current multiple as a proxy for its multiple at maturity — if today\'s multiple is already elevated because the market expects high growth, this can understate how much growth is really being priced in.'
-
   return {
     terminalSalesMultiple,
     terminalPeMultiple,
@@ -110,12 +101,9 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
     },
     // Rationale strings shown in ⓘ tooltips
     rationale: {
-      terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple) +
-        (salesResult.tier === TIER.DERIVED ? currentMultipleCaveat : ''),
-      terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple) +
-        (peResult.tier === TIER.DERIVED ? currentMultipleCaveat : ''),
-      terminalFcfMultiple:   `${terminalFcfMultiple}× FCF is the assumed terminal FCF multiple — what the market will pay per rupee of free cash flow at maturity, anchored on this company's own current FCF conversion where measurable, else this sector's typical range. Asset-light, high-conversion sectors (tech, FMCG, pharma) trade richest; capital-intensive sectors (telecom, power, energy) trade lowest. Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.` +
-        (fcfResult.tier === TIER.DERIVED ? currentMultipleCaveat : ''),
+      terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple, salesResult.tier),
+      terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple,    peResult.tier),
+      terminalFcfMultiple:   getMultipleRationale('fcf',   sectorType, terminalFcfMultiple,   fcfResult.tier),
       discountRate:           getDiscountRationale(stage, discountRate, capm),
       enterpriseDiscountRate: getWaccRationale(enterpriseDiscountRate, waccResult, discountRate),
       horizon:               'Standard investment horizon of 10 years. Long enough to smooth out cycles, short enough to be meaningful. Change to 5 years for faster-moving sectors.'
@@ -167,16 +155,38 @@ function getFcfMultiple(sectorType, ratios, data) {
   return { value: sectorEvFcf(data), tier: TIER.ASSUMED }
 }
 
-function getMultipleRationale(type, sectorType, value) {
+// Two genuinely different claims depending on tier, not one sentence trying
+// to cover both: DERIVED means this IS the company's own current multiple
+// (real, measured, with the growth-premium caveat that implies); ASSUMED
+// means no usable current multiple existed and this sector's typical range
+// was used instead (no such caveat applies — it was never anchored to this
+// company's own trading data in the first place). Showing the DERIVED
+// caveat text alongside ASSUMED's "typical for this sector" framing (or
+// vice versa) previously left it unclear which source actually produced
+// the number on screen.
+function getMultipleRationale(type, sectorType, value, tier) {
+  const own = tier === TIER.DERIVED
+  const growthCaveat = ' If today\'s multiple is elevated because the market already expects high growth, using it as the maturity multiple too can understate how much growth is really being priced in.'
+
   if (type === 'sales') {
-    return `${value}× Sales is the assumed terminal valuation multiple — what the market will value ` +
-      `this company's revenue at once it matures. ` +
-      `Lower for asset-heavy/cyclical sectors (1.5-2×), higher for tech/consumer (4-6×). ` +
-      `Increase if you believe the company will command a premium at maturity; decrease for commoditised businesses.`
+    return own
+      ? `${value}× Sales is this company's OWN current EV/Revenue, used as a proxy for what the market will value its revenue at once it matures.${growthCaveat}`
+      : `${value}× Sales is the assumed terminal valuation multiple for this sector (no usable current EV/Revenue to anchor on) — what the market will value this company's revenue at once it matures. ` +
+        `Lower for asset-heavy/cyclical sectors (1.5-2×), higher for tech/consumer (4-6×). ` +
+        `Increase if you believe the company will command a premium at maturity; decrease for commoditised businesses.`
   }
-  return `${value}× P/E is the assumed terminal earnings multiple. ` +
-    `Reflects what the market typically pays for ₹1 of mature earnings in this sector. ` +
-    `Increase for high-quality compounders; decrease for cyclical or capital-intensive businesses.`
+  if (type === 'fcf') {
+    return own
+      ? `${value}× FCF is this company's OWN current EV/FCF (from its measured FCF yield), used as a proxy for what the market will pay per rupee of free cash flow at maturity.${growthCaveat}`
+      : `${value}× FCF is the assumed terminal FCF multiple for this sector (no usable current FCF yield to anchor on) — what the market will pay per rupee of free cash flow at maturity. ` +
+        `Asset-light, high-conversion sectors (tech, FMCG, pharma) trade richest; capital-intensive sectors (telecom, power, energy) trade lowest. ` +
+        `Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.`
+  }
+  return own
+    ? `${value}× P/E is this company's OWN current P/E, used as a proxy for what it will trade at once mature.${growthCaveat}`
+    : `${value}× P/E is the assumed terminal earnings multiple for this sector (no usable current P/E to anchor on). ` +
+      `Reflects what the market typically pays for ₹1 of mature earnings in this sector. ` +
+      `Increase for high-quality compounders; decrease for cyclical or capital-intensive businesses.`
 }
 
 function getDiscountRationale(stage, rate, capm) {
