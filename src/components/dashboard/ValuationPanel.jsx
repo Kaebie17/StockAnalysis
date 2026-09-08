@@ -502,28 +502,12 @@ function EstimateRevisions({ state }) {
   const { actionable, incomplete, loading } = useNewsFacts(
     state.ticker, state.data?.name, ctx, handledKeys)
 
+  // overrides is already "what's active right now, per lever" — activeOverrides()
+  // in useEstimate.js stops at the most recent 'cleared' marker rather than
+  // falling through to an earlier stored number, so a cleared lever simply
+  // isn't a key here. No separate history scan needed to answer this.
   const levers = Object.keys(overrides)
   const pending = actionable.length + incomplete.length
-
-  // What's overriding the estimate RIGHT NOW, one row per lever — not the
-  // whole append-only trail that produced it. The log itself still records
-  // every apply/dismiss/undo (undo appends a reverting entry rather than
-  // deleting), but "what's active today" is a different question from "what
-  // happened", and scanning a growing history to answer the first is the
-  // wrong shape for it.
-  const activeRevisionByLever = React.useMemo(() => {
-    const out = {}
-    const sorted = [...revisions].sort((a, b) => b.createdAt - a.createdAt)
-    for (const r of sorted) {
-      if (r.disposition !== 'revised' || !r.lever) continue
-      if (out[r.lever]) continue
-      out[r.lever] = r
-    }
-    return out
-  }, [revisions])
-  const activeOverrideRows = levers
-    .map(lever => ({ lever, value: overrides[lever], rec: activeRevisionByLever[lever] }))
-    .filter(row => row.rec)
 
   // A conflicting forecast is presented, not applied. Keeping the current
   // assumption is recorded too — "someone looked and stayed" is a different fact
@@ -556,13 +540,18 @@ function EstimateRevisions({ state }) {
     }
   }, [commit])
 
-  // Undo appends a reverting entry rather than deleting: the log is append-only,
-  // and "this was applied then undone" is worth keeping.
-  const undo = (x) => commit({
-    lever: x.lever, oldValue: x.newValue, newValue: x.oldValue, years: x.years ?? null,
-    disposition: 'revised', trigger: 'undo',
-    reason: `Undone: ${x.reason || 'auto-applied revision'}`,
-    sourceKey: x.sourceKey ? `${x.sourceKey}:undone` : undefined,
+  // Removing an override commits an explicit "stop overriding this lever"
+  // marker rather than replaying whatever number preceded it. Chain-based
+  // undo (restore x.oldValue) depended on that stored value being correct —
+  // but a stale or duplicate-applied entry can have oldValue equal to
+  // newValue, which made undo silently do nothing (the exact failure this
+  // replaces). Clearing always lands on the engine's own freshly-computed
+  // default (revenue CAGR, 3-yr average margin, etc. — see activeOverrides
+  // in useEstimate.js, which treats 'cleared' as authoritative and does not
+  // fall through to an earlier stored number), regardless of history.
+  const clearOverride = (lever) => commit({
+    lever, disposition: 'cleared', trigger: 'cleared',
+    reason: `Cleared — back to the app's own computed default`,
   })
 
   // Dismiss and defer are logged, not just hidden. "Someone looked and judged it
@@ -707,15 +696,15 @@ function EstimateRevisions({ state }) {
             + Record something else
           </button>
 
-          {activeOverrideRows.length > 0 && (
+          {levers.length > 0 && (
             <div className="space-y-1.5 pt-2 border-t border-navy-700/60">
               <div className="text-[10px] uppercase tracking-wide text-slate-600">Active overrides</div>
-              {activeOverrideRows.map(({ lever, value, rec }) => (
+              {levers.map(lever => (
                 <div key={lever} className="flex items-center gap-2 text-[11px]">
                   <span className="text-slate-400 capitalize shrink-0">{lever}</span>
-                  <span className="font-mono text-slate-300 shrink-0">{fmtLever(lever, value)}</span>
+                  <span className="font-mono text-slate-300 shrink-0">{fmtLever(lever, overrides[lever])}</span>
                   <span className="text-slate-600 truncate">{overrideSourceLabel(revisions, lever)}</span>
-                  <button onClick={() => undo(rec)}
+                  <button onClick={() => clearOverride(lever)}
                     className="text-[10px] text-slate-500 hover:text-bear ml-auto shrink-0">
                     remove
                   </button>

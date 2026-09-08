@@ -299,7 +299,9 @@ export function useEstimate(state, opts = {}) {
   const handledKeys = new Set(revisions.map(r => r.sourceKey).filter(Boolean))
 
   /**
-   * Record a revision and re-apply. `disposition` is 'revised' | 'dismissed' | 'deferred'.
+   * Record a revision and re-apply. `disposition` is 'revised' | 'dismissed' |
+   * 'deferred' | 'cleared' — 'cleared' explicitly stops overriding a lever
+   * (see activeOverrides above) rather than restoring a specific prior value.
    *
    * A growth revision — from any source (quarterly drift, a news fact, a
    * manually-resolved conflict) — used to only reach App Target's own growth
@@ -313,10 +315,11 @@ export function useEstimate(state, opts = {}) {
    *
    * `entry.years` is the duration THIS fact/signal itself supports (a
    * contract's delivery period, a capacity ramp) — never assumed beyond what
-   * was actually stated. Undo naturally reverts this too: an undo re-commits
-   * with disposition 'revised' and the old value as the new one, so it hits
-   * the same branch and pushes nearTermGrowth back to what it was.
-   * Dismiss/defer use a different disposition and never reach this at all.
+   * was actually stated. Clearing resets nearTermGrowth to null (DCF's own
+   * "no near-term window" state, see valuation.js) rather than replaying
+   * whatever value preceded the override — the same reasoning as
+   * activeOverrides not falling back to an earlier stored number.
+   * Dismiss/defer use a different disposition and never reach either branch.
    */
   const commit = useCallback(async (entry) => {
     if (!ticker) return null
@@ -332,6 +335,8 @@ export function useEstimate(state, opts = {}) {
       // when something explicitly says so.
       const years = (entry.years > 0) ? entry.years : 1
       recalc({ nearTermGrowth: entry.newValue, nearTermYears: years }, {})
+    } else if (entry.lever === 'growth' && entry.disposition === 'cleared') {
+      recalc({ nearTermGrowth: null, nearTermYears: 0 }, {})
     }
 
     return rec
@@ -364,13 +369,21 @@ export function useEstimate(state, opts = {}) {
  * VALUE purposes but stay in the log — a deferred item still holds its bar open,
  * and a dismissal is itself worth keeping ("someone looked and judged it
  * immaterial" is different from "nobody looked").
+ *
+ * Both functions below stop at the first 'cleared' row for a lever rather
+ * than skipping past it to an older 'revised' one. Not stopping there was a
+ * real bug: it meant "clear this override" could silently resurrect
+ * whatever number preceded it instead of landing on "no override" — and the
+ * numbers involved are exactly the ones being cleared because they were
+ * already wrong (a stale or duplicate-applied news figure), so falling back
+ * to an even older one from the same source is no improvement.
  */
 /** How an applied override should be described, from the log entry that set it. */
 export function overrideSourceLabel(revisions = [], lever = 'growth') {
   const r = [...revisions]
-    .filter(x => x.disposition === 'revised' && x.lever === lever)
+    .filter(x => x.lever === lever && (x.disposition === 'revised' || x.disposition === 'cleared'))
     .sort((a, b) => b.createdAt - a.createdAt)[0]
-  if (!r) return null
+  if (!r || r.disposition === 'cleared') return null
   switch (r.trigger) {
     case 'news-auto':      return 'applied automatically from news'
     case 'quarterly-auto': return 'applied automatically from results'
@@ -383,12 +396,20 @@ export function overrideSourceLabel(revisions = [], lever = 'growth') {
 
 export function activeOverrides(revisions = []) {
   const out = {}
+  const decided = new Set()
   const sorted = [...revisions].sort((a, b) => b.createdAt - a.createdAt)
   for (const r of sorted) {
-    if (r.disposition !== 'revised') continue
-    if (!r.lever || out[r.lever] !== undefined) continue
-    if (r.newValue == null || !isFinite(r.newValue)) continue
-    out[r.lever] = r.newValue
+    if (!r.lever || decided.has(r.lever)) continue
+    if (r.disposition === 'cleared') {
+      decided.add(r.lever)   // explicit "use the real default" — stop here
+    } else if (r.disposition === 'revised') {
+      if (r.newValue != null && isFinite(r.newValue)) {
+        out[r.lever] = r.newValue
+        decided.add(r.lever)
+      }
+      // A 'revised' row with no usable value shouldn't occur; if it does,
+      // keep looking backward rather than treating the lever as settled.
+    }
   }
   return out
 }
