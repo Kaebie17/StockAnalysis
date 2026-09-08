@@ -455,6 +455,12 @@ function EstimateRevisions({ state }) {
   const [open, setOpen] = useState(false)
   const [factOpen, setFactOpen] = useState(false)
   const [seedItem, setSeedItem] = useState(null)
+  // The log only grows — a fixed cap with no way past it would silently bury
+  // an old entry (an auto-applied revision from months back, say) under
+  // whatever's been committed since, with nothing on screen saying more
+  // exist. Default to a short list for the common case, but let it expand
+  // rather than hide anything for good.
+  const [showAllRevisions, setShowAllRevisions] = useState(false)
   const {
     estimate, overrides, revisions, rerating, commit, peerBand,
     guidanceAssessment, quarterlySuggestion, score, handledKeys, deferredLevers, relative,
@@ -690,7 +696,7 @@ function EstimateRevisions({ state }) {
 
           {applied.length > 0 && (
             <div className="space-y-1.5 pt-2 border-t border-navy-700/60">
-              {applied.slice(0, 8).map(x => (
+              {(showAllRevisions ? applied : applied.slice(0, 8)).map(x => (
                 <div key={x.id} className="text-[11px]">
                   <div className="flex items-baseline gap-2">
                     <span className="text-slate-400 capitalize">{x.lever}</span>
@@ -711,6 +717,12 @@ function EstimateRevisions({ state }) {
                   )}
                 </div>
               ))}
+              {applied.length > 8 && (
+                <button onClick={() => setShowAllRevisions(v => !v)}
+                  className="text-[11px] text-accent hover:text-accent-light">
+                  {showAllRevisions ? 'Show fewer' : `+ ${applied.length - 8} more`}
+                </button>
+              )}
             </div>
           )}
         </div>
