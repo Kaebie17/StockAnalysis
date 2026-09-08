@@ -69,11 +69,17 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
   const flags = []
 
   // ── metric summaries ────────────────────────────────────────────────────────
-  const roce  = summarize(series.roce, config.roce.narrow)
+  // hitRate's threshold matches the floor deriveMoat/deriveQuality actually
+  // compare against and LABEL (costOfCapital when known) — this used to
+  // hardcode the flat config floor here regardless, so a company's own WACC
+  // appeared in the evidence text ("ROCE >= 12.6% in N% of years") while N%
+  // itself had actually been computed against a different, flat number
+  // (config.roce.narrow / config.roe.ok). Same bug in both series, same fix.
+  const roce  = summarize(series.roce, costOfCapital ?? config.roce.narrow)
   let gm      = summarize(series.grossMargin)
   const om    = summarize(series.opMargin)
   const nm    = summarize(series.netMargin)
-  const roe   = summarize(series.roe, config.roe.ok)
+  const roe   = summarize(series.roe, costOfCapital ?? config.roe.ok)
   const incRoce = incrementalRoce(series)
   const dilution = dilutionSignal(series.impliedShares)
 
