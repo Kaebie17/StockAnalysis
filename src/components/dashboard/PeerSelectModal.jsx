@@ -130,11 +130,17 @@ export default function PeerSelectModal({ open, onClose, ticker, excludedPeers =
                          className="accent-accent" />
                   <span className="flex-1 text-slate-300 truncate">{p.name || p.symbol}</span>
                 </label>
-                <StatusBadge status={status[p.symbol]} queued={queue.includes(p.symbol) && status[p.symbol] !== 'loading'} />
+                {!isExcluded && (
+                  <StatusBadge status={status[p.symbol]} queued={queue.includes(p.symbol) && status[p.symbol] !== 'loading'} />
+                )}
+                {/* Explicit verbs, not an icon the user has to decode — "restore"
+                    reads as an action regardless of whether the row's dimming or
+                    the icon swap is noticed. */}
                 <button onClick={() => onToggleExclude?.(p.symbol)}
                   title={isExcluded ? 'Include this peer again' : "Not a good comparable — exclude from this stock's peer group"}
-                  className="text-[10px] text-slate-600 hover:text-bear shrink-0">
-                  {isExcluded ? '↺ excluded' : '✕'}
+                  className={`text-[10px] shrink-0 underline underline-offset-2 ${
+                    isExcluded ? 'text-accent hover:text-accent-light' : 'text-slate-600 hover:text-bear'}`}>
+                  {isExcluded ? 'restore' : 'exclude'}
                 </button>
               </div>
             )
