@@ -7,7 +7,6 @@ import FactInputModal from './FactInputModal.jsx'
 import { useNewsFacts, keyOf, leverOf } from '../../store/useNewsFacts.js'
 import { computeFact } from '../../engine/factImpact.js'
 import { extractSegmentShares } from '../../engine/segmentShare.js'
-import { TERMINAL_GROWTH_BY_MARKET } from '../../engine/requiredReturn.js'
 import { TIER } from '../../engine/methodologyTier.js'
 import ProvenanceTag from '../ProvenanceTag.jsx'
 
@@ -55,13 +54,6 @@ export default function ValuationPanel({ open, onClose }) {
   const price    = ratioResult?.price
   const { models, modelMeta, fairValue, rangeLow, rangeHigh, upside,
           signal, intrinsicValue, secondaryChecks, assumptions } = valuation
-
-  // Last-resort display fallbacks only — real values come from valuation.defaults
-  // (engine). wacc/growthRate still have genuine null paths (unmeasurable cost of
-  // debt; no CAGR basis), so they're kept here. termGrowth/sectorPe/sectorEvEb no
-  // longer have a null path in the engine, so their slider fallbacks below are
-  // inline safety nets, not a fourth source of truth.
-  const DEFAULT_ASSUMPTIONS = { wacc: 0.10, growthRate: 0.08 }
 
   const updateAssumption = (key, value) => {
     const next = { ...localAssumptions, [key]: value }
@@ -250,10 +242,25 @@ export default function ValuationPanel({ open, onClose }) {
 
       {showSliders && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
+          {/* WACC, Terminal Growth and FCF Growth used to be sliders here
+              too, tagged DERIVED. That tag was the tell: they aren't
+              judgment calls the way a sector multiple is. WACC is now a
+              real CAPM computation off this app's own beta regression;
+              Terminal Growth is a flat, disclosed market-level convention
+              with no per-company discretion to exercise; FCF Growth already
+              defaulted to the same measured revenue CAGR every other
+              consumer uses, and DECLINES (no invented flat 8%) when that
+              can't be measured — the same "fail rather than substitute"
+              discipline this whole app applies elsewhere. A free-drag
+              slider let a user override any of these with an arbitrary
+              number, bypassing exactly that discipline. Sensitivity to
+              WACC/growth is still visible — see the DCF Sensitivity grid
+              below, which sweeps a real, derived range around the actual
+              computed values instead of an arbitrary manual one. Only
+              genuine judgment calls remain editable here: what THIS sector
+              should trade at has no computable answer.
+          */}
           {[
-            { key: 'wacc',       label: 'WACC',             min: 5,  max: 34, step: 0.5, pct: true,  def: DEFAULT_ASSUMPTIONS.wacc * 100, tier: TIER.DERIVED },
-            { key: 'termGrowth', label: 'Terminal Growth',  min: 1,  max: 6,  step: 0.5, pct: true,  def: TERMINAL_GROWTH_BY_MARKET.IN * 100, tier: TIER.DERIVED },
-            { key: 'growthRate', label: 'FCF Growth',       min: -5, max: 40, step: 1,   pct: true,  def: DEFAULT_ASSUMPTIONS.growthRate * 100, tier: TIER.DERIVED },
             { key: 'sectorPe',   label: 'Sector P/E',       min: 5,   max: 60, step: 1,   pct: false, def: 20, tier: TIER.ASSUMED },
             { key: 'sectorEvEb', label: 'Sector EV/EBITDA', min: 4,   max: 30, step: 0.5, pct: false, def: 12, tier: TIER.ASSUMED },
             { key: 'sectorPs',   label: 'Sector EV/Sales',  min: 0.5, max: 10, step: 0.5, pct: false, def: 3, tier: TIER.ASSUMED },

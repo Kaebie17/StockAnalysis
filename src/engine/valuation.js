@@ -63,14 +63,24 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // twice with identical inputs.
   const growthResult = estimateGrowth(r)
 
+  // WACC, Terminal Growth and FCF Growth are no longer accepted as manual
+  // overrides — see ValuationPanel.jsx's slider removal. Each is either a
+  // real CAPM computation (WACC, off this app's own beta regression), a
+  // flat disclosed market convention with no per-company discretion to
+  // exercise (Terminal Growth), or already the same measured default every
+  // other consumer uses and correctly DECLINES rather than substitutes a
+  // flat number when unmeasurable (FCF Growth, see estimateGrowth above).
+  // None of them were legitimate free-drag assumptions, so the override
+  // slot itself is closed here, not just the UI that used to reach it.
+  const wacc = waccDefault
+  const termGrowth = TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN
+  const growthRate = growthResult.growth
+
   const {
-    wacc       = waccDefault,
-    termGrowth = TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN,
     projYears  = 10,
     sectorPe   = sectorPeDefault,
     sectorEvEb = sectorEvEbDefault,
     sectorPs   = sectorPsDefault,
-    growthRate = growthResult.growth,
     // Optional near-term (guidance) window: grow at nearTermGrowth for
     // nearTermYears, then fade toward terminal. Drives the FORWARD DCF only;
     // the reverse-DCF (market-implied) stays independent so the comparison holds.
@@ -91,19 +101,17 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   if (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf) {
     const perShare = dcfPerShare(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntG, ntY)
     if (perShare != null) {
-      // Growth caveats only apply when the DCF is actually running on the
-      // measured default — a user-overridden slider value has its own
-      // number and these flags (computed from the measured CAGR) wouldn't
-      // describe what's actually being used.
-      const usedDefaultGrowth = assumptions.growthRate == null
+      // growthRate is always the measured default now (see above — the
+      // manual override is gone), so these caveats — computed from that
+      // same measured CAGR — always describe what's actually being used.
       const caveats = [
         r.fcfEstimated && 'FCF estimated (CapEx ≈ Depreciation) — no CapEx reported',
         r.cashEstimated && 'Cash not reported — assumed nil, fair value understated',
         r.debtEstimated && 'Debt estimated from Equity × D/E',
         waccBetaFlag,
-        usedDefaultGrowth && growthResult.unusual &&
+        growthResult.unusual &&
           `Growth rate (${(growthRate * 100).toFixed(0)}%) is well outside a typical range — likely a recovery from a collapsed base or a one-off`,
-        usedDefaultGrowth && growthResult.aboveSustainable &&
+        growthResult.aboveSustainable &&
           `Growth rate (${(growthRate * 100).toFixed(0)}%) exceeds what ${(growthResult.sustainable * 100).toFixed(0)}% ROE-funded growth alone can sustain — implies raising capital or more leverage`,
       ].filter(Boolean)
       results.dcf = {
