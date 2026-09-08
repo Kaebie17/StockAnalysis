@@ -136,9 +136,19 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   if (closes.length === 0) return null
 
   const epsByYear = new Map()
+  // A loss year isn't excluded because it's an outlier to be filtered out —
+  // P/E is mathematically undefined for negative earnings, dividing by a
+  // negative number doesn't produce "a low multiple," it's a different,
+  // meaningless quantity for this purpose. So it's not usable as a
+  // year-to-price-against, but that's not the same as invisible: counted
+  // here and disclosed by the caller (own.excludedLossYears), rather than
+  // silently vanishing with nothing on screen saying a year was skipped.
+  let excludedLossYears = 0
   for (const row of incomeHistory || []) {
     const y = yearOf(row), e = val(row?.eps)
-    if (y != null && e > 0) epsByYear.set(y, e)
+    if (y == null) continue
+    if (e != null && e <= 0) { excludedLossYears++; continue }
+    if (e > 0) epsByYear.set(y, e)
   }
 
   const ratios = []
@@ -190,9 +200,12 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   // weighed accordingly.
   const MIN_PAIRED_YEARS = 2
   if (pairedYears < MIN_PAIRED_YEARS) {
+    const lossNote = excludedLossYears > 0
+      ? ` (${excludedLossYears} loss year${excludedLossYears === 1 ? '' : 's'} also on record — excluded, P/E undefined for negative earnings)`
+      : ''
     const reason =
       epsByYear.size < MIN_PAIRED_YEARS + 1
-        ? `${epsByYear.size} year${epsByYear.size === 1 ? '' : 's'} of earnings gives no range to measure — paste the Screener tables for a fuller history`
+        ? `${epsByYear.size} year${epsByYear.size === 1 ? '' : 's'} of earnings gives no range to measure${lossNote} — paste the Screener tables for a fuller history`
         : consecutivePairs < MIN_PAIRED_YEARS
         ? `${epsByYear.size} years of earnings on record, but gaps between them` +
           `${missingYears.length ? ` (missing ${[...new Set(missingYears)].sort().join(', ')})` : ''}` +
@@ -200,7 +213,7 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
         : `${consecutivePairs} consecutive year${consecutivePairs === 1 ? '' : 's'} of earnings exist, but price history only overlaps ` +
           `${pairedYears} of them — more likely this stock's trading history than its statement history; pasting more Screener tables won't extend it`
     return { insufficient: true, pairedYears, consecutivePairs, samples: ratios.length,
-             earningsYears: epsByYear.size, priceDays: closes.length, reason }
+             earningsYears: epsByYear.size, priceDays: closes.length, excludedLossYears, reason }
   }
 
   // A contaminated YEAR (a mid-year EPS restatement, a stub year producing a
@@ -220,7 +233,7 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   // year's worth of daily ratios), but not assumed.
   if (!ps) {
     return { insufficient: true, pairedYears, samples: ratios.length,
-             earningsYears: epsByYear.size, priceDays: closes.length,
+             earningsYears: epsByYear.size, priceDays: closes.length, excludedLossYears,
              reason: `only ${ratios.length} priced day${ratios.length === 1 ? '' : 's'} overlap the paired years — too few to measure a range` }
   }
   // Percentiles, not min/max: one panic day or one melt-up shouldn't define the
@@ -233,7 +246,10 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
            // Real data, computed regardless — but a band from fewer than 100
            // pooled daily observations is disclosed as thinner than ideal
            // rather than hidden.
-           thin: ps.thin }
+           thin: ps.thin,
+           // Years where P/E is undefined (negative earnings) — declined,
+           // not silently dropped. See the comment on epsByYear above.
+           excludedLossYears }
 }
 
 /**
@@ -259,15 +275,28 @@ export function pbBand(priceHistory = [], balanceHistory = [], incomeHistory = [
 
   // Book per share by fiscal year. Share count comes from profit ÷ EPS, the
   // weighted average the company itself used for that year.
+  //
+  // Two distinct reasons a year is excluded, tracked separately rather than
+  // silently dropped, same reasoning as forwardPeBand's loss-year count:
+  //   - negative/zero book equity — P/B is genuinely undefined here, same
+  //     class of issue as P/E for negative earnings.
+  //   - a loss year (net profit <= 0) breaks the profit/EPS share-count
+  //     derivation this function relies on — a methodological limitation
+  //     of THIS function, not a claim that the year itself is meaningless.
   const bpsByYear = new Map()
+  let excludedNegativeEquityYears = 0
+  let excludedLossYears = 0
   for (const bRow of balanceHistory || []) {
     const y = yearOf(bRow)
     const eq = val(bRow?.totalEquity)
-    if (y == null || !(eq > 0)) continue
+    if (y == null) continue
+    if (eq != null && eq <= 0) { excludedNegativeEquityYears++; continue }
+    if (!(eq > 0)) continue
     const iRow = (incomeHistory || []).find(r => yearOf(r) === y)
     const np = val(iRow?.netProfit), eps = val(iRow?.eps)
     const sharesThen = (np > 0 && eps > 0) ? np / eps : null
-    if (sharesThen > 0) bpsByYear.set(y, eq / sharesThen)
+    if (!(sharesThen > 0)) { if (np != null && np <= 0) excludedLossYears++; continue }
+    bpsByYear.set(y, eq / sharesThen)
   }
   if (bpsByYear.size === 0) return null
 
@@ -297,7 +326,9 @@ export function pbBand(priceHistory = [], balanceHistory = [], incomeHistory = [
            samples: ps.count,
            // Real data, computed regardless — a band from fewer than 100
            // pooled daily observations is disclosed as thin, not hidden.
-           thin: ps.thin }
+           thin: ps.thin,
+           // Excluded, not silently dropped — see the comment on bpsByYear above.
+           excludedNegativeEquityYears, excludedLossYears }
 }
 
 /**
@@ -370,7 +401,16 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
   } else if (band) {
     multiples = { low: band.low, base: band.median, high: band.high }
     multipleBasis = 'observed'
-    multipleLabel = `its own P/B range (${band.samples} days)`
+    // Disclosed, not hidden: both are real exclusions with a stated
+    // reason, not values quietly dropped as noise. See pbBand's bpsByYear
+    // comment for why these two are tracked separately.
+    const excl = []
+    if (band.excludedNegativeEquityYears > 0)
+      excl.push(`${band.excludedNegativeEquityYears} negative-equity year${band.excludedNegativeEquityYears === 1 ? '' : 's'} (P/B undefined)`)
+    if (band.excludedLossYears > 0)
+      excl.push(`${band.excludedLossYears} loss year${band.excludedLossYears === 1 ? '' : 's'} (share count undeterminable)`)
+    multipleLabel = `its own P/B range (${band.samples} days)` +
+      (excl.length ? ` (excludes ${excl.join(', ')})` : '')
     thinDispersion = !!band.thin
   } else if (currentPb > 0) {
     const dd = priceDispersion(priceHistory)
@@ -1389,7 +1429,13 @@ export function buildEstimate(ratioResult, opts = {}) {
     // The span is stated either way; the prompt appears while a longer history
     // is still available to fetch, without implying the shorter one is invalid.
     multipleLabel = `its own forward P/E over ${own.spanYears} year${own.spanYears === 1 ? '' : 's'}` +
-      (own.spanYears < 5 ? ' — paste the Screener tables for a longer range' : '')
+      (own.spanYears < 5 ? ' — paste the Screener tables for a longer range' : '') +
+      // Disclosed, not hidden: P/E is undefined for a loss year, so it
+      // can't be used as a pairing year — but the exclusion itself, and
+      // how many years it applied to, is visible rather than silent.
+      (own.excludedLossYears > 0
+        ? ` (excludes ${own.excludedLossYears} loss year${own.excludedLossYears === 1 ? '' : 's'} — P/E undefined for negative earnings)`
+        : '')
   } else if (fitted?.multiple > 0 && fitted.source === 'historical-median') {
     multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
     multipleBasis = 'historical-median'

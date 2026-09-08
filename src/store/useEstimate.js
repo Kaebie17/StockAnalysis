@@ -204,7 +204,12 @@ export function useEstimate(state, opts = {}) {
     // null for the rate and reported a missing key even when one was set.
     riskFreeRate: opts?.riskFreeRate ?? riskFreeShared?.rate ?? null,
     equityRiskPremium: opts?.equityRiskPremium ?? erpShared?.erp ?? null,
-    beta: state.data?.meta?.beta ?? state.technicals?.beta ?? null,
+    // assumptions.beta first — this app's own regression (AppContext's
+    // SET_LIVE_BETA), the same override slot DCF/Market Expectation already
+    // read. Falls back to Yahoo's reported figure only when that regression
+    // hasn't resolved or lacked enough overlapping history.
+    beta: state.assumptions?.beta ?? state.data?.meta?.beta ?? state.technicals?.beta ?? null,
+    betaMeta: state.computedBeta ?? null,
     incomeHistory: state.data?.incomeHistory || [],
     cashflowHistory: state.data?.cashflowHistory || [],
   }) : null

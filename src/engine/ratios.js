@@ -385,6 +385,10 @@ export function calcRatios(data, opts = {}) {
       bookPerShare:    tag(bookPerShare,     'calculated', 'Total Equity ÷ Shares Outstanding'),
       // Meta (from v7 quote, for reference only)
       divYield:        tag(meta?.divYield,   'source-reference', 'From Yahoo v7 quote'),
+      // Fallback ONLY — every CAPM consumer prefers assumptions.beta (this
+      // app's own regression, src/engine/beta.js) and only falls back to
+      // this reported figure when that regression hasn't resolved or
+      // declined for lack of overlapping price history. See requiredReturn.js.
       beta:            tag(meta?.beta,       'source-reference', 'From Yahoo v7 quote'),
       high52:          tag(meta?.high52,     'source-reference', null),
       low52:           tag(meta?.low52,      'source-reference', null),

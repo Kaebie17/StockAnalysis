@@ -44,8 +44,8 @@ const STAGE_1_YEARS = 5
  * "decline to null when no rate is available" behavior as before, so every
  * existing call site (estimate.js, useEstimate.js) needs zero changes.
  */
-export function requiredReturn({ riskFreeRate, beta, equityRiskPremium = null, market = 'IN' } = {}) {
-  return capmCostOfEquity({ riskFreeRate, beta, erp: equityRiskPremium, market })
+export function requiredReturn({ riskFreeRate, beta, equityRiskPremium = null, market = 'IN', betaMeta = null } = {}) {
+  return capmCostOfEquity({ riskFreeRate, beta, erp: equityRiskPremium, market, betaMeta })
 }
 
 /** Sustainable growth: what the business can fund from what it keeps. */
@@ -204,7 +204,7 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   // own 'IN' default inside capmCostOfEquity. Harmless while ERP_BY_MARKET's
   // IN/US values were identical, but a real bug once terminal growth (below)
   // is split by market instead of shared.
-  const { riskFreeRate, equityRiskPremium, beta, incomeHistory = [], market = 'IN' } = opts
+  const { riskFreeRate, equityRiskPremium, beta, betaMeta = null, incomeHistory = [], market = 'IN' } = opts
   const R = ratioResult?.ratios || {}
 
   const roe = R.roe?.value
@@ -213,7 +213,7 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     dividendYield: R.dividendYield?.value ?? null,
     pe: R.pe?.value ?? null,
   })
-  const rr = requiredReturn({ riskFreeRate, beta, equityRiskPremium, market })
+  const rr = requiredReturn({ riskFreeRate, beta, equityRiskPremium, market, betaMeta })
   const sg = sustainableGrowth({ roe, payoutPct })
   const terminalG = TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN
 

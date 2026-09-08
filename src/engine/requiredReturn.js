@@ -80,31 +80,61 @@ const MIN_PLAUSIBLE_RAW_BETA = 1 / MAX_PLAUSIBLE_RAW_BETA
 /**
  * Required return on equity — CAPM, with a Blume-adjusted beta.
  *   r = risk-free + adjustedBeta x equity risk premium
- * Beta is Yahoo's own reported figure (ratios.beta); the equity risk premium
- * is the one genuine assumption here and is surfaced rather than buried.
- * The real reported beta is always used — see MAX_PLAUSIBLE_RAW_BETA above,
- * this never substitutes a different number. When beta itself is missing
- * (not merely unusual — genuinely absent), there is nothing to Blume-adjust,
- * so 1.0 (average market risk) is used as a stated absence-of-data default,
- * not a correction of a real reading.
+ *
+ * Beta is primarily this app's OWN regression (src/engine/beta.js — stock
+ * monthly returns against the index's, over a user-adjustable window),
+ * computed asynchronously in AppContext.jsx and fed into `beta` here via
+ * the `assumptions.beta` slot every caller already reads. Yahoo's reported
+ * figure (ratios.beta) is the fallback ONLY — used when the regression
+ * can't be built (too little overlapping history, e.g. a recent IPO, or
+ * the index fetch failed). `betaMeta`, when passed, is the diagnostic
+ * object computeBeta() returns (`{beta, n, years, r2, label}` on success,
+ * `{beta: null, insufficientReason}` when it declined) — it's what lets
+ * this function say WHICH source `beta` actually came from, rather than
+ * silently treating every number the same way regardless of provenance.
+ *
+ * The equity risk premium is the one genuine flat assumption here and is
+ * surfaced rather than buried. The real beta reading — whichever source
+ * produced it — is always used; see MAX_PLAUSIBLE_RAW_BETA above, this
+ * never substitutes a different number. When beta itself is missing (not
+ * merely unusual — genuinely absent from both sources), there is nothing
+ * to Blume-adjust, so 1.0 (average market risk) is used as a stated
+ * absence-of-data default, not a correction of a real reading.
  * Returns null iff riskFreeRate isn't a usable positive number — this
  * function ships no fallback of its own; each caller decides its own policy
  * (justifiedMultiple.js declines gracefully, valuation.js falls back to
  * DEFAULT_RISK_FREE_BY_MARKET so it never goes blank).
  */
-export function capmCostOfEquity({ riskFreeRate, beta, erp = null, market = 'IN' } = {}) {
+export function capmCostOfEquity({ riskFreeRate, beta, erp = null, market = 'IN', betaMeta = null } = {}) {
   if (!(riskFreeRate > 0)) return null
   const premium = erp ?? ERP_BY_MARKET[market] ?? ERP_BY_MARKET.IN
   const hasBeta = beta > 0
   const b = hasBeta ? (BLUME_WEIGHT * beta + (1 - BLUME_WEIGHT)) : 1
   const r = riskFreeRate + b * premium
+
+  // Only trust betaMeta as describing THIS beta reading when its own
+  // computed value is the one actually passed in — a caller can hold a
+  // betaMeta with a failed/insufficient regression while still passing a
+  // Yahoo-fallback beta, and the two must not be conflated.
+  const usingOwnRegression = hasBeta && betaMeta?.beta != null && Math.abs(betaMeta.beta - beta) < 1e-9
+  const betaSourceLabel = usingOwnRegression
+    ? betaMeta.label
+    : (betaMeta?.insufficientReason
+        ? `Yahoo's reported beta — this app's own regression was unavailable (${betaMeta.insufficientReason})`
+        : "Yahoo's reported beta")
+
   const betaFlag = (hasBeta && beta >= MAX_PLAUSIBLE_RAW_BETA)
-    ? `Reported beta of ${round(beta, 2)} is statistically unusual for a liquid single stock — verify against another source before trusting this cost of equity.`
+    ? (usingOwnRegression
+        ? `Beta of ${round(beta, 2)} (${betaSourceLabel}) is statistically unusual for a liquid single stock — try a different window in the beta control to see how sensitive this reading is.`
+        : `Reported beta of ${round(beta, 2)} is statistically unusual for a liquid single stock — verify against another source before trusting this cost of equity.`)
     : (hasBeta && beta <= MIN_PLAUSIBLE_RAW_BETA)
-    ? `Reported beta of ${round(beta, 2)} is unusually low — verify against another source; a low beta thins the required return, which inflates every multiple that divides by (r - g).`
+    ? (usingOwnRegression
+        ? `Beta of ${round(beta, 2)} (${betaSourceLabel}) is unusually low — a low beta thins the required return, which inflates every multiple that divides by (r - g); try a different window in the beta control to see how sensitive this reading is.`
+        : `Reported beta of ${round(beta, 2)} is unusually low — verify against another source; a low beta thins the required return, which inflates every multiple that divides by (r - g).`)
     : null
+
   return {
-    r, beta: b, rawBeta: hasBeta ? beta : null, betaFlag,
+    r, beta: b, rawBeta: hasBeta ? beta : null, betaFlag, betaSourceLabel,
     // betaAssumed: true only when beta was genuinely absent, not when a real
     // reading was merely unusual — estimate.js's "Beta unavailable" note
     // means the former; it would previously fire on the latter too, which
@@ -113,7 +143,7 @@ export function capmCostOfEquity({ riskFreeRate, beta, erp = null, market = 'IN'
     betaAssumed: !hasBeta,
     riskFreeRate, equityRiskPremium: premium, market,
     label: hasBeta
-      ? `${round(riskFreeRate * 100, 1)}% risk-free + ${round(b, 2)} beta (Blume-adjusted from ${round(beta, 2)}) x ${round(premium * 100, 1)}% premium`
+      ? `${round(riskFreeRate * 100, 1)}% risk-free + ${round(b, 2)} beta (Blume-adjusted from ${round(beta, 2)}, ${betaSourceLabel}) x ${round(premium * 100, 1)}% premium`
       : `${round(riskFreeRate * 100, 1)}% risk-free + 1.00 beta (assumed — no reported beta) x ${round(premium * 100, 1)}% premium`,
   }
 }

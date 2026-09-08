@@ -3,6 +3,7 @@ import { AppProvider, useApp } from './store/AppContext.jsx'
 import Header from './components/dashboard/Header.jsx'
 import SummaryStrip from './components/dashboard/SummaryStrip.jsx'
 import GrowthWindowPicker from './components/dashboard/GrowthWindowPicker.jsx'
+import BetaWindowPicker from './components/dashboard/BetaWindowPicker.jsx'
 import ValuationPanel from './components/dashboard/ValuationPanel.jsx'
 import FundamentalsPanel from './components/dashboard/FundamentalsPanel.jsx'
 import TechnicalsPanel from './components/dashboard/TechnicalsPanel.jsx'
@@ -44,6 +45,7 @@ function Dashboard() {
               <SummaryStrip onExpand={handleExpand} expanded={expanded} onAddHistory={() => setAddHistoryOpen(true)} detail={
                 <div className="space-y-4">
                   <GrowthWindowPicker />
+                  <BetaWindowPicker />
                   <div className="flex items-center justify-between gap-2">
                     <DataGapBanner
                       ratioResult={state.ratioResult}

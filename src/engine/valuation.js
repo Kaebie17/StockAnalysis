@@ -15,7 +15,6 @@ import { computePeg } from './peg.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvSales as getSectorEvSales, financialPb } from './sectorMultiples.js'
 import { peerBand } from './peerBands.js'
-import { percentileSpread } from './spread.js'
 import { TIER } from './methodologyTier.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
@@ -54,7 +53,10 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // to a usable default rather than going blank.
   const market = assumptions.market ?? 'IN'
   // WACC default is computed per company (CAPM), not a flat rate — see computeWacc.
-  const waccResult = computeWacc(r, { liveRiskFree: assumptions.liveRiskFree ?? null, erp: assumptions.liveErp ?? null, market })
+  const waccResult = computeWacc(r, {
+    liveRiskFree: assumptions.liveRiskFree ?? null, erp: assumptions.liveErp ?? null, market,
+    beta: assumptions.beta ?? null, betaMeta: assumptions.betaMeta ?? null,
+  })
   const waccDefault = waccResult.wacc
   const waccBetaFlag = waccResult.betaFlag
   // Computed once, reused for the default below — was previously called
@@ -452,13 +454,18 @@ const TAX_RATE_BY_MARKET = { IN: 0.2517, US: 0.21 }
 // with a guess. The one thing that CAN make this number worth a second
 // look — an unusual beta reading — is surfaced via betaFlag (see
 // requiredReturn.js) without altering the computed value.
-function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRate = null } = {}) {
+function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRate = null, beta = null, betaMeta = null } = {}) {
   const riskFree = liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
   const tax = taxRate ?? TAX_RATE_BY_MARKET[market] ?? TAX_RATE_BY_MARKET.IN
-  const beta = (r?.ratios?.beta?.value != null && r.ratios.beta.value > 0) ? r.ratios.beta.value : 1.0
+  // `beta` here is this app's own regression (AppContext's SET_LIVE_BETA,
+  // threaded via assumptions.beta) — Yahoo's reported figure is the
+  // fallback ONLY, used when the regression hasn't resolved or declined
+  // for lack of overlapping history. See requiredReturn.js.
+  const resolvedBeta = (beta != null && beta > 0) ? beta
+    : (r?.ratios?.beta?.value != null && r.ratios.beta.value > 0) ? r.ratios.beta.value : 1.0
   const E = r?.marketCap > 0 ? r.marketCap : null
   const D = r?.totalDebt > 0 ? r.totalDebt : 0
-  const capm = capmCostOfEquity({ riskFreeRate: riskFree, beta, erp, market })
+  const capm = capmCostOfEquity({ riskFreeRate: riskFree, beta: resolvedBeta, erp, market, betaMeta })
   const ke = capm.r
   const betaFlag = capm.betaFlag
   if (E == null) return { wacc: ke, betaFlag }          // no market cap → all-equity proxy
@@ -615,11 +622,23 @@ function dcfPerShare(cfBase, g, wacc, tg, yrs, cash, debt, shares, ntGrowth = nu
   return ps > 0 ? ps : null
 }
 
-// This stock's own YoY revenue growth volatility (15th-85th percentile
-// half-width) — the same measurement growthScenarioSpread() used to provide
-// for the removed Bear/Bull scenario feature, revived here for a different,
-// legitimate purpose: sizing the sensitivity grid's growth axis from
-// something real instead of an identical flat constant for every company.
+// This stock's own YoY revenue growth volatility — sizing the sensitivity
+// grid's growth axis from something real instead of an identical flat
+// constant for every company. Originally a 15th-85th percentile half-width
+// (the same measurement growthScenarioSpread() used to provide for the
+// removed Bear/Bull scenario feature) — replaced with a median absolute
+// deviation (MAD, scaled by the standard 1.4826 consistency constant to be
+// comparable to a standard deviation) after a real, checked case: a
+// percentile spread in a small sample (a company's income history is
+// rarely more than ~15 years) is set almost entirely by 1-2 sorted extreme
+// values, and RELIANCE's axis swung from -24% to +44% off what was very
+// likely one or two outlier years (a demerger, a COVID-year swing)
+// dominating an ~11-point percentile pick. MAD doesn't exclude or flag
+// anything — every real year, however unusual, still contributes to the
+// median and to the median of deviations from it — it just can't be
+// unilaterally set by one or two of them the way a sorted-percentile edge
+// can. No filtering: this deliberately never drops a real growth year, a
+// -34% decline year is exactly as valid an input as any other.
 // Returns null when there's too little revenue history to measure — the
 // caller falls back to a stated convention in that case, same pattern as
 // priceDispersion/multipleSpread's own fallback chains elsewhere.
@@ -635,9 +654,15 @@ function measuredGrowthHalfWidth(incomeHistory) {
     .sort((a, b) => a.year - b.year)
   const yoy = []
   for (let i = 1; i < series.length; i++) yoy.push(series[i].value / series[i - 1].value - 1)
-  const ps = percentileSpread(yoy, { minSamples: 4 })
-  if (!ps) return null
-  const half = (ps.high - ps.low) / 2
+  // Same floor percentileSpread's own minSamples used — below this, a
+  // dispersion measure of any kind (robust or not) is more noise than
+  // signal.
+  if (yoy.length < 4) return null
+  const sorted = [...yoy].sort((a, b) => a - b)
+  const median = sorted[Math.floor(sorted.length / 2)]
+  const absDevs = yoy.map(v => Math.abs(v - median)).sort((a, b) => a - b)
+  const mad = absDevs[Math.floor(absDevs.length / 2)]
+  const half = mad * 1.4826
   return (half > 0 && isFinite(half)) ? half : null
 }
 
@@ -653,22 +678,26 @@ function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYea
   // declining/turnaround companies where seeing the range matters most.
   //
   // Growth axis width: this stock's own measured YoY revenue volatility
-  // where there's enough history to measure one; falls back to a flat ±4%
-  // (the previous behavior, now a named, disclosed convention rather than
-  // an unlabelled default) only when there isn't.
+  // (median absolute deviation — see measuredGrowthHalfWidth) where there's
+  // enough history to measure one; falls back to a flat ±4% (the previous
+  // behavior, now a named, disclosed convention rather than an unlabelled
+  // default) only when there isn't.
   const measuredHalf = measuredGrowthHalfWidth(incomeHistory)
   const growthHalf = measuredHalf ?? 0.04
   const growthAxisMeasured = measuredHalf != null
   const growthAxis = [-1, -0.5, 0, 0.5, 1].map(f => gBase + f * growthHalf)
   // WACC axis keeps only the structural floor (wacc must exceed terminal
   // growth or the terminal-value term is undefined); no separate ceiling.
-  // Unlike growth, there is no equivalent real per-company measurement
-  // available for this: beta is Yahoo's own reported figure, not a
-  // regression this app runs itself, so there's no residual/standard-error
-  // data to build a genuine interval from the way the growth axis (and
-  // targetMultiple.js's prediction interval) can. This stays a fixed,
-  // disclosed convention (±50-100bps steps, a common professional practice
-  // for showing DCF sensitivity) rather than a manufactured "measurement."
+  // Beta is now this app's own regression (src/engine/beta.js), which DOES
+  // carry residual/standard-error data (fitLine's residualSE) a genuine
+  // interval could in principle be built from, the way targetMultiple.js's
+  // prediction interval already is — that hasn't been done here yet (this
+  // axis was written when beta was still a bare reported figure with
+  // nothing to propagate). Left as a fixed, disclosed convention
+  // (±50-100bps steps, a common professional practice for showing DCF
+  // sensitivity) for now rather than manufacturing it silently; a real
+  // beta-derived WACC interval is a legitimate follow-up, not something
+  // this axis should quietly claim to already be.
   const waccAxis = [-0.02, -0.01, 0, 0.01, 0.02].map(d => Math.max(wBase + d, tg + 0.01))
   const grid = growthAxis.map(g =>
     waccAxis.map(w => ntYears > 0

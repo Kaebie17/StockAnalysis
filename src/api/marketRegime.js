@@ -85,6 +85,35 @@ export function sectorIndexFor(meta = {}, sectorType = null) {
 
 const relCache = new Map()   // `${symbol}:${days}` -> { change, from }
 
+// Full daily series, not just a 2-point delta — for beta.js's regression.
+// Session-cached (not TTL-limited like the quote-based caches above): a
+// past close never changes, and this is shared across every ticker loaded
+// in the session (the same Nifty history regardless of which stock is on
+// screen), so re-fetching it per ticker would be pure waste.
+const indexHistCache = new Map()   // `${symbol}:${years}` -> rows[]
+
+/** Daily {date, close} history for an index symbol, over the trailing `years`. */
+export async function fetchIndexHistory(symbol, years = 5) {
+  if (!symbol) return []
+  const key = `${symbol}:${years}`
+  if (indexHistCache.has(key)) return indexHistCache.get(key)
+
+  let rows = []
+  try {
+    const to = new Date().toISOString().slice(0, 10)
+    const from = new Date(Date.now() - years * 365.25 * 86400000).toISOString().slice(0, 10)
+    const r = await fetch(`/api/yahoo?endpoint=history&ticker=${encodeURIComponent(symbol)}` +
+                          `&from=${from}&to=${to}`)
+    if (r.ok) {
+      const j = await r.json().catch(() => null)
+      rows = j?.history || []
+    }
+  } catch { /* absent rather than wrong — computeBeta degrades gracefully */ }
+
+  indexHistCache.set(key, rows)
+  return rows
+}
+
 /**
  * How an index has moved over a window. Used to place a stock's move in context:
  * the same −8% means opposite things depending on whether the sector fell 12% or

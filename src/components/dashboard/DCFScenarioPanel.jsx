@@ -57,10 +57,11 @@ export default function DCFScenarioPanel() {
 
       <p className="text-[10px] text-slate-600">
         {sensitivity.growthAxisMeasured
-          ? "Growth steps sized from this stock's own historical YoY revenue swings."
+          ? "Growth steps sized from this stock's own historical YoY revenue swings (median absolute deviation — a robust measure a single unusual year, like a demerger or a COVID-year swing, can't dominate)."
           : 'Growth steps: a flat ±4% convention — too little revenue history to measure this stock\'s own volatility.'}
-        {' '}WACC steps (±50–100bps) are a fixed convention, not a measurement — there\'s no equivalent
-        per-company data (beta is a reported figure, not a regression this app runs itself) to derive one from.
+        {' '}WACC steps (±50–100bps) are a fixed convention, not a measurement — beta is now this app's
+        own regression (see the Beta window control), but that hasn't been propagated into a genuine
+        WACC interval here yet, so this stays a disclosed convention rather than a manufactured one.
       </p>
 
       {/* Sensitivity table */}

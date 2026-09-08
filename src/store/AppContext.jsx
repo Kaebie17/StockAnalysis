@@ -19,6 +19,8 @@ import { fetchPeers } from '../api/peersClient.js'
 import { getRiskFreeRate } from '../api/riskFreeClient.js'
 import { getEquityRiskPremium } from '../api/erpClient.js'
 import { getAiKey } from '../utils/aiKey.js'
+import { computeBeta } from '../engine/beta.js'
+import { fetchIndexHistory } from '../api/marketRegime.js'
 
 const AppContext = createContext(null)
 
@@ -42,6 +44,13 @@ const initial = {
   holdingsData: null, arData: null, quarterlyData: null,
   growthWindowYears: null,   // user's chosen CAGR window; null = full-history default
   normalizedIncomeHistory: null,   // reconstructed rows; only years the user restated
+  // This app's own regression beta (src/engine/beta.js) — see the
+  // SET_LIVE_BETA case and its effect below. Session-scoped like the WACC/
+  // margin overrides in `assumptions` already are, not persisted per ticker
+  // like growthWindowYears — a "how many years should the regression use"
+  // preference, not curated per-company data.
+  betaWindowYears: 5,
+  computedBeta: null,   // { beta, n, years, r2, label } | { beta: null, insufficientReason } | null (not yet resolved)
 }
 
 function reducer(s, a) {
@@ -78,11 +87,41 @@ function reducer(s, a) {
         liveRiskFree: a.liveRiskFree,
         liveErp: a.liveErp,
         beta: assumptions.beta ?? s.ratioResult?.ratios?.beta?.value ?? null,
+        betaMeta: assumptions.betaMeta ?? null,
         market: a.market,
       }
       const marketExpectation = runMarketExpectation(s.data, s.ratioResult, s.stage, s.sectorType, s.meAssumptions, meOpts)
       return { ...s, assumptions, valuation, marketExpectation }
     }
+    // This app's own regression beta (src/engine/beta.js), resolved
+    // asynchronously by the effect below once price + index history are
+    // available. Same shape as SET_LIVE_INPUTS above — beta lives in
+    // `assumptions` (the slot every CAPM consumer already reads as
+    // `assumptions.beta ?? ratios.beta.value`), `betaMeta` rides alongside
+    // it so requiredReturn.js's labels can say WHICH source produced the
+    // number. `a.beta` is null when the regression declined (not enough
+    // overlapping history) — that's a real, intentional value: it means
+    // "fall through to Yahoo's reported figure", not "no data at all".
+    case 'SET_LIVE_BETA': {
+      if (!s.data) return s
+      const assumptions = { ...s.assumptions, beta: a.beta, betaMeta: a.betaMeta ?? null }
+      const valuation = runValuation(s.data, s.ratioResult, s.stage, s.sectorType, assumptions)
+      const meOpts = {
+        liveRiskFree: assumptions.liveRiskFree ?? null,
+        liveErp: assumptions.liveErp ?? null,
+        beta: assumptions.beta ?? s.ratioResult?.ratios?.beta?.value ?? null,
+        betaMeta: assumptions.betaMeta ?? null,
+        market: assumptions.market ?? 'IN',
+      }
+      const marketExpectation = runMarketExpectation(s.data, s.ratioResult, s.stage, s.sectorType, s.meAssumptions, meOpts)
+      return { ...s, assumptions, valuation, marketExpectation, computedBeta: a.betaMeta ?? null }
+    }
+    // Just records the chosen window — the effect below reacts to the
+    // change, fetches/refits, and dispatches SET_LIVE_BETA once resolved.
+    // Not persisted per ticker (see the `betaWindowYears` comment on
+    // `initial` above), so this intentionally survives a ticker switch.
+    case 'SET_BETA_WINDOW':
+      return { ...s, betaWindowYears: a.years }
     case 'SET_QUAL':      return { ...s, ...a.payload }
     case 'MERGE_PASTED': {
       if (!s.data) return s
@@ -386,6 +425,7 @@ export function AppProvider({ children }) {
       liveRiskFree: assumptions.liveRiskFree ?? null,
       liveErp: assumptions.liveErp ?? null,
       beta: assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
+      betaMeta: assumptions.betaMeta ?? null,
       market: assumptions.market ?? 'IN',
     }
     const me            = runMarketExpectation(state.data, state.ratioResult, state.stage, state.sectorType, meAssumptions, meOpts)
@@ -420,6 +460,30 @@ export function AppProvider({ children }) {
     })
     return () => { cancelled = true }
   }, [state.ticker, state.status])
+
+  // This app's own regression beta (src/engine/beta.js) — stock monthly
+  // returns against the index's, over `state.betaWindowYears`. Separate
+  // from the peers/risk-free/ERP effect above: it needs
+  // state.data.priceHistory (not guaranteed ready at the exact same
+  // instant on every load path) and re-fires on its own trigger
+  // (betaWindowYears, via BetaWindowPicker) independent of ticker load.
+  // `result.beta` is null when the regression declines (too little
+  // overlapping history) — every CAPM consumer's `assumptions.beta ??
+  // ratios.beta.value` already falls back to Yahoo's reported figure in
+  // that case, so this dispatches null deliberately rather than skipping.
+  useEffect(() => {
+    if (state.status !== 'success' || !state.ticker || !state.data?.priceHistory?.length) return
+    let cancelled = false
+    const indian = state.data?.currency === 'INR'
+    const indexSymbol = indian ? '^NSEI' : '^GSPC'
+    const indexLabel = indian ? 'Nifty 50' : 'the S&P 500'
+    fetchIndexHistory(indexSymbol, state.betaWindowYears).then(indexHistory => {
+      if (cancelled) return
+      const result = computeBeta(state.data.priceHistory, indexHistory, { years: state.betaWindowYears, indexLabel })
+      dispatch({ type: 'SET_LIVE_BETA', beta: result?.beta ?? null, betaMeta: result })
+    })
+    return () => { cancelled = true }
+  }, [state.ticker, state.status, state.data?.priceHistory, state.betaWindowYears])
 
   /** "This figure isn't reported for this company — stop asking." Stored per
    *  ticker alongside the AR data, so it syncs and survives a reload. It changes
@@ -474,6 +538,7 @@ export function AppProvider({ children }) {
       liveRiskFree: state.assumptions.liveRiskFree ?? null,
       liveErp: state.assumptions.liveErp ?? null,
       beta: state.assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
+      betaMeta: state.assumptions.betaMeta ?? null,
       market: state.assumptions.market ?? 'IN',
     })
     dispatch({ type: 'SET_STAGE', stage, valuation, marketExpectation })
@@ -506,6 +571,10 @@ export function AppProvider({ children }) {
    */
   const setGrowthWindowYears = useCallback((years) => {
     dispatch({ type: 'SET_GROWTH_WINDOW', years: years ?? null })
+  }, [])
+
+  const setBetaWindowYears = useCallback((years) => {
+    dispatch({ type: 'SET_BETA_WINDOW', years: years ?? 5 })
   }, [])
 
   const setBasis = useCallback((basis) => {
@@ -568,7 +637,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBasis, applyNormalization, refreshPrice, refreshPriceHistory
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, refreshPrice, refreshPriceHistory
     }}>
       {children}
     </AppContext.Provider>
