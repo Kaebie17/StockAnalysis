@@ -169,10 +169,15 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
  * @param opts.basis         'pe' | 'pb'
  * @param opts.forwardRoe    expected ROE for the projection year
  * @param opts.forwardGrowth expected growth, %
- * @param opts.peerBand      { low, median, high } — the sanity anchor
+ * @param opts.peerBand      { low, median, high } — the peer cross-check
+ * @param opts.peerWeight    0-1, how much peerBand pulls the own-history
+ *                           fitted multiple — a disclosed judgment call the
+ *                           caller sets explicitly, not inferred here. 0
+ *                           (default) means peers have no effect at all.
  */
 export function targetMultiple(opts = {}) {
   const { basis = 'pe', forwardRoe = null, forwardGrowth = null, peerBand = null } = opts
+  const peerWeight = Math.max(0, Math.min(1, opts.peerWeight ?? 0))
   const obs = yearlyObservations(opts)
 
   // A median needs a distribution behind it. Two annual observations give a
@@ -274,23 +279,25 @@ export function targetMultiple(opts = {}) {
     steps.push('No fitted adjustment — using the plain historical median.')
   }
 
-  // ── Peer cross-check ──────────────────────────────────────────────────────
-  // Peers are the check on "this company's own history has stopped being
-  // representative". Pulled halfway rather than overridden: the stock's own
-  // record still carries information about how the market treats it.
-  let peerPulled = false
-  if (peerBand?.low > 0 && peerBand?.high > 0) {
-    if (adjusted > peerBand.high * 1.5) {
-      const before = adjusted
-      adjusted = (adjusted + peerBand.high) / 2
-      peerPulled = true
-      steps.push(`Peers trade at ${peerBand.low}–${peerBand.high}× — ${round(before)}× pulled to ${round(adjusted)}×`)
-    } else if (adjusted < peerBand.low * 0.5) {
-      const before = adjusted
-      adjusted = (adjusted + peerBand.low) / 2
-      peerPulled = true
-      steps.push(`Peers trade at ${peerBand.low}–${peerBand.high}× — ${round(before)}× pulled to ${round(adjusted)}×`)
-    }
+  // ── Peer weight ────────────────────────────────────────────────────────────
+  // How much the peer band pulls this company's own fitted multiple — a
+  // genuine judgment call (are these SPECIFIC peers actually comparable to
+  // THIS company's business?) that no formula can make on its own. RELIANCE's
+  // own NSE "Oil Gas & Consumable Fuels" peers, for instance, are real,
+  // verified index-mates but don't capture Jio/Retail — applying their ~5×
+  // EV/EBITDA to a conglomerate trading at 11× isn't a correction, it's a
+  // mismatch. This used to trigger automatically past a hardcoded 1.5×/0.5×
+  // divergence threshold and always pull exactly halfway when it did —
+  // implementation choices with no real basis, presented as settled
+  // methodology. Replaced with an explicit, disclosed weight the caller sets
+  // (see PeerWeightSlider.jsx) — 0 (default) means peers have no effect at
+  // all; 1 means the peer median fully replaces the own-history multiple.
+  let peerBlended = false
+  if (peerWeight > 0 && peerBand?.median > 0) {
+    const before = adjusted
+    adjusted = (1 - peerWeight) * adjusted + peerWeight * peerBand.median
+    peerBlended = true
+    steps.push(`Peer weight ${round(peerWeight * 100, 0)}%: ${round(before)}× blended with peers' ${round(peerBand.median)}× median → ${round(adjusted)}×`)
   }
 
   // Structural check only: a multiple can't be zero or negative — that isn't
@@ -310,19 +317,37 @@ export function targetMultiple(opts = {}) {
   }
 
   // The range is a genuine prediction interval from the same regression(s)
-  // that produced finalMultiple — not a spread measured around a different
-  // (unadjusted) center and transplanted here. When no fit was reliable
-  // enough to use (finalMultiple === anchor), there's no regression to build
-  // an interval from; the real, unadjusted historical percentile band
-  // (ps.low/ps.high) is what's actually known in that case, same as before.
-  let low, high
+  // that produced finalMultiple's own-history component — not a spread
+  // measured around a different (unadjusted) center and transplanted here.
+  // When peerWeight blended the center, the same weight blends the spread
+  // too (own regression margin vs. peers' own low-high dispersion), so the
+  // range stays consistent with whatever mix of own-history and peer trust
+  // the weight represents, rather than a peer-shifted center wearing a
+  // purely own-history uncertainty band. When no fit was reliable enough to
+  // use (finalMultiple === anchor) and peerWeight is 0, there's no
+  // regression to build an interval from; the real, unadjusted historical
+  // percentile band (ps.low/ps.high) is what's actually known in that case,
+  // same as before.
+  let ownMargin = null
   if (fits.length > 0 && marginsSquaredSum > 0) {
-    const totalMargin = Math.sqrt(marginsSquaredSum)
-    low = finalMultiple - totalMargin
-    high = finalMultiple + totalMargin
-    if (!(low > 0)) low = Math.min(ps.low, finalMultiple * 0.5)   // structural floor, not a plausibility cap
-    steps.push(`Range: ±${round(totalMargin)}× from the regression's own prediction interval ` +
+    ownMargin = Math.sqrt(marginsSquaredSum)
+    steps.push(`Own-history range: ±${round(ownMargin)}× from the regression's own prediction interval ` +
       `(80% confidence, ${obs.length} year${obs.length > 1 ? 's' : ''} of data)`)
+  }
+
+  let low, high
+  if (peerWeight > 0 && peerBand?.low > 0 && peerBand?.high > 0) {
+    const peerMargin = (peerBand.high - peerBand.low) / 2
+    const baseMargin = ownMargin != null ? ownMargin : (ps.high - ps.low) / 2
+    const blendedMargin = (1 - peerWeight) * baseMargin + peerWeight * peerMargin
+    low = finalMultiple - blendedMargin
+    high = finalMultiple + blendedMargin
+    if (!(low > 0)) low = Math.min(ps.low, finalMultiple * 0.5)   // structural floor, not a plausibility cap
+    steps.push(`Range blended ${round(peerWeight * 100, 0)}% toward peers' own ${round(peerBand.low)}–${round(peerBand.high)}× spread`)
+  } else if (ownMargin != null) {
+    low = finalMultiple - ownMargin
+    high = finalMultiple + ownMargin
+    if (!(low > 0)) low = Math.min(ps.low, finalMultiple * 0.5)
   } else {
     low = ps.low
     high = ps.high
@@ -333,14 +358,14 @@ export function targetMultiple(opts = {}) {
     low:  round(low),
     high: round(high),
     basis, anchor: round(anchor), observations: obs.length,
-    fits, peerPulled,
+    fits, peerBlended, peerWeight,
     source: fits.length > 0 ? 'fitted' : 'historical-median',
     thin: thinYears > 0,
     // DERIVED in effectively every case here: the anchor is this stock's
     // own real historical multiple, any adjustment is a disclosed
-    // regression bounded to its own measured range, and a peer pull only
-    // ever moves it toward other real market data — no branch produces an
-    // unanchored number.
+    // regression bounded to its own measured range, and a peer blend only
+    // ever moves it toward other real market data at a weight the caller
+    // set explicitly — no branch produces an unanchored number.
     tier: TIER.DERIVED,
     steps,
   }

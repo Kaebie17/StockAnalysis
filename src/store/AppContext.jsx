@@ -236,6 +236,17 @@ function reducer(s, a) {
                                   { growthWindowYears: a.years, basis: data.basis })
       return { ...next, ...computed }
     }
+    // How much App Estimate's peer cross-check (targetMultiple.js) pulls the
+    // fitted own-history multiple toward the peer band — a per-ticker
+    // judgment call (persisted on data, same storage as growthWindowYears
+    // above), not something valuation.js/marketExpectation.js read at all.
+    // No computeAll/runValuation pass needed: useEstimate.js's buildEstimate
+    // call reads state.data.peerWeight directly on its own next render, the
+    // same way it already reacts to state.data.confirmedPeers changing.
+    case 'SET_PEER_WEIGHT': {
+      if (!s.data) return s
+      return { ...s, data: { ...s.data, peerWeight: a.weight } }
+    }
     // A peer explicitly confirmed as a real comparable for THIS ticker —
     // persisted on data (same per-ticker storage as growthWindowYears
     // above), never touches the confirmed ticker's OWN cached record. Only
@@ -678,6 +689,10 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_GROWTH_WINDOW', years: years ?? null })
   }, [])
 
+  const setPeerWeight = useCallback((weight) => {
+    dispatch({ type: 'SET_PEER_WEIGHT', weight: Math.max(0, Math.min(1, weight ?? 0)) })
+  }, [])
+
   const setBetaWindowYears = useCallback((years) => {
     dispatch({ type: 'SET_BETA_WINDOW', years: years ?? 5 })
   }, [])
@@ -753,7 +768,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>

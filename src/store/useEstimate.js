@@ -256,6 +256,11 @@ export function useEstimate(state, opts = {}) {
     reportedIncomeHistory: state.data?.reportedIncomeHistory || [],
     balanceHistory: state.data?.balanceHistory || [],
     peerBand,
+    // 0-1, how much peerBand pulls the own-history fitted multiple — a
+    // per-ticker judgment call the user sets via PeerWeightSlider, not
+    // something the engine infers. Defaults to 0 (peers have no effect),
+    // persisted the same way growthWindowYears/confirmedPeers are.
+    peerWeight: state.data?.peerWeight ?? 0,
   }) : null
 
   // Re-rating check runs against the same band the estimate uses, so a proposal

@@ -9,6 +9,7 @@ import { computeFact } from '../../engine/factImpact.js'
 import { extractSegmentShares } from '../../engine/segmentShare.js'
 import { TIER } from '../../engine/methodologyTier.js'
 import ProvenanceTag from '../ProvenanceTag.jsx'
+import PeerWeightSlider from './PeerWeightSlider.jsx'
 
 // Dot bar: 5 dots, filled based on upside magnitude
 // Green dots = upside, red dots = downside
@@ -308,7 +309,7 @@ function EstimateExplainer({ state }) {
   // and it stays in sync with revisions the same way TwoEstimates does
   // (useEstimate's docblock: multiple call sites, one shared revision
   // counter, so a commit anywhere reloads all of them together).
-  const { estimate: est } = useEstimate(state)
+  const { estimate: est, peerBand } = useEstimate(state)
   const data = state?.data
   if (!state?.ratioResult || !est) return null
 
@@ -376,6 +377,8 @@ function EstimateExplainer({ state }) {
                        <span className="text-slate-300">{est.multiples.high}×</span>.</>}
                 </Step>
               </div>
+
+              <PeerWeightSlider peerBand={peerBand} />
 
               <div className="bg-navy-900/60 rounded px-3 py-2 space-y-1 font-mono text-[11px]">
                 <div className="text-slate-500">Multiply the last two together:</div>

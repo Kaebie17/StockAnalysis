@@ -1234,7 +1234,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     guidanceExpired = false, growthOverride = null, marginOverride = null,
     multipleOverride = null,
     priceHistory = [], incomeHistory = [], balanceHistory = [],
-    peerBand = null, years = 1,
+    peerBand = null, peerWeight = 0, years = 1,
   } = opts
 
   // Lenders take the book-and-ROE path. The margin chain below describes a
@@ -1364,6 +1364,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     forwardRoe: ratioResult?.ratios?.roe?.value ?? null,
     forwardGrowth: growthBasis.growth != null ? growthBasis.growth * 100 : null,
     peerBand,
+    peerWeight,
   })
 
   // Reported series for the band; normalised for the projection. See the note
