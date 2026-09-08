@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { fmtPct, fmtPctPlain } from '../../utils/format.js'
 import DCFScenarioPanel from './DCFScenarioPanel.jsx'
-import { useEstimate } from '../../store/useEstimate.js'
+import { useEstimate, overrideSourceLabel } from '../../store/useEstimate.js'
 import FactInputModal from './FactInputModal.jsx'
 import { useNewsFacts, keyOf, leverOf } from '../../store/useNewsFacts.js'
 import { computeFact } from '../../engine/factImpact.js'
@@ -455,12 +455,6 @@ function EstimateRevisions({ state }) {
   const [open, setOpen] = useState(false)
   const [factOpen, setFactOpen] = useState(false)
   const [seedItem, setSeedItem] = useState(null)
-  // The log only grows — a fixed cap with no way past it would silently bury
-  // an old entry (an auto-applied revision from months back, say) under
-  // whatever's been committed since, with nothing on screen saying more
-  // exist. Default to a short list for the common case, but let it expand
-  // rather than hide anything for good.
-  const [showAllRevisions, setShowAllRevisions] = useState(false)
   const {
     estimate, overrides, revisions, rerating, commit, peerBand,
     guidanceAssessment, quarterlySuggestion, score, handledKeys, deferredLevers, relative,
@@ -508,9 +502,28 @@ function EstimateRevisions({ state }) {
   const { actionable, incomplete, loading } = useNewsFacts(
     state.ticker, state.data?.name, ctx, handledKeys)
 
-  const applied = revisions.filter(x => x.disposition === 'revised')
   const levers = Object.keys(overrides)
   const pending = actionable.length + incomplete.length
+
+  // What's overriding the estimate RIGHT NOW, one row per lever — not the
+  // whole append-only trail that produced it. The log itself still records
+  // every apply/dismiss/undo (undo appends a reverting entry rather than
+  // deleting), but "what's active today" is a different question from "what
+  // happened", and scanning a growing history to answer the first is the
+  // wrong shape for it.
+  const activeRevisionByLever = React.useMemo(() => {
+    const out = {}
+    const sorted = [...revisions].sort((a, b) => b.createdAt - a.createdAt)
+    for (const r of sorted) {
+      if (r.disposition !== 'revised' || !r.lever) continue
+      if (out[r.lever]) continue
+      out[r.lever] = r
+    }
+    return out
+  }, [revisions])
+  const activeOverrideRows = levers
+    .map(lever => ({ lever, value: overrides[lever], rec: activeRevisionByLever[lever] }))
+    .filter(row => row.rec)
 
   // A conflicting forecast is presented, not applied. Keeping the current
   // assumption is recorded too — "someone looked and stayed" is a different fact
@@ -694,35 +707,20 @@ function EstimateRevisions({ state }) {
             + Record something else
           </button>
 
-          {applied.length > 0 && (
+          {activeOverrideRows.length > 0 && (
             <div className="space-y-1.5 pt-2 border-t border-navy-700/60">
-              {(showAllRevisions ? applied : applied.slice(0, 8)).map(x => (
-                <div key={x.id} className="text-[11px]">
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-slate-400 capitalize">{x.lever}</span>
-                    <span className="font-mono text-slate-500">
-                      {fmtLever(x.lever, x.oldValue)} → {fmtLever(x.lever, x.newValue)}
-                    </span>
-                    <span className="text-slate-600 ml-auto shrink-0">
-                      {new Date(x.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                    </span>
-                  </div>
-                  {x.reason && <div className="text-slate-600 truncate">{x.reason}</div>}
-                  {(x.trigger === 'news-auto' || x.trigger === 'quarterly-auto') && (
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-slate-600">applied automatically</span>
-                      <button onClick={() => undo(x)}
-                        className="text-[10px] text-slate-500 hover:text-bear">undo</button>
-                    </div>
-                  )}
+              <div className="text-[10px] uppercase tracking-wide text-slate-600">Active overrides</div>
+              {activeOverrideRows.map(({ lever, value, rec }) => (
+                <div key={lever} className="flex items-center gap-2 text-[11px]">
+                  <span className="text-slate-400 capitalize shrink-0">{lever}</span>
+                  <span className="font-mono text-slate-300 shrink-0">{fmtLever(lever, value)}</span>
+                  <span className="text-slate-600 truncate">{overrideSourceLabel(revisions, lever)}</span>
+                  <button onClick={() => undo(rec)}
+                    className="text-[10px] text-slate-500 hover:text-bear ml-auto shrink-0">
+                    remove
+                  </button>
                 </div>
               ))}
-              {applied.length > 8 && (
-                <button onClick={() => setShowAllRevisions(v => !v)}
-                  className="text-[11px] text-accent hover:text-accent-light">
-                  {showAllRevisions ? 'Show fewer' : `+ ${applied.length - 8} more`}
-                </button>
-              )}
             </div>
           )}
         </div>
