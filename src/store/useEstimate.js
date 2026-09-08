@@ -277,8 +277,12 @@ export function useEstimate(state, opts = {}) {
   // on someone noticing.
   const sanity = sanityCheck(estimate, {
     price: state?.ratioResult?.price,
-        fairValue: state?.valuation?.rangeLow > 0
-      ? { low: state.valuation.rangeLow, high: state.valuation.rangeHigh } : null,
+    // The real Fair Value headline (primaryModel's own value), not
+    // rangeLow/rangeHigh's midpoint — those are the min/max across every
+    // extrinsic model (how much the models disagree), not a range around
+    // Fair Value, and averaging them produced a number that didn't match
+    // what's actually shown as Fair Value anywhere else on the page.
+    fairValue: state?.valuation?.fairValue > 0 ? state.valuation.fairValue : null,
     analystTarget: state?.analystTarget || null,
   })
 

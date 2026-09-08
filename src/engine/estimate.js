@@ -1583,7 +1583,7 @@ export function buildEstimate(ratioResult, opts = {}) {
  * number as unreliable so it is read that way.
  *
  * @param estimate  from buildEstimate
- * @param context   { price, fairValue: {low,high}, analystTarget: {low,high} }
+ * @param context   { price, fairValue: number, analystTarget: {low,high} }
  */
 export function sanityCheck(estimate, context = {}) {
   if (!estimate?.ok || !(estimate.target?.base > 0)) return null
@@ -1605,15 +1605,17 @@ export function sanityCheck(estimate, context = {}) {
 
   // 2 — against fair value, which uses a different method on the same data.
   // Two independent routes disagreeing by this much means one of them is broken.
-  if (fairValue?.low > 0 && fairValue?.high > 0) {
-    const fvMid = (fairValue.low + fairValue.high) / 2
-    const r = mid / fvMid
+  // `fairValue` is the real headline number (primaryModel's own value, not a
+  // midpoint of how far apart the extrinsic models are — that's a different
+  // question, already surfaced separately as the Fair Value range itself).
+  if (fairValue > 0) {
+    const r = mid / fairValue
     // Tighter than the price check on purpose. Fair value and the estimate run
     // different methods over the SAME statements, so they should broadly agree;
     // price can legitimately sit far from both. SBIN sat at 0.60 of fair value
     // — inside a 0.4 threshold and still plainly wrong — which is what set this.
     if (r > 2 || r < 0.65) issues.push({ severity: 'medium', kind: 'fair-value',
-      note: `Fair value says ${Math.round(fvMid)}, this estimate says ${Math.round(mid)} — ` +
+      note: `Fair value says ${Math.round(fairValue)}, this estimate says ${Math.round(mid)} — ` +
             (r < 1
               ? 'the market has been paying less than the numbers suggest, and this reflects that.'
               : 'this projects more than the current numbers alone support.') })

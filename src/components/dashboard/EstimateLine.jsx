@@ -21,6 +21,7 @@ import { useEstimate } from '../../store/useEstimate.js'
  */
 export default function EstimateLine({ currency, state, which = 'market' }) {
   const [open, setOpen] = useState(false)
+  const [showMultipleSteps, setShowMultipleSteps] = useState(false)
 
   // One source of truth with ValuationPanel: the same hook resolves guidance,
   // applies stored revisions and fetches peers, so the dashboard line and the
@@ -110,6 +111,25 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
                     pct={est.marginPct != null ? `${est.marginPct}%` : null} />
           <BasisRow label="Multiple" value={est.multipleLabel}
                     pct={isJustified ? `${est.multiples.base}×` : `${est.multiples.low}–${est.multiples.high}×`} />
+          {/* Collapsed by default — this line is meant to stay crisp — but the
+              anchor -> returns/growth-adjustment derivation already exists
+              (multipleSteps) and answers "why this center, not the range's
+              edge" without a trip to Valuation Detail for whoever taps it. */}
+          {est.multipleSteps?.length > 0 && (
+            <span className="block">
+              <button onClick={e => { e.stopPropagation(); setShowMultipleSteps(v => !v) }}
+                className="text-[10px] text-accent hover:text-accent-light">
+                {showMultipleSteps ? '▲' : '▼'} why this multiple
+              </button>
+              {showMultipleSteps && (
+                <span className="block mt-0.5 space-y-0.5">
+                  {est.multipleSteps.map((s, i) => (
+                    <span key={i} className="block text-[10px] text-slate-500">{s}</span>
+                  ))}
+                </span>
+              )}
+            </span>
+          )}
           {est.growthAlternatives?.length > 0 && est.growthSpreadPts >= 5 && (
             <span className="block text-[11px] text-slate-500">
               Other bases: {est.growthAlternatives.map(a => `${a.pct}% ${a.label}`).join(' · ')}
