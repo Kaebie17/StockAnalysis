@@ -15,7 +15,7 @@ import { queuePush } from '../sync/sync.js'
 import { useSync } from '../sync/SyncProvider.jsx'
 import { mergeByYear } from '../engine/reconstruct.js'
 import { listRevisions } from '../utils/db.js'
-import { fetchPeers } from '../api/peersClient.js'
+import { fetchPeers, clearPeersCache } from '../api/peersClient.js'
 import { getRiskFreeRate } from '../api/riskFreeClient.js'
 import { getEquityRiskPremium } from '../api/erpClient.js'
 import { getAiKey } from '../utils/aiKey.js'
@@ -548,6 +548,31 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_STAGE', stage, valuation, marketExpectation })
   }, [state])
 
+  // Re-fetch peers on demand (rather than waiting for the next ticker load)
+  // — used after PeerSelectModal finishes warming some peer tickers'
+  // IndexedDB cache, so their real EV/Revenue/EV/FCF/EV/EBITDA (see
+  // peersClient.js's enrichFromCache) reach the live valuation/market-
+  // expectation numbers immediately instead of only on the next visit.
+  // clearPeersCache() forces fetchPeers() past its own 30-min in-memory
+  // cache; the underlying /api/yahoo?endpoint=peers call itself is still
+  // CDN-cached server-side, so this doesn't add a real new Yahoo hit.
+  const refreshPeers = useCallback(async () => {
+    if (!state.ticker || !state.data) return
+    clearPeersCache()
+    const peers = await fetchPeers(state.ticker)
+    const assumptions = { ...state.assumptions, peers }
+    const valuation = runValuation(state.data, state.ratioResult, state.stage, state.sectorType, assumptions)
+    const marketExpectation = runMarketExpectation(state.data, state.ratioResult, state.stage, state.sectorType, state.meAssumptions, {
+      liveRiskFree: assumptions.liveRiskFree ?? null,
+      liveErp: assumptions.liveErp ?? null,
+      beta: assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
+      betaMeta: assumptions.betaMeta ?? null,
+      market: assumptions.market ?? 'IN',
+      peers,
+    })
+    dispatch({ type: 'RECALC', payload: { valuation, marketExpectation, assumptions } })
+  }, [state])
+
   // Merge a single pasted table (income/balance/cashflow) into current data.
   // Pasted years that overlap Yahoo's years get added as cross-source fill
   // for any field Yahoo was missing; new years extend history. Pass
@@ -641,7 +666,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, refreshPrice, refreshPriceHistory
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, refreshPrice, refreshPriceHistory, refreshPeers
     }}>
       {children}
     </AppContext.Provider>

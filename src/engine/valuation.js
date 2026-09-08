@@ -149,17 +149,23 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     results.pe = { value: r.eps * targetPe, note, tier: peBand ? TIER.DERIVED : TIER.ASSUMED }
   }
 
-  // ── EV/EBITDA ── sector-median multiple as anchor (peer EV/EBITDA data
-  // isn't fetched — see sectorEvEbDefault above) ────────────────────────────
+  // ── EV/EBITDA ── real peer median first, sector-median table otherwise —
+  // same two-tier shape as the P/B block below. Peer EV/EBITDA used to be
+  // unfetchable at all (Yahoo's batched quote() call doesn't carry it), but
+  // peersClient.js's enrichFromCache() now supplies it for free whenever a
+  // peer ticker has already been analyzed in this app (its full financials
+  // are already in this browser's IndexedDB from that analysis) ───────────
   if (isApplicable('evEbitda', modelMeta) && r.ebitda > 0 && r.shares && r.totalDebt != null) {
-    const impliedEV = r.ebitda * sectorEvEb
+    const evEbBand = peerBand(peers, 'evEbitda')
+    const targetEvEb = evEbBand?.median ?? sectorEvEb
+    const impliedEV = r.ebitda * targetEvEb
     const impliedEq = impliedEV + r.cash - r.totalDebt
     const perShare  = impliedEq / r.shares
     if (perShare > 0) {
-      // Always ASSUMED today — peer EV/EBITDA isn't fetched at all (see the
-      // comment on sectorEvEbDefault above), so this model has no DERIVED
-      // path to take yet.
-      results.evEbitda = { value: perShare, note: `EBITDA × ${sectorEvEb.toFixed(1)}× sector median EV/EBITDA`, tier: TIER.ASSUMED }
+      const note = evEbBand
+        ? `EBITDA × peer median ${targetEvEb.toFixed(1)}× EV/EBITDA (${evEbBand.count} peers)`
+        : `EBITDA × ${targetEvEb.toFixed(1)}× sector median EV/EBITDA`
+      results.evEbitda = { value: perShare, note, tier: evEbBand ? TIER.DERIVED : TIER.ASSUMED }
     }
   }
 
@@ -202,20 +208,24 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     }
   }
 
-  // ── P/S ── sector-median EV/Sales as anchor (peer EV/Sales data isn't
-  // fetched — same reasoning as EV/EBITDA above) ────────────────────────────
+  // ── P/S ── real peer median EV/Revenue first, sector-median EV/Sales
+  // table otherwise — same fix as EV/EBITDA above, same peersClient.js
+  // cache-derived source (enrichFromCache's evRevenue field). ─────────────
   // No netMargin gate: P/S is weighted specifically for PRE_REVENUE/GROWTH
   // stages (stage.js) precisely because those companies' earnings aren't
   // usable yet — gating this model on positive margin would disqualify the
   // exact companies it exists to serve.
   if (isApplicable('ps', modelMeta) && r.revenue > 0 && r.shares && r.totalDebt != null) {
-    const impliedEV = r.revenue * sectorPs
+    const psBand = peerBand(peers, 'evRevenue')
+    const targetPs = psBand?.median ?? sectorPs
+    const impliedEV = r.revenue * targetPs
     const impliedEq = impliedEV + r.cash - r.totalDebt
     const perShare  = impliedEq / r.shares
     if (perShare > 0) {
-      // Always ASSUMED today — same reason as EV/EBITDA above, no peer
-      // EV/Sales data is fetched, so this model always falls to the table.
-      results.ps = { value: perShare, note: `Revenue × ${sectorPs.toFixed(1)}× sector median EV/Sales`, tier: TIER.ASSUMED }
+      const note = psBand
+        ? `Revenue × peer median ${targetPs.toFixed(1)}× EV/Sales (${psBand.count} peers)`
+        : `Revenue × ${targetPs.toFixed(1)}× sector median EV/Sales`
+      results.ps = { value: perShare, note, tier: psBand ? TIER.DERIVED : TIER.ASSUMED }
     }
   }
 

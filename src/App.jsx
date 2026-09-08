@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { AppProvider, useApp } from './store/AppContext.jsx'
 import Header from './components/dashboard/Header.jsx'
 import SummaryStrip from './components/dashboard/SummaryStrip.jsx'
@@ -12,18 +12,62 @@ import EmptyState from './components/dashboard/EmptyState.jsx'
 import DataGapBanner from './components/dashboard/DataGapBanner.jsx'
 import GapFillModal from './components/dashboard/GapFillModal.jsx'
 import AddHistoryModal from './components/dashboard/AddHistoryModal.jsx'
+import PeerSelectModal from './components/dashboard/PeerSelectModal.jsx'
 import ScoringStudio from './components/studio/ScoringStudio.jsx'
 import MoatQualityPanel from './components/dashboard/MoatQualityPanel.jsx'
 import BackupControls from './components/BackupControls.jsx'
 import PositionFab from './components/dashboard/PositionFab.jsx'
 import PortfolioNews from './components/dashboard/PortfolioNews.jsx'
 
+// peerBand()'s own minSamples floor (peerBands.js) — the auto-open trigger
+// below tracks the same threshold peer-tier logic actually needs, not an
+// independently-chosen number.
+const MIN_PEERS_FOR_BAND = 3
+
 function Dashboard() {
-  const { state, load, applyPastedTable, dismissGap } = useApp()
+  const { state, load, applyPastedTable, dismissGap, refreshPeers } = useApp()
   const [expanded, setExpanded] = useState(null)
   const [studioOpen, setStudioOpen] = useState(false)
   const [gapFillOpen, setGapFillOpen] = useState(false)
   const [addHistoryOpen, setAddHistoryOpen] = useState(false)
+  const [peerModalOpen, setPeerModalOpen] = useState(false)
+  // Which ticker the auto-open has already fired (or been dismissed) for —
+  // without this, closing the modal with coverage still below the floor
+  // (e.g. the user Skipped, or some loads failed) would immediately reopen
+  // it on the very next render, since the trigger condition is still true.
+  const autoOpenedFor = useRef(null)
+
+  const peers = state.assumptions?.peers || []
+  const availablePeerCount = peers.filter(p => p.cached).length
+  // Only meaningful when the floor is actually reachable — a stock with
+  // fewer than 3 total peer candidates can never clear peerBand()'s
+  // minSamples floor no matter how many get loaded, so auto-opening every
+  // single visit for something that can't be fixed would just be
+  // repeatedly interrupting for nothing. That case declines gracefully
+  // (no peer-tier multiple, same as any other model with real inputs it
+  // doesn't have) rather than nagging.
+  const floorReachable = peers.length >= MIN_PEERS_FOR_BAND
+  const belowPeerFloor = floorReachable && availablePeerCount < MIN_PEERS_FOR_BAND
+  const hasMoreToLoad = peers.length > availablePeerCount
+
+  // Auto-opens once per ticker while peer coverage is genuinely too thin
+  // for peerBand() to use at all AND loading more could actually fix that.
+  // Once 3+ peers are available (from this app's organic use, a prior
+  // warming session, or completing this modal), it stops auto-opening on
+  // later visits — see the reopenable button rendered alongside
+  // DataGapBanner below instead.
+  useEffect(() => {
+    if (!state.ticker || peers.length === 0) return
+    if (belowPeerFloor && autoOpenedFor.current !== state.ticker) {
+      autoOpenedFor.current = state.ticker
+      setPeerModalOpen(true)
+    }
+  }, [state.ticker, peers.length, belowPeerFloor])
+
+  const closePeerModal = (anyLoaded) => {
+    setPeerModalOpen(false)
+    if (anyLoaded) refreshPeers()
+  }
 
   const handleExpand = (panel) => {
     const next = expanded === panel ? null : panel
@@ -55,6 +99,18 @@ function Dashboard() {
                       onFix={() => setGapFillOpen(true)}
                     />
                   </div>
+                  {/* Shown whenever there's a peer left to warm, regardless of
+                      whether the auto-open floor was ever reached — covers
+                      "already sufficient, but more would still help" and
+                      "floor unreachable, but individual peers still useful"
+                      alike, without repeatedly interrupting (see the effect
+                      above for the one-time auto-open case). */}
+                  {hasMoreToLoad && (
+                    <button onClick={() => setPeerModalOpen(true)}
+                      className="text-[11px] text-slate-500 hover:text-accent">
+                      🔗 {availablePeerCount}/{peers.length} peers available — add more
+                    </button>
+                  )}
                   <div id="panel-valuation">
                     <ValuationPanel open={expanded === 'valuation'} onClose={() => setExpanded(null)} />
                   </div>
@@ -121,6 +177,12 @@ function Dashboard() {
         onClose={() => setAddHistoryOpen(false)}
         ticker={state.ticker}
         onApplyAll={applyPastedTable}
+      />
+
+      <PeerSelectModal
+        open={peerModalOpen}
+        onClose={closePeerModal}
+        ticker={state.ticker}
       />
 
     </div>

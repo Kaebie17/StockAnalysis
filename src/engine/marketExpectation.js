@@ -44,7 +44,7 @@ import { TIER } from './methodologyTier.js'
 export function getDefaultAssumptions(stage, sectorType, ratios, data = null, opts = {}) {
   // Terminal Sales multiple — what the market will value the company at maturity
   // Based on sector median EV/Sales for mature companies in that sector
-  const salesResult = getSalesMultiple(sectorType, ratios, data)
+  const salesResult = getSalesMultiple(sectorType, ratios, data, opts.peers)
   const terminalSalesMultiple = salesResult.value
 
   // Terminal PE multiple — what earnings multiple a mature company deserves
@@ -78,7 +78,7 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   // all). Now anchors on the stock's own actual FCF conversion when a usable
   // one exists, else the sector median table (same two-tier pattern as the
   // Sales/P/E multiples above).
-  const fcfResult = getFcfMultiple(sectorType, ratios, data)
+  const fcfResult = getFcfMultiple(sectorType, ratios, data, opts.peers)
   const terminalFcfMultiple = fcfResult.value
 
   return {
@@ -102,9 +102,9 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
     },
     // Rationale strings shown in ⓘ tooltips
     rationale: {
-      terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple, salesResult.source),
-      terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple,    peResult.source, peResult.peerCount),
-      terminalFcfMultiple:   getMultipleRationale('fcf',   sectorType, terminalFcfMultiple,   fcfResult.source),
+      terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple, salesResult.source, salesResult.peerCount),
+      terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple,    peResult.source,    peResult.peerCount),
+      terminalFcfMultiple:   getMultipleRationale('fcf',   sectorType, terminalFcfMultiple,   fcfResult.source,   fcfResult.peerCount),
       discountRate:           getDiscountRationale(stage, discountRate, capm),
       enterpriseDiscountRate: getWaccRationale(enterpriseDiscountRate, waccResult, discountRate),
       horizon:               'Standard investment horizon of 10 years. Long enough to smooth out cycles, short enough to be meaningful. Change to 5 years for faster-moving sectors.'
@@ -112,7 +112,16 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   }
 }
 
-function getSalesMultiple(sectorType, ratios, data) {
+function getSalesMultiple(sectorType, ratios, data, peers) {
+  // Real peer-median EV/Revenue first — same reasoning as getPeMultiple's
+  // peer tier above: not self-referential to what the market is currently
+  // pricing THIS stock's own growth at. Only populated on a peer when that
+  // ticker has been analyzed before (peersClient.js's enrichFromCache) —
+  // peerBand() already returns null below its own minSamples floor, so
+  // this simply falls through when too few peers are covered yet.
+  const pb = peerBand(peers, 'evRevenue')
+  if (pb?.median > 0) return { value: Math.round(pb.median * 2) / 2, tier: TIER.DERIVED, source: 'peer', peerCount: pb.count }
+
   // Real EV/Revenue, used as-is (rounded to the nearest 0.5) — never
   // clamped to a band. This used to clamp to [1.5, 8] while still labeling
   // the (silently substituted) boundary value DERIVED, as if it were the
@@ -163,7 +172,12 @@ function getPeMultiple(sectorType, ratios, data, peers) {
 // above), sector median EV/FCF table (sectorMultiples.js) otherwise. Was
 // previously a single flat 18x for every sector alike, with no per-company
 // anchor tier at all.
-function getFcfMultiple(sectorType, ratios, data) {
+function getFcfMultiple(sectorType, ratios, data, peers) {
+  // Real peer-median EV/FCF first — same reasoning as getSalesMultiple's
+  // peer tier above.
+  const pb = peerBand(peers, 'evFcf')
+  if (pb?.median > 0) return { value: Math.round(pb.median), tier: TIER.DERIVED, source: 'peer', peerCount: pb.count }
+
   const fcfYield = ratios?.fcfYield?.value
   const actual = (fcfYield != null && fcfYield > 0) ? 100 / fcfYield : null
   if (actual != null && actual > 0 && actual < 50) return { value: Math.round(actual), tier: TIER.DERIVED, source: 'own' }
