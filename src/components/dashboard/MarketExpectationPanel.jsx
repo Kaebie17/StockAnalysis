@@ -254,6 +254,12 @@ export default function MarketExpectationPanel({ open, onClose }) {
     // assumption the user didn't touch, silently reverting them.
     const liveBase = {
       discountRate: state.marketExpectation?.assumptions?.discountRate,
+      // Without this, touching any slider here recomputed enterpriseDiscountRate
+      // via getDefaultAssumptions()'s own computeWacc() call — but this call
+      // site passes no opts (beta/ratioResult), so that recompute silently fell
+      // back to Yahoo's reported beta instead of this app's live regression,
+      // same class of bug discountRate above was already guarded against.
+      enterpriseDiscountRate: state.marketExpectation?.assumptions?.enterpriseDiscountRate,
       terminalSalesMultiple: state.marketExpectation?.assumptions?.terminalSalesMultiple,
       terminalPeMultiple: state.marketExpectation?.assumptions?.terminalPeMultiple,
       terminalFcfMultiple: state.marketExpectation?.assumptions?.terminalFcfMultiple,

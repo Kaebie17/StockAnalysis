@@ -21,6 +21,7 @@
 import { SECTOR_TYPES } from './stage.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { sectorPe, sectorEvSales, sectorEvFcf, financialPe, financialSales } from './sectorMultiples.js'
+import { peerBand } from './peerBands.js'
 import { reverseDcfGrowth, computeWacc } from './valuation.js'
 import { TIER } from './methodologyTier.js'
 
@@ -47,7 +48,7 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   const terminalSalesMultiple = salesResult.value
 
   // Terminal PE multiple — what earnings multiple a mature company deserves
-  const peResult = getPeMultiple(sectorType, ratios, data)
+  const peResult = getPeMultiple(sectorType, ratios, data, opts.peers)
   const terminalPeMultiple = peResult.value
 
   const market = opts.market ?? 'IN'
@@ -101,9 +102,9 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
     },
     // Rationale strings shown in ⓘ tooltips
     rationale: {
-      terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple, salesResult.tier),
-      terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple,    peResult.tier),
-      terminalFcfMultiple:   getMultipleRationale('fcf',   sectorType, terminalFcfMultiple,   fcfResult.tier),
+      terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple, salesResult.source),
+      terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple,    peResult.source, peResult.peerCount),
+      terminalFcfMultiple:   getMultipleRationale('fcf',   sectorType, terminalFcfMultiple,   fcfResult.source),
       discountRate:           getDiscountRationale(stage, discountRate, capm),
       enterpriseDiscountRate: getWaccRationale(enterpriseDiscountRate, waccResult, discountRate),
       horizon:               'Standard investment horizon of 10 years. Long enough to smooth out cycles, short enough to be meaningful. Change to 5 years for faster-moving sectors.'
@@ -122,7 +123,7 @@ function getSalesMultiple(sectorType, ratios, data) {
   // the reading is too extreme to trust as a proxy for what this company
   // will trade at once mature, rather than distorting the real number.
   const actual = ratios?.evRevenue?.value
-  if (actual != null && actual > 0 && actual < 20) return { value: Math.round(actual * 2) / 2, tier: TIER.DERIVED }
+  if (actual != null && actual > 0 && actual < 20) return { value: Math.round(actual * 2) / 2, tier: TIER.DERIVED, source: 'own' }
 
   // Sector median, from the SAME shared table valuation.js uses. Financial
   // sub-types read from sectorMultiples.js's own FINANCIAL_SALES_BY_SECTOR_TYPE
@@ -132,61 +133,78 @@ function getSalesMultiple(sectorType, ratios, data) {
   // two in sync if either changed. Both branches here are ASSUMED — flat
   // asserted numbers, no external anchor.
   const isFinancial = [SECTOR_TYPES.INSURANCE, SECTOR_TYPES.BANK, SECTOR_TYPES.NBFC].includes(sectorType)
-  return { value: isFinancial ? financialSales(sectorType) : sectorEvSales(data), tier: TIER.ASSUMED }
+  return { value: isFinancial ? financialSales(sectorType) : sectorEvSales(data), tier: TIER.ASSUMED, source: 'sector' }
 }
 
-function getPeMultiple(sectorType, ratios, data) {
+// P/E gets a third, PREFERRED tier the other two multiples can't: real peer
+// data. Peer median P/E is real (same peerBand() mechanism valuation.js's
+// own P/E model already uses) AND, unlike this stock's own current P/E,
+// not self-referential to what the market is currently pricing THIS
+// specific stock's growth at — a peer group's median is contaminated by
+// sector-wide sentiment at most, not by this one stock's own priced-in
+// expectations. Ranked above "own current P/E" for that reason. Sales and
+// FCF stay two-tier (own -> sector): peer data for EV/Revenue or EV/FCF
+// isn't fetched anywhere in this app (see valuation.js's own comment on
+// sectorEvEbDefault) — a real data-availability gap, not a design choice,
+// so they don't get a fabricated third tier pretending otherwise.
+function getPeMultiple(sectorType, ratios, data, peers) {
+  const peBand = peerBand(peers, 'forwardPe') || peerBand(peers, 'pe')
+  if (peBand?.median > 0) return { value: Math.round(peBand.median), tier: TIER.DERIVED, source: 'peer', peerCount: peBand.count }
+
   const actual = ratios?.pe?.value
-  if (actual != null && actual > 0 && actual < 60) return { value: Math.round(actual), tier: TIER.DERIVED }
+  if (actual != null && actual > 0 && actual < 60) return { value: Math.round(actual), tier: TIER.DERIVED, source: 'own' }
   const isFinancial = [SECTOR_TYPES.INSURANCE, SECTOR_TYPES.BANK, SECTOR_TYPES.NBFC].includes(sectorType)
-  return { value: isFinancial ? financialPe(sectorType) : sectorPe(data), tier: TIER.ASSUMED }
+  return { value: isFinancial ? financialPe(sectorType) : sectorPe(data), tier: TIER.ASSUMED, source: 'sector' }
 }
 
-// EV/FCF anchor — same two-tier pattern as Sales/P/E above: the stock's own
+// EV/FCF anchor — same two-tier pattern as Sales above: the stock's own
 // actual FCF conversion first (via fcfYield, FCF/MarketCap — the same rough,
-// not EV-adjusted, precision the "actual" tier already has for Sales/P/E
+// not EV-adjusted, precision the "own" tier already has for Sales/P/E
 // above), sector median EV/FCF table (sectorMultiples.js) otherwise. Was
 // previously a single flat 18x for every sector alike, with no per-company
 // anchor tier at all.
 function getFcfMultiple(sectorType, ratios, data) {
   const fcfYield = ratios?.fcfYield?.value
   const actual = (fcfYield != null && fcfYield > 0) ? 100 / fcfYield : null
-  if (actual != null && actual > 0 && actual < 50) return { value: Math.round(actual), tier: TIER.DERIVED }
-  return { value: sectorEvFcf(data), tier: TIER.ASSUMED }
+  if (actual != null && actual > 0 && actual < 50) return { value: Math.round(actual), tier: TIER.DERIVED, source: 'own' }
+  return { value: sectorEvFcf(data), tier: TIER.ASSUMED, source: 'sector' }
 }
 
-// Two genuinely different claims depending on tier, not one sentence trying
-// to cover both: DERIVED means this IS the company's own current multiple
-// (real, measured, with the growth-premium caveat that implies); ASSUMED
-// means no usable current multiple existed and this sector's typical range
-// was used instead (no such caveat applies — it was never anchored to this
-// company's own trading data in the first place). Showing the DERIVED
-// caveat text alongside ASSUMED's "typical for this sector" framing (or
-// vice versa) previously left it unclear which source actually produced
-// the number on screen.
-function getMultipleRationale(type, sectorType, value, tier) {
-  const own = tier === TIER.DERIVED
+// Three genuinely different claims depending on source, not one sentence
+// trying to cover all of them: 'peer' means a real peer-group median (the
+// least circular real anchor available); 'own' means this company's own
+// current multiple (real, but carries the growth-premium caveat below);
+// 'sector' means no usable real anchor existed and this sector's typical
+// range was used instead (no caveat applies — it was never anchored to
+// real trading data in the first place). Mixing any two of these framings
+// on screen at once previously left it unclear which source actually
+// produced the number.
+function getMultipleRationale(type, sectorType, value, source, peerCount) {
   const growthCaveat = ' If today\'s multiple is elevated because the market already expects high growth, using it as the maturity multiple too can understate how much growth is really being priced in.'
+  const label = type === 'sales' ? 'Sales' : type === 'fcf' ? 'FCF' : 'P/E'
+  const metricName = type === 'sales' ? 'EV/Revenue' : type === 'fcf' ? 'EV/FCF' : 'P/E'
 
+  if (source === 'peer') {
+    return `${value}× ${label} is the MEDIAN current ${metricName} across ${peerCount} real peer compan${peerCount === 1 ? 'y' : 'ies'}, used as a proxy for what this company will trade at once mature. ` +
+      `Preferred over this company's own current multiple because a peer median isn't as directly inflated by growth expectations priced into this ONE stock specifically — though a sector-wide re-rating can still affect it.`
+  }
+  if (source === 'own') {
+    return `${value}× ${label} is this company's OWN current ${metricName}, used as a proxy for what it will trade at once mature (no peer data was available to use the less circular peer-median anchor instead).${growthCaveat}`
+  }
+  // source === 'sector'
   if (type === 'sales') {
-    return own
-      ? `${value}× Sales is this company's OWN current EV/Revenue, used as a proxy for what the market will value its revenue at once it matures.${growthCaveat}`
-      : `${value}× Sales is the assumed terminal valuation multiple for this sector (no usable current EV/Revenue to anchor on) — what the market will value this company's revenue at once it matures. ` +
-        `Lower for asset-heavy/cyclical sectors (1.5-2×), higher for tech/consumer (4-6×). ` +
-        `Increase if you believe the company will command a premium at maturity; decrease for commoditised businesses.`
+    return `${value}× Sales is the assumed terminal valuation multiple for this sector (no usable current EV/Revenue or peer data to anchor on) — what the market will value this company's revenue at once it matures. ` +
+      `Lower for asset-heavy/cyclical sectors (1.5-2×), higher for tech/consumer (4-6×). ` +
+      `Increase if you believe the company will command a premium at maturity; decrease for commoditised businesses.`
   }
   if (type === 'fcf') {
-    return own
-      ? `${value}× FCF is this company's OWN current EV/FCF (from its measured FCF yield), used as a proxy for what the market will pay per rupee of free cash flow at maturity.${growthCaveat}`
-      : `${value}× FCF is the assumed terminal FCF multiple for this sector (no usable current FCF yield to anchor on) — what the market will pay per rupee of free cash flow at maturity. ` +
-        `Asset-light, high-conversion sectors (tech, FMCG, pharma) trade richest; capital-intensive sectors (telecom, power, energy) trade lowest. ` +
-        `Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.`
+    return `${value}× FCF is the assumed terminal FCF multiple for this sector (no usable current FCF yield or peer data to anchor on) — what the market will pay per rupee of free cash flow at maturity. ` +
+      `Asset-light, high-conversion sectors (tech, FMCG, pharma) trade richest; capital-intensive sectors (telecom, power, energy) trade lowest. ` +
+      `Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.`
   }
-  return own
-    ? `${value}× P/E is this company's OWN current P/E, used as a proxy for what it will trade at once mature.${growthCaveat}`
-    : `${value}× P/E is the assumed terminal earnings multiple for this sector (no usable current P/E to anchor on). ` +
-      `Reflects what the market typically pays for ₹1 of mature earnings in this sector. ` +
-      `Increase for high-quality compounders; decrease for cyclical or capital-intensive businesses.`
+  return `${value}× P/E is the assumed terminal earnings multiple for this sector (no usable current P/E or peer data to anchor on). ` +
+    `Reflects what the market typically pays for ₹1 of mature earnings in this sector. ` +
+    `Increase for high-quality compounders; decrease for cyclical or capital-intensive businesses.`
 }
 
 function getDiscountRationale(stage, rate, capm) {
@@ -317,16 +335,24 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
     betaMeta: opts.betaMeta ?? null,
     market: opts.market ?? 'IN',
     ratioResult: r,   // computeWacc needs the FULL ratioResult (marketCap/totalDebt/interest/cash), not just .ratios
+    peers: opts.peers ?? [],   // real peer data for getPeMultiple's peer-median tier
   })
   const assumptions = { ...defaults, ...overrides }
   const { terminalSalesMultiple, terminalPeMultiple, discountRate, horizon } = assumptions
-  // A manual override is one shared "required return" concept from the
-  // user's side (the panel's single discount-rate slider) — when set, it
-  // replaces BOTH rates uniformly. Left un-overridden, the two deliberately
-  // differ: discountRate (Ke) for the equity-target Earnings variant,
-  // enterpriseDiscountRate (WACC) for the enterprise-value-target Sales/
-  // FCF/Reverse-DCF variants — see getDefaultAssumptions.
-  const enterpriseDiscountRate = overrides.discountRate ?? defaults.enterpriseDiscountRate
+  // A manual discountRate override is one shared "required return" concept
+  // from the user's side (the panel's single discount-rate slider) — when
+  // set, it replaces BOTH rates uniformly. Otherwise prefer an explicit
+  // enterpriseDiscountRate override when the CALLER supplies one (e.g.
+  // MarketExpectationPanel.jsx's liveBase, preserving the already-correctly
+  // -live-computed WACC across a local "what if" edit) before falling to a
+  // fresh default recompute — call sites that don't pass opts.beta/
+  // opts.ratioResult would otherwise silently recompute against Yahoo's
+  // fallback beta instead of this app's live regression. Left fully
+  // un-overridden, the two deliberately differ: discountRate (Ke) for the
+  // equity-target Earnings variant, enterpriseDiscountRate (WACC) for the
+  // enterprise-value-target Sales/FCF/Reverse-DCF variants — see
+  // getDefaultAssumptions.
+  const enterpriseDiscountRate = overrides.discountRate ?? overrides.enterpriseDiscountRate ?? defaults.enterpriseDiscountRate
 
   const price     = r?.price
   const marketCap = r?.marketCap

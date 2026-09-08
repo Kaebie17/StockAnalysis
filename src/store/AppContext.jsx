@@ -89,6 +89,7 @@ function reducer(s, a) {
         beta: assumptions.beta ?? s.ratioResult?.ratios?.beta?.value ?? null,
         betaMeta: assumptions.betaMeta ?? null,
         market: a.market,
+        peers: assumptions.peers ?? [],
       }
       const marketExpectation = runMarketExpectation(s.data, s.ratioResult, s.stage, s.sectorType, s.meAssumptions, meOpts)
       return { ...s, assumptions, valuation, marketExpectation }
@@ -112,6 +113,7 @@ function reducer(s, a) {
         beta: assumptions.beta ?? s.ratioResult?.ratios?.beta?.value ?? null,
         betaMeta: assumptions.betaMeta ?? null,
         market: assumptions.market ?? 'IN',
+        peers: assumptions.peers ?? [],
       }
       const marketExpectation = runMarketExpectation(s.data, s.ratioResult, s.stage, s.sectorType, s.meAssumptions, meOpts)
       return { ...s, assumptions, valuation, marketExpectation, computedBeta: a.betaMeta ?? null }
@@ -427,6 +429,7 @@ export function AppProvider({ children }) {
       beta: assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
       betaMeta: assumptions.betaMeta ?? null,
       market: assumptions.market ?? 'IN',
+      peers: assumptions.peers ?? [],
     }
     const me            = runMarketExpectation(state.data, state.ratioResult, state.stage, state.sectorType, meAssumptions, meOpts)
     dispatch({ type: 'RECALC', payload: { valuation, quality, marketExpectation: me, assumptions, scoreWeights: weights, meAssumptions } })
@@ -540,6 +543,7 @@ export function AppProvider({ children }) {
       beta: state.assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
       betaMeta: state.assumptions.betaMeta ?? null,
       market: state.assumptions.market ?? 'IN',
+      peers: state.assumptions.peers ?? [],
     })
     dispatch({ type: 'SET_STAGE', stage, valuation, marketExpectation })
   }, [state])
