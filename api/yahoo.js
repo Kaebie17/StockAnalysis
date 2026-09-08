@@ -83,51 +83,15 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // ── PEERS — similar companies + their multiples ─────────────────────────
-    // /api/yahoo?endpoint=peers&ticker=BAJFINANCE.NS
-    //
-    // Own-history multiples are blind to a SECTOR-wide re-rating: if every NBFC
-    // de-rates, this company's own past says nothing about it and the estimate
-    // keeps calling the stock cheap all the way down. Peers are the second
-    // anchor that catches it.
-    if (endpoint === 'peers') {
-      let symbols = []
-      try {
-        const rec = await yf.recommendationsBySymbol(ticker)
-        const list = Array.isArray(rec) ? rec[0] : rec
-        symbols = (list?.recommendedSymbols || []).map(r => r.symbol).filter(Boolean).slice(0, 8)
-      } catch (e) {
-        console.info('[yahoo] peers unavailable:', e?.message)
-      }
-      if (symbols.length === 0) return res.status(200).json({ peers: [], error: 'no_peers' })
-
-      // validateResult belongs in the third (module) options argument, not the
-      // second (query) one — passed there it fails quote()'s own schema check
-      // ("should NOT have additional properties") and throws, taking this
-      // endpoint down with a 500 on every call.
-      const rows = await yf.quote(symbols, {}, { validateResult: false })
-      const list = Array.isArray(rows) ? rows : [rows]
-      const peers = list
-        // A peer with no P/E (loss-making, common for growth-stage names) can
-        // still have a perfectly usable P/B — requiring trailingPE dropped
-        // that peer from the list entirely, losing its P/B too.
-        .filter(q => q?.symbol && (q.trailingPE > 0 || q.priceToBook > 0))
-        .map(q => ({
-          symbol: q.symbol, name: q.shortName || q.longName || q.symbol,
-          pe: q.trailingPE ?? null, forwardPe: q.forwardPE ?? null,
-          pb: q.priceToBook ?? null,
-          marketCap: q.marketCap ?? null,
-        }))
-      res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400')
-      return res.status(200).json({ peers })
-    }
-
     if (endpoint === 'quotes') {
       const symbols = String(req.query.tickers || '')
         .split(',').map(s => s.trim()).filter(Boolean).slice(0, 50)
       if (symbols.length === 0) return res.status(400).json({ error: 'Missing tickers' })
 
-      // Same fix as 'peers': validateResult goes in the third argument.
+      // validateResult belongs in the third (module) options argument, not the
+      // second (query) one — passed there it fails quote()'s own schema check
+      // ("should NOT have additional properties") and throws, taking this
+      // endpoint down with a 500 on every call.
       const rows = await yf.quote(symbols, {}, { validateResult: false })
       const list = Array.isArray(rows) ? rows : [rows]
       const out = {}

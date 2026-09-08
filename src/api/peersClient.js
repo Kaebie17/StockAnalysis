@@ -7,103 +7,182 @@
  * "the market changed its mind about this company" from "…about this industry",
  * and those two have very different odds of reverting.
  *
- * Cached for the session — peer multiples move slowly, and this is called from
- * pages that re-render often.
+ * Candidates come from two automatic sources — NSE's own sectoral index
+ * constituents and this browser's own analysis history in the same sector
+ * (see fetchPeerCandidates below) — never Yahoo's recommendationsBySymbol,
+ * which is effectively empty for Indian tickers. Neither source is cached
+ * across a full session by itself (the server already CDN-caches the NSE
+ * fetch for a day; the own-cache scan is a cheap local IndexedDB read every
+ * time), only the NSE constituent list gets a short in-module cache below,
+ * shared across every stock in the same sector.
  */
 
-import { getCached } from '../utils/db.js'
+import { getCached, listCachedTickers } from '../utils/db.js'
+import { sectorIndexFor } from './marketRegime.js'
 
-const TTL_MS = 30 * 60 * 1000
-const cache = new Map()      // ticker -> { at, peers }
-
-export async function fetchPeers(ticker) {
-  const t = String(ticker || '').trim().toUpperCase()
-  if (!t) return []
-
-  // The 30-min cache covers only the SYMBOL LIST + live P/E/P/B — a real
-  // network call, and genuinely slow-moving (who a company's peers are,
-  // and what they trade at, doesn't change minute to minute). It must NOT
-  // also cover the cache-enrichment step below: that reflects IndexedDB
-  // state that can change at any moment from ANY ticker analysis anywhere
-  // in the app — e.g. warming a peer via PeerSelectModal, or simply
-  // analyzing that ticker directly, minutes ago, unrelated to this stock
-  // entirely. Baking the enrichment into the same 30-min snapshot meant
-  // returning to a ticker shortly after warming (or independently
-  // analyzing) one of its peers could still show that peer as unavailable
-  // for up to half an hour, purely because the SYMBOL list happened to be
-  // cache-hit. Re-enriching is a handful of local IndexedDB reads — no
-  // network cost — so it's always run fresh, regardless of whether the
-  // symbol list came from cache or a live fetch.
-  let basePeers
-  const hit = cache.get(t)
-  if (hit && Date.now() - hit.at < TTL_MS) {
-    basePeers = hit.peers
-  } else {
-    try {
-      const r = await fetch(`/api/yahoo?endpoint=peers&ticker=${encodeURIComponent(t)}`)
-      if (!r.ok) return []
-      const j = await r.json().catch(() => null)
-      basePeers = j?.peers || []
-      cache.set(t, { at: Date.now(), peers: basePeers })
-    } catch {
-      return []      // never breaks the page — the estimate falls back to own history
-    }
-  }
-
-  try {
-    return await enrichFromCache(basePeers)
-  } catch {
-    return basePeers
-  }
-}
-
-// EV/Revenue, EV/FCF and EV/EBITDA need real revenue/EBITDA/FCF/debt/cash
-// — fields Yahoo's batched quote() call above doesn't carry (only
-// pe/forwardPe/pb/marketCap). Those fields only exist on quoteSummary(),
-// which can't be batched, so fetching them live would mean one extra
-// Yahoo call PER peer (up to 8) on every single fetch of this endpoint.
-// Used by both marketExpectation.js (Sales/FCF terminal multiples) and
-// valuation.js (EV/EBITDA and P/S extrinsic models) — same gap, same fix,
-// in both files.
-//
-// Reused for free instead: if a peer ticker has ALREADY been analyzed in
-// this app — this stock's own history, or as someone else's peer before —
-// its full financials are already sitting in this browser's IndexedDB
-// (db.js's getCached/setCached), including any richer, longer-history
-// Screener data if it was ever pasted for that ticker (the cache doesn't
-// track source, it just holds whatever's most current). No network call
-// either way: a cache hit reads local IndexedDB; a miss just leaves that
-// one peer without evRevenue/evFcf/evEbitda — peerBand() already filters
-// out missing/non-positive values, so an unresolved peer simply doesn't
-// contribute to that particular median rather than breaking anything.
-// Coverage grows for free as more tickers get analyzed over time —
-// including by deliberately opening a peer ticker once to "warm" it, if
-// you want a specific sector's peer coverage sooner than that (see
-// PeerSelectModal.jsx for the deliberate version of that).
+// EV/Revenue, EV/FCF, EV/EBITDA, P/E and P/B all need each peer's own
+// financials, not just a live quote — and every one of them is read off
+// each peer's OWN cached ratioResult (db.js's getCached/setCached) rather
+// than any live network call. Reused for free: if a peer ticker has
+// ALREADY been analyzed in this app — this stock's own history, or as
+// someone else's peer before — its full financials are already sitting in
+// this browser's IndexedDB, including any richer, longer-history Screener
+// data if it was ever pasted for that ticker (the cache doesn't track
+// source, it just holds whatever's most current). No network call either
+// way: a cache hit reads local IndexedDB; a miss just leaves that one peer
+// without these fields — peerBand() already filters out missing/
+// non-positive values, so an unresolved peer simply doesn't contribute to
+// that particular median rather than breaking anything. Coverage grows for
+// free as more tickers get analyzed over time — including by deliberately
+// opening a peer ticker once to "warm" it, if you want a specific sector's
+// peer coverage sooner than that (see PeerSelectModal.jsx for the
+// deliberate version of that).
 async function enrichFromCache(peers) {
   return Promise.all(peers.map(async p => {
     try {
       const rec = await getCached(p.symbol)
       // `cached` is whether this ticker has EVER been analyzed in this app
-      // — distinct from whether evRevenue/evFcf/evEbitda actually computed
-      // (a cached record might still lack, say, FCF). PeerSelectModal and
-      // the auto-open trigger both need the former: "is there anything to
-      // gain by loading this peer" is a different question from "did every
+      // — distinct from whether these fields actually computed (a cached
+      // record might still lack, say, FCF). PeerSelectModal and the
+      // auto-open trigger both need the former: "is there anything to gain
+      // by loading this peer" is a different question from "did every
       // multiple resolve."
       if (!rec) return { ...p, cached: false }
       const r = rec.ratioResult
       // r.ev, not a hand-reconstructed marketCap+debt-cash — ratios.js
       // already computes and stores enterprise value on every ratioResult,
       // the same figure the rest of the app trusts; recomputing a parallel
-      // version here risked silently drifting from it.
+      // version here risked silently drifting from it. Same reasoning for
+      // pe/pb: ratios.js already computes them (price ÷ EPS, price ÷ book
+      // value per share) for every analyzed ticker — reading that instead
+      // of a live Yahoo quote means peer P/E and P/B bands need no network
+      // call at all, same as the EV multiples below.
       const evRevenue = (r?.ev > 0 && r.revenue > 0) ? r.ev / r.revenue : null
       const evFcf      = (r?.ev > 0 && r.fcf > 0)     ? r.ev / r.fcf     : null
       const evEbitda    = (r?.ev > 0 && r.ebitda > 0)  ? r.ev / r.ebitda  : null
-      return { ...p, cached: true, evRevenue, evFcf, evEbitda }
+      const pe = r?.ratios?.pe?.value > 0 ? r.ratios.pe.value : null
+      const pb = r?.ratios?.pb?.value > 0 ? r.ratios.pb.value : null
+      return { ...p, cached: true, evRevenue, evFcf, evEbitda, pe, pb }
     } catch {
       return { ...p, cached: false }   // a read failure just leaves this one peer without the extra fields
     }
   }))
 }
 
-export function clearPeersCache() { cache.clear() }
+// NSE Indices Ltd's own sectoral index constituents (api/nseIndices.js) —
+// real, exchange-maintained peer candidates, unlike Yahoo's
+// recommendationsBySymbol (documented weak international coverage,
+// confirmed empty for RELIANCE.NS). Cached by SECTOR SLUG, not by ticker
+// — every stock in the same sector shares the same constituent list, so
+// caching per-parent-ticker would refetch/reparse the identical data for
+// each one. The server (api/nseIndices.js) already caches the raw fetch
+// for a day at the CDN; this just avoids redundant client-side re-fetches
+// of that same cached response within a session.
+const sectorCache = new Map()   // csvSlug -> { at, constituents }
+const SECTOR_TTL_MS = 60 * 60 * 1000   // shorter than the server's day-long cache is fine to keep this simple
+
+export async function fetchSectorConstituents(meta, sectorType, excludeTicker) {
+  const idx = sectorIndexFor(meta, sectorType)
+  // Real, disclosed coverage gap: SECTOR_INDICES only covers ten buckets
+  // (bank, financial services, IT, auto, pharma, metal, fmcg, energy,
+  // realty, media). A stock outside all ten (e.g. telecom) gets nothing
+  // from this source — declines rather than guesses at a mapping.
+  if (!idx?.csvSlug) return []
+
+  const hit = sectorCache.get(idx.csvSlug)
+  let constituents
+  if (hit && Date.now() - hit.at < SECTOR_TTL_MS) {
+    constituents = hit.constituents
+  } else {
+    try {
+      const r = await fetch(`/api/nseIndices?index=${encodeURIComponent(idx.csvSlug)}`)
+      const j = r.ok ? await r.json().catch(() => null) : null
+      constituents = j?.constituents || []
+      sectorCache.set(idx.csvSlug, { at: Date.now(), constituents })
+    } catch {
+      return []
+    }
+  }
+
+  const t = String(excludeTicker || '').trim().toUpperCase()
+  // NSE's CSV symbols are bare (e.g. "BPCL") — this app's convention is
+  // exchange-suffixed (e.g. "BPCL.NS"), same as every other ticker.
+  const mapped = constituents.map(c => ({ symbol: `${c.symbol}.NS`, name: c.name, industry: c.industry }))
+  const withCache = await enrichFromCache(mapped)
+  return withCache.filter(p => p.symbol !== t)
+}
+
+// Every ticker this browser has ever analyzed, matched against the CURRENT
+// stock's sector — the real fallback for the coverage gaps NSE's index CSV
+// (#fetchSectorConstituents above) still has on its own: it only lists
+// NSE-listed names, so a BSE-only comparable in the exact same sector never
+// appears there no matter how thoroughly the user has researched it
+// independently. A stock the user has personally analyzed — under whatever
+// ticker/exchange suffix — gets a real chance to surface as a peer here.
+//
+// Matched on sectorIndexFor's csvSlug (the same fine-grained, ten-bucket
+// classification fetchSectorConstituents uses), not on sectorType — that's
+// a coarse valuation-methodology bucket (checked stage.js directly:
+// STANDARD/BANK/NBFC/INSURANCE/YIELD/HOLDING/REALTY/CYCLICAL/
+// CAPITAL_INTENSIVE), and RELIANCE and an unrelated IT company could both
+// land in STANDARD — matching on it here would flood the list with
+// unrelated names. Both sides must resolve to a KNOWN bucket, so this
+// declines (returns nothing extra) for a sector SECTOR_INDICES doesn't
+// cover at all, same as fetchSectorConstituents — it doesn't guess at a
+// looser match just because the precise one came up empty.
+async function fetchCachedSameSector(meta, sectorType, excludeTicker) {
+  const target = sectorIndexFor(meta, sectorType)
+  if (!target) return []
+
+  const t = String(excludeTicker || '').trim().toUpperCase()
+  let all
+  try {
+    all = await listCachedTickers()
+  } catch {
+    return []
+  }
+
+  const matches = all.filter(rec => {
+    if (rec.symbol === t) return false
+    const recIdx = sectorIndexFor(rec.meta, rec.sectorType)
+    return recIdx?.csvSlug === target.csvSlug
+  })
+
+  const mapped = matches.map(rec => ({ symbol: rec.symbol, name: rec.name, industry: rec.meta?.industry || null }))
+  return enrichFromCache(mapped)
+}
+
+// Merges NSE's real sectoral constituents (#fetchSectorConstituents — the
+// primary source, exchange-maintained and automatic) with this browser's
+// own analysis history in the same sector (#fetchCachedSameSector — covers
+// what NSE's list structurally can't: BSE-only names). Yahoo's
+// recommendationsBySymbol was dropped entirely, not kept as a third
+// best-effort source — confirmed empty for RELIANCE.NS, and the library's
+// own docs say international/small-cap coverage is weak generally, so for
+// this app's actual market (Indian equities) it was never contributing a
+// real candidate; every peer field it used to supply (pe/forwardPe/pb/
+// marketCap) is now read off each cached peer's own ratioResult instead
+// (see enrichFromCache above), so nothing downstream lost real data by
+// dropping it. Every candidate is tagged with which source(s) surfaced it,
+// so PeerSelectModal can show why it's in the list — these are candidates
+// to review, not automatic peers.
+export async function fetchPeerCandidates({ ticker, meta, sectorType } = {}) {
+  const [nse, ownCache] = await Promise.all([
+    fetchSectorConstituents(meta, sectorType, ticker),
+    fetchCachedSameSector(meta, sectorType, ticker),
+  ])
+
+  const bySymbol = new Map()
+  for (const p of nse) bySymbol.set(p.symbol, { ...p, sources: ['nse-index'] })
+  for (const p of ownCache) {
+    const existing = bySymbol.get(p.symbol)
+    if (existing) {
+      bySymbol.set(p.symbol, { ...existing, ...p, sources: [...existing.sources, 'own-cache'] })
+    } else {
+      bySymbol.set(p.symbol, { ...p, sources: ['own-cache'] })
+    }
+  }
+  return [...bySymbol.values()]
+}
+
+export function clearPeersCache() { sectorCache.clear() }

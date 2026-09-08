@@ -25,7 +25,7 @@ import PortfolioNews from './components/dashboard/PortfolioNews.jsx'
 const MIN_PEERS_FOR_BAND = 3
 
 function Dashboard() {
-  const { state, load, applyPastedTable, dismissGap, refreshPeers, togglePeerExclusion } = useApp()
+  const { state, load, applyPastedTable, dismissGap, refreshPeers, togglePeerConfirmation } = useApp()
   const [expanded, setExpanded] = useState(null)
   const [studioOpen, setStudioOpen] = useState(false)
   const [gapFillOpen, setGapFillOpen] = useState(false)
@@ -37,39 +37,42 @@ function Dashboard() {
   // it on the very next render, since the trigger condition is still true.
   const autoOpenedFor = useRef(null)
 
-  // Excluded peers are removed from consideration entirely here too, not
-  // just from the actual valuation/market-expectation calculations — an
-  // excluded peer isn't going to contribute to peerBand() regardless of
-  // its cache status, so it shouldn't count toward "need more coverage"
-  // or show up asking to be warmed.
-  const excludedPeers = state.data?.excludedPeers || []
-  const excludedSet = new Set(excludedPeers)
-  const peers = (state.assumptions?.peers || []).filter(p => !excludedSet.has(p.symbol))
-  const availablePeerCount = peers.filter(p => p.cached).length
+  // Opt-in: a candidate only counts toward peerBand() once explicitly
+  // confirmed (AppContext.jsx's activePeers/confirmedPeers) — the full
+  // candidate pool (state.assumptions.peers) always includes everything
+  // NSE's sectoral index constituents plus this browser's own same-sector
+  // analysis history surfaced, confirmed or not. An unconfirmed candidate
+  // isn't going to contribute to peerBand() regardless of its cache
+  // status, so it shouldn't count toward "need more coverage."
+  const candidatePeers = state.assumptions?.peers || []
+  const confirmedPeers = state.data?.confirmedPeers || []
+  const confirmedSet = new Set(confirmedPeers)
+  const confirmedCount = candidatePeers.filter(p => confirmedSet.has(p.symbol) && p.cached).length
   // Only meaningful when the floor is actually reachable — a stock with
   // fewer than 3 total peer candidates can never clear peerBand()'s
-  // minSamples floor no matter how many get loaded, so auto-opening every
-  // single visit for something that can't be fixed would just be
+  // minSamples floor no matter how many get confirmed, so auto-opening
+  // every single visit for something that can't be fixed would just be
   // repeatedly interrupting for nothing. That case declines gracefully
   // (no peer-tier multiple, same as any other model with real inputs it
   // doesn't have) rather than nagging.
-  const floorReachable = peers.length >= MIN_PEERS_FOR_BAND
-  const belowPeerFloor = floorReachable && availablePeerCount < MIN_PEERS_FOR_BAND
-  const hasMoreToLoad = peers.length > availablePeerCount
+  const floorReachable = candidatePeers.length >= MIN_PEERS_FOR_BAND
+  const belowPeerFloor = floorReachable && confirmedCount < MIN_PEERS_FOR_BAND
+  const hasMoreToLoad = candidatePeers.length > confirmedCount
 
-  // Auto-opens once per ticker while peer coverage is genuinely too thin
-  // for peerBand() to use at all AND loading more could actually fix that.
-  // Once 3+ peers are available (from this app's organic use, a prior
-  // warming session, or completing this modal), it stops auto-opening on
-  // later visits — see the reopenable button rendered alongside
-  // DataGapBanner below instead.
+  // Auto-opens once per ticker while confirmed peer coverage is genuinely
+  // too thin for peerBand() to use at all AND the candidate pool is large
+  // enough that confirming more could actually fix that. Once 3+ are
+  // confirmed (from a prior visit already persisted on this ticker, or
+  // completing this modal now), it stops auto-opening on later visits —
+  // see the reopenable button rendered alongside DataGapBanner below
+  // instead.
   useEffect(() => {
-    if (!state.ticker || peers.length === 0) return
+    if (!state.ticker || candidatePeers.length === 0) return
     if (belowPeerFloor && autoOpenedFor.current !== state.ticker) {
       autoOpenedFor.current = state.ticker
       setPeerModalOpen(true)
     }
-  }, [state.ticker, peers.length, belowPeerFloor])
+  }, [state.ticker, candidatePeers.length, belowPeerFloor])
 
   const closePeerModal = (anyLoaded) => {
     setPeerModalOpen(false)
@@ -106,8 +109,8 @@ function Dashboard() {
                       onFix={() => setGapFillOpen(true)}
                     />
                   </div>
-                  {/* Shown whenever there's a peer left to warm, regardless of
-                      whether the auto-open floor was ever reached — covers
+                  {/* Shown whenever there's a candidate left to confirm, regardless
+                      of whether the auto-open floor was ever reached — covers
                       "already sufficient, but more would still help" and
                       "floor unreachable, but individual peers still useful"
                       alike, without repeatedly interrupting (see the effect
@@ -115,7 +118,7 @@ function Dashboard() {
                   {hasMoreToLoad && (
                     <button onClick={() => setPeerModalOpen(true)}
                       className="text-[11px] text-slate-500 hover:text-accent">
-                      🔗 {availablePeerCount}/{peers.length} peers available — add more
+                      🔗 {confirmedCount}/{candidatePeers.length} peers confirmed — review more
                     </button>
                   )}
                   <div id="panel-valuation">
@@ -190,8 +193,10 @@ function Dashboard() {
         open={peerModalOpen}
         onClose={closePeerModal}
         ticker={state.ticker}
-        excludedPeers={excludedPeers}
-        onToggleExclude={togglePeerExclusion}
+        meta={state.data?.meta}
+        sectorType={state.sectorType}
+        confirmedPeers={confirmedPeers}
+        onToggleConfirm={togglePeerConfirmation}
       />
 
     </div>

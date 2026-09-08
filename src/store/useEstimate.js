@@ -4,7 +4,7 @@ import { listRevisions, appendRevision, saveEstimate, currentEstimate } from '..
 import { queuePush } from '../sync/sync.js'
 import { buildEstimate, buildJustifiedEstimate, scoreEstimate, sanityCheck } from '../engine/estimate.js'
 import { assessFromQuarterly, growthDriftSuggestion } from '../engine/quarterlyBridge.js'
-import { fetchPeers } from '../api/peersClient.js'
+import { fetchPeerCandidates } from '../api/peersClient.js'
 import { relativePerformance } from '../api/marketRegime.js'
 import { getRiskFreeRate, refreshRiskFreeRate } from '../api/riskFreeClient.js'
 import { getEquityRiskPremium } from '../api/erpClient.js'
@@ -143,12 +143,23 @@ export function useEstimate(state, opts = {}) {
 
   useEffect(() => { reload() }, [reload])
 
+  // Same candidate pool AppContext.jsx feeds valuation.js/marketExpectation.js
+  // (NSE sectoral index constituents + this browser's own same-sector
+  // analysis history — see peersClient.js), filtered down to what the user
+  // has actually confirmed via PeerSelectModal. A candidate the user hasn't
+  // reviewed yet has no business feeding App Target's peer-median P/E any
+  // more than it feeds Fair Value's — the whole point of the opt-in review
+  // step is that index/cache membership isn't itself proof of comparability.
   useEffect(() => {
     if (!ticker) return
     let dead = false
-    fetchPeers(ticker).then(p => { if (!dead) setPeers(p) })
+    fetchPeerCandidates({ ticker, meta: state?.data?.meta, sectorType: state?.sectorType }).then(list => {
+      if (dead) return
+      const confirmed = new Set(state?.data?.confirmedPeers || [])
+      setPeers(list.filter(p => confirmed.has(p.symbol)))
+    })
     return () => { dead = true }
-  }, [ticker])
+  }, [ticker, state?.data?.meta, state?.sectorType, state?.data?.confirmedPeers])
 
   // Stock against its sector and the market — the reading that separates an
   // industry-wide de-rating from a company-specific one.

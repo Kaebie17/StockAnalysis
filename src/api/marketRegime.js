@@ -62,23 +62,31 @@ export function clearRegimeCache() { cache = null }
  * those have very different odds of reverting. The sector index is what
  * separates them.
  */
+// csvSlug: the niftyindices.com constituent-list filename fragment (see
+// api/nseIndices.js — /api/nseIndices?index=<csvSlug> fetches
+// ind_nifty<csvSlug>list.csv). Verified live against every slug below —
+// 'finance', not the more obvious 'financialservices'/'finservice', both
+// 404. Reused for peer-candidate discovery (peersClient.js's
+// fetchSectorConstituents), not just this file's own sector-performance
+// comparison — same classification answers both "which index to compare
+// against" and "which real companies are in this stock's sector."
 const SECTOR_INDICES = [
-  [/bank/i,                                    '^NSEBANK',   'Nifty Bank'],
-  [/financial|nbfc|credit|insurance|finance/i, '^CNXFIN',    'Nifty Financial Services'],
-  [/software|information technology|\bit\b/i,  '^CNXIT',     'Nifty IT'],
-  [/auto|vehicle|tyre/i,                       '^CNXAUTO',   'Nifty Auto'],
-  [/pharma|drug|healthcare|hospital/i,         '^CNXPHARMA', 'Nifty Pharma'],
-  [/metal|steel|mining|aluminium/i,            '^CNXMETAL',  'Nifty Metal'],
-  [/fmcg|consumer|food|beverage|personal/i,    '^CNXFMCG',   'Nifty FMCG'],
-  [/energy|oil|gas|petroleum|power|utility/i,  '^CNXENERGY', 'Nifty Energy'],
-  [/realty|real estate|construction|cement/i,  '^CNXREALTY', 'Nifty Realty'],
-  [/media|entertainment|broadcast/i,           '^CNXMEDIA',  'Nifty Media'],
+  [/bank/i,                                    '^NSEBANK',   'Nifty Bank',              'bank'],
+  [/financial|nbfc|credit|insurance|finance/i, '^CNXFIN',    'Nifty Financial Services', 'finance'],
+  [/software|information technology|\bit\b/i,  '^CNXIT',     'Nifty IT',                 'it'],
+  [/auto|vehicle|tyre/i,                       '^CNXAUTO',   'Nifty Auto',               'auto'],
+  [/pharma|drug|healthcare|hospital/i,         '^CNXPHARMA', 'Nifty Pharma',             'pharma'],
+  [/metal|steel|mining|aluminium/i,            '^CNXMETAL',  'Nifty Metal',              'metal'],
+  [/fmcg|consumer|food|beverage|personal/i,    '^CNXFMCG',   'Nifty FMCG',               'fmcg'],
+  [/energy|oil|gas|petroleum|power|utility/i,  '^CNXENERGY', 'Nifty Energy',             'energy'],
+  [/realty|real estate|construction|cement/i,  '^CNXREALTY', 'Nifty Realty',             'realty'],
+  [/media|entertainment|broadcast/i,           '^CNXMEDIA',  'Nifty Media',              'media'],
 ]
 
 export function sectorIndexFor(meta = {}, sectorType = null) {
   const hay = `${meta?.industry || ''} ${meta?.sector || ''} ${sectorType || ''}`
-  for (const [re, symbol, name] of SECTOR_INDICES) {
-    if (re.test(hay)) return { symbol, name }
+  for (const [re, symbol, name, csvSlug] of SECTOR_INDICES) {
+    if (re.test(hay)) return { symbol, name, csvSlug }
   }
   return null
 }

@@ -228,6 +228,26 @@ export async function deleteCached(ticker) {
   try { await txDelete('financials', ticker.toUpperCase()) } catch { /* non-critical */ }
 }
 
+// Every ticker this browser has ever analyzed, reduced to just what
+// peersClient.js's own-cache sector scan needs (symbol/name/sector/
+// industry) — not the full cached payload (price history, statements,
+// etc.), which a symbol-matching pass has no use for. A real fallback for
+// peer discovery's real coverage gaps: a stock the user has personally
+// analyzed gets a chance to surface as a peer even when it's on an
+// exchange (BSE-only) or in a sector NSE's own index CSVs and Yahoo's
+// recommendation engine wouldn't produce it from.
+export async function listCachedTickers() {
+  try {
+    const all = await txGetAll('financials')
+    return all.map(rec => ({
+      symbol: rec.key,
+      name: rec.data?.data?.name || rec.key,
+      meta: rec.data?.data?.meta || null,
+      sectorType: rec.data?.sectorType || null,
+    }))
+  } catch { return [] }
+}
+
 // ── Ticker resolution cache (bare symbol → real Yahoo symbol) ─────────────────
 // No TTL: an exchange listing's suffix is effectively permanent, so this is
 // resolved once and trusted from then on.
