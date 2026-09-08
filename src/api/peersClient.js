@@ -19,18 +19,41 @@ const cache = new Map()      // ticker -> { at, peers }
 export async function fetchPeers(ticker) {
   const t = String(ticker || '').trim().toUpperCase()
   if (!t) return []
+
+  // The 30-min cache covers only the SYMBOL LIST + live P/E/P/B — a real
+  // network call, and genuinely slow-moving (who a company's peers are,
+  // and what they trade at, doesn't change minute to minute). It must NOT
+  // also cover the cache-enrichment step below: that reflects IndexedDB
+  // state that can change at any moment from ANY ticker analysis anywhere
+  // in the app — e.g. warming a peer via PeerSelectModal, or simply
+  // analyzing that ticker directly, minutes ago, unrelated to this stock
+  // entirely. Baking the enrichment into the same 30-min snapshot meant
+  // returning to a ticker shortly after warming (or independently
+  // analyzing) one of its peers could still show that peer as unavailable
+  // for up to half an hour, purely because the SYMBOL list happened to be
+  // cache-hit. Re-enriching is a handful of local IndexedDB reads — no
+  // network cost — so it's always run fresh, regardless of whether the
+  // symbol list came from cache or a live fetch.
+  let basePeers
   const hit = cache.get(t)
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.peers
+  if (hit && Date.now() - hit.at < TTL_MS) {
+    basePeers = hit.peers
+  } else {
+    try {
+      const r = await fetch(`/api/yahoo?endpoint=peers&ticker=${encodeURIComponent(t)}`)
+      if (!r.ok) return []
+      const j = await r.json().catch(() => null)
+      basePeers = j?.peers || []
+      cache.set(t, { at: Date.now(), peers: basePeers })
+    } catch {
+      return []      // never breaks the page — the estimate falls back to own history
+    }
+  }
 
   try {
-    const r = await fetch(`/api/yahoo?endpoint=peers&ticker=${encodeURIComponent(t)}`)
-    if (!r.ok) return []
-    const j = await r.json().catch(() => null)
-    const peers = await enrichFromCache(j?.peers || [])
-    cache.set(t, { at: Date.now(), peers })
-    return peers
+    return await enrichFromCache(basePeers)
   } catch {
-    return []      // never breaks the page — the estimate falls back to own history
+    return basePeers
   }
 }
 
