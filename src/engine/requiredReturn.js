@@ -67,6 +67,15 @@ const BLUME_WEIGHT = 2 / 3   // adjusted = (2/3) x raw + (1/3) x 1.0
 // informational flag telling the user to verify it — it never changes what
 // gets fed into the formula.
 const MAX_PLAUSIBLE_RAW_BETA = 5
+// Same reasoning, other direction, at the same distance from 1 the high
+// threshold sits (5x average → 1/5 of average). A near-zero beta is real for
+// some genuinely uncorrelated names, but for a large, heavily-traded stock
+// — the exact case a thin r-g gap inflates every Gordon-growth-style
+// multiple the worst for — it deserves the same "verify this" nudge the
+// high side already gets, not silent trust just because it happens to sit
+// below the surprising side people usually check. Purely informational,
+// like MAX_PLAUSIBLE_RAW_BETA above: never substitutes a different number.
+const MIN_PLAUSIBLE_RAW_BETA = 1 / MAX_PLAUSIBLE_RAW_BETA
 
 /**
  * Required return on equity — CAPM, with a Blume-adjusted beta.
@@ -91,6 +100,8 @@ export function capmCostOfEquity({ riskFreeRate, beta, erp = null, market = 'IN'
   const r = riskFreeRate + b * premium
   const betaFlag = (hasBeta && beta >= MAX_PLAUSIBLE_RAW_BETA)
     ? `Reported beta of ${round(beta, 2)} is statistically unusual for a liquid single stock — verify against another source before trusting this cost of equity.`
+    : (hasBeta && beta <= MIN_PLAUSIBLE_RAW_BETA)
+    ? `Reported beta of ${round(beta, 2)} is unusually low — verify against another source; a low beta thins the required return, which inflates every multiple that divides by (r - g).`
     : null
   return {
     r, beta: b, rawBeta: hasBeta ? beta : null, betaFlag,

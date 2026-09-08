@@ -1172,7 +1172,15 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
     base: round(base), baseLabel,
     target: { base: round(mid) },
     upside: price > 0 ? { base: round(((mid - price) / price) * 100, 1) } : null,
-    degraded: rr.betaAssumed ? ['Beta unavailable — assumed 1.0'] : [],
+    degraded: [
+      ...(rr.betaAssumed ? ['Beta unavailable — assumed 1.0'] : []),
+      // capmCostOfEquity() already computes this (it's the same CAPM call
+      // the DCF's WACC uses), but nothing previously carried it through to
+      // Justified Multiples — an unusual beta (either direction) thins or
+      // widens (r - g) and every form here divides by that gap, so it
+      // deserves to be visible here specifically, not only on the DCF line.
+      ...(rr.betaFlag ? [rr.betaFlag] : []),
+    ],
     missing: jm.missing,
     basisSummary: `${chosen.label} ${chosen.multiple}× on ${baseLabel} · ${rr.label}`,
   }
