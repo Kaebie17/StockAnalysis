@@ -43,8 +43,9 @@ const MIN_OBSERVATIONS = 4
 const MIN_R2 = 0.4
 
 /**
- * Ordinary least squares on (x, y), returning slope, intercept and R².
- * Small enough to keep here rather than take a dependency for one regression.
+ * Ordinary least squares on (x, y), returning slope, intercept, R², and the
+ * residual variance a genuine prediction interval needs (sxx, residualSE) —
+ * small enough to keep here rather than take a dependency for one regression.
  */
 export function fitLine(points = []) {
   const pts = points.filter(p => isFinite(p.x) && isFinite(p.y))
@@ -62,7 +63,34 @@ export function fitLine(points = []) {
   const slope = sxy / sxx
   const intercept = my - slope * mx
   const r = sxy / Math.sqrt(sxx * syy)
-  return { slope, intercept, r2: r * r, n, meanX: mx, meanY: my }
+  // SSE via the standard OLS identity (Syy - slope*Sxy) rather than a second
+  // pass computing each residual directly — same result, one loop.
+  const sse = Math.max(0, syy - slope * sxy)
+  const residualSE = n > 2 ? Math.sqrt(sse / (n - 2)) : null
+  return { slope, intercept, r2: r * r, n, meanX: mx, meanY: my, sxx, residualSE }
+}
+
+// Student's t two-tailed 80%-confidence critical values (one-tailed α=0.10),
+// keyed by degrees of freedom — standard, published values (verifiable
+// against any statistics reference), not fitted or chosen for this app. 80%
+// is a common, recognized prediction-interval confidence level, distinct
+// from this file's own 15th/85th percentile-spread convention used
+// elsewhere (a plain percentile split, not a regression interval — the two
+// answer different questions and have no reason to share a number).
+const T_TABLE_80 = {
+  1: 3.078, 2: 1.886, 3: 1.638, 4: 1.533, 5: 1.476,
+  6: 1.440, 7: 1.415, 8: 1.397, 9: 1.383, 10: 1.372,
+  11: 1.363, 12: 1.356, 13: 1.350, 14: 1.345, 15: 1.341,
+  16: 1.337, 17: 1.333, 18: 1.330, 19: 1.328, 20: 1.325,
+  21: 1.323, 22: 1.321, 23: 1.319, 24: 1.318, 25: 1.316,
+  26: 1.315, 27: 1.314, 28: 1.313, 29: 1.311, 30: 1.310,
+}
+const T_NORMAL_APPROX_80 = 1.282   // z-value the t-distribution converges to as df grows
+
+function tCritical(df) {
+  if (!(df > 0)) return T_NORMAL_APPROX_80
+  const rounded = Math.max(1, Math.round(df))
+  return T_TABLE_80[rounded] ?? T_NORMAL_APPROX_80
 }
 
 /**
@@ -172,8 +200,6 @@ export function targetMultiple(opts = {}) {
   // minSamples:3 default is already satisfied by MIN_YEARS_FOR_BAND above.
   const ps = percentileSpread(obs.map(o => o.multiple), { lowP: 0.15, highP: 0.85 })
   const anchor = ps.median
-  const spreadLow = ps.low / anchor
-  const spreadHigh = ps.high / anchor
 
   const steps = [`Anchor: ${round(anchor)}× — this stock's median over ${obs.length} year${obs.length > 1 ? 's' : ''}`]
   // A thin year (fewer than 30 trading days — a listing year, a data gap) is
@@ -186,6 +212,13 @@ export function targetMultiple(opts = {}) {
   }
   let adjusted = anchor
   const fits = []
+  // Sum of squared per-factor prediction-interval margins — root-sum-square
+  // is the standard way to propagate independent uncertainty contributions
+  // through a sum, matching how the point estimate itself already combines
+  // two independent single-variable fits (additively) rather than a true
+  // joint multi-variable regression. Not more sophisticated than the point
+  // estimate it surrounds, just consistent with it.
+  let marginsSquaredSum = 0
 
   // ── Fitted adjustments ────────────────────────────────────────────────────
   // Each asks the same question of this company's own record: when this
@@ -221,6 +254,17 @@ export function targetMultiple(opts = {}) {
     steps.push(
       `${label}: ${round(forward, 1)}${unit} expected vs ${round(fit.meanX, 1)}${unit} average → ` +
       `${delta >= 0 ? '+' : ''}${round(delta)}× (fitted, R² ${round(fit.r2)})`)
+
+    // Real prediction-interval margin for THIS factor at the value actually
+    // used — the standard formula for a new observation's interval (not a
+    // mean-response interval: we're predicting one new multiple, not
+    // estimating the average one), using the same fit already vetted above.
+    if (fit.residualSE != null && fit.sxx > 0) {
+      const df = fit.n - 2
+      const predSE = fit.residualSE * Math.sqrt(1 + 1 / fit.n + ((clamped - fit.meanX) ** 2) / fit.sxx)
+      const margin = tCritical(df) * predSE
+      if (isFinite(margin)) marginsSquaredSum += margin * margin
+    }
   }
 
   applyFit('roe', forwardRoe, 'Returns')
@@ -265,13 +309,29 @@ export function targetMultiple(opts = {}) {
     finalMultiple = anchor
   }
 
+  // The range is a genuine prediction interval from the same regression(s)
+  // that produced finalMultiple — not a spread measured around a different
+  // (unadjusted) center and transplanted here. When no fit was reliable
+  // enough to use (finalMultiple === anchor), there's no regression to build
+  // an interval from; the real, unadjusted historical percentile band
+  // (ps.low/ps.high) is what's actually known in that case, same as before.
+  let low, high
+  if (fits.length > 0 && marginsSquaredSum > 0) {
+    const totalMargin = Math.sqrt(marginsSquaredSum)
+    low = finalMultiple - totalMargin
+    high = finalMultiple + totalMargin
+    if (!(low > 0)) low = Math.min(ps.low, finalMultiple * 0.5)   // structural floor, not a plausibility cap
+    steps.push(`Range: ±${round(totalMargin)}× from the regression's own prediction interval ` +
+      `(80% confidence, ${obs.length} year${obs.length > 1 ? 's' : ''} of data)`)
+  } else {
+    low = ps.low
+    high = ps.high
+  }
+
   return {
     multiple: round(finalMultiple),
-    // The band keeps the shape of the stock's own observed spread, so a
-    // consistently tight-trading stock gets a tight range and a volatile one a
-    // wide one, rather than a fixed percentage for everything.
-    low:  round(finalMultiple * (spreadLow > 0 ? spreadLow : 0.85)),
-    high: round(finalMultiple * (spreadHigh > 0 ? spreadHigh : 1.15)),
+    low:  round(low),
+    high: round(high),
     basis, anchor: round(anchor), observations: obs.length,
     fits, peerPulled,
     source: fits.length > 0 ? 'fitted' : 'historical-median',

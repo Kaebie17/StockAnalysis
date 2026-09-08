@@ -55,6 +55,14 @@ export default function DCFScenarioPanel() {
         </p>
       )}
 
+      <p className="text-[10px] text-slate-600">
+        {sensitivity.growthAxisMeasured
+          ? "Growth steps sized from this stock's own historical YoY revenue swings."
+          : 'Growth steps: a flat ±4% convention — too little revenue history to measure this stock\'s own volatility.'}
+        {' '}WACC steps (±50–100bps) are a fixed convention, not a measurement — there\'s no equivalent
+        per-company data (beta is a reported figure, not a regression this app runs itself) to derive one from.
+      </p>
+
       {/* Sensitivity table */}
       <div className="space-y-1">
         <div className="text-xs font-medium text-slate-300">DCF fair value — growth (rows) × WACC (columns)</div>

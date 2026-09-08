@@ -15,6 +15,7 @@ import { computePeg } from './peg.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvSales as getSectorEvSales, financialPb } from './sectorMultiples.js'
 import { peerBand } from './peerBands.js'
+import { percentileSpread } from './spread.js'
 import { TIER } from './methodologyTier.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
@@ -326,7 +327,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // any one cell is "the bear case," it just shows the same formula's real
   // output across a range of inputs the user can see are inputs.
   const sensitivity = (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf && growthRate != null && wacc != null)
-    ? dcfSensitivity(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntY)
+    ? dcfSensitivity(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntY, data?.incomeHistory)
     : null
 
   // Signal from the primary model's value vs CMP. Deadband scaled to how much
@@ -614,25 +615,66 @@ function dcfPerShare(cfBase, g, wacc, tg, yrs, cash, debt, shares, ntGrowth = nu
   return ps > 0 ? ps : null
 }
 
+// This stock's own YoY revenue growth volatility (15th-85th percentile
+// half-width) — the same measurement growthScenarioSpread() used to provide
+// for the removed Bear/Bull scenario feature, revived here for a different,
+// legitimate purpose: sizing the sensitivity grid's growth axis from
+// something real instead of an identical flat constant for every company.
+// Returns null when there's too little revenue history to measure — the
+// caller falls back to a stated convention in that case, same pattern as
+// priceDispersion/multipleSpread's own fallback chains elsewhere.
+function measuredGrowthHalfWidth(incomeHistory) {
+  const yearOf = row => {
+    const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
+    return m ? Number(m[0]) : null
+  }
+  const series = (incomeHistory || [])
+    .filter(row => !row?.synthetic)
+    .map(row => ({ year: yearOf(row), value: row?.revenue?.value }))
+    .filter(p => p.year != null && p.value > 0)
+    .sort((a, b) => a.year - b.year)
+  const yoy = []
+  for (let i = 1; i < series.length; i++) yoy.push(series[i].value / series[i - 1].value - 1)
+  const ps = percentileSpread(yoy, { minSamples: 4 })
+  if (!ps) return null
+  const half = (ps.high - ps.low) / 2
+  return (half > 0 && isFinite(half)) ? half : null
+}
+
 // DCF fair value across a growth × WACC grid (the two inputs a DCF is sensitive
 // to). When a near-term (guidance) window is set, the growth axis sweeps that
 // near-term rate so the centre cell matches the applied DCF.
-function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYears = 0) {
+function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYears = 0, incomeHistory = null) {
   if (!(cfBase > 0) || !(shares > 0)) return null
   // No floor/ceiling on the growth axis: gBase is already sanity-bounded by
   // estimateGrowth() upstream, and flooring the sweep at 0% used to collapse
   // every column to an identical value for any company with base growth
   // below about -4% — destroying the sensitivity table for exactly the
   // declining/turnaround companies where seeing the range matters most.
+  //
+  // Growth axis width: this stock's own measured YoY revenue volatility
+  // where there's enough history to measure one; falls back to a flat ±4%
+  // (the previous behavior, now a named, disclosed convention rather than
+  // an unlabelled default) only when there isn't.
+  const measuredHalf = measuredGrowthHalfWidth(incomeHistory)
+  const growthHalf = measuredHalf ?? 0.04
+  const growthAxisMeasured = measuredHalf != null
+  const growthAxis = [-1, -0.5, 0, 0.5, 1].map(f => gBase + f * growthHalf)
   // WACC axis keeps only the structural floor (wacc must exceed terminal
   // growth or the terminal-value term is undefined); no separate ceiling.
-  const growthAxis = [-0.04, -0.02, 0, 0.02, 0.04].map(d => gBase + d)
-  const waccAxis   = [-0.02, -0.01, 0, 0.01, 0.02].map(d => Math.max(wBase + d, tg + 0.01))
+  // Unlike growth, there is no equivalent real per-company measurement
+  // available for this: beta is Yahoo's own reported figure, not a
+  // regression this app runs itself, so there's no residual/standard-error
+  // data to build a genuine interval from the way the growth axis (and
+  // targetMultiple.js's prediction interval) can. This stays a fixed,
+  // disclosed convention (±50-100bps steps, a common professional practice
+  // for showing DCF sensitivity) rather than a manufactured "measurement."
+  const waccAxis = [-0.02, -0.01, 0, 0.01, 0.02].map(d => Math.max(wBase + d, tg + 0.01))
   const grid = growthAxis.map(g =>
     waccAxis.map(w => ntYears > 0
       ? dcfPerShare(cfBase, g, w, tg, yrs, cash, debt, shares, g, ntYears)
       : dcfPerShare(cfBase, g, w, tg, yrs, cash, debt, shares)))
-  return { growthAxis, waccAxis, grid }
+  return { growthAxis, waccAxis, grid, growthAxisMeasured }
 }
 
 /**
