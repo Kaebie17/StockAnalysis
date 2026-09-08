@@ -25,7 +25,7 @@ import PortfolioNews from './components/dashboard/PortfolioNews.jsx'
 const MIN_PEERS_FOR_BAND = 3
 
 function Dashboard() {
-  const { state, load, applyPastedTable, dismissGap, refreshPeers } = useApp()
+  const { state, load, applyPastedTable, dismissGap, refreshPeers, togglePeerExclusion } = useApp()
   const [expanded, setExpanded] = useState(null)
   const [studioOpen, setStudioOpen] = useState(false)
   const [gapFillOpen, setGapFillOpen] = useState(false)
@@ -37,7 +37,14 @@ function Dashboard() {
   // it on the very next render, since the trigger condition is still true.
   const autoOpenedFor = useRef(null)
 
-  const peers = state.assumptions?.peers || []
+  // Excluded peers are removed from consideration entirely here too, not
+  // just from the actual valuation/market-expectation calculations — an
+  // excluded peer isn't going to contribute to peerBand() regardless of
+  // its cache status, so it shouldn't count toward "need more coverage"
+  // or show up asking to be warmed.
+  const excludedPeers = state.data?.excludedPeers || []
+  const excludedSet = new Set(excludedPeers)
+  const peers = (state.assumptions?.peers || []).filter(p => !excludedSet.has(p.symbol))
   const availablePeerCount = peers.filter(p => p.cached).length
   // Only meaningful when the floor is actually reachable — a stock with
   // fewer than 3 total peer candidates can never clear peerBand()'s
@@ -183,6 +190,8 @@ function Dashboard() {
         open={peerModalOpen}
         onClose={closePeerModal}
         ticker={state.ticker}
+        excludedPeers={excludedPeers}
+        onToggleExclude={togglePeerExclusion}
       />
 
     </div>

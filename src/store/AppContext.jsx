@@ -29,6 +29,19 @@ const yearOf = row => {
   return m ? Number(m[0]) : null
 }
 
+// A peer the user has judged irrelevant for THIS ticker specifically —
+// stored on data.excludedPeers (per-ticker, mirrors growthWindowYears'
+// storage), never on the peer ticker's own record. Filtered out only at
+// the point of USE (feeding runValuation/runMarketExpectation), never by
+// mutating assumptions.peers itself — that stays the full raw list always,
+// so un-excluding a peer later just needs a re-filter, not a fresh fetch
+// to bring it back.
+const activePeers = (allPeers, excludedPeers) => {
+  if (!excludedPeers?.length) return allPeers || []
+  const excluded = new Set(excludedPeers)
+  return (allPeers || []).filter(p => !excluded.has(p.symbol))
+}
+
 // The persisted CAGR window for a ticker (stored as a 'growth-window' revision by
 // useEstimate). Read here so the store computes with it from the first render —
 // otherwise the slider shows the pinned window while the CAGR uses the default.
@@ -81,15 +94,18 @@ function reducer(s, a) {
     // like when the effect was created.
     case 'SET_LIVE_INPUTS': {
       if (!s.data) return s
+      // assumptions.peers stays the FULL raw list — exclusions are applied
+      // fresh, below, at the point of use, not baked in here.
       const assumptions = { ...s.assumptions, peers: a.peers, liveRiskFree: a.liveRiskFree, liveErp: a.liveErp, market: a.market }
-      const valuation = runValuation(s.data, s.ratioResult, s.stage, s.sectorType, assumptions)
+      const peers = activePeers(assumptions.peers, s.data.excludedPeers)
+      const valuation = runValuation(s.data, s.ratioResult, s.stage, s.sectorType, { ...assumptions, peers })
       const meOpts = {
         liveRiskFree: a.liveRiskFree,
         liveErp: a.liveErp,
         beta: assumptions.beta ?? s.ratioResult?.ratios?.beta?.value ?? null,
         betaMeta: assumptions.betaMeta ?? null,
         market: a.market,
-        peers: assumptions.peers ?? [],
+        peers,
       }
       const marketExpectation = runMarketExpectation(s.data, s.ratioResult, s.stage, s.sectorType, s.meAssumptions, meOpts)
       return { ...s, assumptions, valuation, marketExpectation }
@@ -106,14 +122,15 @@ function reducer(s, a) {
     case 'SET_LIVE_BETA': {
       if (!s.data) return s
       const assumptions = { ...s.assumptions, beta: a.beta, betaMeta: a.betaMeta ?? null }
-      const valuation = runValuation(s.data, s.ratioResult, s.stage, s.sectorType, assumptions)
+      const peers = activePeers(assumptions.peers, s.data.excludedPeers)
+      const valuation = runValuation(s.data, s.ratioResult, s.stage, s.sectorType, { ...assumptions, peers })
       const meOpts = {
         liveRiskFree: assumptions.liveRiskFree ?? null,
         liveErp: assumptions.liveErp ?? null,
         beta: assumptions.beta ?? s.ratioResult?.ratios?.beta?.value ?? null,
         betaMeta: assumptions.betaMeta ?? null,
         market: assumptions.market ?? 'IN',
-        peers: assumptions.peers ?? [],
+        peers,
       }
       const marketExpectation = runMarketExpectation(s.data, s.ratioResult, s.stage, s.sectorType, s.meAssumptions, meOpts)
       return { ...s, assumptions, valuation, marketExpectation, computedBeta: a.betaMeta ?? null }
@@ -212,6 +229,29 @@ function reducer(s, a) {
                                   { growthWindowYears: a.years, basis: data.basis })
       return { ...next, ...computed }
     }
+    // A peer judged irrelevant for THIS ticker — persisted on data (same
+    // per-ticker storage as growthWindowYears above), never touches the
+    // excluded ticker's OWN cached record. Only affects the peer-median
+    // tiers in valuation.js/marketExpectation.js (via activePeers, applied
+    // fresh here) — everything else about this stock is unrelated, so a
+    // light recompute (like SET_LIVE_BETA above) is enough; no need for
+    // computeAll's full ratios/stage pass.
+    case 'SET_EXCLUDED_PEERS': {
+      if (!s.data) return s
+      const data = { ...s.data, excludedPeers: a.excludedPeers }
+      const peers = activePeers(s.assumptions.peers, a.excludedPeers)
+      const valuation = runValuation(data, s.ratioResult, s.stage, s.sectorType, { ...s.assumptions, peers })
+      const meOpts = {
+        liveRiskFree: s.assumptions.liveRiskFree ?? null,
+        liveErp: s.assumptions.liveErp ?? null,
+        beta: s.assumptions.beta ?? s.ratioResult?.ratios?.beta?.value ?? null,
+        betaMeta: s.assumptions.betaMeta ?? null,
+        market: s.assumptions.market ?? 'IN',
+        peers,
+      }
+      const marketExpectation = runMarketExpectation(data, s.ratioResult, s.stage, s.sectorType, s.meAssumptions, meOpts)
+      return { ...s, data, valuation, marketExpectation }
+    }
     case 'RESET':          return { ...initial }
     case 'APPLY_NORMALIZATION': {
       if (!s.data) return s
@@ -293,7 +333,16 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   const ratioResult = calcRatios(data, { growthWindowYears: opts.growthWindowYears })
   const sectorType  = detectSectorType(data)
   const stage       = detectStage(data, ratioResult)
-  const valuation   = runValuation(data, ratioResult, stage, sectorType, assumptions)
+  // Every caller of computeAll() routes through here — including
+  // PRICE_UPDATE, which fires every 60s from the live-price poller. Without
+  // filtering here too, excluding a peer (SET_EXCLUDED_PEERS) would get
+  // silently reverted on the very next price tick, since this bootstrap
+  // pass otherwise uses assumptions.peers as-is. No async wait needed for
+  // this one (unlike beta/liveRiskFree, which genuinely need a network
+  // round-trip and so stay absent from this pass by established design) —
+  // it's a synchronous derivation from data already in hand.
+  const peers       = activePeers(assumptions.peers, data.excludedPeers)
+  const valuation   = runValuation(data, ratioResult, stage, sectorType, { ...assumptions, peers })
   const technicals  = runTechnicals(data.priceHistory || [])
   const quality     = scoreQuality(data, ratioResult, weights)
   const marketExpectation = runMarketExpectation(data, ratioResult, stage, sectorType, meAssumptions)
@@ -417,7 +466,8 @@ export function AppProvider({ children }) {
     const assumptions   = { ...state.assumptions,   ...newAssumptions }
     const weights       = { ...state.scoreWeights,  ...newWeights }
     const meAssumptions = { ...state.meAssumptions, ...newMeAssumptions }
-    const valuation     = runValuation(state.data, state.ratioResult, state.stage, state.sectorType, assumptions)
+    const peers         = activePeers(assumptions.peers, state.data.excludedPeers)
+    const valuation     = runValuation(state.data, state.ratioResult, state.stage, state.sectorType, { ...assumptions, peers })
     const quality       = scoreQuality(state.data, state.ratioResult, weights)
     // liveRiskFree/beta/market live in `assumptions` (valuation.js's WACC reads
     // them from there too) — forwarded here as marketExpectation.js's own
@@ -429,7 +479,7 @@ export function AppProvider({ children }) {
       beta: assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
       betaMeta: assumptions.betaMeta ?? null,
       market: assumptions.market ?? 'IN',
-      peers: assumptions.peers ?? [],
+      peers,
     }
     const me            = runMarketExpectation(state.data, state.ratioResult, state.stage, state.sectorType, meAssumptions, meOpts)
     dispatch({ type: 'RECALC', payload: { valuation, quality, marketExpectation: me, assumptions, scoreWeights: weights, meAssumptions } })
@@ -536,14 +586,15 @@ export function AppProvider({ children }) {
 
   const overrideStage = useCallback((stage) => {
     if (!state.data) return
-    const valuation         = runValuation(state.data, state.ratioResult, stage, state.sectorType, state.assumptions)
+    const peers              = activePeers(state.assumptions.peers, state.data.excludedPeers)
+    const valuation         = runValuation(state.data, state.ratioResult, stage, state.sectorType, { ...state.assumptions, peers })
     const marketExpectation = runMarketExpectation(state.data, state.ratioResult, stage, state.sectorType, state.meAssumptions, {
       liveRiskFree: state.assumptions.liveRiskFree ?? null,
       liveErp: state.assumptions.liveErp ?? null,
       beta: state.assumptions.beta ?? state.ratioResult?.ratios?.beta?.value ?? null,
       betaMeta: state.assumptions.betaMeta ?? null,
       market: state.assumptions.market ?? 'IN',
-      peers: state.assumptions.peers ?? [],
+      peers,
     })
     dispatch({ type: 'SET_STAGE', stage, valuation, marketExpectation })
   }, [state])
@@ -559,9 +610,10 @@ export function AppProvider({ children }) {
   const refreshPeers = useCallback(async () => {
     if (!state.ticker || !state.data) return
     clearPeersCache()
-    const peers = await fetchPeers(state.ticker)
-    const assumptions = { ...state.assumptions, peers }
-    const valuation = runValuation(state.data, state.ratioResult, state.stage, state.sectorType, assumptions)
+    const rawPeers = await fetchPeers(state.ticker)
+    const assumptions = { ...state.assumptions, peers: rawPeers }   // full raw list, exclusions applied fresh below
+    const peers = activePeers(rawPeers, state.data.excludedPeers)
+    const valuation = runValuation(state.data, state.ratioResult, state.stage, state.sectorType, { ...assumptions, peers })
     const marketExpectation = runMarketExpectation(state.data, state.ratioResult, state.stage, state.sectorType, state.meAssumptions, {
       liveRiskFree: assumptions.liveRiskFree ?? null,
       liveErp: assumptions.liveErp ?? null,
@@ -605,6 +657,16 @@ export function AppProvider({ children }) {
   const setBetaWindowYears = useCallback((years) => {
     dispatch({ type: 'SET_BETA_WINDOW', years: years ?? 5 })
   }, [])
+
+  // Mark/unmark a peer as irrelevant for THIS ticker — persisted on
+  // data.excludedPeers, never touches the excluded ticker's own cached
+  // record (it stays fully warmed, just not counted here). See
+  // activePeers above for where the exclusion is actually applied.
+  const togglePeerExclusion = useCallback((symbol) => {
+    const current = state.data?.excludedPeers || []
+    const next = current.includes(symbol) ? current.filter(s => s !== symbol) : [...current, symbol]
+    dispatch({ type: 'SET_EXCLUDED_PEERS', excludedPeers: next })
+  }, [state.data])
 
   const setBasis = useCallback((basis) => {
     dispatch({ type: 'SET_BASIS', basis })
@@ -666,7 +728,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, refreshPrice, refreshPriceHistory, refreshPeers
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerExclusion
     }}>
       {children}
     </AppContext.Provider>

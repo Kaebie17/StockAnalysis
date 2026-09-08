@@ -24,8 +24,15 @@ import { analyzeTicker } from '../../store/analyzeTicker.js'
  * even if several boxes are ticked in quick succession. A failure simply
  * unchecks the box — that IS the retry affordance, tick it again — rather
  * than a separate persistent "failed" state with its own button.
+ *
+ * A peer can also be marked irrelevant for THIS stock (excludedPeers,
+ * AppContext.jsx) — Yahoo's own suggested-peer list isn't always a good
+ * comparable. That's a per-ticker preference only: it removes the peer
+ * from THIS stock's peer-median calculations, never the excluded ticker's
+ * own cached data — it stays fully warmed and usable everywhere else
+ * (its own analysis, or as a peer of some other stock).
  */
-export default function PeerSelectModal({ open, onClose, ticker }) {
+export default function PeerSelectModal({ open, onClose, ticker, excludedPeers = [], onToggleExclude }) {
   const [peers, setPeers] = useState([])
   const [selected, setSelected] = useState(() => new Set())
   const [status, setStatus] = useState({})   // symbol -> 'available' | 'loading' (no other states — a failure just reverts)
@@ -113,15 +120,25 @@ export default function PeerSelectModal({ open, onClose, ticker }) {
         </p>
 
         <div className="space-y-1 max-h-64 overflow-y-auto">
-          {peers.map(p => (
-            <label key={p.symbol} className="flex items-center gap-2 text-sm py-1 cursor-pointer">
-              <input type="checkbox" checked={selected.has(p.symbol)} onChange={() => toggle(p.symbol)}
-                     disabled={status[p.symbol] === 'available' || status[p.symbol] === 'loading'}
-                     className="accent-accent" />
-              <span className="flex-1 text-slate-300 truncate">{p.name || p.symbol}</span>
-              <StatusBadge status={status[p.symbol]} queued={queue.includes(p.symbol) && status[p.symbol] !== 'loading'} />
-            </label>
-          ))}
+          {peers.map(p => {
+            const isExcluded = excludedPeers.includes(p.symbol)
+            return (
+              <div key={p.symbol} className={`flex items-center gap-2 text-sm py-1 ${isExcluded ? 'opacity-40' : ''}`}>
+                <label className="flex items-center gap-2 flex-1 min-w-0 cursor-pointer">
+                  <input type="checkbox" checked={selected.has(p.symbol)} onChange={() => toggle(p.symbol)}
+                         disabled={status[p.symbol] === 'available' || status[p.symbol] === 'loading'}
+                         className="accent-accent" />
+                  <span className="flex-1 text-slate-300 truncate">{p.name || p.symbol}</span>
+                </label>
+                <StatusBadge status={status[p.symbol]} queued={queue.includes(p.symbol) && status[p.symbol] !== 'loading'} />
+                <button onClick={() => onToggleExclude?.(p.symbol)}
+                  title={isExcluded ? 'Include this peer again' : "Not a good comparable — exclude from this stock's peer group"}
+                  className="text-[10px] text-slate-600 hover:text-bear shrink-0">
+                  {isExcluded ? '↺ excluded' : '✕'}
+                </button>
+              </div>
+            )
+          })}
           {peers.length === 0 && <p className="text-xs text-slate-500 py-2">No peers found for this stock.</p>}
         </div>
 
