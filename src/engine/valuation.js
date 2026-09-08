@@ -462,7 +462,7 @@ const TAX_RATE_BY_MARKET = { IN: 0.2517, US: 0.21 }
 // with a guess. The one thing that CAN make this number worth a second
 // look — an unusual beta reading — is surfaced via betaFlag (see
 // requiredReturn.js) without altering the computed value.
-function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRate = null, beta = null, betaMeta = null } = {}) {
+export function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRate = null, beta = null, betaMeta = null } = {}) {
   const riskFree = liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
   const tax = taxRate ?? TAX_RATE_BY_MARKET[market] ?? TAX_RATE_BY_MARKET.IN
   // `beta` here is this app's own regression (AppContext's SET_LIVE_BETA,

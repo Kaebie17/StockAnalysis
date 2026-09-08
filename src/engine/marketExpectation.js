@@ -21,7 +21,7 @@
 import { SECTOR_TYPES } from './stage.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { sectorPe, sectorEvSales, sectorEvFcf, financialPe, financialSales } from './sectorMultiples.js'
-import { reverseDcfGrowth } from './valuation.js'
+import { reverseDcfGrowth, computeWacc } from './valuation.js'
 import { TIER } from './methodologyTier.js'
 
 // ─── Default assumptions by stage + sector ───────────────────────────────────
@@ -53,7 +53,24 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   const market = opts.market ?? 'IN'
   const riskFree = opts.liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
   const capm = capmCostOfEquity({ riskFreeRate: riskFree, beta: opts.beta, erp: opts.liveErp ?? null, market, betaMeta: opts.betaMeta ?? null })
-  const discountRate = capm.r
+  const discountRate = capm.r   // pure cost of equity — correct for the Earnings-based variant, which solves against a bare EQUITY target (marketCap).
+
+  // Sales-based, FCF-based and Reverse-DCF all solve against an ENTERPRISE
+  // value target (marketCap + net debt) — discounting that at pure cost of
+  // equity was a units mismatch (WACC blends in the cheaper, tax-shielded
+  // cost of debt; Ke alone overstates the firm-level discount rate whenever
+  // there's meaningful debt). Reuses valuation.js's own computeWacc() rather
+  // than writing a second, independently-maintained WACC formula here.
+  // opts.ratioResult is the FULL ratioResult (not just .ratios) — computeWacc
+  // needs marketCap/totalDebt/interest/cash, which live at that top level.
+  const waccResult = computeWacc(opts.ratioResult, {
+    liveRiskFree: riskFree, market, erp: opts.liveErp ?? null, beta: opts.beta, betaMeta: opts.betaMeta ?? null,
+  })
+  // Falls back to the pure cost of equity when a real WACC can't be computed
+  // (debt is present but interest expense isn't reported) — decline
+  // gracefully to the nearest real number available, don't fabricate a
+  // blended rate from nothing.
+  const enterpriseDiscountRate = waccResult.wacc ?? discountRate
 
   // Terminal FCF multiple — was a single flat 18x for every sector alike (and
   // before that, hardcoded inline in the FCF variant with no override path at
@@ -63,38 +80,61 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   const fcfResult = getFcfMultiple(sectorType, ratios, data)
   const terminalFcfMultiple = fcfResult.value
 
+  // Shared disclosure: every terminal multiple here defaults to this
+  // company's OWN current multiple as a proxy for what it'll trade at once
+  // mature — a common, defensible reverse-DCF simplification, but not a
+  // free one. If today's multiple is elevated BECAUSE the market already
+  // expects high growth, using it as the maturity/exit multiple too
+  // partially bakes that same growth premium into the terminal assumption,
+  // which can UNDERSTATE the growth actually being priced in.
+  const currentMultipleCaveat = ' Uses this company\'s own current multiple as a proxy for its multiple at maturity — if today\'s multiple is already elevated because the market expects high growth, this can understate how much growth is really being priced in.'
+
   return {
     terminalSalesMultiple,
     terminalPeMultiple,
     terminalFcfMultiple,
     discountRate,
+    enterpriseDiscountRate,
     horizon: 10,
     // DERIVED when the stock's own actual ratio anchors the multiple; ASSUMED
-    // when it falls to the sector/financial table. discountRate is always
-    // DERIVED — CAPM applied to real inputs, no asserted constant in the
-    // chain. horizon carries no tier — a structural modeling choice, not a
-    // value.
+    // when it falls to the sector/financial table. discountRate and
+    // enterpriseDiscountRate are always DERIVED — CAPM/WACC applied to real
+    // inputs, no asserted constant in the chain. horizon carries no tier —
+    // a structural modeling choice, not a value.
     tiers: {
       terminalSalesMultiple: salesResult.tier,
       terminalPeMultiple:    peResult.tier,
       terminalFcfMultiple:   fcfResult.tier,
       discountRate:          TIER.DERIVED,
+      enterpriseDiscountRate: TIER.DERIVED,
     },
     // Rationale strings shown in ⓘ tooltips
     rationale: {
-      terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple),
-      terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple),
-      terminalFcfMultiple:   `${terminalFcfMultiple}× FCF is the assumed terminal FCF multiple — what the market will pay per rupee of free cash flow at maturity, anchored on this company's own current FCF conversion where measurable, else this sector's typical range. Asset-light, high-conversion sectors (tech, FMCG, pharma) trade richest; capital-intensive sectors (telecom, power, energy) trade lowest. Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.`,
-      discountRate:          getDiscountRationale(stage, discountRate, capm),
+      terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple) +
+        (salesResult.tier === TIER.DERIVED ? currentMultipleCaveat : ''),
+      terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple) +
+        (peResult.tier === TIER.DERIVED ? currentMultipleCaveat : ''),
+      terminalFcfMultiple:   `${terminalFcfMultiple}× FCF is the assumed terminal FCF multiple — what the market will pay per rupee of free cash flow at maturity, anchored on this company's own current FCF conversion where measurable, else this sector's typical range. Asset-light, high-conversion sectors (tech, FMCG, pharma) trade richest; capital-intensive sectors (telecom, power, energy) trade lowest. Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.` +
+        (fcfResult.tier === TIER.DERIVED ? currentMultipleCaveat : ''),
+      discountRate:           getDiscountRationale(stage, discountRate, capm),
+      enterpriseDiscountRate: getWaccRationale(enterpriseDiscountRate, waccResult, discountRate),
       horizon:               'Standard investment horizon of 10 years. Long enough to smooth out cycles, short enough to be meaningful. Change to 5 years for faster-moving sectors.'
     }
   }
 }
 
 function getSalesMultiple(sectorType, ratios, data) {
-  // If we have the stock's actual EV/Revenue, use it as anchor (clamped to reasonable range)
+  // Real EV/Revenue, used as-is (rounded to the nearest 0.5) — never
+  // clamped to a band. This used to clamp to [1.5, 8] while still labeling
+  // the (silently substituted) boundary value DERIVED, as if it were the
+  // real, unmodified figure — exactly the "the model prefers a different
+  // number than reality gave it" mistake this codebase removes everywhere
+  // else (beta, WACC, targetMultiple's range). Same gate getPeMultiple/
+  // getFcfMultiple already use instead: decline to the sector fallback when
+  // the reading is too extreme to trust as a proxy for what this company
+  // will trade at once mature, rather than distorting the real number.
   const actual = ratios?.evRevenue?.value
-  if (actual != null && actual > 0) return { value: Math.round(Math.max(1.5, Math.min(actual, 8)) * 2) / 2, tier: TIER.DERIVED }
+  if (actual != null && actual > 0 && actual < 20) return { value: Math.round(actual * 2) / 2, tier: TIER.DERIVED }
 
   // Sector median, from the SAME shared table valuation.js uses. Financial
   // sub-types read from sectorMultiples.js's own FINANCIAL_SALES_BY_SECTOR_TYPE
@@ -149,6 +189,24 @@ function getDiscountRationale(stage, rate, capm) {
   return `${pct}% is your required annual return${basis}.${stageNote} ` +
     `Think of this as the minimum return you need to invest here vs a safer alternative. ` +
     `Increase if you want a higher margin of safety; decrease if you trust the business more.`
+}
+
+// Sales-based, FCF-based and Reverse-DCF solve against an ENTERPRISE value
+// target (market cap + net debt), not bare equity — this needs the blended
+// cost of capital (WACC), not the pure cost of equity the Earnings-based
+// variant correctly uses for its equity-only target. Named and rationale'd
+// separately so the ⓘ tooltip says which rate is which, rather than the
+// same "your required return" text implying both are the same number.
+function getWaccRationale(rate, waccResult, ke) {
+  const pct = (rate * 100).toFixed(1)
+  if (waccResult.wacc == null) {
+    return `${pct}% — WACC couldn't be computed (debt is present but interest expense isn't reported), ` +
+      `so this falls back to the pure cost of equity (${(ke * 100).toFixed(1)}%) used elsewhere in this panel.`
+  }
+  return `${pct}% is this company's blended cost of capital (WACC) — equity and debt weighted by their ` +
+    `market values, debt's cost tax-shielded. Used here rather than the pure cost of equity because this ` +
+    `variant solves against an ENTERPRISE value target (market cap + net debt), not bare equity — discounting ` +
+    `a firm-level value at cost of equity alone would overstate the rate whenever there's meaningful debt.`
 }
 
 // ─── Core solver ──────────────────────────────────────────────────────────────
@@ -248,9 +306,17 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
     beta: opts.beta ?? r?.ratios?.beta?.value ?? null,
     betaMeta: opts.betaMeta ?? null,
     market: opts.market ?? 'IN',
+    ratioResult: r,   // computeWacc needs the FULL ratioResult (marketCap/totalDebt/interest/cash), not just .ratios
   })
   const assumptions = { ...defaults, ...overrides }
   const { terminalSalesMultiple, terminalPeMultiple, discountRate, horizon } = assumptions
+  // A manual override is one shared "required return" concept from the
+  // user's side (the panel's single discount-rate slider) — when set, it
+  // replaces BOTH rates uniformly. Left un-overridden, the two deliberately
+  // differ: discountRate (Ke) for the equity-target Earnings variant,
+  // enterpriseDiscountRate (WACC) for the enterprise-value-target Sales/
+  // FCF/Reverse-DCF variants — see getDefaultAssumptions.
+  const enterpriseDiscountRate = overrides.discountRate ?? defaults.enterpriseDiscountRate
 
   const price     = r?.price
   const marketCap = r?.marketCap
@@ -280,9 +346,11 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   // seemingly-live card with nothing inside it, instead of the same clean N/A
   // treatment the other two variants get when they can't compute.
   if (revenue != null && revenue > 0 && marketCap && evTarget != null) {
-    const impliedG = solveImpliedGrowth(revenue, evTarget, terminalSalesMultiple, discountRate, horizon)
+    // enterpriseDiscountRate (WACC), not discountRate (Ke) — this variant
+    // solves against evTarget, an ENTERPRISE value, see the note above.
+    const impliedG = solveImpliedGrowth(revenue, evTarget, terminalSalesMultiple, enterpriseDiscountRate, horizon)
     const sanity   = impliedG != null
-      ? buildSanityTable(revenue, evTarget, terminalSalesMultiple, discountRate, horizon, impliedG)
+      ? buildSanityTable(revenue, evTarget, terminalSalesMultiple, enterpriseDiscountRate, horizon, impliedG)
       : null
 
     variants.sales = {
@@ -300,7 +368,7 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       conclusion: getConclusion(impliedG, historicalRevGrowth, stage, 'sales'),
       assumptions: {
         terminalMultiple: { value: terminalSalesMultiple, rationale: assumptions.rationale.terminalSalesMultiple, tier: assumptions.tiers.terminalSalesMultiple },
-        discountRate:     { value: discountRate,          rationale: assumptions.rationale.discountRate,          tier: assumptions.tiers.discountRate },
+        discountRate:     { value: enterpriseDiscountRate, rationale: assumptions.rationale.enterpriseDiscountRate, tier: assumptions.tiers.enterpriseDiscountRate },
         horizon:          { value: horizon,                rationale: assumptions.rationale.horizon }
       }
     }
@@ -361,10 +429,12 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   const fcfBase = fcf ?? opCF
   if (fcfBase != null && fcfBase > 0 && evTarget != null) {
     // For FCF we use EV/FCF terminal multiple — typically 15-25×
+    // enterpriseDiscountRate (WACC), not discountRate (Ke) — see the note
+    // on evTarget above; this variant solves against an ENTERPRISE value.
     const termFcfMult = assumptions.terminalFcfMultiple
-    const impliedG = solveImpliedGrowth(fcfBase, evTarget, termFcfMult, discountRate, horizon)
+    const impliedG = solveImpliedGrowth(fcfBase, evTarget, termFcfMult, enterpriseDiscountRate, horizon)
     const sanity   = impliedG != null
-      ? buildSanityTable(fcfBase, evTarget, termFcfMult, discountRate, horizon, impliedG)
+      ? buildSanityTable(fcfBase, evTarget, termFcfMult, enterpriseDiscountRate, horizon, impliedG)
       : null
 
     variants.fcf = {
@@ -384,7 +454,7 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       conclusion: getConclusion(impliedG, historicalRevGrowth, stage, 'FCF'),
       assumptions: {
         terminalMultiple: { value: termFcfMult, rationale: assumptions.rationale.terminalFcfMultiple, tier: assumptions.tiers.terminalFcfMultiple },
-        discountRate:     { value: discountRate, rationale: assumptions.rationale.discountRate,         tier: assumptions.tiers.discountRate },
+        discountRate:     { value: enterpriseDiscountRate, rationale: assumptions.rationale.enterpriseDiscountRate, tier: assumptions.tiers.enterpriseDiscountRate },
         horizon:          { value: horizon,       rationale: assumptions.rationale.horizon }
       }
     }
@@ -407,20 +477,24 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   // terminal-growth mechanics — a genuinely different, also legitimate
   // terminal-value convention from the other three variants' flat-growth-
   // then-exit-multiple approach, kept visibly distinct rather than blended
-  // in. Uses THIS tab's own discount rate (not valuation.js's separate DCF
-  // WACC slider) so the tab stays self-contained: two different rates
-  // sharing one label would show two different numbers as if they agreed.
+  // in. Uses THIS panel's own WACC (enterpriseDiscountRate), not the
+  // Valuation tab's separate DCF WACC — two different tabs computing WACC
+  // independently could disagree for no stated reason, but reverseDcfGrowth
+  // solves against targetEV (marketCap + totalDebt - cash, an ENTERPRISE
+  // value), so it needs a real WACC, not the pure cost of equity — this used
+  // to pass discountRate (Ke) here, the same units mismatch fixed on the
+  // Sales/FCF variants above.
   if (fcf > 0 && price > 0 && marketCap && r?.shares && r?.totalDebt != null) {
     // Its own override key (not shared with the other variants' terminal-
     // multiple overrides, which are a different convention) — editable via
     // the same onAssumptionChange mechanism the panel already uses.
     const market = opts.market ?? 'IN'
     const reverseDcfTermGrowth = overrides.reverseDcfTermGrowth ?? (TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN)
-    const impliedG = reverseDcfGrowth(r, { wacc: discountRate, termGrowth: reverseDcfTermGrowth, projYears: horizon })
+    const impliedG = reverseDcfGrowth(r, { wacc: enterpriseDiscountRate, termGrowth: reverseDcfTermGrowth, projYears: horizon })
     variants.reverseDcf = {
       applicable: impliedG != null,
       label: 'Reverse DCF',
-      note: 'Uses the full DCF fade-to-terminal-growth mechanics (perpetuity-growth convention) — unlike the exit-multiple convention the other three variants use, and using this tab\'s own discount rate, not the Valuation tab\'s DCF WACC.',
+      note: 'Uses the full DCF fade-to-terminal-growth mechanics (perpetuity-growth convention) — unlike the exit-multiple convention the other three variants use, and using this panel\'s own WACC, not the Valuation tab\'s DCF WACC.',
       base: fcf,
       baseLabel: r?.fcfEstimated ? 'Free Cash Flow (estimated)' : 'Free Cash Flow',
       impliedGrowth: impliedG,
@@ -434,7 +508,7 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
         // multiple at all (perpetuity-growth convention, not exit-multiple).
         // VariantBlock renders whichever of the two is present.
         termGrowth:   { value: reverseDcfTermGrowth, rationale: `${(reverseDcfTermGrowth * 100).toFixed(1)}% is the terminal growth rate cash flows fade to once the explicit projection window ends — defaults to the same rate DCF's Fair Value model uses.`, tier: TIER.DERIVED },
-        discountRate: { value: discountRate, rationale: assumptions.rationale.discountRate, tier: assumptions.tiers.discountRate },
+        discountRate: { value: enterpriseDiscountRate, rationale: assumptions.rationale.enterpriseDiscountRate, tier: assumptions.tiers.enterpriseDiscountRate },
         horizon:      { value: horizon,      rationale: assumptions.rationale.horizon },
       },
     }
