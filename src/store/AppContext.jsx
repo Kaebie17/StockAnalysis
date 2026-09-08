@@ -518,8 +518,17 @@ export function AppProvider({ children }) {
     // data.confirmedPeers at the point of use. A confirmed candidate that
     // isn't in this pool would filter to nothing, so this has to be the
     // full pool, not some narrower list.
+    // state.ticker is the RAW user input ("RELIANCE") — the exchange-
+    // suffixed symbol fetchSectorConstituents needs to check NSE
+    // membership only lives on state.data.ticker (set by normalizeYahoo,
+    // the same resolved form fetchTicker's resolveTicker() produced).
+    // Passing the raw form meant a bare "RELIANCE" search never carried
+    // .NS, fetchSectorConstituents' own-market guard rejected it before
+    // ever calling /api/nseIndices, and the peer pipeline silently ran on
+    // zero NSE candidates for anyone who hadn't typed the suffix by hand.
+    const peerTicker = state.data?.ticker || state.ticker
     Promise.all([
-      fetchPeerCandidates({ ticker: state.ticker, meta: state.data?.meta, sectorType: state.sectorType }),
+      fetchPeerCandidates({ ticker: peerTicker, meta: state.data?.meta, sectorType: state.sectorType }),
       getRiskFreeRate({ market, userKey: getAiKey() }),
       getEquityRiskPremium({ market, userKey: getAiKey() }),
     ]).then(([peers, rf, erp]) => {
@@ -625,7 +634,7 @@ export function AppProvider({ children }) {
   const refreshPeers = useCallback(async () => {
     if (!state.ticker || !state.data) return
     clearPeersCache()
-    const rawPeers = await fetchPeerCandidates({ ticker: state.ticker, meta: state.data?.meta, sectorType: state.sectorType })
+    const rawPeers = await fetchPeerCandidates({ ticker: state.data?.ticker || state.ticker, meta: state.data?.meta, sectorType: state.sectorType })
     const assumptions = { ...state.assumptions, peers: rawPeers }   // full raw candidate pool, confirmations applied fresh below
     const peers = activePeers(rawPeers, state.data.confirmedPeers)
     const valuation = runValuation(state.data, state.ratioResult, state.stage, state.sectorType, { ...assumptions, peers })

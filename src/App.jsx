@@ -192,7 +192,7 @@ function Dashboard() {
       <PeerSelectModal
         open={peerModalOpen}
         onClose={closePeerModal}
-        ticker={state.ticker}
+        ticker={state.data?.ticker || state.ticker}
         meta={state.data?.meta}
         sectorType={state.sectorType}
         confirmedPeers={confirmedPeers}

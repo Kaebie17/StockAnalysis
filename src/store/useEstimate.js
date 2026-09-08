@@ -153,7 +153,11 @@ export function useEstimate(state, opts = {}) {
   useEffect(() => {
     if (!ticker) return
     let dead = false
-    fetchPeerCandidates({ ticker, meta: state?.data?.meta, sectorType: state?.sectorType }).then(list => {
+    // state.ticker (the `ticker` var above) is the raw, unresolved user
+    // input — fetchSectorConstituents needs the exchange-suffixed symbol
+    // (state.data.ticker, set by normalizeYahoo) to check NSE membership.
+    const peerTicker = state?.data?.ticker || ticker
+    fetchPeerCandidates({ ticker: peerTicker, meta: state?.data?.meta, sectorType: state?.sectorType }).then(list => {
       if (dead) return
       const confirmed = new Set(state?.data?.confirmedPeers || [])
       setPeers(list.filter(p => confirmed.has(p.symbol)))
