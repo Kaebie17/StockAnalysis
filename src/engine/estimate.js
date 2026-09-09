@@ -1437,6 +1437,22 @@ export function buildEstimate(ratioResult, opts = {}) {
       (own.excludedLossYears > 0
         ? ` (excludes ${own.excludedLossYears} loss year${own.excludedLossYears === 1 ? '' : 's'} — P/E undefined for negative earnings)`
         : '')
+    // targetMultiple() ran (it's computed unconditionally above, before this
+    // branch is even chosen) and may have tried a regression adjustment for
+    // returns/growth against this stock's own history — but its result only
+    // gets used when it actually wins one of the branches below/above this
+    // one. When THIS band wins instead, that reasoning — including exactly
+    // why a fit was or wasn't trusted (R² too low, not enough years, no
+    // forward figure) — used to be silently thrown away with no way to see
+    // it. Surfaced here instead, through the same multipleSteps UI already
+    // used for an adopted fit, with a header line making clear this is the
+    // REJECTED path, not what's shown above.
+    if (fitted?.steps?.length) {
+      fittedSteps = [
+        'A regression-based adjustment (this stock\'s own ROE/growth vs. its multiple) was tried but not used — the plain historical band above is shown instead:',
+        ...fitted.steps,
+      ]
+    }
   } else if (fitted?.multiple > 0 && fitted.source === 'historical-median') {
     multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
     multipleBasis = 'historical-median'

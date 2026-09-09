@@ -107,7 +107,17 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
     .filter(p => p?.date && p.close > 0)
     .map(p => ({ t: Date.parse(p.date), close: p.close }))
     .filter(p => isFinite(p.t))
-  if (closes.length === 0) return []
+  // A year with real, usable financial data that has no priced trading day
+  // anywhere in it just vanishes from `out` below (the `continue` at the
+  // price-overlap check) — same as any other excluded year, but for a
+  // different reason: the financials are fine, only price coverage is
+  // missing (fetched price history starting later than pasted statement
+  // history is the usual cause). Tracked separately so a caller can tell
+  // "not enough financial history" apart from "price data doesn't reach
+  // back as far as the statements do" instead of both looking like the same
+  // plain shortfall.
+  const priceGapYears = []
+  if (closes.length === 0) return Object.assign([], { priceGapYears })
 
   const out = []
   for (const row of incomeHistory || []) {
@@ -128,7 +138,7 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
     const start = Date.UTC(y - 1, fyEndMonth, 1)
     const end = Date.UTC(y, fyEndMonth, 0)
     const inYear = closes.filter(c => c.t >= start && c.t <= end).map(c => c.close).sort((a, b) => a - b)
-    if (inYear.length === 0) continue
+    if (inYear.length === 0) { priceGapYears.push(y); continue }
     const medianClose = inYear[Math.floor(inYear.length / 2)]
     // A median is the most sample-efficient statistic there is — real even from
     // a thin year (a listing year, a data gap) — so it's used and disclosed as
@@ -160,7 +170,7 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
       out[i].growth = ((cur[base] / prev[base]) - 1) * 100
     }
   }
-  return out
+  return Object.assign(out, { priceGapYears })
 }
 
 /**
@@ -187,12 +197,16 @@ export function targetMultiple(opts = {}) {
   // the minimum that can describe a range at all.
   const MIN_YEARS_FOR_BAND = 3
   if (obs.length < MIN_YEARS_FOR_BAND) {
+    const gapNote = obs.priceGapYears?.length > 0
+      ? ` (${obs.priceGapYears.length} more year${obs.priceGapYears.length === 1 ? '' : 's'} of financial data — ` +
+        `${obs.priceGapYears.join(', ')} — exist but have no overlapping price history)`
+      : ''
     // DERIVED — real peer data plus a percentile formula, same standing as
     // the primary anchor below, not a weaker fallback in provenance terms.
     return peerBand?.median > 0
       ? { multiple: peerBand.median, low: peerBand.low, high: peerBand.high,
           basis, source: 'peers', observations: obs.length, tier: TIER.DERIVED,
-          steps: [`Only ${obs.length} year${obs.length === 1 ? '' : 's'} of multiple history — ` +
+          steps: [`Only ${obs.length} year${obs.length === 1 ? '' : 's'} of multiple history${gapNote} — ` +
                   `too few to describe a range, so peers are used instead.`] }
       : null
   }
@@ -215,6 +229,14 @@ export function targetMultiple(opts = {}) {
   if (thinYears > 0) {
     steps.push(`${thinYears} of ${obs.length} year${obs.length > 1 ? 's' : ''} used ha${thinYears === 1 ? 's' : 've'} a thin trading record`)
   }
+  // Years with real financial data that never made it into `obs` at all
+  // because no priced trading day fell inside them — most often means the
+  // fetched price history doesn't reach back as far as the pasted/reported
+  // statement history does, not a fundamentals problem.
+  if (obs.priceGapYears?.length > 0) {
+    steps.push(`${obs.priceGapYears.length} year${obs.priceGapYears.length === 1 ? '' : 's'} of financial data ` +
+      `(${obs.priceGapYears.join(', ')}) had no overlapping price history — excluded from both the anchor and the fit`)
+  }
   let adjusted = anchor
   const fits = []
   // Sum of squared per-factor prediction-interval margins — root-sum-square
@@ -231,7 +253,18 @@ export function targetMultiple(opts = {}) {
   // that the data doesn't support is not used at all.
   const applyFit = (key, forward, label, unit = '%') => {
     const pts = obs.filter(o => o[key] != null).map(o => ({ x: o[key], y: o.multiple }))
-    if (pts.length < MIN_OBSERVATIONS || forward == null) return
+    // Both of these used to bail with no explanation at all — indistinguishable
+    // from "never tried" once rendered, when they're actually two different,
+    // real reasons: no forward figure to compare against, or not enough paired
+    // years of this fundamental to trust a slope from.
+    if (forward == null) {
+      steps.push(`${label}: no forward figure to compare against — no adjustment`)
+      return
+    }
+    if (pts.length < MIN_OBSERVATIONS) {
+      steps.push(`${label}: only ${pts.length} year${pts.length === 1 ? '' : 's'} with usable data (need ${MIN_OBSERVATIONS}+) — no adjustment`)
+      return
+    }
     const fit = fitLine(pts)
     if (!fit || fit.r2 < MIN_R2) {
       steps.push(`${label}: no reliable relationship in this stock's history (R²${fit ? ' ' + round(fit.r2) : ' —'}) — no adjustment`)
