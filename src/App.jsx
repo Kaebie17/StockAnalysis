@@ -30,11 +30,6 @@ function Dashboard() {
   const [studioOpen, setStudioOpen] = useState(false)
   const [gapFillOpen, setGapFillOpen] = useState(false)
   const [addHistoryOpen, setAddHistoryOpen] = useState(false)
-  // Set when "Add more history" was opened from a data-quality flag (see
-  // Header.jsx's isAutoDerivable) rather than the general +Add entry point —
-  // names which year/note to show, and drives the modal straight to the
-  // income table instead of a general five-table paste surface.
-  const [addHistoryFlag, setAddHistoryFlag] = useState(null)
   const [peerModalOpen, setPeerModalOpen] = useState(false)
   // Which ticker the auto-open has already fired (or been dismissed) for —
   // without this, closing the modal with coverage still below the floor
@@ -95,13 +90,13 @@ function Dashboard() {
 
   return (
     <div className="min-h-screen bg-navy-950 overflow-x-hidden">
-      <Header onAddHistory={f => { setAddHistoryFlag(f); setAddHistoryOpen(true) }} />
+      <Header />
 
       <main className="max-w-5xl mx-auto px-4 space-y-4">
         {!showDashboard
           ? <EmptyState />
           : <>
-              <SummaryStrip onExpand={handleExpand} expanded={expanded} onAddHistory={() => { setAddHistoryFlag(null); setAddHistoryOpen(true) }} detail={
+              <SummaryStrip onExpand={handleExpand} expanded={expanded} onAddHistory={() => setAddHistoryOpen(true)} detail={
                 <div className="space-y-4">
                   <GrowthWindowPicker />
                   <BetaWindowPicker />
@@ -189,10 +184,9 @@ function Dashboard() {
 
       <AddHistoryModal
         open={addHistoryOpen}
-        onClose={() => { setAddHistoryOpen(false); setAddHistoryFlag(null) }}
+        onClose={() => setAddHistoryOpen(false)}
         ticker={state.ticker}
         onApplyAll={applyPastedTable}
-        flag={addHistoryFlag}
       />
 
       <PeerSelectModal
