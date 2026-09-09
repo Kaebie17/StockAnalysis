@@ -59,6 +59,20 @@ function resolvedValues(r, data) {
     // Not on ratioResult — read off the latest row. Both were invisible before.
     capex:           latestC.capex?.value ?? null,
     cogs:            latestI.cogs?.value ?? latestI.grossProfit?.value ?? null,
+    // Same treatment as cogs above — the exceptional-items normalization
+    // group (metrics.js), also not on ratioResult. This only decides
+    // whether to PROMPT for the latest year's expanded Other Income/Net
+    // Profit rows, same as any other gap; whether that year turns out to
+    // have a real exceptional item or genuinely none is a separate question
+    // answered once it's actually pasted, not by this check.
+    otherIncome:            latestI.otherIncome?.value ?? null,
+    profitBeforeTax:        latestI.profitBeforeTax?.value ?? null,
+    exceptionalItems:       latestI.exceptionalItems?.value ?? null,
+    exceptionalItemsAT:     latestI.exceptionalItemsAT?.value ?? null,
+    profitExclExceptional:  latestI.profitExclExceptional?.value ?? null,
+    profitForEPS:           latestI.profitForEPS?.value ?? null,
+    profitForPE:            latestI.profitForPE?.value ?? null,
+    minorityInterest:       latestI.minorityInterest?.value ?? null,
   }
 }
 
