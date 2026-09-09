@@ -132,6 +132,56 @@ export const METRICS = {
     csv: ['netProfit', 'netIncome', 'pat'],
     needs: 'net margin, ROE, ROA, EPS, P/E',
   },
+  // otherIncome and the two exceptional-items lines exist to feed the
+  // per-year normalization derivation (dataQuality.js's normaliseIncome) —
+  // NOT flagged as missing base data (base: false) when absent, because
+  // most years genuinely have none; a blank year here is the normal case,
+  // not a gap.
+  otherIncome: {
+    table: 'income', label: 'Other Income', base: false,
+    yahoo: ['totalOtherIncomeExpenseNet', 'otherIncomeExpense'],
+    sec: [],
+    screener: ['otherincome'],
+    expandFrom: null,          // visible on Screener's default P&L, no expansion needed
+    ar: [/other income/i],
+    csv: ['otherIncome'],
+    needs: 'exceptional-items normalization',
+  },
+  // Not itself part of the normalization math, but without it dataQuality.js's
+  // effective-tax-rate estimate (used to convert a PRE-tax exceptional figure
+  // to its after-tax impact) has nothing to work from and falls back to
+  // removing the item gross — overstating the correction by the tax on it.
+  // A plain visible Screener row, no expansion needed.
+  profitBeforeTax: {
+    table: 'income', label: 'Profit Before Tax', base: false,
+    yahoo: ['pretaxIncome'], sec: ['IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest'],
+    screener: ['profitbeforetax', 'pbt'],
+    expandFrom: null,
+    ar: [/profit before tax/i, /\bPBT\b/],
+    csv: ['profitBeforeTax', 'pbt'],
+    needs: 'accurate after-tax normalization of a pre-tax exceptional item',
+  },
+  exceptionalItems: {
+    table: 'income', label: 'Exceptional Items', base: false,
+    yahoo: [], sec: [],
+    screener: ['exceptionalitems', 'exceptionalitem'],
+    // Best guess — confirm against a live Screener page. Pre-tax figure;
+    // exceptionalItemsAT (below) is preferred when both are present since
+    // it's already after-tax and needs no further tax-rate estimation.
+    expandFrom: 'Profit before tax',
+    ar: [/exceptional items?/i, /extraordinary items?/i],
+    csv: ['exceptionalItems'],
+    needs: 'per-year normalization (pre-tax; see exceptionalItemsAT)',
+  },
+  exceptionalItemsAT: {
+    table: 'income', label: 'Exceptional Items (After Tax)', base: false,
+    yahoo: [], sec: [],
+    screener: ['exceptionalitemsat', 'exceptionalitemat', 'exceptionalitemsaftertax'],
+    expandFrom: 'Profit before tax',
+    ar: [/exceptional items?.*after tax/i, /exceptional items?.*\(at\)/i],
+    csv: ['exceptionalItemsAT'],
+    needs: 'per-year normalization (used directly, no tax-rate estimation needed)',
+  },
   eps: {
     table: 'income', label: 'EPS', base: false,      // = netProfit / shares
     yahoo: ['dilutedEPS', 'basicEPS'],

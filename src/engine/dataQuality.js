@@ -35,16 +35,25 @@ const yearOf = row => {
   return m ? Number(m[0]) : null
 }
 
-/** Fields Screener and Yahoo use for separately-disclosed one-off items. */
-const EXCEPTIONAL_FIELDS = [
+// Fields Screener and Yahoo use for separately-disclosed one-off items.
+// AFTER_TAX_FIELDS are checked first and used directly — Screener's own
+// "Exceptional Items (AT)" line already IS the after-tax impact, so running
+// it through the tax-rate estimate below would double-adjust it. The
+// PRE_TAX_FIELDS fallback still needs that estimate, same as before.
+const AFTER_TAX_FIELDS = ['exceptionalItemsAT']
+const PRE_TAX_FIELDS = [
   'exceptionalItems', 'exceptional', 'extraordinaryItems', 'extraordinary',
   'otherIncomeExceptional', 'exceptionalItemsBeforeTax',
 ]
 
 function exceptionalOf(row) {
-  for (const f of EXCEPTIONAL_FIELDS) {
+  for (const f of AFTER_TAX_FIELDS) {
     const v = val(row?.[f])
-    if (v != null && isFinite(v) && v !== 0) return v
+    if (v != null && isFinite(v) && v !== 0) return { value: v, alreadyAfterTax: true }
+  }
+  for (const f of PRE_TAX_FIELDS) {
+    const v = val(row?.[f])
+    if (v != null && isFinite(v) && v !== 0) return { value: v, alreadyAfterTax: false }
   }
   return null
 }
@@ -63,12 +72,14 @@ export function normaliseIncome(incomeHistory = []) {
     const np = val(row?.netProfit)
     if (exc == null || !(np > 0)) return row
 
-    // Exceptional items are reported pre-tax; the after-tax effect is what
-    // reaches net profit. Where the effective rate is derivable it is used,
-    // otherwise the item is removed gross and that is stated.
+    // Exceptional items are usually reported pre-tax; the after-tax effect
+    // is what reaches net profit. Where Screener's own after-tax figure is
+    // available it's used directly (exceptionalOf already flags this via
+    // alreadyAfterTax); otherwise the effective rate is estimated where
+    // derivable, and failing that the item is removed gross.
     const pbt = val(row?.profitBeforeTax) ?? val(row?.pbt)
-    const taxRate = (pbt > 0 && np > 0 && pbt > np) ? 1 - (np / pbt) : null
-    const afterTax = taxRate != null ? exc * (1 - taxRate) : exc
+    const taxRate = (!exc.alreadyAfterTax && pbt > 0 && np > 0 && pbt > np) ? 1 - (np / pbt) : null
+    const afterTax = exc.alreadyAfterTax ? exc.value : (taxRate != null ? exc.value * (1 - taxRate) : exc.value)
     const adjusted = np - afterTax
     if (!(adjusted > 0)) return row      // removing it would leave a loss; leave alone
 
@@ -82,6 +93,7 @@ export function normaliseIncome(incomeHistory = []) {
       reportedProfit: round(np, 0),
       adjustedProfit: round(adjusted, 0),
       taxAdjusted: taxRate != null,
+      alreadyAfterTax: exc.alreadyAfterTax,
       impactPct: round(((np - adjusted) / np) * 100, 1),
       note: `${afterTax > 0 ? 'A gain of' : 'A charge of'} ${Math.abs(round(afterTax, 0))} was reported separately and has been removed`,
       resolved: true,

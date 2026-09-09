@@ -6,7 +6,7 @@ import { normalize, applyDocFacts, migrateStoredData } from '../engine/normalize
 import { calcRatios } from '../engine/ratios.js'
 import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
-import { assessDataQuality } from '../engine/dataQuality.js'
+import { assessDataQuality, normaliseIncome } from '../engine/dataQuality.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -191,9 +191,27 @@ function reducer(s, a) {
       // SAME kind of Screener data, arriving later, and this case never set
       // it. That silently made every ticker built up via "Add History" un-
       // syncable: real pasted effort, sitting on one device forever.
-      const data = a.tableType === 'income'
-        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
-        : { ...s.data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
+      let data
+      if (a.tableType === 'income') {
+        data = { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
+        // A pasted Other Income / Exceptional Items expansion is enough on
+        // its own to derive a normalized year — the most common one-off
+        // shape (see dataQuality.js's normaliseIncome), no separate
+        // NormalizeModal trip required for it. Runs over the full merged
+        // history, not just this paste's years, so an earlier paste's
+        // exceptional items that never got derived (e.g. before this existed)
+        // are picked up too. Fill-only: an existing manual normalization for
+        // a year always wins over this auto-derivation — mergeByYear's second
+        // argument takes precedence, so the existing table is passed second.
+        const { rows: derivedRows, adjustments } = normaliseIncome(newHistory)
+        if (adjustments.length > 0) {
+          const derivedByYear = Object.fromEntries(derivedRows.map(r => [String(r.year), r]))
+          const autoNormalized = adjustments.map(adj => derivedByYear[String(adj.year)]).filter(Boolean)
+          data.normalizedIncomeHistory = mergeByYear(autoNormalized, s.data.normalizedIncomeHistory || [])
+        }
+      } else {
+        data = { ...s.data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
+      }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
