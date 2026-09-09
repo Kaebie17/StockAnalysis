@@ -209,12 +209,24 @@ export function parsePastedTable(text, tableType, opts = {}) {
 
     let matchedField = overrides[norm] || null
     if (!matchedField) {
+      // Exact match always wins outright, checked across every field first —
+      // otherwise field iteration order decided ties that had nothing to do
+      // with which alias actually fit the label. Failing that, the LONGEST
+      // startsWith match wins: "exceptionalitemsat" starts with the plain
+      // "exceptionalitems" alias too, so whichever field happened to be
+      // checked first (an object's insertion order, not something the alias
+      // choice was ever meant to encode) used to silently win regardless of
+      // which one actually named the row — exceptionalItemsAT rows were
+      // landing in exceptionalItems this way.
+      let bestField = null, bestAlias = ''
       for (const [field, aliases] of Object.entries(aliasMap)) {
-        if (aliases.some(a => norm === a || norm.startsWith(a))) {
-          matchedField = field
-          break
+        for (const a of aliases) {
+          if (norm === a) { bestField = field; bestAlias = a; break }
+          if (norm.startsWith(a) && a.length > bestAlias.length) { bestField = field; bestAlias = a }
         }
+        if (bestAlias === norm) break
       }
+      matchedField = bestField
     }
     if (!matchedField) {
       // Only worth flagging if the row actually carries a number — a stray
