@@ -111,19 +111,23 @@ const yearOf = row => {
  * FOLLOWING year: what buyers were paying, at the time, for earnings that hadn't
  * arrived yet. That is the multiple a forward EPS can legitimately be multiplied
  * by.
- */
-/**
- * What buyers have paid for a year of FORWARD earnings.
  *
- * Uses REPORTED earnings, not normalised ones. The market set those prices while
- * looking at the reported figures — including whatever exceptional item was in
- * them — so dividing historical prices by a normalised EPS measures a multiple
- * nobody ever paid. The projection this band is applied to uses normalised
- * earnings, correctly: one describes past market behaviour, the other forecasts
- * the underlying business.
- *
- * Callers pass `reportedIncomeHistory` where it exists; where it doesn't, the
- * two are identical and nothing changes.
+ * Takes whichever basis the caller's `incomeHistory` already represents
+ * (reported, or reported-with-normalized-years-merged-in per the basis
+ * toggle) rather than forcing reported regardless of it. An earlier version
+ * hard-overrode to reported here on the theory that a normalized EPS
+ * "measures a multiple nobody ever paid" — but this app's normalization is
+ * a per-year correction of that YEAR's own contemporaneously-disclosed
+ * one-off (a footnoted exceptional item in that year's own report), not a
+ * hindsight-wide restatement, so that theory doesn't hold: it's typically
+ * closer to what an adjusted-EPS-using analyst was pricing at the time than
+ * raw reported earnings is. More decisively, the target this band feeds
+ * (`target = multiple × forwardEps`) only means anything if the multiple
+ * was itself measured as price ÷ THE SAME KIND of EPS being projected —
+ * and the projection already follows the basis toggle (resolveMarginBasis
+ * reads normalized years when the toggle is set), so forcing this band to
+ * stay reported-only while the EPS it multiplies floats between bases was
+ * multiplying two different definitions of earnings together.
  */
 export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) {
   const { fyEndMonth = 3 } = opts
@@ -376,8 +380,9 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
 
   const forwardBook = bps * Math.pow(1 + growth, years)
 
-  const band = pbBand(priceHistory, balanceHistory,
-    opts.reportedIncomeHistory?.length ? opts.reportedIncomeHistory : incomeHistory)
+  // Same basis as the projection this band is applied to — see forwardPeBand's
+  // docblock for why forcing this to reported regardless of the toggle was wrong.
+  const band = pbBand(priceHistory, balanceHistory, incomeHistory)
   const currentPb = ratioResult?.ratios?.pb?.value ?? (price > 0 ? price / bps : null)
   // Spread width when no measured P/B band exists: this stock's own price
   // dispersion (needs only closes, not paired book value — clears where the
@@ -634,9 +639,9 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
 
   // The multiple is applied to NORMALISED earnings, so it must be a
   // through-cycle multiple too — the median of what the market paid across the
-  // same span, not today's.
-  const bandHistory = opts.reportedIncomeHistory?.length ? opts.reportedIncomeHistory : incomeHistory
-  const bandRaw = forwardPeBand(priceHistory, bandHistory)
+  // same span, not today's. Same basis (reported/normalized, per the toggle)
+  // as the projection too — see forwardPeBand's docblock.
+  const bandRaw = forwardPeBand(priceHistory, incomeHistory)
   const band = bandRaw?.insufficient ? null : bandRaw
   // Spread width: the real through-cycle band's own shape when one exists
   // (this override branch previously ignored `band` even when available and
@@ -1367,10 +1372,9 @@ export function buildEstimate(ratioResult, opts = {}) {
     peerWeight,
   })
 
-  // Reported series for the band; normalised for the projection. See the note
-  // on forwardPeBand.
-  const bandHistory = opts.reportedIncomeHistory?.length ? opts.reportedIncomeHistory : incomeHistory
-  const ownRaw = forwardPeBand(priceHistory, bandHistory)
+  // Same basis (reported, or reported-with-normalized-years-merged-in) as
+  // the projection this band is applied to. See forwardPeBand's docblock.
+  const ownRaw = forwardPeBand(priceHistory, incomeHistory)
   const bandReason = ownRaw?.insufficient ? ownRaw.reason : null
   let own = ownRaw?.insufficient ? null : ownRaw
 

@@ -251,9 +251,6 @@ export function useEstimate(state, opts = {}) {
     multipleOverride: overrides.multiple ?? null,
     priceHistory:   state.data?.priceHistory   || [],
     incomeHistory:  state.data?.incomeHistory  || [],
-    // The pre-normalisation series, so the multiple band is measured against
-    // the figures the market actually saw.
-    reportedIncomeHistory: state.data?.reportedIncomeHistory || [],
     balanceHistory: state.data?.balanceHistory || [],
     peerBand,
     // 0-1, how much peerBand pulls the own-history fitted multiple — a
