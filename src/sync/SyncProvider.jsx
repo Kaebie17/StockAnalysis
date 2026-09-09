@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react'
 import { supabase, syncEnabled } from './supabaseClient.js'
 import { pullAll, pushAllLocal } from './sync.js'
 
@@ -40,7 +40,7 @@ export function SyncProvider({ children }) {
   // watch this value and re-read their own cache when it changes.
   const [lastPulledAt, setLastPulledAt] = useState(0)
 
-  const runInitialSync = useCallback(async () => {
+  const doRunInitialSync = useCallback(async () => {
     setStatus('syncing')
     setError(null)
     // A network call here (getUser/select/upsert) has no built-in timeout — a
@@ -72,6 +72,29 @@ export function SyncProvider({ children }) {
       setStatus('error')
     }
   }, [])
+
+  // Supabase's own client re-checks/refreshes the session on its own —
+  // notably on every tab-visibility change — and each of those fires
+  // onAuthStateChange, which calls runInitialSync. Nothing stopped a
+  // visibility change moments after page load from starting a SECOND full
+  // sync while the first was still running: both pushAllLocal() calls
+  // upsert the same rows, so the second queues behind the first's Postgres
+  // row lock, and that wait counts against the 8s statement_timeout — a
+  // self-inflicted timeout that no amount of chunking or concurrency tuning
+  // in sync.js fixes on its own, since the real problem is two of these
+  // running at once in the first place. A second caller just awaits the
+  // run already in flight instead of starting a competing one.
+  const inFlightRef = useRef(null)
+  const runInitialSync = useCallback(async () => {
+    if (inFlightRef.current) return inFlightRef.current
+    const run = doRunInitialSync()
+    inFlightRef.current = run
+    try {
+      await run
+    } finally {
+      inFlightRef.current = null
+    }
+  }, [doRunInitialSync])
 
   // onAuthStateChange fires immediately on subscribe with whatever session
   // already exists, THEN again on any later real change (sign-in, sign-out,

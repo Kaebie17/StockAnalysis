@@ -103,9 +103,33 @@ async function pushChunk(user, chunk) {
   }
 }
 
+// Supabase's client re-checks/refreshes the session on its own — notably on
+// every tab-visibility change — and each of those emits an auth event that
+// SyncProvider reacts to by starting a fresh full sync. Nothing stopped two
+// of those from overlapping (e.g. a tab regaining focus moments after page
+// load, or the debounce timer below firing while pushAllLocal's own flush
+// call is still in flight), and two concurrent upserts touching the SAME
+// (user_id, key) rows make the second one queue behind the first's row lock
+// — that wait time counts against Postgres's statement_timeout too, so an
+// otherwise-healthy write can time out purely from contending with itself.
+// Collapsing every call onto one shared in-flight promise makes overlap
+// impossible: a second caller just awaits the run already underway instead
+// of starting a competing one.
+let flushInFlight = null
+
+async function flush() {
+  if (flushInFlight) return flushInFlight
+  flushInFlight = doFlush()
+  try {
+    return await flushInFlight
+  } finally {
+    flushInFlight = null
+  }
+}
+
 // @returns {{ok: boolean, error?: any}} — the caller (SyncProvider) surfaces
 // this as real sync status instead of assuming every push landed.
-async function flush() {
+async function doFlush() {
   const user = await currentUser()
   if (!user) return { ok: false, error: 'not signed in' }
   if (pending.size === 0) return { ok: true }
@@ -143,8 +167,22 @@ export async function pushAllLocal() {
 }
 
 // ── Pull ──────────────────────────────────────────────────────────────────────
-// @returns {{pulled: number, ok: boolean, error?: any}}
+// Same overlap risk as flush() above (an auth-refresh-triggered resync
+// landing mid-pull), so the same single-in-flight guard applies here.
+let pullInFlight = null
+
 export async function pullAll() {
+  if (pullInFlight) return pullInFlight
+  pullInFlight = doPullAll()
+  try {
+    return await pullInFlight
+  } finally {
+    pullInFlight = null
+  }
+}
+
+// @returns {{pulled: number, ok: boolean, error?: any}}
+async function doPullAll() {
   const user = await currentUser()
   if (!user) return { pulled: 0, ok: false, error: 'not signed in' }
   let rows = []
