@@ -29,6 +29,17 @@ export function queuePush(key, value) {
   timer = setTimeout(flush, 1200)   // debounce
 }
 
+// One upsert statement covering the whole pending set (which can be
+// hundreds of records right after sign-in, via pushAllLocal) risked growing
+// large enough — several merged financials records, each holding years of
+// pasted history, in one statement — to blow past Postgres's
+// statement_timeout (error 57014). Worse, a fixed 30s retry then replayed
+// that exact same oversized statement forever, which is what was tipping a
+// recovering database back into an unhealthy state. Capping each upsert to
+// a bounded number of rows keeps every individual statement small
+// regardless of how much is queued.
+const PUSH_CHUNK_SIZE = 10
+
 // @returns {{ok: boolean, error?: any}} — the caller (SyncProvider) surfaces
 // this as real sync status instead of assuming every push landed.
 async function flush() {
@@ -39,29 +50,44 @@ async function flush() {
   // duration of the request so a NEW edit queued while this upsert is in
   // flight isn't lost, and isn't silently discarded if the upsert fails.
   const snapshot = new Map(pending)
-  const rows = [...snapshot.entries()].map(([key, value]) => ({
-    user_id: user.id, key, value, updated_at: new Date().toISOString(),
-  }))
-  try {
-    const { error } = await supabase.from('user_data').upsert(rows, { onConflict: 'user_id,key' })
-    if (error) throw error
-    // Only drop the keys we just pushed, and only if nothing newer re-queued
-    // that same key while the request was in flight (reference equality on
-    // the value we snapshotted — a fresh queuePush call replaces it).
-    for (const [key, value] of snapshot) {
-      if (pending.get(key) === value) pending.delete(key)
+  const entries = [...snapshot.entries()]
+  const chunks = []
+  for (let i = 0; i < entries.length; i += PUSH_CHUNK_SIZE) chunks.push(entries.slice(i, i + PUSH_CHUNK_SIZE))
+
+  let firstError = null
+  for (const chunk of chunks) {
+    const rows = chunk.map(([key, value]) => ({
+      user_id: user.id, key, value, updated_at: new Date().toISOString(),
+    }))
+    try {
+      const { error } = await supabase.from('user_data').upsert(rows, { onConflict: 'user_id,key' })
+      if (error) throw error
+      // Only drop the keys we just pushed, and only if nothing newer re-queued
+      // that same key while the request was in flight (reference equality on
+      // the value we snapshotted — a fresh queuePush call replaces it).
+      for (const [key, value] of chunk) {
+        if (pending.get(key) === value) pending.delete(key)
+      }
+    } catch (e) {
+      console.warn('[sync] push chunk failed', e)
+      firstError = firstError || e
+      // Stop rather than push straight on to the next chunk — a timeout
+      // usually means the database is already under strain, and immediately
+      // firing more upserts at it would only make that worse. Whatever
+      // wasn't pushed stays in `pending` for the retry below.
+      break
     }
-    clearTimeout(retryTimer)
-    return { ok: true }
-  } catch (e) {
-    console.warn('[sync] push failed', e)
-    // Nothing was removed from `pending` — the next queuePush's debounce
-    // will retry it. But if the user makes no further edits, that would
-    // never fire, so also schedule one attempt on our own.
-    clearTimeout(retryTimer)
-    retryTimer = setTimeout(flush, 30000)
-    return { ok: false, error: e }
   }
+
+  clearTimeout(retryTimer)
+  if (firstError) {
+    // Nothing further was removed from `pending` — the next queuePush's
+    // debounce will retry it. But if the user makes no further edits, that
+    // would never fire, so also schedule one attempt on our own.
+    retryTimer = setTimeout(flush, 30000)
+    return { ok: false, error: firstError }
+  }
+  return { ok: true }
 }
 
 // Convenience: push everything currently local (called after sign-in).
