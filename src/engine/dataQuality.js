@@ -61,6 +61,23 @@ function exceptionalOf(row) {
 /**
  * Normalise reported one-offs out of the income history.
  *
+ * Two tiers, checked in order, per year:
+ *
+ *   1. profitExclExceptional — a company with associates and/or minority
+ *      interest (Airtel, e.g.) has a Net Profit waterfall where those sit
+ *      somewhere relative to the exceptional item, in an order this app has
+ *      no way to know. Subtracting exceptionalItemsAT from the FINAL
+ *      (post-minority) Net Profit silently assumes minority interest's
+ *      share of the exceptional item is zero — an assumption that can be
+ *      wrong. Screener's own "excluding exceptional items" figure has
+ *      already resolved that waterfall correctly, whatever its actual
+ *      order is for this specific company, so it's used directly and
+ *      unconditionally preferred over deriving anything.
+ *   2. exceptionalItems(AT) subtraction — the fallback when Screener
+ *      doesn't disclose the resolved figure directly. Carries the
+ *      minority-interest-ordering risk above; flagged via `derivedByOrdering`
+ *      so a caller can distinguish "Screener told us" from "we subtracted."
+ *
  * Returns a NEW history — the original is left untouched, so a caller that
  * wants reported figures still has them. Each adjusted row carries what was
  * removed, so the ⓘ can show the working.
@@ -68,19 +85,32 @@ function exceptionalOf(row) {
 export function normaliseIncome(incomeHistory = []) {
   const adjustments = []
   const rows = (incomeHistory || []).map(row => {
-    const exc = exceptionalOf(row)
     const np = val(row?.netProfit)
-    if (exc == null || !(np > 0)) return row
+    if (!(np > 0)) return row
 
-    // Exceptional items are usually reported pre-tax; the after-tax effect
-    // is what reaches net profit. Where Screener's own after-tax figure is
-    // available it's used directly (exceptionalOf already flags this via
-    // alreadyAfterTax); otherwise the effective rate is estimated where
-    // derivable, and failing that the item is removed gross.
-    const pbt = val(row?.profitBeforeTax) ?? val(row?.pbt)
-    const taxRate = (!exc.alreadyAfterTax && pbt > 0 && np > 0 && pbt > np) ? 1 - (np / pbt) : null
-    const afterTax = exc.alreadyAfterTax ? exc.value : (taxRate != null ? exc.value * (1 - taxRate) : exc.value)
-    const adjusted = np - afterTax
+    const directClean = val(row?.profitExclExceptional)
+    const exc = exceptionalOf(row)
+    if (directClean == null && exc == null) return row
+
+    let afterTax, adjusted, taxRate = null, derivedByOrdering
+    if (directClean != null && directClean > 0 && directClean !== np) {
+      adjusted = directClean
+      afterTax = np - directClean
+      derivedByOrdering = false
+    } else if (exc != null) {
+      // Exceptional items are usually reported pre-tax; the after-tax effect
+      // is what reaches net profit. Where Screener's own after-tax figure is
+      // available it's used directly (exceptionalOf already flags this via
+      // alreadyAfterTax); otherwise the effective rate is estimated where
+      // derivable, and failing that the item is removed gross.
+      const pbt = val(row?.profitBeforeTax) ?? val(row?.pbt)
+      taxRate = (!exc.alreadyAfterTax && pbt > 0 && np > 0 && pbt > np) ? 1 - (np / pbt) : null
+      afterTax = exc.alreadyAfterTax ? exc.value : (taxRate != null ? exc.value * (1 - taxRate) : exc.value)
+      adjusted = np - afterTax
+      derivedByOrdering = true
+    } else {
+      return row
+    }
     if (!(adjusted > 0)) return row      // removing it would leave a loss; leave alone
 
     const eps = val(row?.eps)
@@ -93,7 +123,11 @@ export function normaliseIncome(incomeHistory = []) {
       reportedProfit: round(np, 0),
       adjustedProfit: round(adjusted, 0),
       taxAdjusted: taxRate != null,
-      alreadyAfterTax: exc.alreadyAfterTax,
+      alreadyAfterTax: exc?.alreadyAfterTax ?? true,
+      // false: Screener's own "excl. exceptional" figure was used directly.
+      // true: derived by subtracting from Net Profit — carries the
+      // associates/minority-interest-ordering risk described above.
+      derivedByOrdering,
       impactPct: round(((np - adjusted) / np) * 100, 1),
       note: `${afterTax > 0 ? 'A gain of' : 'A charge of'} ${Math.abs(round(afterTax, 0))} was reported separately and has been removed`,
       resolved: true,

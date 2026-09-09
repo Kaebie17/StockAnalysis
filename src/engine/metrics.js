@@ -165,22 +165,81 @@ export const METRICS = {
     table: 'income', label: 'Exceptional Items', base: false,
     yahoo: [], sec: [],
     screener: ['exceptionalitems', 'exceptionalitem'],
-    // Best guess — confirm against a live Screener page. Pre-tax figure;
-    // exceptionalItemsAT (below) is preferred when both are present since
-    // it's already after-tax and needs no further tax-rate estimation.
-    expandFrom: 'Profit before tax',
+    // Pre-tax figure, revealed by expanding OTHER INCOME (not Profit before
+    // tax — corrected per confirmed Screener layout). exceptionalItemsAT and
+    // profitExclExceptional (below) are preferred over deriving from this
+    // when present, since both sidestep this app's own tax-rate estimate.
+    expandFrom: 'Other Income',
     ar: [/exceptional items?/i, /extraordinary items?/i],
     csv: ['exceptionalItems'],
     needs: 'per-year normalization (pre-tax; see exceptionalItemsAT)',
   },
+  // The rest of this group is revealed by expanding NET PROFIT, not Other
+  // Income — Screener's full waterfall from consolidated profit down to
+  // what EPS is actually based on. A company with associates/minority
+  // interests (e.g. Airtel) needs this whole chain, not just the
+  // exceptional-item figure, because Net Profit − exceptionalItemsAT alone
+  // silently assumes minority interest's share of the exceptional item is
+  // zero — an assumption dataQuality.js has no way to check. Where Screener
+  // directly discloses "excluding exceptional items," that number has
+  // already resolved this correctly whatever Airtel's actual waterfall
+  // order is; deriving it ourselves via subtraction does not need to.
   exceptionalItemsAT: {
     table: 'income', label: 'Exceptional Items (After Tax)', base: false,
     yahoo: [], sec: [],
     screener: ['exceptionalitemsat', 'exceptionalitemat', 'exceptionalitemsaftertax'],
-    expandFrom: 'Profit before tax',
+    expandFrom: 'Net Profit',
     ar: [/exceptional items?.*after tax/i, /exceptional items?.*\(at\)/i],
     csv: ['exceptionalItemsAT'],
-    needs: 'per-year normalization (used directly, no tax-rate estimation needed)',
+    needs: 'per-year normalization fallback when profitExclExceptional is absent',
+  },
+  profitExclExceptional: {
+    table: 'income', label: 'Profit excl. Exceptional Items', base: false,
+    yahoo: [], sec: [],
+    screener: ['profitexclexcep', 'profitexcludingexceptionalitems', 'profitexclexceptional'],
+    expandFrom: 'Net Profit',
+    ar: [/profit excl(?:uding)?\.? exceptional/i],
+    csv: ['profitExclExceptional'],
+    // Primary source for the normalized netProfit: Screener has already
+    // resolved the associates/minority-interest ordering correctly, whatever
+    // it is for this specific company — see the group comment above.
+    needs: 'per-year normalization (preferred over deriving via subtraction)',
+  },
+  profitForEPS: {
+    table: 'income', label: 'Profit for EPS', base: false,
+    yahoo: [], sec: [],
+    screener: ['profitforeps'],
+    expandFrom: 'Net Profit',
+    ar: [/profit for eps/i],
+    csv: ['profitForEPS'],
+    needs: 'confirms which profit figure EPS is actually based on',
+  },
+  profitForPE: {
+    table: 'income', label: 'Profit for PE', base: false,
+    yahoo: [], sec: [],
+    screener: ['profitforpe'],
+    expandFrom: 'Net Profit',
+    ar: [/profit for pe/i],
+    csv: ['profitForPE'],
+    needs: 'confirms which profit figure the P/E ratio is actually based on',
+  },
+  profitFromAssociates: {
+    table: 'income', label: 'Profit from Associates', base: false,
+    yahoo: [], sec: [],
+    screener: ['profitfromassociates', 'shareofprofitofassociates'],
+    expandFrom: 'Net Profit',
+    ar: [/profit from associates/i, /share of profit of associates/i],
+    csv: ['profitFromAssociates'],
+    needs: 'context for the Net Profit waterfall on a company with associates',
+  },
+  minorityInterest: {
+    table: 'income', label: 'Minority Share', base: false,
+    yahoo: ['minorityInterest'], sec: ['MinorityInterest'],
+    screener: ['minorityshare', 'minorityinterest', 'noncontrollinginterest'],
+    expandFrom: 'Net Profit',
+    ar: [/minority (?:share|interest)/i, /non-?controlling interest/i],
+    csv: ['minorityInterest'],
+    needs: 'context for the Net Profit waterfall on a company with non-wholly-owned subsidiaries',
   },
   eps: {
     table: 'income', label: 'EPS', base: false,      // = netProfit / shares

@@ -32,7 +32,10 @@ const TABLES = [
 const FIELD_LABELS = {
   income:   { revenue: 'Revenue', operatingProfit: 'Operating Profit', depreciation: 'Depreciation', interest: 'Interest', netProfit: 'Net Profit', eps: 'EPS', dividendPayout: 'Dividend Payout %',
               otherIncome: 'Other Income', profitBeforeTax: 'Profit Before Tax',
-              exceptionalItems: 'Exceptional Items', exceptionalItemsAT: 'Exceptional Items (After Tax)' },
+              exceptionalItems: 'Exceptional Items', exceptionalItemsAT: 'Exceptional Items (After Tax)',
+              profitExclExceptional: 'Profit excl. Exceptional Items', profitForEPS: 'Profit for EPS',
+              profitForPE: 'Profit for PE', profitFromAssociates: 'Profit from Associates',
+              minorityInterest: 'Minority Share' },
   balance:  { equityCapital: 'Equity Capital', reserves: 'Reserves', totalEquity: 'Total Equity', totalDebt: 'Total Debt', totalAssets: 'Total Assets' },
   cashflow: { operatingCF: 'Operating Cash Flow', freeCashFlow: 'Free Cash Flow' },
 }
