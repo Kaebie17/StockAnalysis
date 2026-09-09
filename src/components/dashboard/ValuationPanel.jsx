@@ -373,7 +373,12 @@ function EstimateExplainer({ state }) {
                 <Step n={est.projRevenue != null ? '4' : '3'} title="What buyers pay for those earnings">
                   {est.multipleBasis === 'observed'
                     ? <>Historically people have paid between <span className="text-slate-300">{est.multiples.low}×</span> and{' '}
-                       <span className="text-slate-300">{est.multiples.high}×</span> next year's earnings for this stock.</>
+                       <span className="text-slate-300">{est.multiples.high}×</span> next year's earnings for this stock.
+                       {est.ownPeerBlend && (
+                         <span className="text-accent">
+                           {' '}Blended {est.ownPeerBlend.pct}% toward confirmed peers' {est.ownPeerBlend.peerMedian}× median.
+                         </span>
+                       )}</>
                     : <>Using {est.multipleLabel}: <span className="text-slate-300">{est.multiples.low}×</span> to{' '}
                        <span className="text-slate-300">{est.multiples.high}×</span>.</>}
                 </Step>

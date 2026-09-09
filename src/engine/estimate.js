@@ -1391,7 +1391,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     ownDivergesFromCurrent = ratio > 2.5 || ratio < 0.4
   }
 
-  let multiples, multipleBasis, multipleLabel, thinMultiple = false, divergesFromCurrent = false
+  let multiples, multipleBasis, multipleLabel, thinMultiple = false, divergesFromCurrent = false, ownPeerBlend = null
   if (multipleOverride != null && multipleOverride > 0) {
     const c = multipleOverride
     // Keep whatever spread the measured band had, so a re-rating moves the
@@ -1420,7 +1420,36 @@ export function buildEstimate(ratioResult, opts = {}) {
     multipleLabel = `${fitted.anchor}× historical anchor, adjusted for returns and growth`
     fittedSteps = fitted.steps
   } else if (own) {
-    multiples = { low: own.low, base: own.median, high: own.high }
+    // Comparable-company cross-checking a firm's own historical multiple is
+    // standard analyst practice (see targetMultiple.js's own citations —
+    // Bradshaw 2002, Yin/Peasnell & Hunt 2018) and this app already applies
+    // it via peerWeight whenever targetMultiple()'s regression or plain
+    // median wins. It had no way to apply to THIS band at all — forwardPeBand
+    // was never given peerWeight/peerBand as inputs — which meant the same
+    // user-set slider silently did nothing whenever this (the most common)
+    // branch was the one chosen, with no indication that was happening.
+    // Mirrors targetMultiple.js's own blend formula exactly: center blends
+    // toward the peer median, and the RANGE'S WIDTH (not the edges
+    // independently) blends toward the peer band's own width, so a
+    // confident, narrow peer band can genuinely tighten an unusually wide
+    // own-history band instead of just recentring it.
+    let ownLow = own.low, ownMedian = own.median, ownHigh = own.high
+    if (peerWeight > 0 && peerBand?.median > 0) {
+      ownMedian = (1 - peerWeight) * own.median + peerWeight * peerBand.median
+      const ownMargin = (own.high - own.low) / 2
+      if (peerBand.low > 0 && peerBand.high > 0) {
+        const peerMargin = (peerBand.high - peerBand.low) / 2
+        const blendedMargin = (1 - peerWeight) * ownMargin + peerWeight * peerMargin
+        ownLow = ownMedian - blendedMargin
+        ownHigh = ownMedian + blendedMargin
+      } else {
+        ownLow = ownMedian - ownMargin
+        ownHigh = ownMedian + ownMargin
+      }
+      if (!(ownLow > 0)) ownLow = Math.min(own.low, ownMedian * 0.5)   // structural floor, not a plausibility cap
+      ownPeerBlend = { pct: Math.round(peerWeight * 100), peerMedian: round(peerBand.median, 1) }
+    }
+    multiples = { low: round(ownLow, 1), base: round(ownMedian, 1), high: round(ownHigh, 1) }
     multipleBasis = 'observed'
     thinMultiple = !!own.thin
     divergesFromCurrent = ownDivergesFromCurrent
@@ -1436,7 +1465,8 @@ export function buildEstimate(ratioResult, opts = {}) {
       // how many years it applied to, is visible rather than silent.
       (own.excludedLossYears > 0
         ? ` (excludes ${own.excludedLossYears} loss year${own.excludedLossYears === 1 ? '' : 's'} — P/E undefined for negative earnings)`
-        : '')
+        : '') +
+      (ownPeerBlend ? ` — blended ${ownPeerBlend.pct}% toward peers' ${ownPeerBlend.peerMedian}× median` : '')
     // targetMultiple() ran (it's computed unconditionally above, before this
     // branch is even chosen) and may have tried a regression adjustment for
     // returns/growth against this stock's own history — but its result only
@@ -1632,6 +1662,7 @@ export function buildEstimate(ratioResult, opts = {}) {
 
     multiples, multipleBasis, multipleLabel,
     multipleSteps: fittedSteps,        // the working behind the adjustment
+    ownPeerBlend,                      // { pct, peerMedian } when the observed band was blended toward peers, else null
     target, upside,
 
     financeability: financeabilityNote(ratioResult, g),
