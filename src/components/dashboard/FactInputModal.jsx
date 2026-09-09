@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import { applicableFacts, computeFact, factType } from '../../engine/factImpact.js'
 import { extractFacts } from '../../engine/factExtract.js'
+import Modal from '../Modal.jsx'
 
 const symOf = c => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[c]) || '₹'
 
@@ -98,18 +99,23 @@ export default function FactInputModal({ open, onClose, ctx, rerating, onCommit,
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center
-                    p-0 sm:p-4 bg-black/60 backdrop-blur-sm"
-         onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="w-full sm:max-w-lg bg-navy-900 border border-navy-700
-                      rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90dvh]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-navy-700 shrink-0">
-          <h2 className="font-semibold text-white">📌 What happened?</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-white text-lg">✕</button>
-        </div>
-
-        <div className="p-5 overflow-y-auto flex-1 space-y-4
-                        pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="What happened?"
+      icon="📌"
+      footer={(result?.lever || activeType) && (
+        <>
+          <button onClick={onClose} className="flex-1 text-sm text-slate-400 hover:text-white py-2">
+            Cancel
+          </button>
+          <button onClick={commitFact} disabled={busy || !result?.lever}
+            className="flex-1 btn-primary text-sm py-2">
+            {busy ? 'Applying…' : 'Apply to estimate'}
+          </button>
+        </>
+      )}
+    >
           {sourceItem && (
             <p className="text-xs text-slate-400 bg-navy-800/50 rounded-lg px-3 py-2">
               {sourceItem.title}
@@ -235,22 +241,7 @@ export default function FactInputModal({ open, onClose, ctx, rerating, onCommit,
           <input value={reason} onChange={e => setReason(e.target.value)}
             placeholder="Note (optional) — what you'll want to remember"
             className="input-field text-xs w-full" />
-        </div>
-
-        {(result?.lever || activeType) && (
-          <div className="flex gap-2 px-5 py-4 border-t border-navy-700 shrink-0
-                          pb-[max(1rem,env(safe-area-inset-bottom))]">
-            <button onClick={onClose} className="flex-1 text-sm text-slate-400 hover:text-white py-2">
-              Cancel
-            </button>
-            <button onClick={commitFact} disabled={busy || !result?.lever}
-              className="flex-1 btn-primary text-sm py-2">
-              {busy ? 'Applying…' : 'Apply to estimate'}
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+    </Modal>
   )
 }
 

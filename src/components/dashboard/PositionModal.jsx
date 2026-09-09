@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
-import { recordBuy, recordSell, positionMath, previewFifo } from '../../store/usePositions.js'
+import { recordBuy, recordSell, previewFifo } from '../../store/usePositions.js'
 import { EXIT_REASONS } from '../../engine/exitReview.js'
+import Modal from '../Modal.jsx'
 
 const cur = c => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[c]) || ''
 
@@ -171,24 +172,21 @@ export default function PositionModal({ open, mode = 'buy', position = null, lot
   const costOfSold = fifo ? fifo.take.reduce((s, t) => s + t.shares * (Number(t.lot.buyPrice) || 0), 0) : 0
 
   return (
-    // Layout note: the sheet is a flex COLUMN capped at 90dvh with only the body
-    // scrolling. Capping the body at 70vh instead let header + body + footer add
-    // up past the viewport, which pushed the title off the top of the screen on a
-    // phone. dvh rather than vh so the mobile URL bar collapsing doesn't crop it.
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center
-                    p-0 sm:p-4 bg-black/60 backdrop-blur-sm overflow-y-auto"
-         onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="w-full sm:max-w-lg bg-navy-900 border border-navy-700
-                      rounded-t-2xl sm:rounded-2xl shadow-2xl
-                      flex flex-col max-h-[90dvh]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-navy-700 shrink-0">
-          <h2 className="font-semibold text-white">
-            {isSell ? '📤 Record a sale' : isBulk ? '📥 Add holdings you own' : '📥 Record a purchase'}
-          </h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-white text-lg">✕</button>
-        </div>
-
-        <div className="p-5 overflow-y-auto flex-1 space-y-4">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={isSell ? 'Record a sale' : isBulk ? 'Add holdings you own' : 'Record a purchase'}
+      icon={isSell ? '📤' : '📥'}
+      footer={
+        <>
+          <button onClick={onClose} className="flex-1 text-sm text-slate-400 hover:text-white py-2">Cancel</button>
+          <button onClick={isSell ? submitSell : submitBuy} disabled={busy}
+            className="flex-1 btn-primary text-sm py-2">
+            {busy ? 'Saving…' : isSell ? 'Record sale' : 'Save'}
+          </button>
+        </>
+      }
+    >
           {isSell ? (
             <>
               <p className="text-xs text-slate-400">
@@ -333,18 +331,7 @@ export default function PositionModal({ open, mode = 'buy', position = null, lot
           )}
 
           {err && <p className="text-xs text-bear">{err}</p>}
-        </div>
-
-        <div className="flex gap-2 px-5 py-4 border-t border-navy-700 shrink-0
-                        pb-[max(1rem,env(safe-area-inset-bottom))]">
-          <button onClick={onClose} className="flex-1 text-sm text-slate-400 hover:text-white py-2">Cancel</button>
-          <button onClick={isSell ? submitSell : submitBuy} disabled={busy}
-            className="flex-1 btn-primary text-sm py-2">
-            {busy ? 'Saving…' : isSell ? 'Record sale' : 'Save'}
-          </button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
 

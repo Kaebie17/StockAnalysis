@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { fetchPeerCandidates } from '../../api/peersClient.js'
 import { analyzeTicker } from '../../store/analyzeTicker.js'
+import Modal from '../Modal.jsx'
 
 /**
  * PeerSelectModal — review real peer candidates, confirm which count, and
@@ -121,12 +122,19 @@ export default function PeerSelectModal({ open, onClose, ticker, meta, sectorTyp
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="card w-full max-w-md space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="font-semibold text-white">Peer coverage</h3>
-          <button onClick={close} className="text-slate-500 hover:text-white text-xl leading-none">✕</button>
-        </div>
+    <Modal
+      open={open}
+      onClose={close}
+      title="Peer coverage"
+      widthClass="sm:max-w-md"
+      footer={
+        <button onClick={close}
+          className="w-full text-xs font-medium text-accent hover:text-accent-light
+                     bg-accent/10 hover:bg-accent/20 px-3 py-1.5 rounded-md transition-colors">
+          Done
+        </button>
+      }
+    >
         <p className="text-xs text-slate-400">
           Candidates from NSE's own sectoral index (real, exchange-maintained — but a mixed bag, not a
           guarantee of comparability) and stocks you've already analyzed in the same sector. Confirm the
@@ -155,16 +163,7 @@ export default function PeerSelectModal({ open, onClose, ticker, meta, sectorTyp
           })}
           {peers.length === 0 && <p className="text-xs text-slate-500 py-2">No peer candidates found for this stock.</p>}
         </div>
-
-        <div className="flex justify-end pt-1">
-          <button onClick={close}
-            className="text-xs font-medium text-accent hover:text-accent-light
-                       bg-accent/10 hover:bg-accent/20 px-3 py-1.5 rounded-md transition-colors">
-            Done
-          </button>
-        </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
 

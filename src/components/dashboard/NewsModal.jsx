@@ -169,6 +169,13 @@ export default function NewsModal({ open, onClose, query, ticker, company }) {
     }
   }, [open, status, onClose])
 
+  useEffect(() => {
+    if (!open) return
+    const onKey = e => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
   const onScroll = () => {
     const el = bodyRef.current
     if (!el) return
@@ -195,7 +202,7 @@ export default function NewsModal({ open, onClose, query, ticker, company }) {
   const sector = items.filter(it => it.tier === 'sector')
 
   return (
-    <div className="fixed inset-0 z-[60] bg-navy-950 flex flex-col">
+    <div className="fixed inset-0 z-[60] bg-navy-950 flex flex-col" role="dialog" aria-modal="true" aria-label={`News — ${ticker || query}`}>
       {/* Header */}
       <div className="shrink-0 border-b border-navy-800 px-4 py-3 flex items-center justify-between gap-3">
         <div className="min-w-0">

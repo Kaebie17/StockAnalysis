@@ -3,9 +3,9 @@ import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 import { expandHints as expandersFor, METRICS } from '../../engine/metrics.js'
 import { parseHoldings } from '../../engine/parseHoldings.js'
 import { useApp } from '../../store/AppContext.jsx'
-import { createPortal } from 'react-dom'
 import { getAliasOverrides, saveAliasOverride } from '../../utils/db.js'
 import AliasReconcile from './AliasReconcile.jsx'
+import Modal from '../Modal.jsx'
 
 const ALL_METRICS = Object.keys(METRICS)
 
@@ -239,22 +239,16 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
     }
   }
 
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-         onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="card max-w-4xl w-full space-y-4 max-h-[85vh] overflow-y-auto">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-white">{focusLabel ? `Re-paste ${focusLabel}` : 'Add more history'}</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              {focusLabel
-                ? 'Expand the sub-rows Screener collapses by default, then paste the table again.'
-                : 'Paste any Screener tables — financials extend history, shareholding feeds Quality & Moat'}
-            </p>
-          </div>
-          <button onClick={handleClose} className="text-slate-500 hover:text-white text-xl leading-none">✕</button>
-        </div>
-
+  return (
+    <Modal
+      open={open}
+      onClose={handleClose}
+      title={focusLabel ? `Re-paste ${focusLabel}` : 'Add more history'}
+      subtitle={focusLabel
+        ? 'Expand the sub-rows Screener collapses by default, then paste the table again.'
+        : 'Paste any Screener tables — financials extend history, shareholding feeds Quality & Moat'}
+      widthClass="sm:max-w-4xl"
+    >
         {!applied ? (
           <>
             {url ? (
@@ -429,9 +423,7 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
             <button onClick={handleClose} className="btn-primary text-sm">Done</button>
           </div>
         )}
-      </div>
-    </div>,
-    document.body
+    </Modal>
   )
 }
 

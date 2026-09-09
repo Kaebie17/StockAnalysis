@@ -3,7 +3,7 @@ import { useApp } from '../../store/AppContext.jsx'
 import { reconstructRow } from '../../engine/reconstruct.js'
 import { parseExcerpt, proposalToEdit } from '../../engine/parseExcerpt.js'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
-import { createPortal } from 'react-dom'
+import Modal from '../Modal.jsx'
 /**
  * NormalizeModal — manual normalization via paste. Two modes, both paste boxes:
  *
@@ -119,21 +119,14 @@ export default function NormalizeModal({ open, onClose, flag = null }) {
   ]
   const rrForPreview = edit?.year ? reportedRowFor(edit.year) : null
 
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-         onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="card max-w-3xl w-full space-y-4 max-h-[85vh] overflow-y-auto">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-white">Normalize from the report</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Paste a full restated table (replaces those years) or an excerpt (the app
-              reads the line, year and value - you confirm). Reported stays untouched.
-            </p>
-          </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">{'\u2715'}</button>
-        </div>
-
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Normalize from the report"
+      subtitle="Paste a full restated table (replaces those years) or an excerpt (the app reads the line, year and value - you confirm). Reported stays untouched."
+      widthClass="sm:max-w-3xl"
+    >
         {flag && !applied && (
           <div className="text-xs rounded-lg px-3 py-2 bg-neutral/10 text-neutral">
             Fixing FY{flag.year}: {flag.note}
@@ -277,9 +270,7 @@ export default function NormalizeModal({ open, onClose, flag = null }) {
             )}
           </>
         )}
-      </div>
-    </div>,
-    document.body
+    </Modal>
   )
 }
 

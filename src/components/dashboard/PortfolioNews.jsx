@@ -5,6 +5,7 @@ import { listRevisions } from '../../utils/db.js'
 import { fetchNews } from '../../api/newsClient.js'
 import { extractFacts } from '../../engine/factExtract.js'
 import { keyOf, leverOf } from '../../store/useNewsFacts.js'
+import Modal from '../Modal.jsx'
 
 const SEEN_KEY = 'sa_news_seen'
 const LAST_SHOWN_KEY = 'sa_news_brief_shown'
@@ -127,22 +128,24 @@ export default function PortfolioNews({ onOpenTicker }) {
         </button>
       )}
 
-      {open && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center
-                        p-0 sm:p-4 bg-black/60 backdrop-blur-sm"
-             onClick={e => e.target === e.currentTarget && setOpen(false)}>
-          <div className="w-full sm:max-w-lg bg-navy-900 border border-navy-700
-                          rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[85dvh]">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-navy-700 shrink-0">
-              <h2 className="font-semibold text-white">
-                📰 On your holdings
-                {material.length > 0 && <span className="text-neutral text-xs ml-2">{material.length} to look at</span>}
-              </h2>
-              <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-white text-lg">✕</button>
-            </div>
-
-            <div className="p-5 overflow-y-auto flex-1 space-y-2
-                            pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title="On your holdings"
+        icon="📰"
+        subtitle={material.length > 0 ? `${material.length} to look at` : null}
+        bodyClassName="space-y-2"
+        footer={
+          <>
+            <button onClick={dismissAll} className="flex-1 text-sm text-slate-400 hover:text-white py-2">
+              Mark all seen
+            </button>
+            <button onClick={() => setOpen(false)} className="flex-1 btn-primary text-sm py-2">
+              Close
+            </button>
+          </>
+        }
+      >
               {loading && items.length === 0 && <p className="text-sm text-slate-500">Checking…</p>}
 
               {material.map(c => (
@@ -166,20 +169,7 @@ export default function PortfolioNews({ onOpenTicker }) {
                 Open a stock to price these into its estimate. Nothing here changes a number on
                 its own.
               </p>
-            </div>
-
-            <div className="flex gap-2 px-5 py-4 border-t border-navy-700 shrink-0
-                            pb-[max(1rem,env(safe-area-inset-bottom))]">
-              <button onClick={dismissAll} className="flex-1 text-sm text-slate-400 hover:text-white py-2">
-                Mark all seen
-              </button>
-              <button onClick={() => setOpen(false)} className="flex-1 btn-primary text-sm py-2">
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      </Modal>
     </>
   )
 }

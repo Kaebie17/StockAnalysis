@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { setManualGuidance } from '../../engine/reconcileDocs.js'
 import DocumentReader from './DocumentReader.jsx'
+import Modal from '../Modal.jsx'
 
 /**
  * GuidanceModal — qualitative context + document intelligence, in a modal opened
@@ -42,26 +43,25 @@ export default function GuidanceModal({ open, onClose }) {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-         onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="card max-w-2xl w-full space-y-4 max-h-[85vh] overflow-y-auto">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-white">Guidance &amp; documents</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Qualitative context for the Quality &amp; Moat read</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <a
-              href={`https://www.google.com/search?q=${encodeURIComponent((state.data?.name || state.ticker || '') + ' investor relations')}`}
-              target="_blank" rel="noopener noreferrer"
-              className="text-xs text-accent hover:text-accent-light">
-              IR page ↗
-            </a>
-            <button onClick={() => setDocOpen(true)} className="btn-primary text-xs">📄 Documents</button>
-            <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">✕</button>
-          </div>
-        </div>
-
+    <>
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Guidance & documents"
+      subtitle="Qualitative context for the Quality & Moat read"
+      widthClass="sm:max-w-2xl"
+      actions={
+        <>
+          <a
+            href={`https://www.google.com/search?q=${encodeURIComponent((state.data?.name || state.ticker || '') + ' investor relations')}`}
+            target="_blank" rel="noopener noreferrer"
+            className="text-xs text-accent hover:text-accent-light">
+            IR page ↗
+          </a>
+          <button onClick={() => setDocOpen(true)} className="btn-primary text-xs">📄 Documents</button>
+        </>
+      }
+    >
         {arData.lastDoc?.name && (
           <p className="text-[11px] text-slate-500">
             Last document: <span className="text-slate-300">{arData.lastDoc.name}</span>
@@ -102,10 +102,9 @@ export default function GuidanceModal({ open, onClose }) {
           Notes are compared with document data by period date. A dated document overrides an
           undated or older note; a newer note overrides older document data.
         </p>
-      </div>
-
-      <DocumentReader open={docOpen} onClose={() => setDocOpen(false)} />
-    </div>
+    </Modal>
+    <DocumentReader open={docOpen} onClose={() => setDocOpen(false)} />
+    </>
   )
 }
 

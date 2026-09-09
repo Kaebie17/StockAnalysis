@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
+import Modal from '../Modal.jsx'
 
 /**
  * Guidance input (formerly Scoring Studio).
@@ -79,15 +80,7 @@ export default function ScoringStudio({ open, onClose }) {
   const effPct = guidedGrowth != null ? (guidedGrowth * 100) : null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-         onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="w-full max-w-lg bg-navy-900 border border-navy-700 rounded-2xl overflow-hidden shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-navy-700">
-          <h2 className="font-semibold text-white">🧭 Guidance</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-white text-lg">✕</button>
-        </div>
-
-        <div className="p-5 max-h-[70vh] overflow-y-auto space-y-4">
+    <Modal open={open} onClose={onClose} title="Guidance" icon="🧭">
           <p className="text-xs text-slate-400">
             Enter management's forward guidance. Revenue guidance drives the DCF near-term
             window and is compared against what the market is pricing. Session only.
@@ -192,8 +185,6 @@ export default function ScoringStudio({ open, onClose }) {
               Only revenue growth/target flows into the model. Margin, capex and cash-flow guidance can be wired in later.
             </p>
           </div>
-        </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

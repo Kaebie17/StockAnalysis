@@ -61,6 +61,13 @@ export default function DocumentReader({ open, onClose }) {
   const [diag, setDiag] = useState(null)
   const fileRef = useRef(null)
 
+  React.useEffect(() => {
+    if (!open) return
+    const onKey = e => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
   if (!open) return null
 
   const onFile = async (e) => {
@@ -139,7 +146,7 @@ export default function DocumentReader({ open, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[60] bg-navy-950 flex flex-col">
+    <div className="fixed inset-0 z-[60] bg-navy-950 flex flex-col" role="dialog" aria-modal="true" aria-label="Document reader">
       {/* Header */}
       <div className="shrink-0 border-b border-navy-800 px-4 py-3 flex items-center justify-between gap-3">
         <div className="min-w-0">

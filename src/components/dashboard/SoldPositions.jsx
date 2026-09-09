@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { listPositions } from '../../utils/db.js'
 import { fetchQuotes } from '../../api/quotesClient.js'
-import { reviewExit, exitStats, reasonLabel, EXIT_REASONS } from '../../engine/exitReview.js'
+import { reviewExit, exitStats, reasonLabel } from '../../engine/exitReview.js'
+import Modal from '../Modal.jsx'
 
 const sym = c => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[c]) || '₹'
 const money = (v, c) => (v == null ? '—' : sym(c) + Math.abs(Math.round(v)).toLocaleString('en-IN'))
@@ -53,18 +54,7 @@ export default function SoldPositions({ open, onClose }) {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center
-                    p-0 sm:p-4 bg-black/60 backdrop-blur-sm"
-         onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="w-full sm:max-w-2xl bg-navy-900 border border-navy-700
-                      rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90dvh]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-navy-700 shrink-0">
-          <h2 className="font-semibold text-white">📕 Exit record</h2>
-          <button onClick={onClose} className="text-slate-400 hover:text-white text-lg">✕</button>
-        </div>
-
-        <div className="p-5 overflow-y-auto flex-1 space-y-4
-                        pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+    <Modal open={open} onClose={onClose} title="Exit record" icon="📕" widthClass="sm:max-w-2xl">
           {loading ? (
             <p className="text-sm text-slate-500">Loading…</p>
           ) : reviews.length === 0 ? (
@@ -102,9 +92,7 @@ export default function SoldPositions({ open, onClose }) {
               </div>
             </>
           )}
-        </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
 

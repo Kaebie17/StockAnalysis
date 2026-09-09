@@ -4,6 +4,7 @@ import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 import { useApp } from '../../store/AppContext.jsx'
 import { getAliasOverrides, saveAliasOverride } from '../../utils/db.js'
 import AliasReconcile from './AliasReconcile.jsx'
+import Modal from '../Modal.jsx'
 
 const STEP_ICON = { income: '📊', balance: '⚖️', cashflow: '💵' }
 
@@ -126,19 +127,12 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
   const handleSkipStep = () => advance()
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-         onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="card max-w-lg w-full space-y-4 max-h-[85vh] overflow-y-auto">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold text-white">Fill missing data</h2>
-            {!finished && (
-              <p className="text-xs text-slate-500 mt-0.5">Step {stepIdx + 1} of {tables.length}</p>
-            )}
-          </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">✕</button>
-        </div>
-
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Fill missing data"
+      subtitle={!finished ? `Step ${stepIdx + 1} of ${tables.length}` : null}
+    >
         {/* Step progress dots */}
         {!finished && (
           <div className="flex gap-1.5">
@@ -299,8 +293,7 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
             <button onClick={onClose} className="btn-primary text-sm">Done</button>
           </div>
         )}
-      </div>
-    </div>
+    </Modal>
   )
 }
 

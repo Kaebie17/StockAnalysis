@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import PositionModal from './PositionModal.jsx'
+import Modal from '../Modal.jsx'
 import { usePositions, positionMath, removePosition, saveExitPlan, updatePositionDate, backfillSnapshot } from '../../store/usePositions.js'
 import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
@@ -182,21 +183,16 @@ export default function PositionsPanel({ open, onClose }) {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center
-                    p-0 sm:p-4 bg-black/60 backdrop-blur-sm"
-         onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="w-full sm:max-w-2xl bg-navy-900 border border-navy-700
-                      rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[90dvh]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-navy-700 shrink-0">
-          <h2 className="font-semibold text-white">📊 My positions</h2>
-          <div className="flex items-center gap-3">
-            <button onClick={() => setAddOpen(true)} className="text-xs text-accent hover:text-accent-light">+ Add</button>
-            <button onClick={onClose} className="text-slate-400 hover:text-white text-lg">✕</button>
-          </div>
-        </div>
-
-        <div className="p-4 overflow-y-auto flex-1 space-y-2
-                        pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+    <>
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="My positions"
+      icon="📊"
+      widthClass="sm:max-w-2xl"
+      bodyClassName="space-y-2"
+      actions={<button onClick={() => setAddOpen(true)} className="text-xs text-accent hover:text-accent-light">+ Add</button>}
+    >
           {loading ? (
             <p className="text-sm text-slate-500">Loading…</p>
           ) : holdings.length === 0 && closed.length === 0 ? (
@@ -262,15 +258,14 @@ export default function PositionsPanel({ open, onClose }) {
               )}
             </>
           )}
-        </div>
-      </div>
+    </Modal>
 
-      <PositionModal open={addOpen} mode="bulk"
-        onClose={() => setAddOpen(false)} onSaved={refresh} />
-      <PositionModal open={sellTarget !== null} mode="sell"
-        lots={sellTarget ? held.filter(p => p.ticker === sellTarget.ticker) : []}
-        onClose={() => setSellTarget(null)} onSaved={refresh} />
-    </div>
+    <PositionModal open={addOpen} mode="bulk"
+      onClose={() => setAddOpen(false)} onSaved={refresh} />
+    <PositionModal open={sellTarget !== null} mode="sell"
+      lots={sellTarget ? held.filter(p => p.ticker === sellTarget.ticker) : []}
+      onClose={() => setSellTarget(null)} onSaved={refresh} />
+    </>
   )
 }
 
