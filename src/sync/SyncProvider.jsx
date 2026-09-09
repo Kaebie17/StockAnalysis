@@ -46,8 +46,12 @@ export function SyncProvider({ children }) {
     // A network call here (getUser/select/upsert) has no built-in timeout — a
     // stalled connection would otherwise leave status stuck on 'syncing'
     // forever with nothing shown to the user. This guarantees a terminal
-    // status either way.
-    const SYNC_TIMEOUT_MS = 20000
+    // status either way. pushAllLocal can be several small chunked upserts
+    // rather than one big one (see sync.js) — a heavy account's full push
+    // can legitimately take longer wall-clock time even with each request
+    // individually fast, so this needs real headroom rather than a budget
+    // sized for a single request.
+    const SYNC_TIMEOUT_MS = 45000
     const timeout = (label) => new Promise((_, reject) =>
       setTimeout(() => reject(new Error(`Sync timed out (${label})`)), SYNC_TIMEOUT_MS))
     try {

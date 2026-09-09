@@ -68,6 +68,41 @@ function buildPushChunks(entries) {
   return chunks
 }
 
+// Chunks were pushed one at a time, sequentially — safe for the database,
+// but with 200+ records split into dozens of small chunks, waiting for each
+// round trip before starting the next meant the whole push could take well
+// over SyncProvider's 20s overall sync budget even though every individual
+// chunk was healthy and fast. A few chunks in flight together cuts that
+// wall-clock time roughly by the concurrency factor while still keeping
+// each request itself small — the thing that actually made a request risky
+// was one oversized STATEMENT, not several small ones overlapping in time.
+const PUSH_CONCURRENCY = 4
+
+async function pushChunk(user, chunk) {
+  const rows = chunk.map(([key, value]) => ({
+    user_id: user.id, key, value, updated_at: new Date().toISOString(),
+  }))
+  try {
+    const { error } = await supabase.from('user_data').upsert(rows, { onConflict: 'user_id,key' })
+    if (error) throw error
+    // Only drop the keys we just pushed, and only if nothing newer re-queued
+    // that same key while the request was in flight (reference equality on
+    // the value we snapshotted — a fresh queuePush call replaces it).
+    for (const [key, value] of chunk) {
+      if (pending.get(key) === value) pending.delete(key)
+    }
+    return { ok: true }
+  } catch (e) {
+    // Sizes logged alongside the failure so a recurrence is diagnosable
+    // without a trip to the SQL editor: a timeout on a chunk that's well
+    // under the byte budget would point at the database itself (still
+    // degraded, or a stuck lock) rather than payload size.
+    console.warn('[sync] push chunk failed', e,
+      chunk.map(([key, value]) => `${key}: ${JSON.stringify(value).length}B`))
+    return { ok: false, error: e }
+  }
+}
+
 // @returns {{ok: boolean, error?: any}} — the caller (SyncProvider) surfaces
 // this as real sync status instead of assuming every push landed.
 async function flush() {
@@ -81,33 +116,11 @@ async function flush() {
   const chunks = buildPushChunks([...snapshot.entries()])
 
   let firstError = null
-  for (const chunk of chunks) {
-    const rows = chunk.map(([key, value]) => ({
-      user_id: user.id, key, value, updated_at: new Date().toISOString(),
-    }))
-    try {
-      const { error } = await supabase.from('user_data').upsert(rows, { onConflict: 'user_id,key' })
-      if (error) throw error
-      // Only drop the keys we just pushed, and only if nothing newer re-queued
-      // that same key while the request was in flight (reference equality on
-      // the value we snapshotted — a fresh queuePush call replaces it).
-      for (const [key, value] of chunk) {
-        if (pending.get(key) === value) pending.delete(key)
-      }
-    } catch (e) {
-      // Sizes logged alongside the failure so a recurrence is diagnosable
-      // without a trip to the SQL editor: a timeout on a chunk that's well
-      // under the byte budget would point at the database itself (still
-      // degraded, or a stuck lock) rather than payload size.
-      console.warn('[sync] push chunk failed', e,
-        chunk.map(([key, value]) => `${key}: ${JSON.stringify(value).length}B`))
-      firstError = firstError || e
-      // Stop rather than push straight on to the next chunk — a timeout
-      // usually means the database is already under strain, and immediately
-      // firing more upserts at it would only make that worse. Whatever
-      // wasn't pushed stays in `pending` for the retry below.
-      break
-    }
+  for (let i = 0; i < chunks.length; i += PUSH_CONCURRENCY) {
+    const wave = chunks.slice(i, i + PUSH_CONCURRENCY)
+    const results = await Promise.all(wave.map(chunk => pushChunk(user, chunk)))
+    const failed = results.find(r => !r.ok)
+    if (failed) { firstError = failed.error; break }
   }
 
   clearTimeout(retryTimer)
