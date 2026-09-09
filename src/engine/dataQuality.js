@@ -61,22 +61,39 @@ function exceptionalOf(row) {
 /**
  * Normalise reported one-offs out of the income history.
  *
- * Two tiers, checked in order, per year:
+ * Two DIFFERENT bases are adjusted, not one, because they're not the same
+ * quantity — confirmed against a real reported waterfall (Airtel):
  *
- *   1. profitExclExceptional — a company with associates and/or minority
- *      interest (Airtel, e.g.) has a Net Profit waterfall where those sit
- *      somewhere relative to the exceptional item, in an order this app has
- *      no way to know. Subtracting exceptionalItemsAT from the FINAL
- *      (post-minority) Net Profit silently assumes minority interest's
- *      share of the exceptional item is zero — an assumption that can be
- *      wrong. Screener's own "excluding exceptional items" figure has
- *      already resolved that waterfall correctly, whatever its actual
- *      order is for this specific company, so it's used directly and
- *      unconditionally preferred over deriving anything.
- *   2. exceptionalItems(AT) subtraction — the fallback when Screener
- *      doesn't disclose the resolved figure directly. Carries the
- *      minority-interest-ordering risk above; flagged via `derivedByOrdering`
- *      so a caller can distinguish "Screener told us" from "we subtracted."
+ *   netProfit (this app's field, = Screener's "Net Profit") is the
+ *   CONSOLIDATED figure — BEFORE deducting minority interest. Screener's own
+ *   published EPS is NOT netProfit ÷ shares; it's (netProfit − minorityShare)
+ *   ÷ shares, i.e. "Profit for EPS" ÷ shares — required by Ind AS 33 (EPS
+ *   must be based on profit attributable to the parent's own shareholders).
+ *   Reconstructing an implied share count as netProfit ÷ reportedEps (the
+ *   previous approach here) is therefore wrong for any company with
+ *   nonzero minority interest: it divides a pre-minority number by a
+ *   post-minority-based EPS, inflating the implied share count.
+ *
+ * So this now adjusts netProfit and eps SEPARATELY, each on its own correct
+ * basis, preferring a directly disclosed figure over deriving one at every
+ * step:
+ *
+ *   netProfit basis (consolidated): profitExclExceptional (= netProfit −
+ *   exceptionalItemsAT) if disclosed, else derived by subtracting
+ *   exceptionalItems(AT) from netProfit directly.
+ *
+ *   eps basis (attributable to parent shareholders): profitForPE if
+ *   disclosed — the fully resolved figure, confirmed equal to
+ *   profitForEPS − exceptionalItemsAT. Falls back to (profitForEPS, or
+ *   netProfit − minorityInterest when even that's absent) minus the same
+ *   exceptional-items-after-tax figure. eps is then scaled proportionally
+ *   (reportedEps × adjustedBasis/reportedBasis) rather than reconstructing
+ *   a share count — sidesteps the inflated-share-count bug above entirely,
+ *   and is algebraically identical to the old shares-based method whenever
+ *   minority interest is genuinely zero.
+ *
+ * `derivedByOrdering` flags whichever half (or both) fell back to
+ * subtraction instead of using a directly disclosed, fully-resolved figure.
  *
  * Returns a NEW history — the original is left untouched, so a caller that
  * wants reported figures still has them. Each adjusted row carries what was
@@ -92,11 +109,12 @@ export function normaliseIncome(incomeHistory = []) {
     const exc = exceptionalOf(row)
     if (directClean == null && exc == null) return row
 
-    let afterTax, adjusted, taxRate = null, derivedByOrdering
+    // ── netProfit basis (consolidated) ──
+    let excAfterTax, npAdjusted, taxRate = null, npDerived
     if (directClean != null && directClean > 0 && directClean !== np) {
-      adjusted = directClean
-      afterTax = np - directClean
-      derivedByOrdering = false
+      npAdjusted = directClean
+      excAfterTax = np - directClean
+      npDerived = false
     } else if (exc != null) {
       // Exceptional items are usually reported pre-tax; the after-tax effect
       // is what reaches net profit. Where Screener's own after-tax figure is
@@ -105,38 +123,53 @@ export function normaliseIncome(incomeHistory = []) {
       // derivable, and failing that the item is removed gross.
       const pbt = val(row?.profitBeforeTax) ?? val(row?.pbt)
       taxRate = (!exc.alreadyAfterTax && pbt > 0 && np > 0 && pbt > np) ? 1 - (np / pbt) : null
-      afterTax = exc.alreadyAfterTax ? exc.value : (taxRate != null ? exc.value * (1 - taxRate) : exc.value)
-      adjusted = np - afterTax
-      derivedByOrdering = true
+      excAfterTax = exc.alreadyAfterTax ? exc.value : (taxRate != null ? exc.value * (1 - taxRate) : exc.value)
+      npAdjusted = np - excAfterTax
+      npDerived = true
     } else {
       return row
     }
-    if (!(adjusted > 0)) return row      // removing it would leave a loss; leave alone
+    if (!(npAdjusted > 0)) return row    // removing it would leave a loss; leave alone
 
-    const eps = val(row?.eps)
-    const shares = (eps > 0) ? np / eps : null
+    // ── eps basis (attributable to parent shareholders) ──
+    const minorityShare = val(row?.minorityInterest) ?? 0
+    const reportedEpsBasis = val(row?.profitForEPS) ?? (np - minorityShare)
+    const directPE = val(row?.profitForPE)
+    let epsBasisAdjusted, epsDerived
+    if (directPE != null && directPE > 0) {
+      epsBasisAdjusted = directPE
+      epsDerived = false
+    } else {
+      epsBasisAdjusted = reportedEpsBasis - excAfterTax
+      epsDerived = true
+    }
+    const reportedEps = val(row?.eps)
+    const adjustedEps = (reportedEps > 0 && reportedEpsBasis > 0 && epsBasisAdjusted > 0)
+      ? reportedEps * (epsBasisAdjusted / reportedEpsBasis) : null
 
     adjustments.push({
       year: yearOf(row),
       kind: 'reported-one-off',
-      removed: round(afterTax, 0),
+      removed: round(excAfterTax, 0),
       reportedProfit: round(np, 0),
-      adjustedProfit: round(adjusted, 0),
+      adjustedProfit: round(npAdjusted, 0),
       taxAdjusted: taxRate != null,
       alreadyAfterTax: exc?.alreadyAfterTax ?? true,
-      // false: Screener's own "excl. exceptional" figure was used directly.
-      // true: derived by subtracting from Net Profit — carries the
-      // associates/minority-interest-ordering risk described above.
-      derivedByOrdering,
-      impactPct: round(((np - adjusted) / np) * 100, 1),
-      note: `${afterTax > 0 ? 'A gain of' : 'A charge of'} ${Math.abs(round(afterTax, 0))} was reported separately and has been removed`,
+      // Whether EITHER basis fell back to subtraction instead of a directly
+      // disclosed, fully-resolved figure (profitExclExceptional / profitForPE).
+      derivedByOrdering: npDerived || epsDerived,
+      minorityAdjusted: minorityShare !== 0 || val(row?.profitForEPS) != null,
+      impactPct: round(((np - npAdjusted) / np) * 100, 1),
+      epsImpactPct: adjustedEps != null && reportedEps > 0
+        ? round(((reportedEps - adjustedEps) / reportedEps) * 100, 1) : null,
+      note: `${excAfterTax > 0 ? 'A gain of' : 'A charge of'} ${Math.abs(round(excAfterTax, 0))} was reported separately and has been removed`,
       resolved: true,
     })
 
     return {
       ...row,
-      netProfit: { value: adjusted, adjusted: true },
-      eps: shares > 0 ? { value: adjusted / shares, adjusted: true } : row.eps,
+      netProfit: { value: npAdjusted, adjusted: true },
+      eps: adjustedEps != null ? { value: adjustedEps, adjusted: true } : row.eps,
       reportedNetProfit: np,
     }
   })
