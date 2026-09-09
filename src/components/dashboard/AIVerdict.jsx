@@ -117,7 +117,7 @@ export default function AIVerdict() {
   const KeyBox = (
     <div className="mt-2 text-xs bg-navy-800/50 rounded-lg p-3 space-y-2">
       <div className="text-slate-300">Enable AI analysis with your own Gemini API key</div>
-      <div className="flex flex-col sm:flex-row gap-2">
+      <form onSubmit={e => { e.preventDefault(); saveKey() }} className="flex flex-col sm:flex-row gap-2">
         <select value={modelVal} onChange={e => setModelVal(e.target.value)} className="input-field text-xs bg-navy-900 cursor-pointer sm:w-auto">
           <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
           <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
@@ -133,10 +133,10 @@ export default function AIVerdict() {
               {showKey ? '🙈' : '👁️'}
             </button>
           </div>
-          <button onClick={saveKey} className="btn-primary text-xs shrink-0">Save</button>
-          {hasKey && <button onClick={() => setEditKey(false)} className="text-slate-500 text-xs shrink-0">Cancel</button>}
+          <button type="submit" className="btn-primary text-xs shrink-0">Save</button>
+          {hasKey && <button type="button" onClick={() => setEditKey(false)} className="text-slate-500 text-xs shrink-0">Cancel</button>}
         </div>
-      </div>
+      </form>
       <label className="flex items-center gap-2 text-[11px] text-slate-400">
         <input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />
         Remember on this device (stay signed in after closing the browser)
