@@ -55,7 +55,7 @@ const pasteScale = (currency, ticker) =>
  * all, review, and one confirm routes each to where it belongs: financials extend
  * the history series, promoter holding is saved to the store (Block-5 gate input).
  */
-export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, focusTable = null }) {
+export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, focusTable = null, flag = null }) {
   const { state: appState, setQualInputs } = useApp()
   const currency = appState?.data?.currency
   const [pasteText, setPasteText] = useState({ income: '', quarterly: '', balance: '', cashflow: '', holdings: '' })
@@ -72,13 +72,20 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
   // confirmed in a previous session is already applied silently.
   const [overridesByTable, setOverridesByTable] = useState({})
 
+  // A data-quality flag always names a P&L year (see Header.jsx's
+  // isAutoDerivable) — default straight to the income table for it, same as
+  // an explicit focusTable, so the flag click doesn't dump the user at a
+  // five-table modal to go find it themselves. Computed above the early
+  // return below since the scroll effect (a hook) needs it too.
+  const effectiveFocusTable = focusTable || (flag ? 'income' : null)
+
   // Scroll to the table the caller asked for. A data-quality flag names where
   // the answer lives, and dropping the user at the top of a five-table modal
   // makes them hunt for it.
   useEffect(() => {
-    if (!open || !focusTable) return
+    if (!open || !effectiveFocusTable) return
     const id = setTimeout(() => {
-      document.getElementById(`paste-table-${focusTable}`)
+      document.getElementById(`paste-table-${effectiveFocusTable}`)
         ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }, 120)
     return () => clearTimeout(id)
@@ -108,7 +115,7 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
   // matters. General "Add more history" (no focusTable) still gets everything.
   // A hint that doesn't match a real table key falls back to everything too,
   // rather than silently rendering zero paste boxes.
-  const focusedMatch = focusTable ? TABLES.filter(t => t.key === focusTable) : []
+  const focusedMatch = effectiveFocusTable ? TABLES.filter(t => t.key === effectiveFocusTable) : []
   const visibleTables = focusedMatch.length ? focusedMatch : TABLES
   const focusLabel = focusedMatch.length ? focusedMatch[0].label : null
 
@@ -248,14 +255,21 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
     <Modal
       open={open}
       onClose={handleClose}
-      title={focusLabel ? `Re-paste ${focusLabel}` : 'Add more history'}
-      subtitle={focusLabel
+      title={flag ? `Fixing FY${flag.year}` : focusLabel ? `Re-paste ${focusLabel}` : 'Add more history'}
+      subtitle={flag
+        ? 'Expand Other Income and Net Profit, then paste the table again — the exceptional item on its own row gets picked up automatically.'
+        : focusLabel
         ? 'Expand the sub-rows Screener collapses by default, then paste the table again.'
         : 'Paste any Screener tables — financials extend history, shareholding feeds Quality & Moat'}
       widthClass="sm:max-w-4xl"
     >
         {!applied ? (
           <>
+            {flag && (
+              <div className="text-xs rounded-lg px-3 py-2 bg-neutral/10 text-neutral">
+                {flag.note}
+              </div>
+            )}
             {url ? (
               <a href={url} target="_blank" rel="noopener noreferrer"
                  className="btn-ghost text-sm w-full inline-flex items-center justify-center">

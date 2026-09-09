@@ -12,7 +12,7 @@ import NormalizeModal from './NormalizeModal.jsx'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
 
-export default function Header() {
+export default function Header({ onAddHistory } = {}) {
   const { state, load, reset } = useApp()
   const [input, setInput] = useState('')
 
@@ -220,7 +220,8 @@ function IdentityBar() {
       {/* Row 3: data vintage badge (its own line — it's long) */}
       <div className="flex flex-wrap">
         <DataVintageBadge data={data} state={state}
-          onNormalize={f => { setNormFlag(f); setNormOpen(true) }} />
+          onNormalize={f => { setNormFlag(f); setNormOpen(true) }}
+          onAddHistory={onAddHistory} />
       </div>
 
       {/* Row 4: stage + basis controls + dividend — wrap as whole units */}
@@ -322,7 +323,7 @@ function DividendLine({ data, ratioResult, cur }) {
  * the company has almost certainly reported a newer year that data
  * providers (including Yahoo) simply haven't ingested yet.
  */
-function DataVintageBadge({ data, state, onNormalize }) {
+function DataVintageBadge({ data, state, onNormalize, onAddHistory }) {
   const years = (data.incomeHistory || []).map(r => r.year).filter(Boolean).sort()
   if (years.length === 0) {
     return <span className="text-xs text-slate-600">📡 No annual data available</span>
@@ -355,7 +356,7 @@ function DataVintageBadge({ data, state, onNormalize }) {
       </span>
       {isStale && <span>⚠️</span>}
       {quality.hasIssues && (
-        <DataQualityDot quality={quality} ticker={state.ticker} onNormalize={onNormalize} />
+        <DataQualityDot quality={quality} ticker={state.ticker} onNormalize={onNormalize} onAddHistory={onAddHistory} />
       )}
     </span>
   )
@@ -368,7 +369,20 @@ function DataVintageBadge({ data, state, onNormalize }) {
  * because a user reading a margin needs to know both — that FY24 has had an
  * exceptional item removed is as material as that FY26 looks odd.
  */
-function DataQualityDot({ quality, ticker, onNormalize }) {
+// A pnl-spike on otherIncome/netProfit, or an unexplained margin-outlier, is
+// most often exactly one thing: an exceptional item Screener discloses on its
+// own row once Other Income / Net Profit is expanded — dataQuality.js's
+// normaliseIncome() now derives the fix from that automatically once it's
+// pasted. Routes those flags to "Add more history" (its expand-hints already
+// cover otherIncome/exceptionalItems/etc., same mechanism already proven for
+// COGS) instead of the manual excerpt/table NormalizeModal flow, which has
+// no way to run that derivation. Other flag kinds (a balance-sheet or
+// cash-flow spike) aren't explained by a P&L exceptional item, so they still
+// go to NormalizeModal as before.
+const AUTO_DERIVABLE_FIELDS = new Set(['otherIncome', 'netProfit'])
+const isAutoDerivable = f => f.kind === 'margin-outlier' || (f.kind === 'pnl-spike' && AUTO_DERIVABLE_FIELDS.has(f.field))
+
+function DataQualityDot({ quality, ticker, onNormalize, onAddHistory }) {
   const [open, setOpen] = React.useState(false)
   const [resolutions, setResolutions] = React.useState([])
 
@@ -448,12 +462,23 @@ function DataQualityDot({ quality, ticker, onNormalize }) {
                       </span>
                       {!settled && (
                         <span className="flex items-center gap-3 mt-1">
-                          {/* Opens the normalize flow (restated table or a
-                              disclosed-excerpt correction), not a raw re-paste —
-                              the figure is already populated, so a plain re-paste
-                              is a no-op; this is the one path that can actually
-                              overwrite it. */}
-                          <button onClick={() => { setOpen(false); onNormalize?.(f) }}
+                          {/* A margin-outlier or an otherIncome/netProfit spike is
+                              usually one exceptional item, sitting on its own row
+                              once Other Income / Net Profit is expanded on
+                              Screener — the SAME paste that already extends
+                              history, now auto-derives the fix from that
+                              expansion (see AUTO_DERIVABLE_FIELDS above), so
+                              fill-only isn't a problem here: it only skips
+                              fields already populated (netProfit/eps, correctly
+                              left alone), while the new exceptional-item fields
+                              are still empty and land normally. Anything else
+                              (a balance-sheet or cash-flow spike) still needs
+                              the manual normalize flow — a raw re-paste of an
+                              already-populated field there really would be a
+                              no-op, so that path opens the one modal that can
+                              actually overwrite it. */}
+                          <button
+                            onClick={() => { setOpen(false); isAutoDerivable(f) ? onAddHistory?.(f) : onNormalize?.(f) }}
                             className="text-accent hover:text-accent-light">
                             normalize this year →
                           </button>
