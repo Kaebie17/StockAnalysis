@@ -300,6 +300,7 @@ export default function ValuationPanel({ open, onClose }) {
  */
 function EstimateExplainer({ state }) {
   const [open, setOpen] = useState(false)
+  const [showSteps, setShowSteps] = useState(false)
   // Was hand-rolling its own buildEstimate() call with 4 of the ~14 options
   // TwoEstimates/useEstimate actually apply (growth window, accepted
   // revisions, peer band, guidance, the pre-normalisation history for the
@@ -394,6 +395,30 @@ function EstimateExplainer({ state }) {
                   {' '}multiples: what buyers paid for earnings that hadn't arrived yet, which is
                   the only kind that can fairly be applied to a projection.
                 </p>
+              )}
+
+              {/* A regression-based adjustment (this stock's own ROE/growth vs.
+                  its multiple) is tried before falling back to this plain
+                  historical band — its reasoning (why it wasn't trusted: R²
+                  too low, too few years, or a year excluded for having no
+                  overlapping price history) used to be computed and silently
+                  discarded whenever this band won instead. Surfaced here the
+                  same way Justified Multiples already discloses its own
+                  working, rather than a second, differently-shaped narrative. */}
+              {est.multipleSteps?.length > 0 && (
+                <div>
+                  <button onClick={() => setShowSteps(v => !v)}
+                    className="text-[10px] text-slate-500 hover:text-slate-300">
+                    {showSteps ? '▲' : '▼'} why this range, not a fitted one
+                  </button>
+                  {showSteps && (
+                    <ul className="mt-1 space-y-0.5">
+                      {est.multipleSteps.map((s, i) => (
+                        <li key={i} className="text-[10px] text-slate-500">{s}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               )}
               {/* This message named the wrong cause and the wrong number: it
                   said "not enough price history" and "25%", but a 'current'
