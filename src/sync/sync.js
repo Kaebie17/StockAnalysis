@@ -17,6 +17,66 @@ export async function currentUser() {
   return data?.user || null
 }
 
+// ── Change detection ────────────────────────────────────────────────────────
+// pushAllLocal() re-exports and re-queues EVERY syncable record on every
+// sync cycle (app open, sign-in, auth-refresh), unconditionally — including
+// full financials blobs that can run several hundred KB — with no check
+// against what's already on the server. Most of the time nothing has
+// actually changed, so that was pure waste: bytes over the wire and real
+// Postgres write work on every single sync, which is exactly the kind of
+// avoidable load that was contributing to the 57014s. Track a lightweight
+// fingerprint of what was last successfully pushed and skip re-sending
+// anything that still matches it.
+const FP_KEY = 'sa_sync_pushed_fp'
+
+function loadFingerprints() {
+  try { return JSON.parse(localStorage.getItem(FP_KEY) || '{}') } catch { return {} }
+}
+function saveFingerprints() {
+  try { localStorage.setItem(FP_KEY, JSON.stringify(fingerprints)) } catch { /* private mode — just re-pushes next time, harmless */ }
+}
+let fingerprints = loadFingerprints()
+
+// A cheap, deterministic string hash (djb2) — this only needs to detect
+// "did the syncable content change," not resist tampering.
+function hashString(s) {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return h.toString(36)
+}
+
+// financials' top-level `timestamp` and `lastAccessed` — and the live
+// price/marketCap/change1d fields nested inside data.data — all get touched
+// by routine, no-edit-behind-them activity: `timestamp` on every fetch/poll
+// (setCached), `lastAccessed` on every plain read (getCached, called on
+// basically every ticker view), and the price fields on every 60s poll tick
+// (pullAll below has the matching note on why those specific fields aren't
+// sync-worthy). Fingerprinting the raw record would re-flag it as "changed"
+// on essentially every page view and defeat the whole point, so all of
+// those are stripped before hashing.
+function fingerprintOf(key, value) {
+  const store = key.split(':', 1)[0]
+  if (store === 'financials' && value?.data?.data) {
+    const { price, marketCap, meta, ...restData } = value.data.data
+    const { timestamp, lastAccessed, ...restValue } = value
+    return hashString(JSON.stringify({
+      ...restValue,
+      data: { ...value.data, data: { ...restData, meta: meta ? { ...meta, change1d: undefined } : meta } },
+    }))
+  }
+  return hashString(JSON.stringify(value))
+}
+
+// Fingerprints aren't scoped per Supabase user id — just per sync key — so
+// switching to a different account on the same browser could otherwise
+// wrongly skip pushing records the new account's server side has never
+// actually seen. Cleared on sign-out (called from SyncProvider) so a fresh
+// sign-in always starts from "prove it's already there," never assumes it.
+export function clearPushFingerprints() {
+  fingerprints = {}
+  try { localStorage.removeItem(FP_KEY) } catch { /* ignore */ }
+}
+
 // ── Push ────────────────────────────────────────────────────────────────────
 let pending = new Map()   // key -> value, coalesced
 let timer = null
@@ -24,6 +84,9 @@ let retryTimer = null
 
 export function queuePush(key, value) {
   if (!syncEnabled()) return
+  // Nothing to send if this exact content (modulo the live fields above)
+  // is already what we last confirmed made it to the server.
+  if (fingerprints[key] === fingerprintOf(key, value)) return
   pending.set(key, value)
   clearTimeout(timer)
   timer = setTimeout(flush, 1200)   // debounce
@@ -87,10 +150,14 @@ async function pushChunk(user, chunk) {
     if (error) throw error
     // Only drop the keys we just pushed, and only if nothing newer re-queued
     // that same key while the request was in flight (reference equality on
-    // the value we snapshotted — a fresh queuePush call replaces it).
+    // the value we snapshotted — a fresh queuePush call replaces it). Record
+    // what actually made it to the server so the next sync cycle can skip
+    // these entirely if nothing changes before then.
     for (const [key, value] of chunk) {
       if (pending.get(key) === value) pending.delete(key)
+      fingerprints[key] = fingerprintOf(key, value)
     }
+    saveFingerprints()
     return { ok: true }
   } catch (e) {
     // Sizes logged alongside the failure so a recurrence is diagnosable

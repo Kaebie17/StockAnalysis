@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react'
 import { supabase, syncEnabled } from './supabaseClient.js'
-import { pullAll, pushAllLocal } from './sync.js'
+import { pullAll, pushAllLocal, clearPushFingerprints } from './sync.js'
 
 /**
  * SyncProvider — magic-link auth + local-first sync orchestration.
@@ -142,6 +142,7 @@ export function SyncProvider({ children }) {
   const signOut = useCallback(async () => {
     if (!syncEnabled()) return
     await supabase.auth.signOut()
+    clearPushFingerprints()
     setUser(null); setStatus('idle'); setError(null)
   }, [])
 
