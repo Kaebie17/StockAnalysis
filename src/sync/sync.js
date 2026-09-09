@@ -33,12 +33,40 @@ export function queuePush(key, value) {
 // hundreds of records right after sign-in, via pushAllLocal) risked growing
 // large enough — several merged financials records, each holding years of
 // pasted history, in one statement — to blow past Postgres's
-// statement_timeout (error 57014). Worse, a fixed 30s retry then replayed
-// that exact same oversized statement forever, which is what was tipping a
-// recovering database back into an unhealthy state. Capping each upsert to
-// a bounded number of rows keeps every individual statement small
-// regardless of how much is queued.
-const PUSH_CHUNK_SIZE = 10
+// statement_timeout (error 57014, an 8s hard ceiling on Supabase's free-tier
+// `authenticated` role). Worse, a fixed 30s retry then replayed that exact
+// same oversized statement forever, which is what was tipping a recovering
+// database back into an unhealthy state.
+//
+// A fixed ROW count isn't the right cap: a pasted-history financials record
+// runs 40-400KB+ while a positions/revisions row is a few hundred bytes, so
+// 10 rows can mean anywhere from a few KB to several MB depending which
+// stores happen to land in that chunk together. Chunking by cumulative BYTE
+// size instead bounds what actually costs time to write regardless of
+// composition. A single record bigger than the budget still ships alone
+// (one JSON value can't be split) — that's fine, it's the SUM of several
+// large records sharing one statement that risked the timeout, not any one
+// of them individually.
+const PUSH_CHUNK_MAX_BYTES = 150_000
+const PUSH_CHUNK_MAX_ROWS = 25   // secondary cap so many tiny records don't pile into one huge row count
+
+function buildPushChunks(entries) {
+  const chunks = []
+  let current = []
+  let currentBytes = 0
+  for (const entry of entries) {
+    const size = JSON.stringify(entry[1]).length
+    if (current.length > 0 && (current.length >= PUSH_CHUNK_MAX_ROWS || currentBytes + size > PUSH_CHUNK_MAX_BYTES)) {
+      chunks.push(current)
+      current = []
+      currentBytes = 0
+    }
+    current.push(entry)
+    currentBytes += size
+  }
+  if (current.length > 0) chunks.push(current)
+  return chunks
+}
 
 // @returns {{ok: boolean, error?: any}} — the caller (SyncProvider) surfaces
 // this as real sync status instead of assuming every push landed.
@@ -50,9 +78,7 @@ async function flush() {
   // duration of the request so a NEW edit queued while this upsert is in
   // flight isn't lost, and isn't silently discarded if the upsert fails.
   const snapshot = new Map(pending)
-  const entries = [...snapshot.entries()]
-  const chunks = []
-  for (let i = 0; i < entries.length; i += PUSH_CHUNK_SIZE) chunks.push(entries.slice(i, i + PUSH_CHUNK_SIZE))
+  const chunks = buildPushChunks([...snapshot.entries()])
 
   let firstError = null
   for (const chunk of chunks) {
@@ -69,7 +95,12 @@ async function flush() {
         if (pending.get(key) === value) pending.delete(key)
       }
     } catch (e) {
-      console.warn('[sync] push chunk failed', e)
+      // Sizes logged alongside the failure so a recurrence is diagnosable
+      // without a trip to the SQL editor: a timeout on a chunk that's well
+      // under the byte budget would point at the database itself (still
+      // degraded, or a stuck lock) rather than payload size.
+      console.warn('[sync] push chunk failed', e,
+        chunk.map(([key, value]) => `${key}: ${JSON.stringify(value).length}B`))
       firstError = firstError || e
       // Stop rather than push straight on to the next chunk — a timeout
       // usually means the database is already under strain, and immediately
