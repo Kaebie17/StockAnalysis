@@ -328,7 +328,21 @@ async function doPullAll() {
           && existing?.data?.source !== 'merged'
       } catch { /* no local copy to protect — fall through to the pulled value */ }
     }
-    try { await putSyncableRecord(store, row.value, bypassFreshnessGate ? null : row.updated_at); pulled++ } catch {}
+    try {
+      await putSyncableRecord(store, row.value, bypassFreshnessGate ? null : row.updated_at)
+      pulled++
+      // The server already has exactly this content — recording its
+      // fingerprint now means the very next push (pushAllLocal always runs
+      // right after a pull, see SyncProvider) won't needlessly re-upload
+      // something that was just confirmed to already be there. Safe even
+      // when putSyncableRecord's freshness gate above just skipped the
+      // local write because local was newer: this only records what the
+      // SERVER's copy looks like, not a claim about local content, so a
+      // genuinely newer/different local value still won't match it and
+      // still gets pushed as normal.
+      fingerprints[row.key] = fingerprintOf(row.key, row.value)
+    } catch {}
   }
+  saveFingerprints()
   return { pulled, ok: true }
 }
