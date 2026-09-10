@@ -7,17 +7,21 @@ import Modal from '../Modal.jsx'
 /**
  * NormalizeModal — manual normalization via paste. Two modes, both paste boxes:
  *
- *   FULL TABLE  → paste a restated P&L table → parsed rows REPLACE those years
- *                 in normalizedIncomeHistory (a complete restated table is the
- *                 answer; no reconstruction needed).
+ *   FULL TABLE  → paste a restated P&L table → the parsed netProfit/eps for
+ *                 those years become netProfitNormalized/epsNormalized
+ *                 overrides written onto the matching reportedIncomeHistory
+ *                 rows (no reconstruction needed — Screener/the AR already
+ *                 gave the resolved figure).
  *
  *   EXCERPT     → paste a sentence/snippet from the report → the app deciphers
  *                 {line, year, value} and PROPOSES a reconstruction, which the
  *                 user confirms/corrects before it is applied. Free-text parsing
  *                 is never trusted blind.
  *
- * Reported data is never overwritten — normalized rows live in a separate table
- * the basis toggle switches to. All hooks are ABOVE the early return.
+ * Reported data is never overwritten — netProfit/eps stay as reported;
+ * netProfitNormalized/epsNormalized are separate sibling fields on the same
+ * row, read only when the basis toggle is set to 'normalized'. All hooks are
+ * ABOVE the early return.
  */
 
 const cur = c => (c === 'INR' ? '\u20b9' : '$')
@@ -35,7 +39,11 @@ const LINE_LABELS = {
 
 export default function NormalizeModal({ open, onClose, flag = null }) {
   const { state, applyNormalization, setBasis } = useApp()
-  const income   = state?.data?.incomeHistory || []
+  // reportedIncomeHistory specifically, not incomeHistory — the latter is the
+  // ACTIVE series and is already normalized whenever basis is 'normalized'.
+  // Reconstructing a fresh manual correction on top of an already-adjusted
+  // netProfit would silently double-adjust it.
+  const income   = state?.data?.reportedIncomeHistory || state?.data?.incomeHistory || []
   const currency = state?.data?.currency
   const div   = currency === 'INR' ? 1e7 : 1e6
   const unit  = currency === 'INR' ? 'Cr' : 'M'
@@ -94,22 +102,19 @@ export default function NormalizeModal({ open, onClose, flag = null }) {
 
   const parseTable = () => setTableResult(parsePastedTable(text, 'income'))
 
+  // No separate normalized table to merge into any more — APPLY_NORMALIZATION
+  // writes netProfitNormalized/epsNormalized straight onto the matching
+  // year's row in reportedIncomeHistory and leaves every other year alone, so
+  // this only ever needs to hand it the year(s) this one action touched.
   const applyExcerpt = () => {
     if (!excerptPreview?.ok) return
-    const existing = state?.data?.normalizedIncomeHistory || []
-    const rows = [...existing.filter(r => yr(r) !== String(edit.year)), excerptPreview.row]
-      .sort((a, b) => yr(a).localeCompare(yr(b)))
-    applyNormalization(rows); setBasis('normalized'); setApplied(true)
+    applyNormalization([excerptPreview.row]); setBasis('normalized'); setApplied(true)
   }
 
   const applyTable = () => {
     if (!tableResult || !tableResult.rows?.length) return
     const tagged = tagPastedRows(tableResult.rows, 'income', { scale })
-    const existing = state?.data?.normalizedIncomeHistory || []
-    const byYear = Object.fromEntries(existing.map(r => [yr(r), r]))
-    for (const row of tagged) byYear[yr(row)] = row
-    const rows = Object.values(byYear).sort((a, b) => yr(a).localeCompare(yr(b)))
-    applyNormalization(rows); setBasis('normalized'); setApplied(true)
+    applyNormalization(tagged); setBasis('normalized'); setApplied(true)
   }
 
   const compareFields = [

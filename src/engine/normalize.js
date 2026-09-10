@@ -94,6 +94,7 @@ export function applyDocFacts(data, arData) {
  * Call this on anything read from cache or Supabase, before calcRatios.
  */
 export function migrateStoredData(data) {
+  data = migrateNormalizedTable(data)
   if (!data?.cashflowHistory) return data
   const STALE = /Operating CF\s*[x\u00d7*]\s*0\.7/i
   let scrubbed = 0
@@ -107,6 +108,34 @@ export function migrateStoredData(data) {
   })
   if (!scrubbed) return data
   return { ...data, cashflowHistory, migrated: scrubbed }
+}
+
+/**
+ * Income used to carry a SEPARATE normalizedIncomeHistory array, merged onto
+ * reportedIncomeHistory whole-row-per-year at read time (mergeByYear). That's
+ * gone \u2014 normalized netProfit/eps now live as netProfitNormalized/
+ * epsNormalized sibling fields directly on the matching reportedIncomeHistory
+ * row, computed live where derivable and written here only for a manual
+ * NormalizeModal override that can't be. A ticker normalized before this
+ * change still has its old array sitting in storage; fold it onto the
+ * matching rows once, on load, so that real prior work isn't silently
+ * dropped just because the table it lived in no longer exists.
+ */
+export function migrateNormalizedTable(data) {
+  const old = data?.normalizedIncomeHistory
+  if (!old?.length) return data
+  const byYear = Object.fromEntries(old.map(r => [String(r.year), r]))
+  const reportedBase = data.reportedIncomeHistory || data.incomeHistory || []
+  const reportedIncomeHistory = reportedBase.map(row => {
+    const o = byYear[String(row.year)]
+    if (!o) return row
+    const out = { ...row }
+    if (o.netProfit?.value != null && out.netProfitNormalized == null) out.netProfitNormalized = o.netProfit
+    if (o.eps?.value != null && out.epsNormalized == null) out.epsNormalized = o.eps
+    return out
+  })
+  const { normalizedIncomeHistory, ...rest } = data
+  return { ...rest, reportedIncomeHistory }
 }
 
 export function normalize(source, raw) {

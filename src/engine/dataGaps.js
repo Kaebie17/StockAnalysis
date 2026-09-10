@@ -72,6 +72,7 @@ function resolvedValues(r, data) {
     profitExclExceptional:  latestI.profitExclExceptional?.value ?? null,
     profitForEPS:           latestI.profitForEPS?.value ?? null,
     profitForPE:            latestI.profitForPE?.value ?? null,
+    profitFromAssociates:   latestI.profitFromAssociates?.value ?? null,
     minorityInterest:       latestI.minorityInterest?.value ?? null,
   }
 }
@@ -151,8 +152,21 @@ export function findMissingBaseMetrics(ratioResult, data = null, dismissed = [])
     else softGaps.push({ metric: 'capex', label: METRICS.capex.label, table: 'cashflow', note })
   }
 
+  // Wizard steps (GapFillModal). A soft gap still needs a step to paste into —
+  // "estimated" (capex ~ depreciation, or a conditional exceptional-items/
+  // minority-interest row that just hasn't been checked yet) is exactly the
+  // kind of thing real data should be able to replace, and there was nowhere
+  // to put it: the summary banner would mention it was estimated, but the
+  // wizard itself was built only from `missing`, so a table whose ONLY gap
+  // was soft (capex being the original case) never got a step at all — no
+  // paste box ever appeared for it, regardless of how the banner worded it.
+  // Marked `soft` so the step can say "optional" rather than "missing", and
+  // so it never blocks the wizard's "all set" completion state — every step
+  // already has its own "Skip this table" escape hatch, so offering one here
+  // costs nothing if the row turns out not to apply to this company.
   const byTable = {}
   for (const m of missing) (byTable[m.table] ||= []).push(m)
+  for (const m of softGapsFromEstimable) (byTable[m.table] ||= []).push({ ...m, soft: true })
 
   const keys = [...missing.map(m => m.metric), ...softGaps.map(m => m.metric)]
 

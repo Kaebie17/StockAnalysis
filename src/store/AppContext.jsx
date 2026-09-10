@@ -2,18 +2,17 @@
 
 import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react'
 import { fetchTicker } from '../api/orchestrator.js'
-import { normalize, applyDocFacts, migrateStoredData } from '../engine/normalize.js'
+import { normalize, applyDocFacts, migrateStoredData, migrateNormalizedTable } from '../engine/normalize.js'
 import { calcRatios } from '../engine/ratios.js'
 import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
-import { assessDataQuality, normaliseIncome } from '../engine/dataQuality.js'
+import { assessDataQuality, computeNormalizedRow } from '../engine/dataQuality.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
 import { getCached, setCached, deleteCached, clearAllCached, saveGuidance, loadGuidance } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
 import { useSync } from '../sync/SyncProvider.jsx'
-import { mergeByYear } from '../engine/reconstruct.js'
 import { listRevisions } from '../utils/db.js'
 import { fetchPeerCandidates, clearPeersCache } from '../api/peersClient.js'
 import { getRiskFreeRate } from '../api/riskFreeClient.js'
@@ -63,7 +62,6 @@ const initial = {
   // Qualitative / governance inputs (Block 5)
   holdingsData: null, arData: null, quarterlyData: null,
   growthWindowYears: null,   // user's chosen CAGR window; null = full-history default
-  normalizedIncomeHistory: null,   // reconstructed rows; only years the user restated
   // This app's own regression beta (src/engine/beta.js) — see the
   // SET_LIVE_BETA case and its effect below. Session-scoped like the WACC/
   // margin overrides in `assumptions` already are, not persisted per ticker
@@ -152,12 +150,14 @@ function reducer(s, a) {
     case 'MERGE_PASTED': {
       if (!s.data) return s
       const histKey = a.tableType + 'History'
-      // Income is the one table with a reported/normalized split. Merge onto
-      // the persisted TRUE REPORTED baseline, not onto s.data.incomeHistory —
-      // when basis is 'normalized' that field holds the merged/normalized
-      // series, and merging a fresh reported paste on top of normalized
-      // figures would bake the normalization into what's supposed to be the
-      // reported source. Balance/cashflow have no such split.
+      // Income has no separate normalized table any more — one table
+      // (reportedIncomeHistory), normalized netProfit/eps computed live per
+      // row by computeAll (see computeNormalizedRow). Merge onto the
+      // persisted reported baseline, not onto s.data.incomeHistory — the
+      // active series can differ from it when basis is 'normalized', and
+      // merging a fresh paste onto the ACTIVE (possibly already-normalized)
+      // series would bake normalization into what's supposed to be the
+      // untouched reported source. Balance/cashflow have no such split.
       const base = a.tableType === 'income'
         ? (s.data.reportedIncomeHistory || s.data.incomeHistory || [])
         : (s.data[histKey] || [])
@@ -182,8 +182,9 @@ function reducer(s, a) {
       const newHistory = Object.values(merged).sort((x, y) => x.year.localeCompare(y.year))
       // A paste into the income table IS a reported-data event — a new year
       // closing, a restated figure from a fresh Screener/AR pull. It updates
-      // the reported baseline directly; computeAll re-derives the ACTIVE
-      // series (merging in normalizedIncomeHistory) from there on its own.
+      // the reported baseline directly; computeAll derives the ACTIVE
+      // series (normalized netProfit/eps, computed live per row) from there
+      // on its own — nothing to pre-derive or store here any more.
       // deepSource is the ONLY thing exportSyncableRecords() checks to decide
       // whether a financials record is worth pushing to Supabase (db.js).
       // normalize.js sets it when Screener data merges in automatically at
@@ -191,27 +192,9 @@ function reducer(s, a) {
       // SAME kind of Screener data, arriving later, and this case never set
       // it. That silently made every ticker built up via "Add History" un-
       // syncable: real pasted effort, sitting on one device forever.
-      let data
-      if (a.tableType === 'income') {
-        data = { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
-        // A pasted Other Income / Exceptional Items expansion is enough on
-        // its own to derive a normalized year — the most common one-off
-        // shape (see dataQuality.js's normaliseIncome), no separate
-        // NormalizeModal trip required for it. Runs over the full merged
-        // history, not just this paste's years, so an earlier paste's
-        // exceptional items that never got derived (e.g. before this existed)
-        // are picked up too. Fill-only: an existing manual normalization for
-        // a year always wins over this auto-derivation — mergeByYear's second
-        // argument takes precedence, so the existing table is passed second.
-        const { rows: derivedRows, adjustments } = normaliseIncome(newHistory)
-        if (adjustments.length > 0) {
-          const derivedByYear = Object.fromEntries(derivedRows.map(r => [String(r.year), r]))
-          const autoNormalized = adjustments.map(adj => derivedByYear[String(adj.year)]).filter(Boolean)
-          data.normalizedIncomeHistory = mergeByYear(autoNormalized, s.data.normalizedIncomeHistory || [])
-        }
-      } else {
-        data = { ...s.data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
-      }
+      const data = a.tableType === 'income'
+        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
+        : { ...s.data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
@@ -291,9 +274,26 @@ function reducer(s, a) {
     case 'RESET':          return { ...initial }
     case 'APPLY_NORMALIZATION': {
       if (!s.data) return s
-      // a.rows: full reconstructed rows (already validated, ok:true). Years not in
-      // a.rows fall back to reported at compute time.
-      const data = { ...s.data, normalizedIncomeHistory: a.rows }
+      // a.rows: full reconstructed rows from NormalizeModal (already
+      // validated, ok:true) — one entry per year the user manually
+      // normalized. No separate table any more: write netProfitNormalized /
+      // epsNormalized directly onto the matching year's row in
+      // reportedIncomeHistory, as an override sibling field. Only netProfit
+      // and eps are ever lifted out of a.rows — every other field
+      // reconstructRow's identity chain touched (PBT, tax, ...) was only ever
+      // scratch work toward those two, never separately consumed by anything
+      // downstream. A year not present in a.rows is completely untouched.
+      const overridesByYear = Object.fromEntries((a.rows || []).map(r => [String(r.year), r]))
+      const reportedBase = s.data.reportedIncomeHistory || s.data.incomeHistory || []
+      const reportedIncomeHistory = reportedBase.map(row => {
+        const o = overridesByYear[String(row.year)]
+        if (!o) return row
+        const out = { ...row }
+        if (o.netProfit != null) out.netProfitNormalized = o.netProfit
+        if (o.eps != null) out.epsNormalized = o.eps
+        return out
+      })
+      const data = { ...s.data, reportedIncomeHistory }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
@@ -333,6 +333,16 @@ function reducer(s, a) {
  * this pipeline there would guarantee the two drift apart.
  */
 export function computeAll(data, assumptions, meAssumptions, weights, arData = null, opts = {}) {
+  // A ticker normalized before the reported/normalized split was collapsed
+  // into row-level fields still carries the old separate array in storage —
+  // fold it onto reportedIncomeHistory BEFORE reportedBase is read below, not
+  // just in the migrateStoredData() call further down: that one runs after
+  // the active series is already derived from reportedBase, which would mean
+  // this one-time migration lands one recompute too late for a manually
+  // normalized year to show correctly on the very first load after this
+  // change. Idempotent — a no-op once the old array is gone, so calling it
+  // again inside migrateStoredData() below is harmless.
+  data = migrateNormalizedTable(data)
 // Reported basis by default; normalized only when the user has restated years
   // AND toggled to it. One-offs are never silently adjusted — assessDataQuality
   // now only flags them (dq.flags); correction is manual via reconstruction.
@@ -352,14 +362,21 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // figure) update it explicitly at the call site instead — see
   // MERGE_PASTED, the one place besides this bootstrap that's allowed to.
   const reportedBase = data.reportedIncomeHistory ?? data.incomeHistory
-  // The ACTIVE series always re-derives from the two stable sources
-  // (reportedBase + normalizedIncomeHistory) rather than from the previous
-  // call's incomeHistory, so toggling the basis back and forth is always
-  // correct regardless of how many recomputes happened while normalized —
-  // mergeByYear's own contract is "start from reported."
-  const useNorm = opts.basis === 'normalized' && data.normalizedIncomeHistory?.length > 0
-  const income = useNorm
-    ? mergeByYear(reportedBase, data.normalizedIncomeHistory)  // normalized row wins per year
+  // The ACTIVE series always re-derives from reportedBase (never from the
+  // previous call's incomeHistory), so toggling the basis back and forth is
+  // always correct regardless of how many recomputes happened while
+  // normalized. There is no second table any more — normalized netProfit/eps
+  // are computed live, per row, from that SAME row's own fields
+  // (computeNormalizedRow: a manual netProfitNormalized/epsNormalized
+  // override from NormalizeModal if present, else derived from the
+  // exceptional-items group Screener discloses, else unchanged). Every other
+  // field always comes straight from reportedBase, untouched — normalization
+  // in this app only ever adjusts netProfit and eps.
+  const income = opts.basis === 'normalized'
+    ? reportedBase.map(row => {
+        const n = computeNormalizedRow(row)
+        return n ? { ...row, netProfit: n.netProfit, eps: n.eps } : row
+      })
     : reportedBase
   data = { ...data, incomeHistory: income, reportedIncomeHistory: reportedBase }
   data = applyDocFacts(migrateStoredData(data), arData)

@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react'
 import { usePositions } from '../../store/usePositions.js'
-import { assessDataQuality } from '../../engine/dataQuality.js'
+import { assessDataQuality, hasNormalizableYear } from '../../engine/dataQuality.js'
 import { saveDataResolution, listDataResolutions } from '../../utils/db.js'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
@@ -118,7 +118,10 @@ function IdentityBar() {
   // and defaults it to table mode. null = the plain "⚖ Normalize" button.
   const [normFlag, setNormFlag] = React.useState(null)
   const basis = data?.basis || 'reported'
-  const hasNorm = (data?.normalizedIncomeHistory?.length || 0) > 0
+  // No separate normalized table any more — whether the toggle shows at all
+  // depends on whether ANY year has something to normalize, manual or
+  // auto-derivable straight from that year's own reported fields.
+  const hasNorm = hasNormalizableYear(data?.reportedIncomeHistory || data?.incomeHistory || [])
   const [refreshing, setRefreshing] = React.useState(false)
   const [fullRefreshing, setFullRefreshing] = React.useState(false)
   // Just the held-lots label; the actions themselves live in PositionFab.

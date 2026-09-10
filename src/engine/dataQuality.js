@@ -99,55 +99,89 @@ function exceptionalOf(row) {
  * wants reported figures still has them. Each adjusted row carries what was
  * removed, so the ⓘ can show the working.
  */
-export function normaliseIncome(incomeHistory = []) {
-  const adjustments = []
-  const rows = (incomeHistory || []).map(row => {
-    const np = val(row?.netProfit)
-    if (!(np > 0)) return row
-
-    const directClean = val(row?.profitExclExceptional)
-    const exc = exceptionalOf(row)
-    if (directClean == null && exc == null) return row
-
-    // ── netProfit basis (consolidated) ──
-    let excAfterTax, npAdjusted, taxRate = null, npDerived
-    if (directClean != null && directClean > 0 && directClean !== np) {
-      npAdjusted = directClean
-      excAfterTax = np - directClean
-      npDerived = false
-    } else if (exc != null) {
-      // Exceptional items are usually reported pre-tax; the after-tax effect
-      // is what reaches net profit. Where Screener's own after-tax figure is
-      // available it's used directly (exceptionalOf already flags this via
-      // alreadyAfterTax); otherwise the effective rate is estimated where
-      // derivable, and failing that the item is removed gross.
-      const pbt = val(row?.profitBeforeTax) ?? val(row?.pbt)
-      taxRate = (!exc.alreadyAfterTax && pbt > 0 && np > 0 && pbt > np) ? 1 - (np / pbt) : null
-      excAfterTax = exc.alreadyAfterTax ? exc.value : (taxRate != null ? exc.value * (1 - taxRate) : exc.value)
-      npAdjusted = np - excAfterTax
-      npDerived = true
-    } else {
-      return row
+/**
+ * The whole of normalization, for ONE row, computed live from that row's own
+ * fields — nothing stored, nothing merged from a second table. There is
+ * exactly one income table (reportedIncomeHistory); a row that needs a
+ * normalized netProfit/eps either says so itself (netProfitNormalized /
+ * epsNormalized — a MANUAL correction from NormalizeModal, for something not
+ * derivable from anything Screener discloses, e.g. an AR footnote) or carries
+ * enough of the exceptional-items group for this function to derive it on the
+ * spot, every time it's asked, from the row's own current values. Either way
+ * there is nothing to go stale, and nothing that needs merging field-by-field
+ * or row-by-row with anything else.
+ *
+ * Returns null when there's genuinely nothing to normalize for this row.
+ */
+export function computeNormalizedRow(row) {
+  // A manual override always wins outright — a human read an annual report
+  // and said so; that's not something this function's own arithmetic should
+  // ever second-guess or recompute over.
+  if (row?.netProfitNormalized) {
+    const reportedProfit = val(row.netProfitNormalized?.reported) ?? val(row.netProfit)
+    const adjustedProfit = val(row.netProfitNormalized)
+    return {
+      netProfit: row.netProfitNormalized,
+      eps: row.epsNormalized ?? row.eps,
+      adjustment: {
+        year: yearOf(row), kind: 'manual', resolved: true,
+        reportedProfit: round(reportedProfit, 0),
+        adjustedProfit: round(adjustedProfit, 0),
+        impactPct: reportedProfit > 0 ? round(((reportedProfit - adjustedProfit) / reportedProfit) * 100, 1) : null,
+        note: 'Manually normalized from the annual report.',
+      },
     }
-    if (!(npAdjusted > 0)) return row    // removing it would leave a loss; leave alone
+  }
 
-    // ── eps basis (attributable to parent shareholders) ──
-    const minorityShare = val(row?.minorityInterest) ?? 0
-    const reportedEpsBasis = val(row?.profitForEPS) ?? (np - minorityShare)
-    const directPE = val(row?.profitForPE)
-    let epsBasisAdjusted, epsDerived
-    if (directPE != null && directPE > 0) {
-      epsBasisAdjusted = directPE
-      epsDerived = false
-    } else {
-      epsBasisAdjusted = reportedEpsBasis - excAfterTax
-      epsDerived = true
-    }
-    const reportedEps = val(row?.eps)
-    const adjustedEps = (reportedEps > 0 && reportedEpsBasis > 0 && epsBasisAdjusted > 0)
-      ? reportedEps * (epsBasisAdjusted / reportedEpsBasis) : null
+  const np = val(row?.netProfit)
+  if (!(np > 0)) return null
 
-    adjustments.push({
+  const directClean = val(row?.profitExclExceptional)
+  const exc = exceptionalOf(row)
+  if (directClean == null && exc == null) return null
+
+  // ── netProfit basis (consolidated) ──
+  let excAfterTax, npAdjusted, taxRate = null, npDerived
+  if (directClean != null && directClean > 0 && directClean !== np) {
+    npAdjusted = directClean
+    excAfterTax = np - directClean
+    npDerived = false
+  } else if (exc != null) {
+    // Exceptional items are usually reported pre-tax; the after-tax effect
+    // is what reaches net profit. Where Screener's own after-tax figure is
+    // available it's used directly (exceptionalOf already flags this via
+    // alreadyAfterTax); otherwise the effective rate is estimated where
+    // derivable, and failing that the item is removed gross.
+    const pbt = val(row?.profitBeforeTax) ?? val(row?.pbt)
+    taxRate = (!exc.alreadyAfterTax && pbt > 0 && np > 0 && pbt > np) ? 1 - (np / pbt) : null
+    excAfterTax = exc.alreadyAfterTax ? exc.value : (taxRate != null ? exc.value * (1 - taxRate) : exc.value)
+    npAdjusted = np - excAfterTax
+    npDerived = true
+  } else {
+    return null
+  }
+  if (!(npAdjusted > 0)) return null    // removing it would leave a loss; leave alone
+
+  // ── eps basis (attributable to parent shareholders) ──
+  const minorityShare = val(row?.minorityInterest) ?? 0
+  const reportedEpsBasis = val(row?.profitForEPS) ?? (np - minorityShare)
+  const directPE = val(row?.profitForPE)
+  let epsBasisAdjusted, epsDerived
+  if (directPE != null && directPE > 0) {
+    epsBasisAdjusted = directPE
+    epsDerived = false
+  } else {
+    epsBasisAdjusted = reportedEpsBasis - excAfterTax
+    epsDerived = true
+  }
+  const reportedEps = val(row?.eps)
+  const adjustedEps = (reportedEps > 0 && reportedEpsBasis > 0 && epsBasisAdjusted > 0)
+    ? reportedEps * (epsBasisAdjusted / reportedEpsBasis) : null
+
+  return {
+    netProfit: { value: npAdjusted, adjusted: true },
+    eps: adjustedEps != null ? { value: adjustedEps, adjusted: true } : row.eps,
+    adjustment: {
       year: yearOf(row),
       kind: 'reported-one-off',
       removed: round(excAfterTax, 0),
@@ -164,17 +198,30 @@ export function normaliseIncome(incomeHistory = []) {
         ? round(((reportedEps - adjustedEps) / reportedEps) * 100, 1) : null,
       note: `${excAfterTax > 0 ? 'A gain of' : 'A charge of'} ${Math.abs(round(excAfterTax, 0))} was reported separately and has been removed`,
       resolved: true,
-    })
+    },
+  }
+}
 
-    return {
-      ...row,
-      netProfit: { value: npAdjusted, adjusted: true },
-      eps: adjustedEps != null ? { value: adjustedEps, adjusted: true } : row.eps,
-      reportedNetProfit: np,
-    }
-  })
+/** Whether ANY year in this table has something to normalize — manual or
+ *  auto-derivable — without computing the whole adjusted series. Drives
+ *  whether the Reported/Normalized toggle even appears. */
+export function hasNormalizableYear(incomeHistory = []) {
+  return (incomeHistory || []).some(row => computeNormalizedRow(row) != null)
+}
 
-  return { rows, adjustments }
+/**
+ * The adjustments list only — for the data-quality display (the "ⓘ" that
+ * shows reported vs. normalized). Doesn't touch or return the rows
+ * themselves; computeAll builds the actual normalized series live, per row,
+ * via computeNormalizedRow above.
+ */
+export function normaliseIncome(incomeHistory = []) {
+  const adjustments = []
+  for (const row of (incomeHistory || [])) {
+    const n = computeNormalizedRow(row)
+    if (n) adjustments.push(n.adjustment)
+  }
+  return { adjustments }
 }
 
 /**

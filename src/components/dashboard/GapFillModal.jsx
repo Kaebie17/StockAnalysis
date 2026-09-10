@@ -173,9 +173,24 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
                 <span>{STEP_ICON[currentTable]}</span>
                 {tableInfo.name} table
               </div>
-              <p className="text-xs text-slate-400">
-                Missing: {currentMissing.map(m => m.label).join(', ')}
-              </p>
+              {(() => {
+                const hard = currentMissing.filter(m => !m.soft)
+                const soft = currentMissing.filter(m => m.soft)
+                return (
+                  <>
+                    {hard.length > 0 && (
+                      <p className="text-xs text-slate-400">
+                        Missing: {hard.map(m => m.label).join(', ')}
+                      </p>
+                    )}
+                    {soft.length > 0 && (
+                      <p className="text-xs text-slate-500">
+                        Optional — replaces an estimate if you have it: {soft.map(m => m.label).join(', ')}
+                      </p>
+                    )}
+                  </>
+                )
+              })()}
             </div>
 
             {/* Step 1: open Screener */}

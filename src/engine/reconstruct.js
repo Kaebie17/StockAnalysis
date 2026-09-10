@@ -160,50 +160,6 @@ export function validateIdentity(row, { revenueIsTotal = null } = {}) {
   return { ok: true }
 }
 
-/**
- * Merge a multi-year reconstructed/pasted table over the reported one, preserving
- * breadth: reconstruct-if-derivable → carry reported forward → null (flagged).
- * `newRows` are the parsed rows from the user's source; `reportedRows` the fetched.
- */
-export function reconstructTable(reportedRows, newRows, opts = {}) {
-  const repByYear = Object.fromEntries((reportedRows || []).map(r => [String(yearOf(r)), r]))
-  const flags = []
-  const out = []
-
-  for (const nr of (newRows || [])) {
-    const y = String(yearOf(nr))
-    const reported = repByYear[y] || {}
-    // Reconstruct the year from whatever lines the new source restated.
-    const edits = Object.entries(nr)
-      .filter(([f, v]) => f !== 'year' && num(v) != null)
-      .map(([line, v]) => ({ line, newValue: num(v), taxed: opts.taxed !== false }))
-
-    const res = reconstructRow({ ...reported, ...nr, year: nr.year }, edits, opts)
-    let row = res.ok ? res.row : { ...reported, ...nr, year: nr.year }
-    if (!res.ok) flags.push({ year: y, kind: 'reconcile-failed', note: res.reason })
-
-    // Breadth-fill: any field reported had but this row lacks → carry forward or flag.
-    for (const f of Object.keys(reported)) {
-      if (f === 'year') continue
-      if (num(row[f]) == null && num(reported[f]) != null) {
-        row[f] = { ...reported[f], carried: true }        // carried-from-reported
-      }
-    }
-    out.push(row)
-  }
-  return { rows: out, flags }
-}
-
-/**
- * Basis selection helper used by computeAll: start from reported, replace whole
- * rows for years present in the normalized table.
- */
-export function mergeByYear(reportedRows, normalizedRows) {
-  const byYear = Object.fromEntries((reportedRows || []).map(r => [String(yearOf(r)), r]))
-  for (const r of (normalizedRows || [])) byYear[String(yearOf(r))] = r
-  return Object.values(byYear).sort((a, b) => String(yearOf(a)).localeCompare(String(yearOf(b))))
-}
-
 /* ────────────────────────────────────────────────────────────────────────────
  * Minimal self-test (run with `node reconstruct.js` after stubbing the imports,
  * or move into your test runner). Asserts a taxed one-off in otherIncome flows

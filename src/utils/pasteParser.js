@@ -199,6 +199,27 @@ export function parsePastedTable(text, tableType, opts = {}) {
   // prompt once.
   const unmatchedByLabel = new Map()
 
+  // A field named EXACTLY by some row anywhere in this paste is that row's,
+  // full stop — no OTHER row in the same paste may take it over merely by
+  // starting with one of its aliases, regardless of processing order. Without
+  // this, a schedule sub-row Screener prints alongside the one actually named
+  // — e.g. "Other income normal", printed right under an expanded
+  // "Other Income +" — starts with the "otherincome" alias too, and being the
+  // LATER row, silently overwrote the real Other Income total with its own,
+  // different, narrower figure. The earlier per-row "exact match wins" fix
+  // (see below) only ever compared candidates for the SAME row; it had no
+  // defence against a second, weaker row for the same field arriving later.
+  const exactMatchFields = new Set()
+  for (let i = 0; i < lines.length; i++) {
+    if (i === headerIdx) continue
+    const cells = splitRow(lines[i])
+    if (cells.length < 2) continue
+    const norm = normalizeLabel(cells[0])
+    for (const [field, aliases] of Object.entries(aliasMap)) {
+      if (aliases.includes(norm)) exactMatchFields.add(field)
+    }
+  }
+
   for (let i = 0; i < lines.length; i++) {
     if (i === headerIdx) continue
     const cells = splitRow(lines[i])
@@ -212,17 +233,21 @@ export function parsePastedTable(text, tableType, opts = {}) {
       // Exact match always wins outright, checked across every field first —
       // otherwise field iteration order decided ties that had nothing to do
       // with which alias actually fit the label. Failing that, the LONGEST
-      // startsWith match wins: "exceptionalitemsat" starts with the plain
-      // "exceptionalitems" alias too, so whichever field happened to be
-      // checked first (an object's insertion order, not something the alias
-      // choice was ever meant to encode) used to silently win regardless of
-      // which one actually named the row — exceptionalItemsAT rows were
-      // landing in exceptionalItems this way.
+      // startsWith match wins, but never against a field some OTHER row in
+      // this same paste already claimed exactly (exactMatchFields above):
+      // "exceptionalitemsat" starts with the plain "exceptionalitems" alias
+      // too, so whichever field happened to be checked first (an object's
+      // insertion order, not something the alias choice was ever meant to
+      // encode) used to silently win regardless of which one actually named
+      // the row — exceptionalItemsAT rows were landing in exceptionalItems
+      // this way.
       let bestField = null, bestAlias = ''
       for (const [field, aliases] of Object.entries(aliasMap)) {
         for (const a of aliases) {
           if (norm === a) { bestField = field; bestAlias = a; break }
-          if (norm.startsWith(a) && a.length > bestAlias.length) { bestField = field; bestAlias = a }
+          if (norm.startsWith(a) && a.length > bestAlias.length && !exactMatchFields.has(field)) {
+            bestField = field; bestAlias = a
+          }
         }
         if (bestAlias === norm) break
       }
