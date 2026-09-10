@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react'
 import { findMissingBaseMetrics, TABLE_INFO , expandHintsForTable } from '../../engine/dataGaps.js'
 import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 import { useApp } from '../../store/AppContext.jsx'
-import { getAliasOverrides, saveAliasOverride } from '../../utils/db.js'
+import { getAliasOverrides, saveAliasOverride, deleteAliasOverride } from '../../utils/db.js'
 import AliasReconcile from './AliasReconcile.jsx'
 import Modal from '../Modal.jsx'
 
@@ -35,8 +35,12 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
   const [completed, setCompleted] = useState({})
   const [finished, setFinished]   = useState(false)
   // Screener row-label -> field mappings already confirmed, for whichever
-  // table is the current step.
-  const [overrides, setOverrides] = useState({})
+  // table is the current step — full rows (not just the flattened
+  // label->field map parsePastedTable wants), so AliasReconcile can
+  // actually display and revise them rather than only applying them
+  // silently.
+  const [overrideRows, setOverrideRows] = useState([])
+  const flatOverrides = Object.fromEntries(overrideRows.map(r => [r.normalizedLabel, r.field]))
 
   // (Re)initialise every time the modal is opened.
   useEffect(() => {
@@ -57,11 +61,8 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
   useEffect(() => {
     if (!open) return
     const t = plan.tables[stepIdx]
-    if (!t) { setOverrides({}); return }
-    (async () => {
-      const rows = await getAliasOverrides(t)
-      setOverrides(Object.fromEntries(rows.map(r => [r.normalizedLabel, r.field])))
-    })()
+    if (!t) { setOverrideRows([]); return }
+    (async () => setOverrideRows(await getAliasOverrides(t)))()
   }, [open, stepIdx, plan.tables])
 
   // Live view of what is still missing — used only to relabel a step, never to
@@ -87,7 +88,7 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
   const expandHints   = expandHintsForTable(gaps, currentTable)
 
   const handleParse = () => {
-    setPreview(parsePastedTable(pasteText, currentTable, { overrides }))
+    setPreview(parsePastedTable(pasteText, currentTable, { overrides: flatOverrides }))
   }
 
   // A row's meaning confirmed in the reconciliation prompt: save it (so the
@@ -95,16 +96,35 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
   // `field === null` means "ignore this row" — not persisted, since that's
   // a per-paste call rather than a durable fact about what the label means.
   const handleMap = async (u, field) => {
-    let next = overrides
+    let rows = overrideRows
     if (field) {
       await saveAliasOverride({ tableType: currentTable, normalizedLabel: u.normalizedLabel, rawLabel: u.rawLabel, field })
-      next = { ...overrides, [u.normalizedLabel]: field }
-      setOverrides(next)
+      rows = [...rows.filter(r => r.normalizedLabel !== u.normalizedLabel),
+              { tableType: currentTable, normalizedLabel: u.normalizedLabel, rawLabel: u.rawLabel, field }]
+      setOverrideRows(rows)
     }
     if (!pasteText.trim()) return
+    const next = Object.fromEntries(rows.map(r => [r.normalizedLabel, r.field]))
     setPreview(prev => field
       ? parsePastedTable(pasteText, currentTable, { overrides: next })
       : { ...prev, unmatched: (prev?.unmatched || []).filter(x => x.normalizedLabel !== u.normalizedLabel) })
+  }
+
+  // A previously-confirmed mapping, changed or forgotten — see
+  // AddHistoryModal's handleRevise for the same logic; kept in sync with it.
+  const handleRevise = async (override, newField) => {
+    let rows
+    if (newField) {
+      await saveAliasOverride({ tableType: currentTable, normalizedLabel: override.normalizedLabel, rawLabel: override.rawLabel, field: newField })
+      rows = overrideRows.map(r => r.normalizedLabel === override.normalizedLabel ? { ...r, field: newField } : r)
+    } else {
+      await deleteAliasOverride({ tableType: currentTable, normalizedLabel: override.normalizedLabel })
+      rows = overrideRows.filter(r => r.normalizedLabel !== override.normalizedLabel)
+    }
+    setOverrideRows(rows)
+    if (!pasteText.trim()) return
+    const next = Object.fromEntries(rows.map(r => [r.normalizedLabel, r.field]))
+    setPreview(prev => (prev ? parsePastedTable(pasteText, currentTable, { overrides: next }) : prev))
   }
 
   const advance = () => {
@@ -191,6 +211,14 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
               )}
             </div>
 
+            {/* Saved mappings for this step's table, always shown — not
+                gated on the current paste having unmatched rows, since
+                revising a wrong one has to be reachable before pasting
+                again too. Unmatched rows from a parsed preview show in the
+                same block once there are any. */}
+            <AliasReconcile tableType={currentTable} unmatched={preview?.unmatched || []}
+              onMap={handleMap} savedOverrides={overrideRows} onRevise={handleRevise} />
+
             {/* Step 2: paste */}
             <div className="space-y-2">
               <p className="text-xs text-slate-400">2. Paste it here</p>
@@ -233,9 +261,6 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
                   <div className="bg-bear/10 border border-bear/30 rounded-lg p-2 text-xs text-bear">
                     {preview.warnings.map((w, i) => <p key={i}>{w}</p>)}
                   </div>
-                )}
-                {preview.unmatched?.length > 0 && (
-                  <AliasReconcile tableType={currentTable} unmatched={preview.unmatched} onMap={handleMap} />
                 )}
                 {preview.rows.length > 0 && (
                   <div className="overflow-x-auto">

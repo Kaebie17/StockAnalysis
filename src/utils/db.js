@@ -277,6 +277,16 @@ export async function getAliasOverrides(tableType) {
     return rows.filter(r => r.tableType === tableType)
   } catch { return [] }
 }
+// A confirmed mapping used to be permanent once saved — no UI ever showed
+// what was stored, let alone let it be changed, so a wrong pick (or a
+// company that later turns out to use the same label for something else)
+// had no fix short of clearing IndexedDB by hand. Same id scheme as
+// saveAliasOverride, so this removes exactly the one record a re-mapping
+// would otherwise have overwritten anyway.
+export async function deleteAliasOverride({ tableType, normalizedLabel }) {
+  if (!tableType || !normalizedLabel) return
+  try { await txDelete('aliasOverrides', `${tableType}:${normalizedLabel}`) } catch { /* non-critical */ }
+}
 
 // ── AI verdict cache ─────────────────────────────────────────────────────────
 // Keyed by ticker (latest only). `fp` is a fingerprint of the data/summary — a

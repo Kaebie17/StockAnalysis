@@ -3,7 +3,7 @@ import { parsePastedTable, tagPastedRows } from '../../utils/pasteParser.js'
 import { expandHints as expandersFor, METRICS } from '../../engine/metrics.js'
 import { parseHoldings } from '../../engine/parseHoldings.js'
 import { useApp } from '../../store/AppContext.jsx'
-import { getAliasOverrides, saveAliasOverride } from '../../utils/db.js'
+import { getAliasOverrides, saveAliasOverride, deleteAliasOverride } from '../../utils/db.js'
 import AliasReconcile from './AliasReconcile.jsx'
 import Modal from '../Modal.jsx'
 
@@ -68,9 +68,12 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
   // to override it explicit in the preview instead.
   const [overwrite, setOverwrite] = useState(false)
   // Screener row-label -> field mappings the user has already confirmed,
-  // keyed by table. Loaded fresh each time the modal opens so a mapping
-  // confirmed in a previous session is already applied silently.
-  const [overridesByTable, setOverridesByTable] = useState({})
+  // keyed by table — full rows (not just the flattened label->field map
+  // parsePastedTable wants), so AliasReconcile can actually display and
+  // revise them rather than only applying them silently.
+  const [overrideRowsByTable, setOverrideRowsByTable] = useState({})
+  const flatOverrides = tableKey =>
+    Object.fromEntries((overrideRowsByTable[tableKey] || []).map(r => [r.normalizedLabel, r.field]))
 
   // Scroll to the table the caller asked for. A data-quality flag names where
   // the answer lives, and dropping the user at the top of a five-table modal
@@ -94,10 +97,9 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
       const next = {}
       for (const t of TABLES) {
         if (t.key === 'holdings') continue
-        const rows = await getAliasOverrides(t.key)
-        next[t.key] = Object.fromEntries(rows.map(r => [r.normalizedLabel, r.field]))
+        next[t.key] = await getAliasOverrides(t.key)
       }
-      setOverridesByTable(next)
+      setOverrideRowsByTable(next)
     })()
   }, [open])
 
@@ -135,7 +137,7 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
       const text = pasteText[t.key].trim()
       if (!text) continue
       out[t.key] = t.key === 'holdings' ? parseHoldings(text)
-        : parsePastedTable(text, t.key, { overrides: overridesByTable[t.key] })
+        : parsePastedTable(text, t.key, { overrides: flatOverrides(t.key) })
     }
     setResults(out)
   }
@@ -146,20 +148,45 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
   // persisted, since that's a per-paste call rather than a durable fact
   // about what the label means.
   const handleMap = async (tableKey, u, field) => {
-    let nextForTable = overridesByTable[tableKey] || {}
+    let rowsForTable = overrideRowsByTable[tableKey] || []
     if (field) {
       await saveAliasOverride({ tableType: tableKey, normalizedLabel: u.normalizedLabel, rawLabel: u.rawLabel, field })
-      nextForTable = { ...nextForTable, [u.normalizedLabel]: field }
-      setOverridesByTable(prev => ({ ...prev, [tableKey]: nextForTable }))
+      rowsForTable = [...rowsForTable.filter(r => r.normalizedLabel !== u.normalizedLabel),
+                      { tableType: tableKey, normalizedLabel: u.normalizedLabel, rawLabel: u.rawLabel, field }]
+      setOverrideRowsByTable(prev => ({ ...prev, [tableKey]: rowsForTable }))
     }
     const text = pasteText[tableKey].trim()
     if (!text) return
+    const nextForTable = Object.fromEntries(rowsForTable.map(r => [r.normalizedLabel, r.field]))
     setResults(prev => ({
       ...prev,
       [tableKey]: field
         ? parsePastedTable(text, tableKey, { overrides: nextForTable })
         : { ...prev[tableKey], unmatched: (prev[tableKey]?.unmatched || []).filter(x => x.normalizedLabel !== u.normalizedLabel) },
     }))
+  }
+
+  // A previously-confirmed mapping, changed or forgotten. Unlike handleMap
+  // above (a fresh label, never persisted until confirmed), this is always
+  // acting on a record that already exists in aliasOverrides — reassigning
+  // writes the new field over it (same id, saveAliasOverride upserts),
+  // forgetting deletes it outright. Re-parses immediately if there's pasted
+  // text for this table, so a correction is visible without re-pasting.
+  const handleRevise = async (tableKey, override, newField) => {
+    let rowsForTable
+    if (newField) {
+      await saveAliasOverride({ tableType: tableKey, normalizedLabel: override.normalizedLabel, rawLabel: override.rawLabel, field: newField })
+      rowsForTable = (overrideRowsByTable[tableKey] || []).map(r =>
+        r.normalizedLabel === override.normalizedLabel ? { ...r, field: newField } : r)
+    } else {
+      await deleteAliasOverride({ tableType: tableKey, normalizedLabel: override.normalizedLabel })
+      rowsForTable = (overrideRowsByTable[tableKey] || []).filter(r => r.normalizedLabel !== override.normalizedLabel)
+    }
+    setOverrideRowsByTable(prev => ({ ...prev, [tableKey]: rowsForTable }))
+    const text = pasteText[tableKey].trim()
+    if (!text) return
+    const nextForTable = Object.fromEntries(rowsForTable.map(r => [r.normalizedLabel, r.field]))
+    setResults(prev => (prev ? { ...prev, [tableKey]: parsePastedTable(text, tableKey, { overrides: nextForTable }) } : prev))
   }
 
   const handleConfirm = () => {
@@ -295,6 +322,18 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
                       </p>
                     ))}
                   </div>
+                  {/* Saved mappings for this table are shown here, always —
+                      not gated on this paste currently having unmatched rows
+                      — since "revise a wrong mapping" has to be reachable
+                      whether or not you're mid-paste. Unmatched rows from a
+                      completed parse show in the same block once there are
+                      any (AliasReconcile renders each section independently). */}
+                  {t.key !== 'holdings' && (
+                    <AliasReconcile tableType={t.key} unmatched={results?.[t.key]?.unmatched || []}
+                      onMap={(u, field) => handleMap(t.key, u, field)}
+                      savedOverrides={overrideRowsByTable[t.key] || []}
+                      onRevise={(o, field) => handleRevise(t.key, o, field)} />
+                  )}
                   {/* Font stays at xs: a 16px monospace blob shows barely half
                       the columns, which defeats the point of eyeballing the
                       paste before confirming. Mobile will zoom on focus as a
@@ -331,15 +370,6 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
 
             {results && (
               <>
-                {/* Unrecognized rows — offered regardless of whether anything
-                    else in this table matched, since a table that matched
-                    nothing at all is exactly where this matters most. */}
-                {Object.entries(results).map(([k, r]) => (
-                  k === 'holdings' || !r.unmatched?.length ? null : (
-                    <AliasReconcile key={`reconcile-${k}`} tableType={k} unmatched={r.unmatched}
-                      onMap={(u, field) => handleMap(k, u, field)} />
-                  )
-                ))}
 
                 {/* Financial preview */}
                 {Object.entries(results).map(([k, r]) => {
