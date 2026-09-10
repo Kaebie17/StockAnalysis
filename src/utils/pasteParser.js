@@ -370,9 +370,23 @@ export function checkShape(tableType, years, colMonths, bodyLines) {
     (a === 'income' && b === 'quarterly') || (a === 'quarterly' && b === 'income')
 
   const wrongTable = best !== tableType && !sameRows(best, tableType) && bestScore >= 2
+
+  // REJECTION gate — deliberately broader than `mine` above. `mine` uses the
+  // small 6-row SIGNATURE set, which exists to tell tables apart quickly
+  // (scoreOf), not to gatekeep how much of a table has to be pasted. Gap-
+  // filling is meant to work from a deliberate partial paste of just the one
+  // row a gap actually asks for — e.g. pasting only "Exceptional Items"
+  // (expanded from Other Income) with no reason to also carry Revenue/Net
+  // Profit/EPS. Requiring a signature match rejected that outright, with
+  // nothing parsed at all, not even the one row the user pasted for.
+  // Checked against EVERY known alias for this table (metrics.js), not just
+  // the signature subset.
+  const anyKnownField = Object.values(screenerAliases(tableType)).some(alts =>
+    labels.some(lab => lab && alts.some(a => lab === a || lab.startsWith(a))))
+
   if (wrongTable) {
     warnings.push(`This looks like the ${TABLE_SHAPE[best].label} table, not ${spec.label}. Paste it into the ${TABLE_SHAPE[best].label} box instead.`)
-  } else if (mine === 0) {
+  } else if (!anyKnownField) {
     warnings.push(`No ${spec.label} rows recognised. Check you copied the table including its row labels.`)
   }
 
@@ -401,7 +415,7 @@ export function checkShape(tableType, years, colMonths, bodyLines) {
     }
   }
 
-  return { ok: !wrongTable && !quarterly && !notQuarterly && mine > 0,
+  return { ok: !wrongTable && !quarterly && !notQuarterly && anyKnownField,
            quarterly, notQuarterly, wrongTable, matched: mine, looksLike: best, warnings }
 }
 
