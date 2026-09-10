@@ -40,9 +40,24 @@ export const TABLE_INFO = {
  * every fallback already available (statement -> derived) has already been
  * applied: a metric only shows up as a gap if it is genuinely unrecoverable.
  */
+// Screener's page always trails its real fiscal-year columns with one more,
+// literally headed "TTM" (trailing twelve months) — a partial, overlapping
+// period, not a year. Sorted alongside real years it lands last regardless of
+// how recent the true latest year is ("TTM".localeCompare("2025") > 0, since
+// 'T' > '2'), so the array's own last element is not a safe way to find "the
+// latest year" — see ratios.js's realRows() for the same guard on the actual
+// ratio calculations, which had the identical bug.
+const isFiscalYear = row => /^\d{4}$/.test(String(row?.year ?? '').trim())
+const latestFiscalRow = (arr) => {
+  for (let i = (arr || []).length - 1; i >= 0; i--) {
+    if (isFiscalYear(arr[i])) return arr[i]
+  }
+  return arr?.[arr.length - 1] || {}
+}
+
 function resolvedValues(r, data) {
-  const latestI = data?.incomeHistory?.[data.incomeHistory.length - 1] || {}
-  const latestC = data?.cashflowHistory?.[data.cashflowHistory.length - 1] || {}
+  const latestI = latestFiscalRow(data?.incomeHistory) || {}
+  const latestC = latestFiscalRow(data?.cashflowHistory) || {}
   return {
     revenue:         r.revenue,
     operatingProfit: r.opProfit,

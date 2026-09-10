@@ -326,7 +326,19 @@ function DividendLine({ data, ratioResult, cur }) {
  * providers (including Yahoo) simply haven't ingested yet.
  */
 function DataVintageBadge({ data, state, onNormalize }) {
-  const years = (data.incomeHistory || []).map(r => r.year).filter(Boolean).sort()
+  // Screener's page always trails its real fiscal-year columns with one
+  // more, literally headed "TTM" — a partial, overlapping period, not a
+  // year. A plain string sort puts it after every real year ('T' > '2'),
+  // which is exactly how this badge used to read "through FYTTM": the
+  // scraper (api/screener.js) used to carry that column into incomeHistory
+  // as a genuine row, and this took whatever sorted last as "the latest
+  // year" with no check that it actually looked like one. Same guard as
+  // ratios.js's realRows() and dataGaps.js's resolvedValues(), which had the
+  // identical bug for the actual ratio calculations and the gap check.
+  const years = (data.incomeHistory || [])
+    .map(r => r.year).filter(Boolean)
+    .filter(y => /^\d{4}$/.test(String(y).trim()))
+    .sort()
   if (years.length === 0) {
     return <span className="text-xs text-slate-600">📡 No annual data available</span>
   }

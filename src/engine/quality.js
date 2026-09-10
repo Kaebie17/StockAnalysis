@@ -67,7 +67,13 @@ export function scoreQuality(data, ratioResult, weights = {}) {
 
 function checkConsistency(incomeHistory) {
   if (!incomeHistory || incomeHistory.length < 3) return null
-  const last5 = incomeHistory.slice(-5)
+  // Screener's page always trails its real fiscal-year columns with one
+  // more, headed "TTM" — a partial, overlapping period, not a year. Left in,
+  // it would occupy one of these "last 5" slots (displacing a real year) and
+  // have its trailing-12-month profit judged as if it were a full FY's. Same
+  // guard as ratios.js/dataGaps.js/Header.jsx, which had the identical bug.
+  const realYears = incomeHistory.filter(y => /^\d{4}$/.test(String(y?.year ?? '').trim()))
+  const last5 = realYears.slice(-5)
   // A year with no reported net profit was coerced to 0 via `?? 0`, which
   // reads as a LOSS — a missing figure and a real loss are not the same
   // thing, and on a thin history one data gap could flip this predicter

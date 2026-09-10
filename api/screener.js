@@ -286,6 +286,23 @@ function parseSection(html, sectionId, aliasMap) {
     headers.shift() // remove label column header
   }
 
+  // Screener's default table always trails the real fiscal-year columns with
+  // one more: TTM (trailing twelve months) — a partial, overlapping period,
+  // not a year. The frontend's own paste parser (pasteParser.js) already
+  // drops this column deliberately; this scraper never did, so every ticker
+  // fetched automatically has carried a `{ year: "TTM", ... }` row in
+  // incomeHistory/balanceHistory/cashflowHistory since the beginning. Sorted
+  // alongside real years ("TTM".localeCompare("2025") > 0, since 'T' > '2'),
+  // that row lands LAST no matter how recent the real latest year is — so
+  // every "latest year" read in the app (dataGaps.js's missing-metrics check
+  // included) was silently reading this partial-period stub instead of the
+  // actual latest fiscal year. Dropped here, at the source, by removing its
+  // column from BOTH headers and every row's values in lockstep — they're
+  // positional, so removing it from one without the other would misalign
+  // every year after it.
+  const ttmIdx = headers.findIndex(h => /^ttm$/i.test(h.trim()))
+  if (ttmIdx !== -1) headers.splice(ttmIdx, 1)
+
   // Parse rows
   const tbodyMatch = sectionHTML.match(/<tbody[^>]*>([\s\S]*?)<\/tbody>/i)
   const rawRows = []
@@ -305,6 +322,7 @@ function parseSection(html, sectionId, aliasMap) {
       const rawLabel = stripHTML(cells[0]).trim()
       const normalizedLabel = normalizeLabel(rawLabel)
       const values = cells.slice(1).map(c => parseScreenerNum(stripHTML(c)))
+      if (ttmIdx !== -1) values.splice(ttmIdx, 1)
       rawRows.push({ rawLabel, normalizedLabel, values })
 
       for (const [field, aliases] of Object.entries(aliasMap)) {

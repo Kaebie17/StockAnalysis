@@ -95,6 +95,7 @@ export function applyDocFacts(data, arData) {
  */
 export function migrateStoredData(data) {
   data = migrateNormalizedTable(data)
+  data = dropTTMRows(data)
   if (!data?.cashflowHistory) return data
   const STALE = /Operating CF\s*[x\u00d7*]\s*0\.7/i
   let scrubbed = 0
@@ -108,6 +109,38 @@ export function migrateStoredData(data) {
   })
   if (!scrubbed) return data
   return { ...data, cashflowHistory, migrated: scrubbed }
+}
+
+/**
+ * api/screener.js used to scrape Screener's page literally — including the
+ * trailing "TTM" column every page has alongside its real fiscal years — into
+ * a genuine `{ year: "TTM", revenue: {...}, ... }` row, never flagged
+ * `synthetic` the way normalize.js's own (unrelated, already-fixed) stub row
+ * was. Sorted alongside real years it lands last ("TTM".localeCompare("2025")
+ * > 0), so it silently became "the latest year" everywhere that read the
+ * array's own last element as a shortcut for that — ratios.js's snapshot and
+ * dataGaps.js's missing-metrics check both had this exact bug, now guarded at
+ * read time there too. The scraper itself is fixed (it no longer emits this
+ * row for a fresh fetch), but a ticker fetched before that fix still has the
+ * row sitting in storage — drop it here so nothing else that ever iterates
+ * the full history (a CAGR window, a chart) has to keep working around it.
+ */
+function dropTTMRows(data) {
+  const isTTM = row => /^ttm$/i.test(String(row?.year ?? '').trim())
+  let changed = false
+  const strip = (arr) => {
+    if (!arr?.some(isTTM)) return arr
+    changed = true
+    return arr.filter(row => !isTTM(row))
+  }
+  const out = {
+    ...data,
+    incomeHistory:         strip(data?.incomeHistory),
+    reportedIncomeHistory: strip(data?.reportedIncomeHistory),
+    balanceHistory:        strip(data?.balanceHistory),
+    cashflowHistory:       strip(data?.cashflowHistory),
+  }
+  return changed ? out : data
 }
 
 /**

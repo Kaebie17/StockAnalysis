@@ -40,13 +40,24 @@ export function calcRatios(data, opts = {}) {
 
   // ── Latest-year snapshot (gap-filled across real rows) ──────────────────────
   // The snapshot is anchored on the most recent row; any field still missing
-  // there is back-filled from older rows. `synthetic` guards against a
-  // fabricated stub row shadowing a real one — normalize.js no longer
-  // produces one (the old TTM-only stub was removed), but the guard costs
-  // nothing to keep for any row a future source flags the same way.
+  // there is back-filled from older rows. Two things get filtered out before
+  // that "most recent" pick: `synthetic` guards against a fabricated stub row
+  // shadowing a real one (normalize.js no longer produces one — the old
+  // TTM-only stub was removed — but the guard costs nothing to keep for any
+  // row a future source flags the same way); the year-shape check guards
+  // against a DIFFERENT source's TTM row that was never flagged synthetic at
+  // all — Screener's own page always trails its real fiscal-year columns with
+  // one more, literally headed "TTM", and api/screener.js scraped it as an
+  // ordinary row (real revenue/netProfit figures, tagged 'source' like any
+  // other). Sorted alongside real years, "TTM" lands last no matter how
+  // recent the true latest year is ("TTM".localeCompare("2025") > 0, since
+  // 'T' > '2'), so it silently became "the latest year" for every ratio here
+  // — revenue, netProfit, EPS, every margin — reading a trailing-12-month
+  // figure instead of the actual latest fiscal year's.
+  const isFiscalYear = r => /^\d{4}$/.test(String(r?.year ?? '').trim())
   const realRows = arr => {
-    const real = (arr || []).filter(r => !r.synthetic)
-    return real.length ? real : (arr || [])
+    const real = (arr || []).filter(r => !r.synthetic && isFiscalYear(r))
+    return real.length ? real : (arr || []).filter(r => !r.synthetic)
   }
   const coalesceLatest = (arr) => {
     const rows = arr || []
