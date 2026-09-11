@@ -75,36 +75,38 @@ function splitRow(line) {
  *   matched neither the built-in aliases nor an override, deduplicated by
  *   normalized label, for the caller to offer a reconciliation step on.
  */
-export function parsePastedTable(text, tableType, opts = {}) {
-  const overrides = opts.overrides || {}
-  // IMPORTANT: don't .trim() each line — that strips a leading tab
-  // (the empty first header cell above the label column), which
-  // shifts every year by one column. Only strip trailing \r and
-  // filter on whether the line has any real content.
-  const lines = text.split('\n')
-    .map(l => l.replace(/\r$/, ''))
-    .filter(l => l.trim().length > 0)
-  if (lines.length < 2) {
-    return { years: [], rows: [], warnings: ['Pasted content has too few rows. Make sure you copied the full table including headers.'], unmatched: [] }
-  }
-
-  const aliasMap = ALIASES[tableType]
-  const warnings = []
-  let shape = { ok: true }
-
-  // Classify each header column (after the label cell) as a real year, YTD,
-  // TTM, or a stray column. A 4-digit year is taken even if a mark is glued to
-  // it ("Mar 2015", "2015*", "FY2015"). Keepers = real years + YTD (current
-  // FY-to-date, a genuine latest period). Dropped = TTM (a trailing-12-month
-  // window that overlaps the last FY) and any stray/blank column, wherever it
-  // sits. Stray columns never carry real data, so row values (numbers only,
-  // below) skip them automatically.
-  // Quarterly columns repeat the calendar year (Mar 2024, Jun 2024, Sep 2024…),
-  // so a year-only label would collide: two columns would resolve to the same
-  // slot and the later one would overwrite the earlier. Period labels therefore
-  // carry the month for quarterly tables ("Jun 2024") and stay year-only for
-  // annual ones, where the month is noise.
-  const isQuarterly = tableType === 'quarterly'
+/**
+ * Shared year-header detection — parsePastedTable and parseRestatementRows
+ * both need it. Scans the first few lines for a row that looks like real
+ * period headers, classifies every column (a real year, TTM/YTD, or a stray
+ * blank), and returns the header index plus the SEQUENCE of data-column
+ * periods to align every data row against.
+ *
+ * minKeepers: how many real period columns a row needs before it's accepted
+ * as the header. Screener's own tables (parsePastedTable) are always
+ * multi-year, so 2+ is the right bar there — a single recognized "year" is
+ * more likely a stray number than a real header. An AR note (a restatement
+ * paste) is frequently single-year by nature (a current-only ageing
+ * schedule, a one-off breakdown for just the latest period) — requiring 2+
+ * there would misread a genuine one-column header as no header at all,
+ * falling through to the numbered "Year 1" placeholder path instead of the
+ * real year. Callers that know their input can legitimately be single-period
+ * pass 1.
+ *
+ * Classify each header column (after the label cell) as a real year, YTD,
+ * TTM, or a stray column. A 4-digit year is taken even if a mark is glued to
+ * it ("Mar 2015", "2015*", "FY2015"). Keepers = real years + YTD (current
+ * FY-to-date, a genuine latest period). Dropped = TTM (a trailing-12-month
+ * window that overlaps the last FY) and any stray/blank column, wherever it
+ * sits. Stray columns never carry real data, so row values (numbers only)
+ * skip them automatically.
+ * Quarterly columns repeat the calendar year (Mar 2024, Jun 2024, Sep 2024…),
+ * so a year-only label would collide: two columns would resolve to the same
+ * slot and the later one would overwrite the earlier. Period labels therefore
+ * carry the month for quarterly tables ("Jun 2024") and stay year-only for
+ * annual ones, where the month is noise.
+ */
+function detectYearHeader(lines, isQuarterly = false, minKeepers = 2) {
   let headerIdx = -1
   let colKinds = []   // per cell: '2015' | 'Jun 2024' … | 'TTM' | null
   let colMonths = []  // month of each real year column, for the annual check
@@ -140,7 +142,7 @@ export function parsePastedTable(text, tableType, opts = {}) {
       return null
     })
     const keepers = cand.filter(k => k && k !== 'TTM')   // real periods
-    if (keepers.length >= 2) {                            // a real period header row
+    if (keepers.length >= minKeepers) {                   // a real period header row
       headerIdx = i
       colKinds = cand
       break
@@ -149,7 +151,6 @@ export function parsePastedTable(text, tableType, opts = {}) {
 
   let years
   if (headerIdx === -1) {
-    warnings.push('Could not detect year headers in the pasted text. Years may be misaligned — please verify in the preview below.')
     const firstRowCells = splitRow(lines[0])
     // Keep the same "label cell, then data columns" shape as the detected-header
     // path below, instead of numbering the label cell itself as "Year 1".
@@ -171,6 +172,32 @@ export function parsePastedTable(text, tableType, opts = {}) {
   // sequences line up correctly whether or not the header's corner cell made it.
   const headerFirstDataIdx = colKinds.findIndex(k => k != null)
   const dataColYears = headerFirstDataIdx === -1 ? [] : colKinds.slice(headerFirstDataIdx)
+
+  return { headerIdx, colKinds, colMonths, years, dataColYears }
+}
+
+export function parsePastedTable(text, tableType, opts = {}) {
+  const overrides = opts.overrides || {}
+  // IMPORTANT: don't .trim() each line — that strips a leading tab
+  // (the empty first header cell above the label column), which
+  // shifts every year by one column. Only strip trailing \r and
+  // filter on whether the line has any real content.
+  const lines = text.split('\n')
+    .map(l => l.replace(/\r$/, ''))
+    .filter(l => l.trim().length > 0)
+  if (lines.length < 2) {
+    return { years: [], rows: [], warnings: ['Pasted content has too few rows. Make sure you copied the full table including headers.'], unmatched: [] }
+  }
+
+  const aliasMap = ALIASES[tableType]
+  const warnings = []
+  let shape = { ok: true }
+
+  const isQuarterly = tableType === 'quarterly'
+  const { headerIdx, colKinds, colMonths, years, dataColYears } = detectYearHeader(lines, isQuarterly)
+  if (headerIdx === -1) {
+    warnings.push('Could not detect year headers in the pasted text. Years may be misaligned — please verify in the preview below.')
+  }
 
   // GATE — before a single number is read. A wrong table or a quarterly table is
   // a mistake to correct, not data to salvage: parsing it would only produce a
@@ -481,7 +508,7 @@ export function quarterMeta(label) {
  * the rest of the app stores absolute currency, so callers pass scale=1e7 for
  * .NS/.BO tickers). Per-share fields in SKIP_SCALE are never scaled.
  */
-const SKIP_SCALE = new Set(['eps','dividendPayout'])
+export const SKIP_SCALE = new Set(['eps','dividendPayout'])
 
 export function tagPastedRows(rows, tableType, opts = {}) {
   const scale = opts.scale ?? 1
@@ -496,6 +523,68 @@ export function tagPastedRows(rows, tableType, opts = {}) {
     }
     return tagged
   })
+}
+
+/**
+ * Parse a pasted restatement/notes-style table for the historical-
+ * normalization tool (NormalizeModal's generic paste mode) — deliberately
+ * statement-agnostic (no tableType argument: P&L, Balance Sheet, and Cash
+ * Flow notes all get pasted through the same box) and deliberately NOT
+ * matched against metrics.js's base-metric aliases. A row here is an
+ * ADJUSTMENT ("Restructuring charge", "Indemnification asset"), not a base
+ * line item — there is nothing in the metrics dictionary for it to match
+ * against, by design. Reuses the same year-header detection and number
+ * parsing as parsePastedTable (detectYearHeader, splitRow, parseNum), but
+ * skips the alias-matching entirely: every row with at least one numeric
+ * value is returned, label and per-year values, for the caller (the
+ * restatement UI) to map to a normalization target and a +/− sign — a user
+ * decision, keyword-suggested but never silently applied, not something
+ * this function should be deciding on its own.
+ */
+export function parseRestatementRows(text) {
+  const lines = text.split('\n')
+    .map(l => l.replace(/\r$/, ''))
+    .filter(l => l.trim().length > 0)
+  if (lines.length < 2) {
+    return { years: [], rows: [], warnings: ['Pasted content has too few rows. Make sure you copied the full table including headers.'] }
+  }
+
+  const warnings = []
+  const { headerIdx, years, dataColYears } = detectYearHeader(lines, false, 1)
+  if (headerIdx === -1) {
+    warnings.push('Could not detect year headers in the pasted text. Years may be misaligned — please verify in the preview below.')
+  }
+
+  const rows = []
+  for (let i = 0; i < lines.length; i++) {
+    if (i === headerIdx) continue
+    const cells = splitRow(lines[i])
+    if (cells.length < 2) continue
+    const rawLabel = cells[0]
+    const normalizedLabel = normalizeLabel(rawLabel)
+    const values = cells.slice(1)
+    const byYear = {}
+    let any = false
+    for (let j = 0; j < dataColYears.length; j++) {
+      const year = dataColYears[j]
+      if (!year || year === 'TTM') continue
+      const v = j < values.length ? parseNum(values[j]) : null
+      if (v == null) continue
+      byYear[year] = v
+      any = true
+    }
+    // A stray subtotal/note line with no numbers at all isn't an adjustment
+    // — nothing to map to a target, so it's silently skipped rather than
+    // padding the row list with rows the UI would just show as empty.
+    if (!any) continue
+    rows.push({ rawLabel, normalizedLabel, byYear })
+  }
+
+  if (rows.length === 0 && !warnings.length) {
+    warnings.push('No rows with numeric values found. Make sure the pasted text includes the amounts, not just labels.')
+  }
+
+  return { years, rows, warnings }
 }
 
 

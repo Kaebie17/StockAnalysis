@@ -9,6 +9,7 @@ import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
 import SyncControls from '../../sync/SyncControls.jsx'
 import NormalizeModal from './NormalizeModal.jsx'
+import HistoryTableModal from './HistoryTableModal.jsx'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
 
@@ -117,6 +118,7 @@ function IdentityBar() {
   // Which flag (if any) opened the modal — names the year/note in its banner
   // and defaults it to table mode. null = the plain "⚖ Normalize" button.
   const [normFlag, setNormFlag] = React.useState(null)
+  const [tableOpen, setTableOpen] = React.useState(false)
   const basis = data?.basis || 'reported'
   // No separate normalized table any more — whether the toggle shows at all
   // depends on whether ANY year has something to normalize, manual or
@@ -248,6 +250,10 @@ function IdentityBar() {
           className="text-xs px-2 py-0.5 rounded border border-navy-700 text-slate-400 hover:text-accent hover:border-accent/50 transition-colors whitespace-nowrap">
           ⚖ Normalize
         </button>
+        <button onClick={() => setTableOpen(true)} title="View and edit the stored history, cell by cell"
+          className="text-xs px-2 py-0.5 rounded border border-navy-700 text-slate-400 hover:text-accent hover:border-accent/50 transition-colors whitespace-nowrap">
+          📋 Data table
+        </button>
         {hasNorm && (
           <button onClick={() => setBasis(basis === 'normalized' ? 'reported' : 'normalized')}
             title="Switch between as-reported and normalized figures"
@@ -262,6 +268,7 @@ function IdentityBar() {
       </div>
 
       <NormalizeModal open={normOpen} onClose={() => setNormOpen(false)} flag={normFlag} />
+      <HistoryTableModal open={tableOpen} onClose={() => setTableOpen(false)} />
     </div>
   )
 }

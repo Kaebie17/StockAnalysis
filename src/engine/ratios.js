@@ -31,6 +31,28 @@ export function grossProfitOf(row) {
   return (rev != null && cogs != null) ? rev - cogs : null
 }
 
+/**
+ * Operating net working capital, for one balance-sheet row: tradeReceivables
+ * + inventories − tradePayables − advanceFromCustomers. Deliberately just
+ * these four — Screener's other current-asset/liability catch-alls (Loans
+ * n Advances, Other asset/liability items) aren't tracked at all; checked
+ * against a real AR, Screener's own total for that catch-all didn't
+ * reconcile with what the company actually discloses (a coverage gap, not
+ * a classification one — see metrics.js's comment above tradeReceivables),
+ * so there's nothing reliable to add in. This is the standard figure the
+ * base DCF/FCFF work uses; a fuller, AR-sourced NWC is a separate,
+ * restatement-tool job, not this function's.
+ * Returns null if any of the four is missing for this row — no partial sum.
+ */
+export function netWorkingCapitalOf(row) {
+  const ar   = row?.tradeReceivables?.value
+  const inv  = row?.inventories?.value
+  const ap   = row?.tradePayables?.value
+  const adv  = row?.advanceFromCustomers?.value
+  if (ar == null || inv == null || ap == null || adv == null) return null
+  return (ar + inv) - (ap + adv)
+}
+
 export function calcRatios(data, opts = {}) {
   const { price, marketCap: marketCapRaw, shares: sharesRaw, incomeHistory,
           balanceHistory, cashflowHistory, meta } = data

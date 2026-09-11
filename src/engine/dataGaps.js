@@ -58,6 +58,7 @@ const latestFiscalRow = (arr) => {
 function resolvedValues(r, data) {
   const latestI = latestFiscalRow(data?.incomeHistory) || {}
   const latestC = latestFiscalRow(data?.cashflowHistory) || {}
+  const latestB = latestFiscalRow(data?.balanceHistory) || {}
   return {
     revenue:         r.revenue,
     operatingProfit: r.opProfit,
@@ -89,6 +90,21 @@ function resolvedValues(r, data) {
     profitForPE:            latestI.profitForPE?.value ?? null,
     profitFromAssociates:   latestI.profitFromAssociates?.value ?? null,
     minorityInterest:       latestI.minorityInterest?.value ?? null,
+    // Operating net working capital group (historical-normalization plan,
+    // Phase 1) — not on ratioResult, read off the latest balance/cashflow
+    // row like capex/cogs above. Deliberately just these four: Screener's
+    // ambiguous "Other Assets"/"Other Liabilities" catch-alls were tried and
+    // dropped — verified against a real AR that Screener's own total for
+    // them doesn't reconcile with what the company actually discloses (a
+    // coverage gap, not just a classification difference), so there's
+    // nothing reliable to gap-check there. See netWorkingCapital in
+    // ratios.js (or wherever it's computed) for why it's built from only
+    // these four.
+    tradeReceivables:        latestB.tradeReceivables?.value ?? null,
+    inventories:             latestB.inventories?.value ?? null,
+    tradePayables:           latestB.tradePayables?.value ?? null,
+    advanceFromCustomers:    latestB.advanceFromCustomers?.value ?? null,
+    changeInWC:              latestC.changeInWC?.value ?? null,
   }
 }
 

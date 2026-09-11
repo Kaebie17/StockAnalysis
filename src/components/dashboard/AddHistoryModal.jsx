@@ -61,12 +61,17 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
   const [pasteText, setPasteText] = useState({ income: '', quarterly: '', balance: '', cashflow: '', holdings: '' })
   const [results, setResults] = useState(null)      // { income:{…}, …, holdings:{ok,…} }
   const [applied, setApplied] = useState(false)
-  // Fill-only is the safe default (never let a re-paste silently downgrade a
-  // field a stronger source already populated) — but that safety used to be
-  // invisible: nothing told you a field you thought you'd just fixed was
-  // quietly kept at its old value. This makes both the skip and the opt-in
-  // to override it explicit in the preview instead.
-  const [overwrite, setOverwrite] = useState(false)
+  // Gap fill is the safe default and always available, not just conditionally
+  // shown when an overlap happens to exist — it never overwrites a field that
+  // already has a value, regardless of that value's origin (auto-fetched,
+  // pasted earlier, or hand-corrected through the data-table editor). That
+  // means it needs no special case for "first paste on an empty ticker" vs.
+  // "adding a new year to an existing one" — on an empty table every cell is
+  // missing, so gap fill already behaves as a full population; once anything
+  // exists, it only fills the blanks. Replace is the explicit, visibly
+  // destructive alternative — confirmed before it runs (see handleConfirm).
+  const [pasteMode, setPasteMode] = useState('gapFill')
+  const overwrite = pasteMode === 'replace'
   // Screener row-label -> field mappings the user has already confirmed,
   // keyed by table — full rows (not just the flattened label->field map
   // parsePastedTable wants), so AliasReconcile can actually display and
@@ -92,7 +97,7 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
     setPasteText({ income: '', quarterly: '', balance: '', cashflow: '', holdings: '' })
     setResults(null)
     setApplied(false)
-    setOverwrite(false)
+    setPasteMode('gapFill')
     ;(async () => {
       const next = {}
       for (const t of TABLES) {
@@ -191,6 +196,13 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
 
   const handleConfirm = () => {
     if (!results) return
+    // Replace is deliberately, visibly destructive — confirmed here, once,
+    // right before it actually runs, rather than relying on the radio choice
+    // alone to carry that weight. Same pattern as the existing "delete cached
+    // data and re-fetch" confirmation elsewhere in the app (Header.jsx).
+    if (overwrite && !window.confirm(
+      `Replace mode will overwrite every matching field shown above with this paste's values — including anything manually corrected earlier. This can't be undone. Continue?`
+    )) return
     // Annual financials → history series.
     // Quarterly is deliberately NOT sent here: incomeHistory is keyed by fiscal
     // year and every consumer (ratios, CAGR, the DCF) reads it as full years.
@@ -425,18 +437,23 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
                   </div>
                 )}
 
-                {overlapCount > 0 && (
-                  <label className="flex items-start gap-2 text-xs text-slate-400 bg-navy-800/40 rounded-lg px-3 py-2 cursor-pointer">
-                    <input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)}
-                      className="mt-0.5" />
-                    <span>
-                      {overlapCount} field{overlapCount > 1 ? 's' : ''} above already {overlapCount > 1 ? 'have' : 'has'} a value
-                      (shown struck through). {overwrite
-                        ? 'Overwrite is on — this paste will replace them.'
-                        : "Unchecked, they'll be kept as-is — check to replace them with this paste instead."}
-                    </span>
-                  </label>
-                )}
+                <div className="rounded-lg bg-navy-800/40 px-3 py-2 space-y-1.5">
+                  <div className="flex gap-3">
+                    {[['gapFill', 'Gap fill'], ['replace', 'Replace']].map(([m, lbl]) => (
+                      <label key={m} className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+                        <input type="radio" name="pasteMode" checked={pasteMode === m} onChange={() => setPasteMode(m)} />
+                        {lbl}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    {pasteMode === 'replace'
+                      ? overlapCount > 0
+                        ? `Replace will overwrite ${overlapCount} field${overlapCount > 1 ? 's' : ''} already set (shown struck through) with this paste's values, including anything corrected by hand. You'll be asked to confirm before it runs.`
+                        : "Replace will overwrite matching fields with this paste's values wherever they overlap — nothing overlaps yet for what's parsed above."
+                      : 'Gap fill only adds values where nothing exists yet — anything already set, however it got there, is left untouched.'}
+                  </p>
+                </div>
 
                 <p className="text-xs text-slate-500">
                   Financial fields recognized: {finMatched}{holdingsOk ? ' · promoter holding parsed' : ''}. Check against your Screener tab before confirming.

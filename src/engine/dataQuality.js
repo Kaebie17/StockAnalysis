@@ -352,7 +352,23 @@ const CASHFLOW_SPIKE_FIELDS = [
  * risk this module's docblock and spread.js already describe: a fix to one
  * copy silently missing its siblings).
  */
-function lineSpikes(rows, fields, kind) {
+// `suppress` maps a field name to the years it's already fully explained for
+// — e.g. netProfit for years normaliseIncome's adjustments list already gives
+// a reason for (a disclosed exceptional item, shown with its own note), or
+// otherIncome for years a disclosed exceptional item is known at all (it's a
+// component OF otherIncome — Other Income = Exceptional items + Other income
+// normal, confirmed against real Screener data), independent of whether
+// netProfit's OWN adjustment happened to succeed. Without this, a year
+// already explained elsewhere gets flagged AGAIN here as an unexplained
+// "jumped X%, well beyond its usual change" — telling the user the app has
+// no idea why, when it does. suspectYears() (the margin-outlier check)
+// already had this exact guard for netProfit (`alreadyAdjusted`); this never
+// had it at all, for any field. Deliberately per-field, not per-year-for-the-
+// whole-row: a known exceptional item explains netProfit and otherIncome
+// specifically (both are directly built from it), but proves nothing about
+// interest, revenue or depreciation moving the same year — those still get
+// flagged as usual if they're genuinely unusual.
+function lineSpikes(rows, fields, kind, suppress = {}) {
   const sorted = (rows || []).slice().sort((a, b) => (yearOf(a) - yearOf(b)))
   const out = []
   for (const [field, label] of fields) {
@@ -367,20 +383,35 @@ function lineSpikes(rows, fields, kind) {
     const scale  = Math.max(Math.abs(median), 0.02)
     for (let i = 0; i < steps.length; i++) {
       if (Math.abs(steps[i]) < scale * 4) continue
+      const year = pts[i + 1].year
+      if (suppress[field]?.includes(year)) continue
       out.push({
-        year: pts[i + 1].year,
+        year,
         kind,
         field,
-        note: `${label} ${steps[i] > 0 ? 'jumped' : 'dropped'} ${Math.abs(round(steps[i] * 100, 0))}% in ${pts[i + 1].year}, well beyond its usual year-to-year change`,
+        note: `${label} ${steps[i] > 0 ? 'jumped' : 'dropped'} ${Math.abs(round(steps[i] * 100, 0))}% in ${year}, well beyond its usual year-to-year change`,
       })
     }
   }
   return out.sort((a, b) => (b.year || 0) - (a.year || 0))
 }
 
-/** Income-statement version — unchanged behavior, now backed by the shared helper. */
-export function pnlSpikes(incomeHistory = []) {
-  return lineSpikes(incomeHistory, SPIKE_FIELDS, 'pnl-spike')
+/** Income-statement version. `alreadyAdjusted` = years normaliseIncome
+ *  already has a disclosed, explained netProfit adjustment for — suppresses
+ *  the redundant "netProfit jumped/dropped X%" flag for exactly those years,
+ *  same as suspectYears() already does for the margin-outlier check.
+ *  otherIncome is suppressed separately, for every year a disclosed
+ *  exceptional item is known at all (exceptionalOf, below) — it's a
+ *  component of otherIncome regardless of whether netProfit's own adjustment
+ *  happened to succeed that year. */
+export function pnlSpikes(incomeHistory = [], alreadyAdjusted = []) {
+  const exceptionalYears = (incomeHistory || [])
+    .filter(row => exceptionalOf(row) != null)
+    .map(row => yearOf(row))
+  return lineSpikes(incomeHistory, SPIKE_FIELDS, 'pnl-spike', {
+    netProfit: alreadyAdjusted,
+    otherIncome: exceptionalYears,
+  })
 }
 
 /** Balance-sheet version — see BALANCE_SPIKE_FIELDS above. */
@@ -406,9 +437,10 @@ export function assessDataQuality(incomeHistory = [], opts = {}) {
   // income statement (or haven't been updated to pass the others yet) still
   // get everything they got before; the balance/cash-flow checks just don't
   // run without their input, same as any other "not enough data" decline.
+  const adjustedYears = adjustments.map(a => a.year)
   const detected = [
-    ...suspectYears(rows, { alreadyAdjusted: adjustments.map(a => a.year) }),
-    ...pnlSpikes(rows),
+    ...suspectYears(rows, { alreadyAdjusted: adjustedYears }),
+    ...pnlSpikes(rows, adjustedYears),
     ...balanceSheetSpikes(opts.balanceHistory || []),
     ...cashFlowSpikes(opts.cashflowHistory || []),
   ]

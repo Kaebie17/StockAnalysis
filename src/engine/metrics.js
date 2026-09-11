@@ -161,6 +161,23 @@ export const METRICS = {
     csv: ['profitBeforeTax', 'pbt'],
     needs: 'accurate after-tax normalization of a pre-tax exceptional item',
   },
+  // Screener's own P&L row is "Tax %" (a percent of profitBeforeTax, per
+  // pctOf below — same handling as cogs's "Material Cost %"), not an
+  // absolute figure. Wasn't tracked as its own field before — a plain "Tax %"
+  // paste went unmatched — even though NormalizeModal's manual-correction
+  // tool already had a 'tax' line to set (reconstructRow). Added now mainly
+  // as a normalization target (the historical-normalization restatement
+  // tool needs it), which also happens to close that pre-existing gap.
+  tax: {
+    table: 'income', label: 'Tax', base: false,
+    yahoo: ['taxProvision'], sec: ['IncomeTaxExpenseBenefit'],
+    screener: ['tax', 'taxpercent'],
+    pctOf: 'profitBeforeTax',
+    expandFrom: null,
+    ar: [/\btax\b/i, /provision for tax/i],
+    csv: ['tax', 'taxExpense'],
+    needs: 'net profit reconciliation, normalized tax rate',
+  },
   exceptionalItems: {
     table: 'income', label: 'Exceptional Items', base: false,
     yahoo: [], sec: [],
@@ -343,6 +360,66 @@ export const METRICS = {
     needs: 'net debt, EV, EV/EBITDA, EV/Revenue',
   },
 
+  // Operating net working capital group — same "Other Assets +"/"Other
+  // Liabilities +" expansions as cash above, confirmed against a real
+  // Screener pull (Bharti Airtel, consolidated). These four are unambiguous
+  // operating items — netWorkingCapital = tradeReceivables + inventories −
+  // tradePayables − advanceFromCustomers, no review needed.
+  //
+  // Screener's OTHER sub-items in the same two expansions — Loans n
+  // Advances, Other asset items, Other liability items — are deliberately
+  // NOT tracked here. They looked like a review-once-per-ticker problem at
+  // first (operating vs. non-operating, ambiguous by label), but checking
+  // against a real AR turned up something worse: Screener's own total for
+  // that catch-all doesn't reconcile with what the company actually
+  // discloses at all — one non-operating item alone (an indemnification
+  // asset) was multiple times larger than Screener's entire bucket. That's
+  // a coverage gap, not a classification question, and no include/exclude
+  // toggle fixes a number that was never captured in the first place.
+  // Getting that right needs the actual AR note pasted through the
+  // restatement tool, not a field tracked here.
+  tradeReceivables: {
+    table: 'balance', label: 'Trade Receivables', base: false,
+    yahoo: ['receivables', 'accountsReceivable'], sec: ['AccountsReceivableNetCurrent'],
+    screener: ['tradereceivables', 'receivables', 'sundrydebtors'],
+    expandFrom: 'Other Assets',
+    ar: [/trade receivables/i, /sundry debtors/i],
+    csv: ['tradeReceivables', 'receivables'],
+    needs: 'operating net working capital',
+  },
+  inventories: {
+    table: 'balance', label: 'Inventories', base: false,
+    yahoo: ['inventory'], sec: ['InventoryNet'],
+    screener: ['inventories', 'inventory', 'stockintrade'],
+    expandFrom: 'Other Assets',
+    ar: [/inventories/i, /stock.?in.?trade/i],
+    csv: ['inventories', 'inventory'],
+    needs: 'operating net working capital',
+  },
+  tradePayables: {
+    table: 'balance', label: 'Trade Payables', base: false,
+    yahoo: ['accountsPayable'], sec: ['AccountsPayableCurrent'],
+    screener: ['tradepayables', 'payables', 'sundrycreditors'],
+    expandFrom: 'Other Liabilities',
+    ar: [/trade payables/i, /sundry creditors/i],
+    csv: ['tradePayables', 'payables'],
+    needs: 'operating net working capital',
+  },
+  advanceFromCustomers: {
+    table: 'balance', label: 'Advance from Customers', base: false,
+    yahoo: [], sec: ['ContractWithCustomerLiabilityCurrent'],
+    // 'deferredrevenue' added after checking a real AR against Screener:
+    // Screener's own advance-from-customers figure read as 0 every year for
+    // a company whose AR disclosed a large, genuinely operating deferred-
+    // revenue balance — same Ind AS 115 contract-liability concept, just a
+    // different label the original alias list didn't cover.
+    screener: ['advancefromcustomers', 'contractliabilities', 'deferredrevenue'],
+    expandFrom: 'Other Liabilities',
+    ar: [/advance(?:s)? from customers?/i, /contract liabilit(?:y|ies)/i, /deferred revenue/i],
+    csv: ['advanceFromCustomers'],
+    needs: 'operating net working capital',
+  },
+
   // ── Cash flow ─────────────────────────────────────────────────────────────
   operatingCF: {
     table: 'cashflow', label: 'Operating Cash Flow', base: true,
@@ -354,6 +431,24 @@ export const METRICS = {
     ar: [/cash (?:generated )?from operating activities/i, /net cash from operations/i],
     csv: ['operatingCF', 'operatingCashFlow'],
     needs: 'free cash flow, FCF conversion',
+  },
+  // Screener's own "Working capital changes" line, under the SAME "+" as
+  // operatingCF. Deliberately a SEPARATE field from the balance-sheet-
+  // derived netWorkingCapital above, not a substitute for it — this is the
+  // actual historical cash-flow impact of working-capital movement in a
+  // given year (real cash, not something to normalize away), useful for
+  // explaining CFO and flagging unusual years. The forward change-in-working-
+  // capital assumption is built from netWorkingCapital's year-over-year
+  // level instead, never from this line — see the historical-normalization
+  // plan.
+  changeInWC: {
+    table: 'cashflow', label: 'Working Capital Changes', base: false,
+    yahoo: ['changeInWorkingCapital'], sec: [],
+    screener: ['workingcapitalchanges'],
+    expandFrom: 'Cash from Operating Activity',
+    ar: [/working capital changes?/i, /change(?:s)? in working capital/i],
+    csv: ['changeInWC'],
+    needs: 'historical CFO reconciliation, unusual-year detection',
   },
   capex: {
     table: 'cashflow', label: 'CapEx (fixed assets purchased)', base: true,

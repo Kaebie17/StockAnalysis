@@ -7,6 +7,7 @@ import { calcRatios } from '../engine/ratios.js'
 import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
 import { assessDataQuality, computeNormalizedRow } from '../engine/dataQuality.js'
+import { METRICS } from '../engine/metrics.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -283,17 +284,94 @@ function reducer(s, a) {
       // reconstructRow's identity chain touched (PBT, tax, ...) was only ever
       // scratch work toward those two, never separately consumed by anything
       // downstream. A year not present in a.rows is completely untouched.
+      //
+      // a.overwrite ('replace' behavior when true) matters for Table mode,
+      // which can paste several years at once — same Gap fill/Replace choice
+      // as every other bulk paste surface in the app, defaulted to true here
+      // since Excerpt mode (a single, deliberate one-year correction) has no
+      // ambiguity to gap-fill against and should always just set the value.
+      const overwrite = a.overwrite ?? true
       const overridesByYear = Object.fromEntries((a.rows || []).map(r => [String(r.year), r]))
       const reportedBase = s.data.reportedIncomeHistory || s.data.incomeHistory || []
       const reportedIncomeHistory = reportedBase.map(row => {
         const o = overridesByYear[String(row.year)]
         if (!o) return row
         const out = { ...row }
-        if (o.netProfit != null) out.netProfitNormalized = o.netProfit
-        if (o.eps != null) out.epsNormalized = o.eps
+        if (o.netProfit != null && (overwrite || out.netProfitNormalized?.value == null)) out.netProfitNormalized = o.netProfit
+        if (o.eps != null && (overwrite || out.epsNormalized?.value == null)) out.epsNormalized = o.eps
         return out
       })
       const data = { ...s.data, reportedIncomeHistory }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      return { ...s, data, ...computed }
+    }
+    // The general historical-normalization restatement tool — NormalizeModal's
+    // "paste any statement" mode. Unlike APPLY_NORMALIZATION above (net
+    // profit/EPS only, always income), a restatement can target any of the
+    // ten fields in normalizationTargets.js, living on any of the three
+    // statements. `a.adjustments`: one entry per pasted row the user actually
+    // mapped to a target — { target, year, amount } — amount already signed
+    // (+/- already applied by the UI). Multiple rows can share a (target,
+    // year): they sum here, not overwrite each other — the one-to-many case
+    // (a restructuring charge AND a litigation settlement both landing on
+    // operatingProfit for the same year add together into one total).
+    //
+    // `a.mode` ('accumulate' | 'replace', default 'accumulate') governs a
+    // DIFFERENT thing from the +/- sign above: the sign decides whether one
+    // pasted row adds to or subtracts from the target WITHIN this paste;
+    // this mode decides what happens to whatever RestatementsTotal is
+    // already stored from an earlier, separate apply. Accumulate adds this
+    // dispatch's total on top of it — the correct default, since a
+    // restructuring charge found today and a litigation settlement found
+    // next week should both count, not have the second silently erase the
+    // first. Replace discards the prior total and starts fresh with only
+    // this paste's contribution, for when the user genuinely wants to redo
+    // a correction rather than layer onto it.
+    case 'APPLY_RESTATEMENTS': {
+      if (!s.data) return s
+      const accumulate = a.mode !== 'replace'
+      const totals = {}   // totals[target][year] = summed signed amount (this dispatch only)
+      for (const adj of (a.adjustments || [])) {
+        if (!adj?.target || !adj?.year || adj.amount == null || !isFinite(adj.amount)) continue
+        totals[adj.target] ??= {}
+        totals[adj.target][adj.year] = (totals[adj.target][adj.year] || 0) + adj.amount
+      }
+
+      let data = { ...s.data }
+      // Route each target's totals to the array it actually lives on — an
+      // income-statement target (operatingProfit, interest, tax, ...) writes
+      // onto reportedIncomeHistory, a balance-sheet target onto
+      // balanceHistory, a cash-flow target onto cashflowHistory. Never
+      // assumes income the way the netProfit-only path above always could.
+      //
+      // `target` is no longer restricted to normalizationTargets.js's fixed
+      // ten — NormalizeModal's dropdown (Part C) now also offers any other
+      // metrics.js field with data, plus any custom row added via the data
+      // table, so its table has to be resolved the same two ways: a real
+      // metrics.js key knows its own table directly; a custom field's table
+      // was recorded on it when it was created (HistoryTableModal.jsx).
+      for (const [target, byYear] of Object.entries(totals)) {
+        const table = METRICS[target]?.table
+          ?? (data.customFields || []).find(f => f.key === target)?.table
+        if (!table) continue
+        const histKey = table === 'income' ? 'reportedIncomeHistory'
+          : table === 'balance' ? 'balanceHistory' : 'cashflowHistory'
+        const base = data[histKey] || []
+        data[histKey] = base.map(row => {
+          const thisDispatch = byYear[String(row.year)]
+          if (thisDispatch == null) return row
+          const reportedVal = row?.[target]?.value
+          if (reportedVal == null) return row   // nothing reported to restate against
+          const priorTotal = accumulate ? (row?.[`${target}RestatementsTotal`]?.value ?? 0) : 0
+          const total = priorTotal + thisDispatch
+          return {
+            ...row,
+            [`${target}RestatementsTotal`]: { value: total, adjusted: true },
+            [`${target}Normalized`]: { value: reportedVal + total, adjusted: true },
+          }
+        })
+      }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
@@ -303,6 +381,79 @@ function reducer(s, a) {
       const data = { ...s.data, basis: a.basis }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: a.basis })
+      return { ...s, data, ...computed }
+    }
+    // The editable data-table's own commit path — a direct, single-cell (or
+    // multi-cell, one Save) correction, as an alternative to pasting a whole
+    // table through AddHistoryModal/GapFillModal for a one-off fix. No Gap
+    // fill/Replace choice here: clicking a cell already shows the user
+    // exactly what's being overwritten (or that it's blank), which is the
+    // same visibility a paste's overlap preview exists to provide — so a
+    // direct edit always just sets the value, same as NormalizeModal's
+    // Excerpt mode for the same reason (one exact, deliberate number).
+    // a.edits: [{ year, field, value }] — value: number to set, or null to
+    // clear the cell back to unpopulated.
+    case 'EDIT_HISTORY_CELLS': {
+      if (!s.data) return s
+      const histKey = a.tableType === 'income' ? 'reportedIncomeHistory' : `${a.tableType}History`
+      const base = a.tableType === 'income'
+        ? (s.data.reportedIncomeHistory || s.data.incomeHistory || [])
+        : (s.data[histKey] || [])
+      const byYear = Object.fromEntries(base.map(r => [String(r.year), { ...r }]))
+      for (const e of (a.edits || [])) {
+        if (!e?.year) continue
+        const y = String(e.year)
+        if (!byYear[y]) byYear[y] = { year: y }
+        if (e.value == null) {
+          const { [e.field]: _drop, ...rest } = byYear[y]
+          byYear[y] = rest
+        } else {
+          byYear[y] = { ...byYear[y], [e.field]: { value: e.value, status: 'pasted', formula: null } }
+        }
+      }
+      const newHistory = Object.values(byYear).sort((x, y) => x.year.localeCompare(y.year))
+      // Same reasoning as MERGE_PASTED: a hand-typed correction is real,
+      // hand-curated work exactly like a Screener paste, so it needs the same
+      // deepSource flag or exportSyncableRecords() silently never syncs it.
+      const data = a.tableType === 'income'
+        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
+        : { ...s.data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      return { ...s, data, ...computed }
+    }
+    // A genuinely custom line item (not in metrics.js) added from the data
+    // table — see HistoryTableModal.jsx. Its VALUES live on the same history
+    // rows as any tracked field (byYear[key]), keyed by this synthetic key;
+    // only the definition (label, which statement, optional normalization
+    // mapping) needs its own storage, kept on `data` the same way
+    // confirmedPeers/growthWindowYears already are (per-ticker, persisted).
+    case 'ADD_CUSTOM_FIELD': {
+      if (!s.data) return s
+      const customFields = [...(s.data.customFields || []), a.field]
+      return { ...s, data: { ...s.data, customFields } }
+    }
+    // Removing a custom row also strips its values off every history row —
+    // otherwise the values would silently linger, orphaned, under a key no
+    // longer listed anywhere for the grid to show or let the user manage.
+    case 'REMOVE_CUSTOM_FIELD': {
+      if (!s.data) return s
+      const customFields = (s.data.customFields || []).filter(f => f.key !== a.key)
+      const strip = rows => (rows || []).map(r => {
+        if (!(a.key in r)) return r
+        const { [a.key]: _drop, ...rest } = r
+        return rest
+      })
+      const data = {
+        ...s.data,
+        customFields,
+        reportedIncomeHistory: strip(s.data.reportedIncomeHistory || s.data.incomeHistory),
+        incomeHistory: strip(s.data.incomeHistory),
+        balanceHistory: strip(s.data.balanceHistory),
+        cashflowHistory: strip(s.data.cashflowHistory),
+      }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
     default:              return s
@@ -747,8 +898,37 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_BASIS', basis })
   }, [])
 
-  const applyNormalization = useCallback((rows) => {
-    dispatch({ type: 'APPLY_NORMALIZATION', rows })
+  // overwrite: true (default) always sets the value — right for Excerpt
+  // mode's single, deliberate correction. Table mode passes its own Gap
+  // fill/Replace choice explicitly, same pattern as every other bulk-paste
+  // surface.
+  const applyNormalization = useCallback((rows, overwrite = true) => {
+    dispatch({ type: 'APPLY_NORMALIZATION', rows, overwrite })
+  }, [])
+
+  // adjustments: [{ target, year, amount }] — one per pasted restatement row
+  // the user mapped to a target field, amount already signed by the +/-
+  // toggle. mode: 'accumulate' (default) adds onto whatever's already
+  // stored for that (target, year) from an earlier apply; 'replace' starts
+  // fresh with only this dispatch's total. See APPLY_RESTATEMENTS.
+  const applyRestatements = useCallback((adjustments, mode = 'accumulate') => {
+    dispatch({ type: 'APPLY_RESTATEMENTS', adjustments, mode })
+  }, [])
+
+  // The editable data table's direct-cell commit — see EDIT_HISTORY_CELLS.
+  // edits: [{ year, field, value }], value null clears the cell.
+  const editHistoryCells = useCallback((tableType, edits) => {
+    dispatch({ type: 'EDIT_HISTORY_CELLS', tableType, edits })
+  }, [])
+
+  // field: { key, label, table, target, sign } — target/sign null for a
+  // plain reference row. See ADD_CUSTOM_FIELD.
+  const addCustomField = useCallback((field) => {
+    dispatch({ type: 'ADD_CUSTOM_FIELD', field })
+  }, [])
+
+  const removeCustomField = useCallback((key) => {
+    dispatch({ type: 'REMOVE_CUSTOM_FIELD', key })
   }, [])
 
   // Reset the whole app: wipe all cached financials.
@@ -803,7 +983,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, applyRestatements, editHistoryCells, addCustomField, removeCustomField, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>

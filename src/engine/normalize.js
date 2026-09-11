@@ -7,6 +7,9 @@
  *
  * ALL values stored with resolution metadata: { value, status, formula }
  */
+import { computeNormalizedRow } from './dataQuality.js'
+
+const val = t => (t && typeof t === 'object' ? t.value : t)
 
 /**
  * Fill remaining holes in the LATEST year from figures the user pulled out of a
@@ -149,10 +152,29 @@ function dropTTMRows(data) {
  * gone \u2014 normalized netProfit/eps now live as netProfitNormalized/
  * epsNormalized sibling fields directly on the matching reportedIncomeHistory
  * row, computed live where derivable and written here only for a manual
- * NormalizeModal override that can't be. A ticker normalized before this
- * change still has its old array sitting in storage; fold it onto the
- * matching rows once, on load, so that real prior work isn't silently
- * dropped just because the table it lived in no longer exists.
+ * NormalizeModal override that can't be.
+ *
+ * The old array conflated two different origins under one identical shape,
+ * with nothing recorded to tell them apart: a genuine manual correction from
+ * NormalizeModal, and an entry the OLD auto-derivation wrote on its own for
+ * ANY year with a detected exceptional item, every time a paste landed \u2014 a
+ * real, intended feature, not something the user did by hand. Labeling every
+ * migrated entry "manual" (this function's first version) meant a ticker
+ * that only ever had the automatic kind got told, for nearly every year,
+ * that it had been "manually normalized from the annual report" \u2014 untrue,
+ * and confusing since some of those years show wild swings (a near-zero
+ * profit year makes the mechanical subtraction's impact% look enormous,
+ * nothing to do with human judgment).
+ *
+ * There's no recorded flag to settle which an old entry was, but there's a
+ * way to infer it: computeNormalizedRow's auto-derivation (unchanged by this
+ * migration) recomputes the exact same figure LIVE from this row's own
+ * reported fields whenever it's the automatic kind. So if an old entry
+ * matches what live derivation independently produces, it's redundant \u2014
+ * drop it, and let computeNormalizedRow derive it fresh (correctly labeled
+ * 'reported-one-off' in the data-quality display) every time from here on.
+ * Only a genuine mismatch \u2014 a human's own correction differing from the
+ * mechanical formula \u2014 is worth preserving as a real override.
  */
 export function migrateNormalizedTable(data) {
   const old = data?.normalizedIncomeHistory
@@ -162,9 +184,13 @@ export function migrateNormalizedTable(data) {
   const reportedIncomeHistory = reportedBase.map(row => {
     const o = byYear[String(row.year)]
     if (!o) return row
-    const out = { ...row }
-    if (o.netProfit?.value != null && out.netProfitNormalized == null) out.netProfitNormalized = o.netProfit
-    if (o.eps?.value != null && out.epsNormalized == null) out.epsNormalized = o.eps
+    const oNp = val(o.netProfit)
+    if (oNp == null) return row
+    const live = computeNormalizedRow(row)
+    const redundant = live && Math.round(live.netProfit.value) === Math.round(oNp)
+    if (redundant) return row
+    const out = { ...row, netProfitNormalized: o.netProfit }
+    if (o.eps?.value != null) out.epsNormalized = o.eps
     return out
   })
   const { normalizedIncomeHistory, ...rest } = data

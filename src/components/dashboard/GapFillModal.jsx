@@ -41,6 +41,13 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
   // silently.
   const [overrideRows, setOverrideRows] = useState([])
   const flatOverrides = Object.fromEntries(overrideRows.map(r => [r.normalizedLabel, r.field]))
+  // Same choice as AddHistoryModal, previously missing here entirely — this
+  // wizard's own steps are only ever driven by what's MISSING, but a paste
+  // made to fill one gap can easily be the whole table, which also touches
+  // fields that already have a value. Gap fill (default) never overwrites
+  // those; Replace does, with the same confirmation before it runs.
+  const [pasteMode, setPasteMode] = useState('gapFill')
+  const overwrite = pasteMode === 'replace'
 
   // (Re)initialise every time the modal is opened.
   useEffect(() => {
@@ -53,6 +60,7 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
     setPreview(null)
     setCompleted({})
     setFinished(tables.length === 0)
+    setPasteMode('gapFill')
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reload confirmed mappings whenever the active step's table changes, so a
@@ -138,8 +146,11 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
     // A rejected paste (wrong table / quarterly) parses to zero rows. Applying it
     // would blank the step rather than fill it. The warning is already on screen.
     if (!preview || preview.rejected) return
+    if (overwrite && !window.confirm(
+      `Replace mode will overwrite every matching field in this table with this paste's values — including anything manually corrected earlier. This can't be undone. Continue?`
+    )) return
     const tagged = tagPastedRows(preview.rows, currentTable, { scale: pasteScale(currency, ticker) })
-    onApply(currentTable, tagged)
+    onApply(currentTable, tagged, { overwrite })
     setCompleted(prev => ({ ...prev, [currentTable]: true }))
     advance()
   }
@@ -306,6 +317,23 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
                   </div>
                 )}
                 <p className="text-xs text-slate-500">Values shown as pasted (₹ Crore for Screener). Check against your Screener tab before confirming.</p>
+
+                <div className="rounded-lg bg-navy-800/40 px-3 py-2 space-y-1.5">
+                  <div className="flex gap-3">
+                    {[['gapFill', 'Gap fill'], ['replace', 'Replace']].map(([m, lbl]) => (
+                      <label key={m} className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+                        <input type="radio" name="gapFillPasteMode" checked={pasteMode === m} onChange={() => setPasteMode(m)} />
+                        {lbl}
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    {pasteMode === 'replace'
+                      ? "Replace will overwrite every matching field with this paste's values, including anything corrected by hand. You'll be asked to confirm before it runs."
+                      : 'Gap fill (default) only adds values where nothing exists yet — anything already set, however it got there, is left untouched.'}
+                  </p>
+                </div>
+
                 <div className="flex gap-2">
                   <button onClick={() => setPreview(null)} className="btn-ghost text-sm flex-1">
                     ↺ Try again
