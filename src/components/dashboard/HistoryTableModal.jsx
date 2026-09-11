@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
-import { SKIP_SCALE } from '../../utils/pasteParser.js'
+import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
 import { normalizedFieldValue, availableTargets } from '../../engine/normalizationTargets.js'
 import { computeNormalizedRow } from '../../engine/dataQuality.js'
 import Modal from '../Modal.jsx'
@@ -49,7 +49,7 @@ function slugify(label) {
 }
 
 export default function HistoryTableModal({ open, onClose }) {
-  const { state, editHistoryCells, addCustomField, removeCustomField, applyRestatements } = useApp()
+  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields } = useApp()
   const data = state?.data
   const currency = data?.currency
   const div  = currency === 'INR' ? 1e7 : 1e6
@@ -60,10 +60,11 @@ export default function HistoryTableModal({ open, onClose }) {
   const [pending, setPending] = useState({})
   const [editingKey, setEditingKey] = useState(null)
   const [addingRow, setAddingRow] = useState(false)
+  const [merging, setMerging] = useState(false)
 
   useEffect(() => {
     if (!open) return
-    setTable('income'); setPending({}); setEditingKey(null); setAddingRow(false)
+    setTable('income'); setPending({}); setEditingKey(null); setAddingRow(false); setMerging(false)
   }, [open])
 
   if (!open || !data) return null
@@ -191,12 +192,12 @@ export default function HistoryTableModal({ open, onClose }) {
       computedRows.push({ label: 'EPS (Normalized)', cells: epsNorm, fmt: v => v == null ? null : v.toFixed(2) })
     }
   }
-  // Restatement-tool Normalized siblings — any target on THIS statement that
-  // actually has a restatement stored, not just the curated ten: since Part C
-  // let NormalizeModal's restatement tool target any field with data (or a
-  // custom row), a restatement can land on something outside the original
-  // ten too, and hiding it here would defeat this table's whole point of
-  // showing what's actually stored.
+  // Restatement-tool Normalized siblings — a real, stored row
+  // (recomputeNormalizedTargets, called from computeAll) for any target on
+  // THIS statement that currently has at least one custom row feeding it —
+  // not just the curated ten, since Part C let the restatement tool target
+  // any field with data (or a custom row), and hiding one here would defeat
+  // this table's whole point of showing what's actually stored.
   const targetsForTable = allTargets.filter(t => t.table === table)
   for (const meta of targetsForTable) {
     const key = meta.key
@@ -205,11 +206,8 @@ export default function HistoryTableModal({ open, onClose }) {
       const n = row ? normalizedFieldValue(row, key) : null
       return n?.value ?? null
     })
-    const hasRestatement = years.some(y => {
-      const row = history.find(r => String(r.year) === y)
-      return val(row?.[`${key}RestatementsTotal`]) != null
-    })
-    if (hasRestatement) {
+    const hasContribution = years.some(y => val(history.find(r => String(r.year) === y)?.[`${key}Normalized`]) != null)
+    if (hasContribution) {
       computedRows.push({ label: `${meta.label} (Normalized)`, cells, fmt: v => v == null ? null : (SKIP_SCALE.has(key) ? v.toFixed(2) : (v / div).toLocaleString(undefined, { maximumFractionDigits: 1 })) })
     }
   }
@@ -290,11 +288,31 @@ export default function HistoryTableModal({ open, onClose }) {
         </div>
       )}
 
-      {!addingRow ? (
-        <button onClick={() => setAddingRow(true)} className="text-xs text-accent hover:text-accent-light">
-          + Add row
-        </button>
-      ) : (
+      {!addingRow && !merging && (
+        <div className="flex gap-4">
+          <button onClick={() => setAddingRow(true)} className="text-xs text-accent hover:text-accent-light">
+            + Add row
+          </button>
+          {customFields.length >= 2 && (
+            <button onClick={() => setMerging(true)} className="text-xs text-accent hover:text-accent-light">
+              ⇄ Merge rows
+            </button>
+          )}
+        </div>
+      )}
+
+      {merging && (
+        <MergeRowsForm
+          customFields={customFields}
+          onCancel={() => setMerging(false)}
+          onMerge={(sourceKeys, opts) => {
+            mergeCustomFields(table, sourceKeys, opts)
+            setMerging(false)
+          }}
+        />
+      )}
+
+      {addingRow && (
         <AddRowForm
           table={table}
           years={years}
@@ -311,13 +329,16 @@ export default function HistoryTableModal({ open, onClose }) {
           }}
           onCreateCustom={({ label, target, sign, valuesByYear }) => {
             const key = `custom_${slugify(label)}_${Date.now().toString(36)}`
+            // The row's own value is the magnitude as entered — never
+            // pre-multiplied by sign. sign lives only as metadata on the
+            // field, applied when a target's Normalized figure is derived
+            // (normalizedFieldValue) — so what's SHOWN in this row always
+            // matches what was typed, whether or not it's mapped to a target.
             addCustomField({ key, label, table, target: target || null, sign: target ? sign : null })
-            const entries = Object.entries(valuesByYear).filter(([, v]) => v !== '')
-            const edits = entries.map(([year, v]) => ({ year, field: key, value: Number(v) * div }))
+            const edits = Object.entries(valuesByYear)
+              .filter(([, v]) => v !== '')
+              .map(([year, v]) => ({ year, field: key, value: Number(v) * div }))
             if (edits.length) editHistoryCells(table, edits)
-            if (target && entries.length) {
-              applyRestatements(entries.map(([year, v]) => ({ target, year, amount: sign * Number(v) * div })), 'accumulate')
-            }
             setAddingRow(false)
           }}
         />
@@ -327,11 +348,47 @@ export default function HistoryTableModal({ open, onClose }) {
 }
 
 function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, targetNote }) {
+  const [showPaste, setShowPaste] = useState(false)
+  const [pasteText, setPasteText] = useState('')
+  const [pasteWarning, setPasteWarning] = useState('')
+
+  // Bulk-correct THIS row across every year in one go — e.g. a tracked
+  // field that already has data but needs redoing wholesale (mixed-sign
+  // CapEx, a whole column that was mis-scaled) instead of cell-by-cell.
+  // Same shape as any paste in the app (a year header, then one row of
+  // values); reuses parseRestatementRows as-is. Stages into the same
+  // pending state a single cell edit would — still gated behind Save
+  // changes, so a bad paste costs nothing until confirmed.
+  const fillFromPaste = () => {
+    const parsed = parseRestatementRows(pasteText)
+    const row = parsed.rows?.[0]
+    if (!row) {
+      setPasteWarning(parsed.warnings?.[0] || 'Could not find a year header and a row of values in that paste.')
+      return
+    }
+    let matched = 0
+    const ignored = []
+    for (const [y, v] of Object.entries(row.byYear)) {
+      if (years.includes(y)) { commitCell(y, field, String(v)); matched++ }
+      else ignored.push(y)
+    }
+    if (matched === 0) {
+      setPasteWarning(`None of the pasted years match this row's years (${years.join(', ')}).`)
+      return
+    }
+    setPasteText('')
+    if (ignored.length) setPasteWarning(`Staged ${matched} year(s) — click Save changes to commit. Ignored year(s) not in this table: ${ignored.join(', ')}.`)
+    else { setPasteWarning(''); setShowPaste(false) }
+  }
+
   return (
+    <>
     <tr className="border-b border-navy-800/50">
       <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2">
         {label}
         {targetNote && <span className="block text-[10px] text-slate-600">{targetNote}</span>}
+        <button onClick={() => { setShowPaste(s => !s); setPasteWarning('') }}
+          title="Bulk-fill this row from a paste" className="ml-1 text-slate-600 hover:text-accent">📋</button>
         {onRemove && (
           <button onClick={onRemove} title="Remove this row" className="ml-1 text-slate-600 hover:text-bear">✕</button>
         )}
@@ -368,6 +425,29 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
         )
       })}
     </tr>
+    {showPaste && (
+      <tr className="border-b border-navy-800/50">
+        <td colSpan={years.length + 1} className="py-2">
+          <div className="space-y-1.5 rounded-lg border border-navy-700 bg-navy-900/60 p-2">
+            <textarea
+              value={pasteText}
+              onChange={e => { setPasteText(e.target.value); setPasteWarning('') }}
+              rows={2}
+              placeholder={`Paste a year header, then one row of values, e.g.\n${years.slice(0, 3).join('\t')}\n450\t600\t720`}
+              className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent resize-none" />
+            {pasteWarning && <p className="text-[11px] text-neutral">{pasteWarning}</p>}
+            <div className="flex gap-2">
+              <button type="button" onClick={() => setShowPaste(false)} className="btn-ghost text-xs flex-1">Cancel</button>
+              <button type="button" onClick={fillFromPaste} disabled={!pasteText.trim()}
+                className="btn-primary text-xs flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
+                Stage from paste
+              </button>
+            </div>
+          </div>
+        </td>
+      </tr>
+    )}
+    </>
   )
 }
 
@@ -378,8 +458,44 @@ function AddRowForm({ table, years, shownTrackedKeys, targetOptions, div, onCanc
   const [target, setTarget] = useState('')
   const [sign, setSign] = useState(1)
   const [values, setValues] = useState({})
+  const [showPaste, setShowPaste] = useState(false)
+  const [pasteText, setPasteText] = useState('')
+  const [pasteWarning, setPasteWarning] = useState('')
 
   const availableTracked = Object.keys(METRICS).filter(k => METRICS[k].table === table && !shownTrackedKeys.includes(k))
+
+  // Bulk-fill the per-year boxes below from a paste, instead of typing into
+  // each one — same shape every other paste surface in the app already
+  // uses (a year header row, then one row of label + values), reusing
+  // parseRestatementRows as-is rather than a new one-off parser. Only the
+  // FIRST data row is used: this form creates one row at a time.
+  const fillFromPaste = () => {
+    const parsed = parseRestatementRows(pasteText)
+    const row = parsed.rows?.[0]
+    if (!row) {
+      setPasteWarning(parsed.warnings?.[0] || 'Could not find a year header and a row of values in that paste.')
+      return
+    }
+    const matched = {}
+    const ignoredYears = []
+    for (const [y, v] of Object.entries(row.byYear)) {
+      if (years.includes(y)) matched[y] = String(v)
+      else ignoredYears.push(y)
+    }
+    if (Object.keys(matched).length === 0) {
+      setPasteWarning(`None of the pasted years match this table's years (${years.join(', ')}).`)
+      return
+    }
+    setValues(v => ({ ...v, ...matched }))
+    setPasteText('')
+    if (ignoredYears.length) {
+      // Leave the paste box open so this note stays visible — hiding it
+      // immediately (the clean-match path below) would flash and vanish it.
+      setPasteWarning(`Filled ${Object.keys(matched).length} year(s). Ignored year(s) not in this table: ${ignoredYears.join(', ')}.`)
+    } else {
+      setPasteWarning(''); setShowPaste(false)
+    }
+  }
 
   const canSubmit = kind === 'tracked' ? !!trackedField : label.trim().length > 0
 
@@ -412,7 +528,7 @@ function AddRowForm({ table, years, shownTrackedKeys, targetOptions, div, onCanc
             <select value={target} onChange={e => setTarget(e.target.value)}
               className="flex-1 bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
               <option value="">No normalization (reference only)</option>
-              {targetOptions.map(t => <option key={t.key} value={t.key}>Feeds {t.label}</option>)}
+              {targetOptions.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
             </select>
             {target && (
               <select value={sign} onChange={e => setSign(Number(e.target.value))}
@@ -431,17 +547,43 @@ function AddRowForm({ table, years, shownTrackedKeys, targetOptions, div, onCanc
       )}
 
       {(kind === 'tracked' ? trackedField : true) && (
-        <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${years.length}, minmax(4rem,1fr))` }}>
-          {years.map(y => (
-            <div key={y}>
-              <label className="text-[10px] text-slate-500 block">{y}</label>
-              <input type="text" inputMode="decimal" value={values[y] ?? ''}
-                onChange={e => setValues(v => ({ ...v, [y]: e.target.value }))}
-                placeholder="—"
-                className="w-full bg-navy-800 border border-navy-700 rounded px-1.5 py-1 text-xs font-mono text-slate-200" />
+        <>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-slate-500">Values ({years.join(', ')})</span>
+            <button type="button" onClick={() => { setShowPaste(s => !s); setPasteWarning('') }}
+              className="text-[11px] text-accent hover:text-accent-light">
+              {showPaste ? 'Cancel paste' : '📋 Paste values'}
+            </button>
+          </div>
+
+          {showPaste && (
+            <div className="space-y-1.5 rounded-lg border border-navy-700 bg-navy-900/60 p-2">
+              <textarea
+                value={pasteText}
+                onChange={e => { setPasteText(e.target.value); setPasteWarning('') }}
+                rows={3}
+                placeholder={'Paste a year header, then one row of values — same as any Screener paste, e.g.\n2022\t2023\t2024\n600\t400\t900'}
+                className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent resize-none" />
+              {pasteWarning && <p className="text-[11px] text-neutral">{pasteWarning}</p>}
+              <button type="button" onClick={fillFromPaste} disabled={!pasteText.trim()}
+                className="btn-primary text-xs w-full disabled:opacity-40 disabled:cursor-not-allowed">
+                Fill values from paste
+              </button>
             </div>
-          ))}
-        </div>
+          )}
+
+          <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${years.length}, minmax(4rem,1fr))` }}>
+            {years.map(y => (
+              <div key={y}>
+                <label className="text-[10px] text-slate-500 block">{y}</label>
+                <input type="text" inputMode="decimal" value={values[y] ?? ''}
+                  onChange={e => setValues(v => ({ ...v, [y]: e.target.value }))}
+                  placeholder="—"
+                  className="w-full bg-navy-800 border border-navy-700 rounded px-1.5 py-1 text-xs font-mono text-slate-200" />
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       <div className="flex gap-2">
@@ -454,6 +596,99 @@ function AddRowForm({ table, years, shownTrackedKeys, targetOptions, div, onCanc
           }}
           className="btn-primary text-xs flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
           Add row
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * MergeRowsForm — combine several custom rows into one (e.g. several
+ * restatement-tool rows that all landed as separate entries) into a single,
+ * more readable row. Scoped to CUSTOM rows only — never a tracked metrics.js
+ * field: those are read directly, by name, by ratios.js/valuation.js's own
+ * formulas, so merging one away would silently sever a real calculation
+ * rather than just tidy up a label.
+ *
+ * Two initial dropdowns (every custom row on this statement is a candidate
+ * in both), with "+ add another row" to bring in more than two. Then either
+ * "merge into a new row" (name it) or "merge into one of the selected rows"
+ * (pick which — it keeps its own name, target and sign; only its values
+ * change). The merged value per year is just the sum of whatever the
+ * selected rows currently hold that year — computed fresh in the reducer
+ * from their live values, not from anything cached here.
+ */
+function MergeRowsForm({ customFields, onCancel, onMerge }) {
+  const [slots, setSlots] = useState(['', ''])
+  const [mode, setMode] = useState('new')
+  const [destKey, setDestKey] = useState('')
+  const [newLabel, setNewLabel] = useState('')
+
+  const selectedKeys = [...new Set(slots.filter(Boolean))]
+  const canSubmit = selectedKeys.length >= 2 && (mode === 'new' ? newLabel.trim().length > 0 : !!destKey)
+
+  const setSlot = (i, key) => setSlots(prev => prev.map((s, idx) => idx === i ? key : s))
+
+  return (
+    <div className="rounded-lg bg-navy-800/40 px-3 py-3 space-y-2.5">
+      <p className="text-[11px] text-slate-500">Pick two or more rows to combine into one.</p>
+
+      {slots.map((s, i) => (
+        <select key={i} value={s} onChange={e => setSlot(i, e.target.value)}
+          className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
+          <option value="">Row {i + 1}…</option>
+          {customFields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+        </select>
+      ))}
+      <button type="button" onClick={() => setSlots(prev => [...prev, ''])}
+        disabled={slots.length >= customFields.length}
+        className="text-[11px] text-accent hover:text-accent-light disabled:opacity-40 disabled:cursor-not-allowed">
+        + Add another row to merge
+      </button>
+
+      <div className="flex gap-3 pt-1">
+        {[['new', 'Merge into new row'], ['existing', 'Merge into this row']].map(([m, lbl]) => (
+          <label key={m} className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+            <input type="radio" name="mergeMode" checked={mode === m} onChange={() => setMode(m)} />
+            {lbl}
+          </label>
+        ))}
+      </div>
+
+      {mode === 'new' ? (
+        <input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Name for the merged row"
+          className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200" />
+      ) : (
+        selectedKeys.length >= 2 && (
+          <select value={destKey} onChange={e => setDestKey(e.target.value)}
+            className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
+            <option value="">Which row keeps its name?</option>
+            {selectedKeys.map(k => <option key={k} value={k}>{customFields.find(f => f.key === k)?.label}</option>)}
+          </select>
+        )
+      )}
+
+      <div className="flex gap-2">
+        <button onClick={onCancel} className="btn-ghost text-xs flex-1">Cancel</button>
+        <button
+          disabled={!canSubmit}
+          onClick={() => {
+            if (mode === 'new') {
+              const first = customFields.find(f => f.key === selectedKeys[0])
+              const newField = {
+                key: `custom_${slugify(newLabel)}_${Date.now().toString(36)}`,
+                label: newLabel.trim(),
+                table: first?.table,
+                target: first?.target ?? null,
+                sign: first?.sign ?? null,
+              }
+              onMerge(selectedKeys, { mode: 'new', newField })
+            } else {
+              onMerge(selectedKeys, { mode: 'existing', destKey })
+            }
+          }}
+          className="btn-primary text-xs flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
+          Merge
         </button>
       </div>
     </div>

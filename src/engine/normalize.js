@@ -216,6 +216,16 @@ function scaleCr(tagged) {
   if (!tagged || tagged.value == null) return tagged ?? unavailable()
   return { ...tagged, value: tagged.value * CR }
 }
+// capex is a spend MAGNITUDE by convention (metrics.js: alwaysPositive), not
+// a signed quantity — Screener's own Investing-Activity row is negative (an
+// outflow, same convention as the rest of that statement), and this scrape
+// path passes it straight through with no sign handling otherwise. The Yahoo
+// fts path already forces this inline further down; this is the same rule
+// for the Screener path.
+function absTagged(tagged) {
+  if (!tagged || tagged.value == null) return tagged
+  return { ...tagged, value: Math.abs(tagged.value) }
+}
 function n(v) { return typeof v === 'number' && isFinite(v) ? v : null }
 function yearOf(d) {
   if (!d) return null
@@ -350,6 +360,14 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
                           'endCashPosition', 'cashAndCashEquivalentsAtCarryingValue')
     const ca  = pick(row, 'currentAssets', 'totalCurrentAssets')
     const cl  = pick(row, 'currentLiabilities', 'totalCurrentLiabilities')
+    // Screener has no equivalent line for these — Indian disclosure doesn't
+    // present a current/non-current split the way US GAAP does — so they
+    // stay Yahoo-only permanently, same standing as grossProfit for an
+    // Indian ticker. That's fine: they're tracked in metrics.js like any
+    // other field (so the data table shows them, tagged, whenever Yahoo
+    // supplies them) rather than dropped for having no active consumer
+    // today — metrics.js is a catalog of what's available, not just what's
+    // currently wired into a calculation.
     return {
       year,
       equityCapital:    unavailable(),
@@ -361,10 +379,10 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
       cash:             csh != null ? src(csh) : unavailable(),
       totalAssets:      ta  != null ? src(ta)  : unavailable(),
       totalLiabilities: unavailable(),
-      fixedAssets:      unavailable(),
-      investments:      unavailable(),
       currentAssets:    ca  != null ? src(ca)  : unavailable(),
       currentLiabilities: cl != null ? src(cl) : unavailable(),
+      fixedAssets:      unavailable(),
+      investments:      unavailable(),
     }
   }).filter(r => r.year && r.totalAssets.value != null)
     .sort((a, b) => a.year.localeCompare(b.year))
@@ -463,6 +481,12 @@ function normalizeScreener(raw) {
     year:             r.year,
     equityCapital:    scaleCr(r.equityCapital),
     reserves:         scaleCr(r.reserves),
+    // api/screener.js already derives this (equityCapital + reserves,
+    // tagged 'derived') before it ever reaches here — r.totalEquity is
+    // already a tagged {value,status,formula} object, same as every other
+    // field on this row, so scaleCr alone is correct; re-deriving from
+    // r.equityCapital/r.reserves here would be adding two TAGGED OBJECTS
+    // instead of their .value — wrong, and unnecessary besides.
     totalEquity:      scaleCr(r.totalEquity),
     totalDebt:        scaleCr(r.totalDebt),
     totalAssets:      scaleCr(r.totalAssets),
@@ -470,6 +494,8 @@ function normalizeScreener(raw) {
     fixedAssets:      scaleCr(r.fixedAssets),   // visible row — feeds the CapEx estimate
     investments:      scaleCr(r.investments),
     cash:             scaleCr(r.cash),   // Other Assets "+" -> Cash Equivalents
+    // Screener has no current/non-current split to supply these from —
+    // stays Yahoo-only, same as normalizeYahoo's balanceHistory above.
     currentAssets:      unavailable(),
     currentLiabilities: unavailable(),
   }))
@@ -478,7 +504,7 @@ function normalizeScreener(raw) {
     operatingCF:  scaleCr(r.operatingCF),
     investingCF:  scaleCr(r.investingCF),
     financingCF:  scaleCr(r.financingCF),
-    capex:        scaleCr(r.capex),   // Investing "+" -> Fixed assets purchased
+    capex:        absTagged(scaleCr(r.capex)),   // Investing "+" -> Fixed assets purchased
     freeCashFlow: scaleCr(r.freeCashFlow),
   }))
 

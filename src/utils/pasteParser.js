@@ -516,7 +516,15 @@ export function tagPastedRows(rows, tableType, opts = {}) {
     const tagged = { year: row.year }
     for (const [key, value] of Object.entries(row)) {
       if (key === 'year') continue
-      const scaled = value != null && !SKIP_SCALE.has(key) ? value * scale : value
+      let scaled = value != null && !SKIP_SCALE.has(key) ? value * scale : value
+      // metrics.js's alwaysPositive (capex) — a spend magnitude, not a signed
+      // quantity. Screener's own cash-flow-statement row is negative (an
+      // outflow, same convention as the rest of that statement); a manual
+      // paste that keeps that sign would silently corrupt every downstream
+      // FCF calculation, since freeCashFlow = operatingCF - capex assumes a
+      // positive magnitude. The Yahoo ingestion path already forces this
+      // inline (normalize.js); this is the same rule applied to a paste.
+      if (scaled != null && METRICS[key]?.alwaysPositive) scaled = Math.abs(scaled)
       tagged[key] = scaled != null
         ? { value: scaled, status: 'pasted', formula: null }
         : { value: null, status: 'unavailable', formula: null }

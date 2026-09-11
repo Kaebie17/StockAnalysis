@@ -359,6 +359,34 @@ export const METRICS = {
     csv: ['cash', 'cashAndEquivalents'],
     needs: 'net debt, EV, EV/EBITDA, EV/Revenue',
   },
+  // Screener has no current/non-current split to supply these from — Indian
+  // Schedule III disclosure doesn't present one the way US GAAP does — so
+  // this stays a Yahoo/SEC-only field permanently, same standing grossProfit
+  // has for an Indian ticker (no source line ever, not a gap to chase). Not
+  // currently read by any calculation, but tracked in the one dictionary
+  // like everything else so it's visible in the data table whenever a
+  // source does supply it, rather than existing only as an ad-hoc field a
+  // couple of ingestion functions happened to write.
+  currentAssets: {
+    table: 'balance', label: 'Current Assets', base: false,
+    yahoo: ['currentAssets', 'totalCurrentAssets'],
+    sec: ['AssetsCurrent'],
+    screener: [],
+    expandFrom: null,
+    ar: [/total current assets/i],
+    csv: ['currentAssets'],
+    needs: 'a rough liquidity check when the granular working-capital breakdown isn\'t available',
+  },
+  currentLiabilities: {
+    table: 'balance', label: 'Current Liabilities', base: false,
+    yahoo: ['currentLiabilities', 'totalCurrentLiabilities'],
+    sec: ['LiabilitiesCurrent'],
+    screener: [],
+    expandFrom: null,
+    ar: [/total current liabilities/i],
+    csv: ['currentLiabilities'],
+    needs: 'a rough liquidity check when the granular working-capital breakdown isn\'t available',
+  },
 
   // Operating net working capital group — same "Other Assets +"/"Other
   // Liabilities +" expansions as cash above, confirmed against a real
@@ -452,8 +480,21 @@ export const METRICS = {
   },
   capex: {
     table: 'cashflow', label: 'CapEx (fixed assets purchased)', base: true,
-    // Yahoo files this NEGATIVE (an outflow); SEC files it positive. normalize.js
-    // stores the absolute magnitude so every source agrees on sign.
+    // Yahoo files this NEGATIVE (an outflow); SEC files it positive; Screener's
+    // own cash-flow-statement row is negative too (an outflow, same convention
+    // as the rest of that statement). The app's own convention is different
+    // from all three sources AND from otherIncome-style fields: capex is a
+    // spend MAGNITUDE, not a signed economic quantity — unlike otherIncome,
+    // where negative genuinely means a loss, a negative capex has no
+    // sensible meaning here. It's always stored positive so
+    // freeCashFlow = operatingCF - capex works regardless of source; a
+    // negative value reaching that subtraction would ADD the spend back
+    // instead of removing it, overstating FCF (and everything downstream:
+    // FCF yield/conversion, DCF, reverse-DCF, justified multiples).
+    // alwaysPositive: true drives every ingestion path (paste, auto-scrape,
+    // direct cell edit in the data table) to enforce this the same way the
+    // Yahoo path already did on its own, inline, below.
+    alwaysPositive: true,
     yahoo: ['capitalExpenditure', 'netPPEPurchaseAndSale', 'purchaseOfPPE'],
     sec: ['PaymentsToAcquirePropertyPlantAndEquipment', 'PaymentsToAcquireProductiveAssets'],
     // Screener hides this inside the Cash from Investing Activity breakup.

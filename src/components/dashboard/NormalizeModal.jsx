@@ -21,14 +21,15 @@ import Modal from '../Modal.jsx'
  *
  *   RESTATEMENT  → paste ANY statement or note (P&L, Balance Sheet, Cash Flow,
  *                  an AR notes breakdown — doesn't matter which, no need to
- *                  say). Every row becomes an adjustment: a target field (from
- *                  normalizationTargets.js's fixed ten, keyword-suggested,
- *                  always editable) and a +/− sign. Multiple rows can target
- *                  the same field/year and sum together. This is the only mode
- *                  that reaches fields beyond net profit/EPS — EBIT, interest,
- *                  tax, D&A, capex, and the four core working-capital lines,
- *                  each written as {target}Normalized on whichever statement's
- *                  history it actually lives on (see APPLY_RESTATEMENTS).
+ *                  say). Every mapped row becomes its OWN new, named row in
+ *                  the data table — a target field (keyword-suggested from
+ *                  normalizationTargets.js, always editable, and no longer
+ *                  limited to the curated ten — see availableTargets) and a
+ *                  +/− sign, never summed away into an anonymous total (see
+ *                  ADD_CUSTOM_FIELDS_BATCH). This is the only mode that
+ *                  reaches fields beyond net profit/EPS — EBIT, interest,
+ *                  tax, D&A, capex, working capital, or any other field/
+ *                  custom row with data.
  *
  * Reported data is never overwritten — every {field} stays as reported;
  * {field}Normalized is a separate sibling field on the same row, read only
@@ -39,6 +40,7 @@ import Modal from '../Modal.jsx'
 const cur = c => (c === 'INR' ? '\u20b9' : '$')
 const num = f => (f && typeof f === 'object' ? f.value : f)
 const yr  = row => String(row?.year ?? '')
+const slugify = l => String(l || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'row'
 
 const LINE_LABELS = {
   otherIncome: 'Other income', expenses: 'Expenses', interest: 'Interest',
@@ -50,7 +52,7 @@ const LINE_LABELS = {
 }
 
 export default function NormalizeModal({ open, onClose, flag = null }) {
-  const { state, applyNormalization, applyRestatements, setBasis } = useApp()
+  const { state, applyNormalization, addCustomFieldsBatch, setBasis } = useApp()
   // reportedIncomeHistory specifically, not incomeHistory — the latter is the
   // ACTIVE series and is already normalized whenever basis is 'normalized'.
   // Reconstructing a fresh manual correction on top of an already-adjusted
@@ -81,14 +83,6 @@ export default function NormalizeModal({ open, onClose, flag = null }) {
   const [restParsed, setRestParsed] = useState(null)   // { years, rows, warnings }
   // Keyed by each row's normalizedLabel: { target: key|null, sign: 1|-1 }.
   const [restMap, setRestMap]       = useState({})
-  // Governs a DIFFERENT thing from each row's own +/- sign: the sign decides
-  // whether a row adds to or subtracts from its target WITHIN this paste;
-  // this decides what happens to a RestatementsTotal already stored from an
-  // earlier, separate apply. 'accumulate' (default) adds this paste's total
-  // on top of it — a restructuring charge found today and a litigation
-  // settlement found next week should both count. 'replace' discards
-  // whatever was there and starts fresh with only this paste's amount.
-  const [restMode, setRestMode]     = useState('accumulate')
 
   useEffect(() => {
     if (!open) return
@@ -98,7 +92,7 @@ export default function NormalizeModal({ open, onClose, flag = null }) {
     // already told the app.
     setEdit(flag ? { line: LINE_LABELS[flag.field] ? flag.field : '', year: String(flag.year), mode: 'set', value: null, percent: null } : null)
     setTableResult(null); setApplied(false)
-    setRestText(''); setRestParsed(null); setRestMap({}); setRestMode('accumulate')
+    setRestText(''); setRestParsed(null); setRestMap({})
     setTablePasteMode('gapFill')
   }, [open, flag])
 
@@ -174,23 +168,35 @@ export default function NormalizeModal({ open, onClose, flag = null }) {
 
   // Only rows the user actually mapped to a target contribute — an
   // unmapped row (no clear home, e.g. "Indemnification assets") is simply
-  // left out, never guessed into some default target. scale converts the
-  // pasted ₹ Crore figure to the app's absolute-currency storage, same as
-  // every other paste path.
-  const restAdjustments = (restParsed?.rows || []).flatMap(row => {
-    const m = restMap[row.normalizedLabel]
-    if (!m?.target) return []
-    return Object.entries(row.byYear).map(([year, v]) => ({
-      target: m.target, year, amount: v * (m.sign ?? 1) * scale,
-    }))
-  })
+  // left out, never guessed into some default target. Each mapped row
+  // becomes its OWN persisted custom row (see ADD_CUSTOM_FIELDS_BATCH),
+  // named after what was actually pasted, instead of being summed away into
+  // an anonymous total the way an earlier design worked — same discipline
+  // the app already applies to a real disclosed waterfall (Exceptional
+  // Items AT, Profit for EPS/PE survive as their own rows, never folded
+  // into Net Profit). The row's own stored value is the magnitude as
+  // pasted, unsigned; `sign` rides along as metadata, applied only when the
+  // target's Normalized figure is derived (normalizedFieldValue) — so what
+  // this row displays always matches what was actually in the note. scale
+  // converts the pasted ₹ Crore figure to the app's absolute-currency
+  // storage, same as every other paste path.
+  const restMappedRows = (restParsed?.rows || [])
+    .map((row, i) => ({ row, i, m: restMap[row.normalizedLabel] }))
+    .filter(({ m }) => m?.target)
+  const restNewFields = []
+  const restEdits = []
+  for (const { row, i, m } of restMappedRows) {
+    const targetMeta = availableTargets(state.data).find(t => t.key === m.target)
+    if (!targetMeta) continue
+    const key = `custom_${slugify(row.rawLabel)}_${Date.now().toString(36)}_${i}`
+    restNewFields.push({ key, label: row.rawLabel, table: targetMeta.table, target: m.target, sign: m.sign ?? 1 })
+    for (const [year, v] of Object.entries(row.byYear)) restEdits.push({ key, year, value: v * scale })
+  }
 
   const applyRestatement = () => {
-    if (!restAdjustments.length) return
-    if (restMode === 'replace' && !window.confirm(
-      `Replace will discard any restatement already applied to these fields/years from an earlier paste and start over with only this one. This can't be undone. Continue?`
-    )) return
-    applyRestatements(restAdjustments, restMode); setBasis('normalized'); setApplied(true)
+    if (!restNewFields.length) return
+    addCustomFieldsBatch(restNewFields, restEdits)
+    setBasis('normalized'); setApplied(true)
   }
 
   const compareFields = [
@@ -434,29 +440,14 @@ export default function NormalizeModal({ open, onClose, flag = null }) {
                       <p className="text-xs text-bear">Nothing recognized - check the pasted text includes amounts, not just labels.</p>
                     )}
                     <p className="text-[11px] text-slate-600">
-                      Values in {sym} {unit}. Rows left as "Not applicable" are ignored. Multiple rows mapped to the
-                      same field and year sum together.
+                      Values in {sym} {unit}. Rows left as "Not applicable" are ignored. Each mapped row becomes its
+                      own named row in the data table (Header \u2192 Data table), feeding its target's normalized figure \u2014
+                      it doesn't overwrite anything already there.
                     </p>
-
-                    <div className="rounded-lg bg-navy-800/40 px-3 py-2 space-y-1.5">
-                      <div className="flex gap-3">
-                        {[['accumulate', 'Accumulate'], ['replace', 'Replace']].map(([m, lbl]) => (
-                          <label key={m} className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
-                            <input type="radio" name="restMode" checked={restMode === m} onChange={() => setRestMode(m)} />
-                            {lbl}
-                          </label>
-                        ))}
-                      </div>
-                      <p className="text-[11px] text-slate-500">
-                        {restMode === 'replace'
-                          ? "Replace discards any restatement already applied to these fields/years from an earlier paste and starts over with only this one. You'll be asked to confirm before it runs."
-                          : 'Accumulate (default) adds this paste on top of any restatement already applied earlier \u2014 a separate correction found later still counts, instead of erasing the first.'}
-                      </p>
-                    </div>
 
                     <div className="flex gap-2">
                       <button onClick={() => setRestParsed(null)} className="btn-ghost text-sm flex-1">{'\u21ba'} Try again</button>
-                      <button onClick={applyRestatement} disabled={!restAdjustments.length}
+                      <button onClick={applyRestatement} disabled={!restNewFields.length}
                         className="btn-primary text-sm flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
                         Apply &amp; switch to normalized
                       </button>

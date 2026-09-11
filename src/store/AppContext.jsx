@@ -8,6 +8,7 @@ import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
 import { assessDataQuality, computeNormalizedRow } from '../engine/dataQuality.js'
 import { METRICS } from '../engine/metrics.js'
+import { recomputeNormalizedTargets } from '../engine/normalizationTargets.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -168,13 +169,19 @@ function reducer(s, a) {
         if (!merged[row.year]) merged[row.year] = { year: row.year }
         for (const [field, tagged] of Object.entries(row)) {
           if (field === 'year') continue
-          // Fill-only by default — a re-paste never silently downgrades a
-          // field a stronger source already populated. `overwrite` is an
-          // explicit, visible opt-in (AddHistoryModal's checkbox) for the
-          // legitimate other case: Screener restated a figure, or the first
-          // paste missed an unexpanded row and the corrected value needs to
-          // actually land, not vanish with no sign it was ever dropped.
-          if (tagged?.value != null && (a.overwrite || merged[row.year][field]?.value == null)) {
+          // A pasted figure ALWAYS beats a Yahoo-derived one for the same
+          // field, in every paste mode, not just Replace — Yahoo and
+          // Screener don't necessarily mean the same thing by "current
+          // assets" or "total debt" (different disclosure bases), so once a
+          // real, disclosed figure exists there's no good reason to leave a
+          // rougher, definitionally-uncertain aggregate sitting next to it.
+          // Gap fill's protection is for a field a PRIOR PASTE already
+          // set — never re-paste over your own earlier work by accident —
+          // not for shielding a Yahoo fallback from being replaced by the
+          // real thing. Replace (`a.overwrite`) additionally overwrites a
+          // prior paste too, for a genuine restatement/correction.
+          const existingIsPasted = merged[row.year][field]?.status === 'pasted'
+          if (tagged?.value != null && (a.overwrite || !existingIsPasted)) {
             merged[row.year][field] = tagged
           }
           if (tagged?.value != null) delete merged[row.year].synthetic
@@ -307,71 +314,97 @@ function reducer(s, a) {
       return { ...s, data, ...computed }
     }
     // The general historical-normalization restatement tool — NormalizeModal's
-    // "paste any statement" mode. Unlike APPLY_NORMALIZATION above (net
-    // profit/EPS only, always income), a restatement can target any of the
-    // ten fields in normalizationTargets.js, living on any of the three
-    // statements. `a.adjustments`: one entry per pasted row the user actually
-    // mapped to a target — { target, year, amount } — amount already signed
-    // (+/- already applied by the UI). Multiple rows can share a (target,
-    // year): they sum here, not overwrite each other — the one-to-many case
-    // (a restructuring charge AND a litigation settlement both landing on
-    // operatingProfit for the same year add together into one total).
+    // "paste any statement" mode. Superseded design: every pasted row the
+    // user maps to a target used to sum invisibly into an opaque
+    // {target}RestatementsTotal, discarding the individual labels — the same
+    // treatment Screener itself never gives a real disclosed waterfall
+    // (Exceptional Items AT, Profit for EPS/PE all survive as their OWN
+    // rows, never collapsed into Net Profit). Every mapped row now becomes
+    // its own persisted custom field instead — see ADD_CUSTOM_FIELDS_BATCH —
+    // so there's nothing left for this action to do; a target's Normalized
+    // figure is derived live from whichever custom rows currently target it
+    // (normalizationTargets.js's normalizedFieldValue), not from a stored
+    // total. Nothing dispatches this any more.
     //
-    // `a.mode` ('accumulate' | 'replace', default 'accumulate') governs a
-    // DIFFERENT thing from the +/- sign above: the sign decides whether one
-    // pasted row adds to or subtracts from the target WITHIN this paste;
-    // this mode decides what happens to whatever RestatementsTotal is
-    // already stored from an earlier, separate apply. Accumulate adds this
-    // dispatch's total on top of it — the correct default, since a
-    // restructuring charge found today and a litigation settlement found
-    // next week should both count, not have the second silently erase the
-    // first. Replace discards the prior total and starts fresh with only
-    // this paste's contribution, for when the user genuinely wants to redo
-    // a correction rather than layer onto it.
-    case 'APPLY_RESTATEMENTS': {
+    // Creating several named rows in one paste, plus their values (which can
+    // span more than one statement — a restatement paste can mix P&L and
+    // balance-sheet rows), needs a single batched dispatch rather than N
+    // separate ADD_CUSTOM_FIELD + EDIT_HISTORY_CELLS round trips, each of
+    // which would otherwise re-run computeAll on its own.
+    // a.fields: [{ key, label, table, target, sign }] — one per mapped row.
+    // a.edits:  [{ key, year, value }] — that row's own values, unsigned
+    // (the magnitude as pasted; `sign` on the field is what tells a target's
+    // live derivation whether to add or subtract it).
+    case 'ADD_CUSTOM_FIELDS_BATCH': {
       if (!s.data) return s
-      const accumulate = a.mode !== 'replace'
-      const totals = {}   // totals[target][year] = summed signed amount (this dispatch only)
-      for (const adj of (a.adjustments || [])) {
-        if (!adj?.target || !adj?.year || adj.amount == null || !isFinite(adj.amount)) continue
-        totals[adj.target] ??= {}
-        totals[adj.target][adj.year] = (totals[adj.target][adj.year] || 0) + adj.amount
+      const customFields = [...(s.data.customFields || []), ...(a.fields || [])]
+      let data = { ...s.data, customFields }
+      const tableByKey = Object.fromEntries((a.fields || []).map(f => [f.key, f.table]))
+      const editsByTable = {}
+      for (const e of (a.edits || [])) {
+        const table = tableByKey[e.key]
+        if (!table || e.value == null) continue
+        ;(editsByTable[table] ??= []).push(e)
       }
+      for (const [table, edits] of Object.entries(editsByTable)) {
+        const histKey = table === 'income' ? 'reportedIncomeHistory' : `${table}History`
+        const base = table === 'income' ? (data.reportedIncomeHistory || data.incomeHistory || []) : (data[histKey] || [])
+        const byYear = Object.fromEntries(base.map(r => [String(r.year), { ...r }]))
+        for (const e of edits) {
+          const y = String(e.year)
+          if (!byYear[y]) byYear[y] = { year: y }
+          byYear[y] = { ...byYear[y], [e.key]: { value: e.value, status: 'pasted', formula: null } }
+        }
+        const newHistory = Object.values(byYear).sort((x, y) => x.year.localeCompare(y.year))
+        data = table === 'income'
+          ? { ...data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
+          : { ...data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
+      }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      return { ...s, data, ...computed }
+    }
+    // Combine several custom rows into one — either a brand-new row
+    // (a.mode 'new', a.newField carries its {key,label,table,target,sign})
+    // or one of the merged rows itself (a.mode 'existing', a.destKey names
+    // which — it keeps its own name/target/sign, only its values change).
+    // The merged value for each year is the sum of whatever the SOURCE rows
+    // currently hold that year (a year every source lacks stays blank, never
+    // fabricated as 0). Every source row except the destination is deleted —
+    // its values stripped off every row, its definition removed — since the
+    // merge is meant to replace them, not leave duplicates sitting around.
+    // Scoped to custom rows only, deliberately: a tracked metrics.js field's
+    // key is read directly, by name, by ratios.js/valuation.js's own
+    // formulas (net working capital, FCF, ...) — merging one of those away
+    // would silently sever that calculation, not just tidy up a label.
+    case 'MERGE_CUSTOM_FIELDS': {
+      if (!s.data) return s
+      const { table, sourceKeys = [], mode, destKey, newField } = a
+      if (!table || sourceKeys.length < 2) return s
+      const histKey = table === 'income' ? 'reportedIncomeHistory' : `${table}History`
+      const base = table === 'income' ? (s.data.reportedIncomeHistory || s.data.incomeHistory || []) : (s.data[histKey] || [])
+      const finalDestKey = mode === 'new' ? newField.key : destKey
+      const keysToRemove = sourceKeys.filter(k => k !== finalDestKey)
 
-      let data = { ...s.data }
-      // Route each target's totals to the array it actually lives on — an
-      // income-statement target (operatingProfit, interest, tax, ...) writes
-      // onto reportedIncomeHistory, a balance-sheet target onto
-      // balanceHistory, a cash-flow target onto cashflowHistory. Never
-      // assumes income the way the netProfit-only path above always could.
-      //
-      // `target` is no longer restricted to normalizationTargets.js's fixed
-      // ten — NormalizeModal's dropdown (Part C) now also offers any other
-      // metrics.js field with data, plus any custom row added via the data
-      // table, so its table has to be resolved the same two ways: a real
-      // metrics.js key knows its own table directly; a custom field's table
-      // was recorded on it when it was created (HistoryTableModal.jsx).
-      for (const [target, byYear] of Object.entries(totals)) {
-        const table = METRICS[target]?.table
-          ?? (data.customFields || []).find(f => f.key === target)?.table
-        if (!table) continue
-        const histKey = table === 'income' ? 'reportedIncomeHistory'
-          : table === 'balance' ? 'balanceHistory' : 'cashflowHistory'
-        const base = data[histKey] || []
-        data[histKey] = base.map(row => {
-          const thisDispatch = byYear[String(row.year)]
-          if (thisDispatch == null) return row
-          const reportedVal = row?.[target]?.value
-          if (reportedVal == null) return row   // nothing reported to restate against
-          const priorTotal = accumulate ? (row?.[`${target}RestatementsTotal`]?.value ?? 0) : 0
-          const total = priorTotal + thisDispatch
-          return {
-            ...row,
-            [`${target}RestatementsTotal`]: { value: total, adjusted: true },
-            [`${target}Normalized`]: { value: reportedVal + total, adjusted: true },
-          }
-        })
-      }
+      const newHistory = base.map(row => {
+        let sum = null
+        for (const k of sourceKeys) {
+          const v = row?.[k]?.value
+          if (v != null) sum = (sum ?? 0) + v
+        }
+        let out = { ...row }
+        for (const k of keysToRemove) { const { [k]: _drop, ...rest } = out; out = rest }
+        if (sum != null) out[finalDestKey] = { value: sum, status: 'pasted', formula: null }
+        return out
+      })
+
+      let customFields = s.data.customFields || []
+      if (mode === 'new') customFields = [...customFields, newField]
+      customFields = customFields.filter(f => !keysToRemove.includes(f.key))
+
+      const data = table === 'income'
+        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, customFields }
+        : { ...s.data, [histKey]: newHistory, customFields }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
@@ -408,7 +441,12 @@ function reducer(s, a) {
           const { [e.field]: _drop, ...rest } = byYear[y]
           byYear[y] = rest
         } else {
-          byYear[y] = { ...byYear[y], [e.field]: { value: e.value, status: 'pasted', formula: null } }
+          // alwaysPositive (capex) — a spend magnitude, not a signed
+          // quantity; see metrics.js. Someone typing in the exact figure
+          // they see on a cash-flow statement (which shows it negative,
+          // an outflow) would otherwise silently store the wrong sign.
+          const value = METRICS[e.field]?.alwaysPositive ? Math.abs(e.value) : e.value
+          byYear[y] = { ...byYear[y], [e.field]: { value, status: 'pasted', formula: null } }
         }
       }
       const newHistory = Object.values(byYear).sort((x, y) => x.year.localeCompare(y.year))
@@ -531,6 +569,15 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
     : reportedBase
   data = { ...data, incomeHistory: income, reportedIncomeHistory: reportedBase }
   data = applyDocFacts(migrateStoredData(data), arData)
+  // Rewrites every {target}Normalized row from its current reported value
+  // and its current custom-row contributors — the one chokepoint every
+  // reducer path already funnels through, so a target's Normalized row
+  // never needs a separate "keep it in sync" call at each individual
+  // mutation site (add/edit/remove/merge a custom row, or re-paste the
+  // reported figure itself all land here automatically). See
+  // recomputeNormalizedTargets for why this writes a real, stored,
+  // inspectable row instead of computing the figure only for display.
+  data = recomputeNormalizedTargets(data)
   // The growth window reaches ratios, so every consumer — stage classification,
   // fair value, market expectation, the AI verdict and the dashboard card — uses
   // the same figure the user chose.
@@ -906,15 +953,6 @@ export function AppProvider({ children }) {
     dispatch({ type: 'APPLY_NORMALIZATION', rows, overwrite })
   }, [])
 
-  // adjustments: [{ target, year, amount }] — one per pasted restatement row
-  // the user mapped to a target field, amount already signed by the +/-
-  // toggle. mode: 'accumulate' (default) adds onto whatever's already
-  // stored for that (target, year) from an earlier apply; 'replace' starts
-  // fresh with only this dispatch's total. See APPLY_RESTATEMENTS.
-  const applyRestatements = useCallback((adjustments, mode = 'accumulate') => {
-    dispatch({ type: 'APPLY_RESTATEMENTS', adjustments, mode })
-  }, [])
-
   // The editable data table's direct-cell commit — see EDIT_HISTORY_CELLS.
   // edits: [{ year, field, value }], value null clears the cell.
   const editHistoryCells = useCallback((tableType, edits) => {
@@ -929,6 +967,20 @@ export function AppProvider({ children }) {
 
   const removeCustomField = useCallback((key) => {
     dispatch({ type: 'REMOVE_CUSTOM_FIELD', key })
+  }, [])
+
+  // One or more named rows created in a single go, each with its own values
+  // — NormalizeModal's restatement paste, which can map several distinct
+  // line items to targets at once. See ADD_CUSTOM_FIELDS_BATCH.
+  const addCustomFieldsBatch = useCallback((fields, edits) => {
+    dispatch({ type: 'ADD_CUSTOM_FIELDS_BATCH', fields, edits })
+  }, [])
+
+  // Combine several custom rows into one. opts: { mode: 'new', newField } to
+  // create a fresh row, or { mode: 'existing', destKey } to fold the rest
+  // into one of the rows being merged. See MERGE_CUSTOM_FIELDS.
+  const mergeCustomFields = useCallback((table, sourceKeys, opts) => {
+    dispatch({ type: 'MERGE_CUSTOM_FIELDS', table, sourceKeys, ...opts })
   }, [])
 
   // Reset the whole app: wipe all cached financials.
@@ -983,7 +1035,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, applyRestatements, editHistoryCells, addCustomField, removeCustomField, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>
