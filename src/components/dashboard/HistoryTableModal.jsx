@@ -812,15 +812,17 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
  * it's looking at.
  */
 function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
-  // A plain reported line item is not a formula just because the
-  // restatement tool COULD target it (kind: 'restatement') — those stay out
-  // of this tab; that adjustment is already visible on the field's own row
-  // (the "feeds X" note) and its "(Normalized)" audit row. Everything that
-  // actually COMBINES fields into a new or fallback-derived figure — 'derived'
-  // (Net Working Capital, Capital Employed, Net Debt) and 'fallback'
-  // (Gross Profit, Profit Before Tax, Tax, EBITDA — reported wins if
-  // present, buckets fill in when it's genuinely absent) — belongs here.
-  const formulas = listFormulas(data).filter(f => f.kind === 'derived' || f.kind === 'fallback')
+  // If it's already a row in the table, it doesn't need to be in this tab
+  // too — checked directly against metrics.js (the actual fact), not
+  // against how a formula happens to be classified internally. A formula
+  // whose key IS a real metrics.js field (revenue, tax, grossProfit,
+  // ebitda, ...) shows as an ordinary statement row the moment it has a
+  // value, whatever put that value there — its own "feeds X" note already
+  // covers what's assigned to it. A formula whose key ISN'T in metrics.js
+  // at all (nwc, capitalEmployed, netDebt — no statement anywhere has a
+  // line called "Net Working Capital") can never appear as a row by any
+  // means, so this tab is the only place it's visible.
+  const formulas = listFormulas(data).filter(f => !METRICS[f.key])
   const fmtNum = v => v == null ? '—' : Math.round(v / div).toLocaleString()
   const focusAssignments = focusField ? assignmentsForField(data, focusField) : []
 
@@ -831,8 +833,11 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
   // output as a raw ingredient via this generic checkbox (tax reading
   // profitBeforeTax is the one legitimate case, and it's wired as a fixed
   // default — see formulas.js — not something offered here for arbitrary
-  // reassignment), nor its own key (self-reference).
-  const formulaKeys = new Set(formulas.map(f => f.key))
+  // reassignment), nor its own key (self-reference). Checked against every
+  // formula (listFormulas(data), unfiltered) — grossProfit/tax/ebitda are
+  // still real formula outputs even though they're hidden from THIS tab's
+  // own list above (they're already visible as ordinary rows instead).
+  const formulaKeys = new Set(listFormulas(data).map(f => f.key))
   const candidatesFor = (formula) =>
     availableTargets(data).filter(t => t.table === formula.table && t.key !== formula.key && !formulaKeys.has(t.key))
 
