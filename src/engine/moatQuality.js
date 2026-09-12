@@ -161,8 +161,11 @@ function buildSeries(data, r) {
     const rev = v(activeValue(row, 'revenue', data?.basis)), op = v(activeValue(row, 'operatingProfit', data?.basis))
     const gp  = grossProfitOf(row, data?.basis)   // grossProfit, else revenue - cogs. One formula, in ratios.js.
     const np = v(activeValue(row, 'netProfit', data?.basis)), eps = v(activeValue(row, 'eps', data?.basis))
-    const eq = v(b.totalEquity), debt = v(b.totalDebt) ?? 0
-    const ce = eq != null ? eq + debt : null
+    const eq = v(activeValue(b, 'totalEquity', data?.basis))
+    // Capital Employed is a materialized field (formulas.js: Total Equity +
+    // Total Debt, per its own bucket assignments) — read the same way as
+    // any other normalizable field rather than recomputed inline here.
+    const ce = v(activeValue(b, 'capitalEmployed', data?.basis))
 
     if (op != null && ce && ce > 0) roce.push(pct(op, ce))
     if (gp != null && rev) grossMargin.push(pct(gp, rev))
