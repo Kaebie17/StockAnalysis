@@ -812,17 +812,17 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
  * it's looking at.
  */
 function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
-  // If it's already a row in the table, it doesn't need to be in this tab
-  // too — checked directly against metrics.js (the actual fact), not
-  // against how a formula happens to be classified internally. A formula
-  // whose key IS a real metrics.js field (revenue, tax, grossProfit,
-  // ebitda, ...) shows as an ordinary statement row the moment it has a
-  // value, whatever put that value there — its own "feeds X" note already
-  // covers what's assigned to it. A formula whose key ISN'T in metrics.js
-  // at all (nwc, capitalEmployed, netDebt — no statement anywhere has a
-  // line called "Net Working Capital") can never appear as a row by any
-  // means, so this tab is the only place it's visible.
-  const formulas = listFormulas(data).filter(f => !METRICS[f.key])
+  // Every formula with a real bucket structure ('derived' — NWC, Capital
+  // Employed, Net Debt — and 'fallback' — Gross Profit, Profit Before Tax,
+  // Tax, EBITDA), no matter how trivial or how often the fallback never
+  // even fires: this tab is the one place to scan all of them and see
+  // which are actually normalized (the output goes red — see FormulaRow)
+  // without checking each one's row in three different statement tabs.
+  // 'restatement' formulas (revenue, interest, capex, ...) stay excluded —
+  // those are plain reported fields with a single implicit bucket, already
+  // fully visible via their own row's "feeds X" note and "(Normalized)"
+  // audit row; nothing here would add to that.
+  const formulas = listFormulas(data).filter(f => f.kind !== 'restatement')
   const fmtNum = v => v == null ? '—' : Math.round(v / div).toLocaleString()
   const focusAssignments = focusField ? assignmentsForField(data, focusField) : []
 
@@ -899,26 +899,23 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
   const resolved = latestRow ? activeValue(latestRow, formula.key, basis) : null
   const output = resolved?.value != null ? { year: latestRow.year, value: resolved.value } : null
 
-  // "NWC = Trade Receivables 520 (Normalized) + Inventories 300 − Trade
-  // Payables 200 − Advance from Customers 50" — each constituent's own
-  // resolved VALUE is shown alongside its name, not just the name, so the
-  // equation is a self-contained audit: you can see exactly what number
-  // each field actually contributed and confirm the total, rather than
-  // trusting a label. "(Normalized)" is appended only when THAT field
-  // itself has an active override on the year shown (not just because the
-  // basis picker is on Normalized — most fields never get restated, and
-  // tagging every one of them "Normalized" just because the toggle is in
-  // that position would say something false about which numbers actually
-  // moved).
+  // "NWC = Trade Receivables + Inventories − Trade Payables (Normalized) −
+  // Advance from Customers" — field names only, per the original spec (the
+  // per-item numbers are visible one click away, on each field's own row
+  // in the statement tab — this stays an at-a-glance list of WHAT feeds
+  // the formula, not a second display of the numbers themselves).
+  // "(Normalized)" is appended only when THAT field itself has an active
+  // override on the year shown (not just because the basis picker is on
+  // Normalized — most fields never get restated, and tagging every one of
+  // them "Normalized" just because the toggle is in that position would
+  // say something false about which numbers actually moved).
   const equation = (() => {
     const terms = []
     for (const bucket of formula.buckets) {
       for (const a of assignedFieldsFor(formula, bucket)) {
         const effSign = (bucket.sign ?? 1) * (a.sign ?? 1)
         const hasOverride = basis === 'normalized' && latestRow?.[`${a.field}Normalized`]?.value != null
-        const v = latestRow ? activeValue(latestRow, a.field, basis)?.value : null
-        const vText = v == null ? '—' : (SKIP_SCALE.has(a.field) ? v.toLocaleString() : Math.round(v / div).toLocaleString())
-        const text = `${fieldLabel(data, a.field)} ${vText}` + (hasOverride ? ' (Normalized)' : '')
+        const text = fieldLabel(data, a.field) + (hasOverride ? ' (Normalized)' : '')
         terms.push({ sign: effSign, text })
       }
     }
@@ -948,7 +945,7 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
         <span className="text-slate-400 font-mono truncate" title={equation}>{equation}</span>
       </span>
       {output
-        ? <span className="flex-shrink-0 font-mono text-accent whitespace-nowrap">{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
+        ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (basis === 'normalized' && hasOwnNormalization ? 'text-bear' : 'text-accent')}>{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
         : <span className="flex-shrink-0 text-slate-600">—</span>}
     </div>
   )
