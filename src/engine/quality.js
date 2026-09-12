@@ -1,6 +1,8 @@
 /**
  * src/engine/quality.js — reads scalar values from ratioResult
  */
+import { activeValue } from './dataQuality.js'
+
 export function scoreQuality(data, ratioResult, weights = {}) {
   const r = ratioResult
   const ratios = r?.ratios || {}
@@ -51,7 +53,7 @@ export function scoreQuality(data, ratioResult, weights = {}) {
 
     { key: 'consistency', label: 'Earnings Consistency (profitable 3+/5yr)',
       value: null, threshold: null,
-      pass: checkConsistency(data?.incomeHistory),
+      pass: checkConsistency(data?.reportedIncomeHistory, data?.basis),
       weight: weights.consistency ?? 1, tagged: null },
   ]
 
@@ -65,7 +67,7 @@ export function scoreQuality(data, ratioResult, weights = {}) {
   return { score: +score.toFixed(1), label, predictors }
 }
 
-function checkConsistency(incomeHistory) {
+function checkConsistency(incomeHistory, basis) {
   if (!incomeHistory || incomeHistory.length < 3) return null
   // Screener's page always trails its real fiscal-year columns with one
   // more, headed "TTM" — a partial, overlapping period, not a year. Left in,
@@ -78,9 +80,10 @@ function checkConsistency(incomeHistory) {
   // reads as a LOSS — a missing figure and a real loss are not the same
   // thing, and on a thin history one data gap could flip this predicter
   // from pass to fail on no evidence at all. Excluded, not counted against.
-  const known = last5.filter(y => y.netProfit?.value != null)
+  const npOf = y => activeValue(y, 'netProfit', basis)?.value
+  const known = last5.filter(y => npOf(y) != null)
   if (known.length < 3) return null   // not enough real data to judge consistency
-  const profitable = known.filter(y => y.netProfit.value > 0).length
+  const profitable = known.filter(y => npOf(y) > 0).length
   // Same "3 of 5" bar (60%), applied to however many years actually have a
   // reported figure rather than assuming an unreported year failed it.
   return profitable / known.length >= 0.6

@@ -16,6 +16,7 @@ import { forwardPeBand } from '../../engine/estimate.js'
 import { yearlyObservations } from '../../engine/targetMultiple.js'
 import { benchmarkReturn } from '../../engine/snapshotRebuild.js'
 import { aggregateLots, holdingMath, summaryLevel } from '../../engine/positionAggregate.js'
+import { activeValue } from '../../engine/dataQuality.js'
 
 const sym = c => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[c]) || '₹'
 const money = (v, c) => (v == null ? '—' : sym(c) + Math.abs(Math.round(v)).toLocaleString('en-IN'))
@@ -290,25 +291,35 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
     if (!analysis?.ratioResult) return {}
     const rr = price != null && price !== analysis.ratioResult.price
       ? { ...analysis.ratioResult, price } : analysis.ratioResult
+    // estimate.js/targetMultiple.js's functions take incomeHistory as a
+    // plain parameter and don't know about normalization — resolved once
+    // here from reportedIncomeHistory, same as useEstimate.js's own
+    // activeIncomeHistory.
+    const activeIncomeHistory = (analysis.data?.reportedIncomeHistory || []).map(row => ({
+      ...row,
+      netProfit: activeValue(row, 'netProfit', analysis.data?.basis),
+      eps: activeValue(row, 'eps', analysis.data?.basis),
+      revenue: activeValue(row, 'revenue', analysis.data?.basis),
+    }))
     const est = buildEstimate(rr, {
       guidedGrowth: (isLive && state.assumptions?.nearTermGrowth != null
         && isFinite(state.assumptions.nearTermGrowth)) ? state.assumptions.nearTermGrowth : null,
       priceHistory:   analysis.data?.priceHistory   || [],
-      incomeHistory:  analysis.data?.incomeHistory  || [],
+      incomeHistory:  activeIncomeHistory,
       balanceHistory: analysis.data?.balanceHistory || [],
     })
     const ga = assessFromQuarterly(isLive ? state.quarterlyData : null, {
       guidance: isLive ? state.guidance : null,
       modelGrowth: est?.growth ?? null,
-      incomeHistory: analysis.data?.incomeHistory || [],
+      incomeHistory: activeIncomeHistory,
     })
     // Leading conditions, from data already fetched — volume, the multiple's
     // position in its own band, the earnings-vs-multiple gap, sector divergence.
-    const bandRaw = forwardPeBand(analysis.data?.priceHistory || [], analysis.data?.incomeHistory || [])
+    const bandRaw = forwardPeBand(analysis.data?.priceHistory || [], activeIncomeHistory)
     const band = bandRaw?.insufficient ? null : bandRaw
     const obs = yearlyObservations({
       priceHistory: analysis.data?.priceHistory || [],
-      incomeHistory: analysis.data?.incomeHistory || [],
+      incomeHistory: activeIncomeHistory,
       balanceHistory: analysis.data?.balanceHistory || [], basis: 'pe' })
     const epsTrend = obs.length >= 2
       ? (obs[obs.length - 1].eps > obs[obs.length - 2].eps ? 'improving' : 'deteriorating') : null

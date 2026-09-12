@@ -20,12 +20,13 @@
  * `observed`. The distinction matters when the bar is later read as evidence.
  */
 import { buildEstimate } from './estimate.js'
+import { activeValue } from './dataQuality.js'
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
 /** Revenue CAGR over whatever years had been published by the rebuild date. */
-function cagrOf(rows = []) {
+function cagrOf(rows = [], basis) {
   const pts = rows
-    .map(r => ({ y: yearOf(r), v: val(r?.revenue) }))
+    .map(r => ({ y: yearOf(r), v: val(activeValue(r, 'revenue', basis)) }))
     .filter(p => p.y != null && p.v > 0)
     .sort((a, b) => a.y - b.y)
   if (pts.length < 3) return null
@@ -94,7 +95,7 @@ export function rebuildSnapshot(analysis, asOfMs, regimeOn = null) {
   if (!analysis?.ratioResult || !isFinite(asOfMs)) return null
 
   const priceHistory = analysis.data?.priceHistory || []
-  const incomeHistory = analysis.data?.incomeHistory || []
+  const incomeHistory = analysis.data?.reportedIncomeHistory || []
 
   const price = priceOn(priceHistory, asOfMs)
   const incAsOf = historyAsOf(incomeHistory, asOfMs)
@@ -109,9 +110,10 @@ export function rebuildSnapshot(analysis, asOfMs, regimeOn = null) {
   // carried over, since it's either price-derived (recomputed below) or slow
   // enough that using today's is a smaller error than dropping the snapshot.
   const lastRow = incAsOf[incAsOf.length - 1]
-  const epsThen = val(lastRow?.eps) ?? analysis.ratioResult.eps
-  const revThen = val(lastRow?.revenue) ?? analysis.ratioResult.revenue
-  const npThen  = val(lastRow?.netProfit) ?? analysis.ratioResult.netProfit
+  const basis = analysis.data?.basis
+  const epsThen = val(activeValue(lastRow, 'eps', basis)) ?? analysis.ratioResult.eps
+  const revThen = val(activeValue(lastRow, 'revenue', basis)) ?? analysis.ratioResult.revenue
+  const npThen  = val(activeValue(lastRow, 'netProfit', basis)) ?? analysis.ratioResult.netProfit
 
   if (incAsOf.length === 0) missing.push('financials as of that date')
 
@@ -153,7 +155,7 @@ export function rebuildSnapshot(analysis, asOfMs, regimeOn = null) {
   // years that hadn't happened yet at the date being rebuilt. Recomputed from
   // the years actually published by then; where there are too few, the field is
   // dropped so the estimate declines rather than borrowing a future number.
-  const cagrThen = cagrOf(incAsOf)
+  const cagrThen = cagrOf(incAsOf, basis)
   for (const k of ['revCagr']) {
     if (cagrThen != null) ratioThen.ratios.revCagr = { value: cagrThen }
   else delete ratioThen.ratios.revCagr

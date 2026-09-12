@@ -114,10 +114,16 @@ function exceptionalOf(row) {
  * Returns null when there's genuinely nothing to normalize for this row.
  */
 export function computeNormalizedRow(row) {
-  // A manual override always wins outright — a human read an annual report
-  // and said so; that's not something this function's own arithmetic should
-  // ever second-guess or recompute over.
-  if (row?.netProfitNormalized) {
+  // Present and NOT flagged `auto` = a genuine manual entry (NormalizeModal
+  // — or older stored data that predates the `auto` flag below, which
+  // never had it either) — always wins outright, never second-guessed.
+  // Present AND flagged `auto` is THIS function's own prior materialization
+  // (see materializeIncomeNormalization) — must be recomputed fresh every
+  // time rather than trusted as-is, or a correction to the underlying
+  // exceptional-items figures would never be picked up: the very first
+  // auto-derived pass would freeze itself in place forever, mistaken for a
+  // human's own confirmation.
+  if (row?.netProfitNormalized && !row.netProfitNormalized.auto) {
     const reportedProfit = val(row.netProfitNormalized?.reported) ?? val(row.netProfit)
     const adjustedProfit = val(row.netProfitNormalized)
     return {
@@ -203,10 +209,89 @@ export function computeNormalizedRow(row) {
 }
 
 /** Whether ANY year in this table has something to normalize — manual or
- *  auto-derivable — without computing the whole adjusted series. Drives
- *  whether the Reported/Normalized toggle even appears. */
+ *  auto-derivable — without computing the whole adjusted series. Netprofit/
+ *  eps only; see hasAnyNormalization for every normalizable field. */
 export function hasNormalizableYear(incomeHistory = []) {
   return (incomeHistory || []).some(row => computeNormalizedRow(row) != null)
+}
+
+/**
+ * Whether ANYTHING has actually been normalized anywhere in this ticker's
+ * data — netProfit/eps (computeNormalizedRow, manual or auto-derived) or
+ * any of the other targets (a real {key}Normalized field already written
+ * by recomputeNormalizedTargets). Drives the default basis (computeAll: no
+ * explicit user choice defaults to 'normalized' once there's something to
+ * normalize, not 'reported' — see the comment there) and whether the
+ * Reported/Normalized toggle appears at all (Header.jsx).
+ */
+export function hasAnyNormalization(data) {
+  if (hasNormalizableYear(data?.reportedIncomeHistory || data?.incomeHistory || [])) return true
+  const arrays = [data?.reportedIncomeHistory, data?.balanceHistory, data?.cashflowHistory]
+  return arrays.some(arr => (arr || []).some(row =>
+    Object.keys(row || {}).some(k => k.endsWith('Normalized') && row[k]?.value != null)
+  ))
+}
+
+/**
+ * The netProfit/eps a caller should actually use for ONE row, given the
+ * current basis — the row's own {key}Normalized sibling field (real,
+ * stored) when basis is 'normalized' and one is actually present, else the
+ * plain reported {key}. ONE function for ANY field, not just netProfit/eps:
+ * revenue, operatingProfit, interest, tax, depreciation, capex, and the
+ * four working-capital fields are ALL normalization targets too (the
+ * restatement tool, normalizationTargets.js — recomputeNormalizedTargets
+ * already writes {key}Normalized for every one of them, the same
+ * convention materializeIncomeNormalization uses for netProfit/eps below).
+ * Two separate accessors — one for netProfit/eps, a different one
+ * (normalizedFieldValue) for the other ten — meant a field could get
+ * restated through the app's own normalization tool and every calculation
+ * would keep silently reading the unrestated figure anyway, unless someone
+ * remembered to special-case that ONE field in every consumer by hand. This
+ * is the whole of what the old separate `incomeHistory` array existed to
+ * do for netProfit/eps specifically — generalized to every normalizable
+ * field, called wherever a file actually reads one, not pre-resolved
+ * across a whole duplicated array on the chance something might ask.
+ */
+export function activeValue(row, key, basis) {
+  if (basis === 'normalized' && row?.[`${key}Normalized`]?.value != null) return row[`${key}Normalized`]
+  return row?.[key]
+}
+
+/**
+ * Writes netProfitNormalized/epsNormalized onto reportedIncomeHistory's own
+ * rows as real, stored, inspectable fields — same discipline as
+ * recomputeNormalizedTargets (normalizationTargets.js) already applies to
+ * the other ten fields: a Normalized figure belongs in the table itself,
+ * not only computable on demand by whichever function happens to ask for
+ * it. A manual NormalizeModal entry is left exactly as it is (this function
+ * never overwrites one); an auto-derivable year (exceptional items
+ * disclosed, no manual override) gets computeNormalizedRow's result written
+ * in, tagged `auto` so a later pass knows to recompute it fresh rather than
+ * trust it as a human's own confirmation — see the `auto` check in
+ * computeNormalizedRow above. A year that no longer normalizes to anything
+ * (its own auto-materialization from an earlier pass, now stale because the
+ * underlying exceptional-items figure was corrected) has that stale field
+ * cleared rather than left behind.
+ *
+ * Called from computeAll, same chokepoint as recomputeNormalizedTargets —
+ * every reducer path already funnels through it, so this needs no separate
+ * "keep it in sync" call at each individual mutation site either.
+ */
+export function materializeIncomeNormalization(reportedIncomeHistory) {
+  return (reportedIncomeHistory || []).map(row => {
+    const n = computeNormalizedRow(row)
+    if (!n) {
+      if (!row?.netProfitNormalized?.auto) return row
+      const { netProfitNormalized, epsNormalized, ...rest } = row
+      return rest
+    }
+    if (n.adjustment.kind === 'manual') return row   // already correct — this function never overwrites a human's entry
+    return {
+      ...row,
+      netProfitNormalized: { ...n.netProfit, auto: true },
+      epsNormalized: n.eps?.value != null ? { ...n.eps, auto: true } : row.epsNormalized,
+    }
+  })
 }
 
 /**

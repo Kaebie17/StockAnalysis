@@ -11,6 +11,7 @@ import { getEquityRiskPremium } from '../api/erpClient.js'
 import { getAiKey } from '../utils/aiKey.js'
 import { peerBandFrom, detectRerating } from '../engine/rerating.js'
 import { forwardPeBand } from '../engine/estimate.js'
+import { activeValue } from '../engine/dataQuality.js'
 
 /**
  * useEstimate — the live estimate, with your accepted revisions applied.
@@ -200,13 +201,32 @@ export function useEstimate(state, opts = {}) {
 
   const peerBand = peerBandFrom(peers)
 
+  // estimate.js's functions (forwardPeBand, buildEstimate, seriesCagr,
+  // multipleSpread, averagePayout, ...) all expect plain .netProfit/.eps/
+  // .revenue on each row — they take incomeHistory as a plain parameter and
+  // don't know about normalization at all, by design. This resolves the
+  // basis ONCE, here, from reportedIncomeHistory (the one real table) for
+  // every field those functions actually read generically (they take a
+  // `field` argument, not just netProfit/eps — revenue-CAGR and the PE/PS
+  // spread both run off whichever one is passed in), rather than every one
+  // of those functions needing to know about {field}Normalized or the
+  // basis toggle itself. Built fresh every render, from current state —
+  // never attached to state.data, never persisted, unlike the old
+  // computeAll-level incomeHistory this replaces.
+  const activeIncomeHistory = (state?.data?.reportedIncomeHistory || []).map(row => ({
+    ...row,
+    netProfit: activeValue(row, 'netProfit', state?.data?.basis),
+    eps: activeValue(row, 'eps', state?.data?.basis),
+    revenue: activeValue(row, 'revenue', state?.data?.basis),
+  }))
+
   // Quarterly results → guidance verdict. Both halves of this were built and
   // never joined: rows sat in `quarterlyData` and nothing read them, so a
   // company could miss guidance three quarters running with no bar moving.
   const guidanceAssessment = assessFromQuarterly(state?.quarterlyData, {
     guidance: state?.guidance,
     modelGrowth: guidedGrowthOf(state) ?? cagrOf(state),
-    incomeHistory: state?.data?.incomeHistory || [],
+    incomeHistory: activeIncomeHistory,
   })
 
   // ESTIMATE 1 — what the fundamentals justify. Independent of price history,
@@ -225,7 +245,7 @@ export function useEstimate(state, opts = {}) {
     // hasn't resolved or lacked enough overlapping history.
     beta: state.assumptions?.beta ?? state.data?.meta?.beta ?? state.technicals?.beta ?? null,
     betaMeta: state.computedBeta ?? null,
-    incomeHistory: state.data?.incomeHistory || [],
+    incomeHistory: activeIncomeHistory,
     cashflowHistory: state.data?.cashflowHistory || [],
   }) : null
 
@@ -250,7 +270,7 @@ export function useEstimate(state, opts = {}) {
     marginOverride:   overrides.margin   ?? null,
     multipleOverride: overrides.multiple ?? null,
     priceHistory:   state.data?.priceHistory   || [],
-    incomeHistory:  state.data?.incomeHistory  || [],
+    incomeHistory:  activeIncomeHistory,
     balanceHistory: state.data?.balanceHistory || [],
     peerBand,
     // 0-1, how much peerBand pulls the own-history fitted multiple — a
@@ -262,7 +282,7 @@ export function useEstimate(state, opts = {}) {
 
   // Re-rating check runs against the same band the estimate uses, so a proposal
   // and the number it would replace are always talking about the same thing.
-  const bandRaw = forwardPeBand(state?.data?.priceHistory || [], state?.data?.incomeHistory || [])
+  const bandRaw = forwardPeBand(state?.data?.priceHistory || [], activeIncomeHistory)
   // forwardPeBand now returns a diagnostic object when it can't build a band;
   // treating that as a band would compare a multiple against undefined edges.
   const band = bandRaw?.insufficient ? null : bandRaw
@@ -284,7 +304,7 @@ export function useEstimate(state, opts = {}) {
     : null
 
   const rerating = (!overrides.multiple && band)
-    ? detectRerating(state?.data?.priceHistory || [], state?.data?.incomeHistory || [], band,
+    ? detectRerating(state?.data?.priceHistory || [], activeIncomeHistory, band,
         // growth passed so the current reading is put on the same FORWARD basis
         // as the band; without it the comparison is trailing-vs-forward.
         { peerBand, currentEps: state?.ratioResult?.eps, growth: estimate?.growth ?? null,

@@ -16,6 +16,7 @@ import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_BY_MARKE
 import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvSales as getSectorEvSales, financialPb } from './sectorMultiples.js'
 import { peerBand } from './peerBands.js'
 import { TIER } from './methodologyTier.js'
+import { activeValue } from './dataQuality.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // Every call site guards on state.data being truthy, not state.ratioResult
@@ -347,7 +348,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // any one cell is "the bear case," it just shows the same formula's real
   // output across a range of inputs the user can see are inputs.
   const sensitivity = (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf && growthRate != null && wacc != null)
-    ? dcfSensitivity(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntY, data?.incomeHistory)
+    ? dcfSensitivity(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntY, data?.reportedIncomeHistory, data?.basis)
     : null
 
   // Signal from the primary model's value vs CMP. Deadband scaled to how much
@@ -414,7 +415,7 @@ function detectBookValueDistortion(data, actualPb) {
     return m ? Number(m[0]) : null
   }
   const bal = (data?.balanceHistory || []).filter(row => !row?.synthetic)
-  const inc = (data?.incomeHistory  || []).filter(row => !row?.synthetic)
+  const inc = (data?.reportedIncomeHistory || []).filter(row => !row?.synthetic)
 
   const points = []
   for (const bRow of bal) {
@@ -422,8 +423,8 @@ function detectBookValueDistortion(data, actualPb) {
     const eq = bRow?.totalEquity?.value
     if (y == null || !(eq > 0)) continue
     const iRow = inc.find(row => yearOf(row) === y)
-    const np  = iRow?.netProfit?.value
-    const eps = iRow?.eps?.value
+    const np  = activeValue(iRow, 'netProfit', data?.basis)?.value
+    const eps = activeValue(iRow, 'eps', data?.basis)?.value
     const shares = (np > 0 && eps > 0) ? np / eps : null
     if (!(shares > 0)) continue
     points.push({ year: y, bps: eq / shares, netProfit: np })
@@ -660,14 +661,14 @@ function dcfPerShare(cfBase, g, wacc, tg, yrs, cash, debt, shares, ntGrowth = nu
 // Returns null when there's too little revenue history to measure — the
 // caller falls back to a stated convention in that case, same pattern as
 // priceDispersion/multipleSpread's own fallback chains elsewhere.
-function measuredGrowthHalfWidth(incomeHistory) {
+function measuredGrowthHalfWidth(incomeHistory, basis) {
   const yearOf = row => {
     const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
     return m ? Number(m[0]) : null
   }
   const series = (incomeHistory || [])
     .filter(row => !row?.synthetic)
-    .map(row => ({ year: yearOf(row), value: row?.revenue?.value }))
+    .map(row => ({ year: yearOf(row), value: activeValue(row, 'revenue', basis)?.value }))
     .filter(p => p.year != null && p.value > 0)
     .sort((a, b) => a.year - b.year)
   const yoy = []
@@ -687,7 +688,7 @@ function measuredGrowthHalfWidth(incomeHistory) {
 // DCF fair value across a growth × WACC grid (the two inputs a DCF is sensitive
 // to). When a near-term (guidance) window is set, the growth axis sweeps that
 // near-term rate so the centre cell matches the applied DCF.
-function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYears = 0, incomeHistory = null) {
+function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYears = 0, incomeHistory = null, basis = null) {
   if (!(cfBase > 0) || !(shares > 0)) return null
   // No floor/ceiling on the growth axis: gBase is already sanity-bounded by
   // estimateGrowth() upstream, and flooring the sweep at 0% used to collapse
@@ -700,7 +701,7 @@ function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYea
   // enough history to measure one; falls back to a flat ±4% (the previous
   // behavior, now a named, disclosed convention rather than an unlabelled
   // default) only when there isn't.
-  const measuredHalf = measuredGrowthHalfWidth(incomeHistory)
+  const measuredHalf = measuredGrowthHalfWidth(incomeHistory, basis)
   const growthHalf = measuredHalf ?? 0.04
   const growthAxisMeasured = measuredHalf != null
   const growthAxis = [-1, -0.5, 0, 0.5, 1].map(f => gBase + f * growthHalf)

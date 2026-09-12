@@ -26,6 +26,7 @@
  */
 
 import { grossProfitOf } from './ratios.js'
+import { activeValue } from './dataQuality.js'
 import { latest, hasContent } from './reconcileDocs.js'
 
 // ── tunable thresholds (surface in ScoringStudio later) ───────────────────────
@@ -147,7 +148,7 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
 
 // ── series construction ───────────────────────────────────────────────────────
 function buildSeries(data, r) {
-  const inc = (data?.incomeHistory || []).filter(x => !x.synthetic)
+  const inc = (data?.reportedIncomeHistory || []).filter(x => !x.synthetic)
   const bal = (data?.balanceHistory || []).filter(x => !x.synthetic)
   const cf  = (data?.cashflowHistory || []).filter(x => !x.synthetic)
   const balByYear = index(bal), cfByYear = index(cf)
@@ -157,9 +158,9 @@ function buildSeries(data, r) {
   for (const row of inc) {
     const y = row.year
     const b = balByYear[y] || {}
-    const rev = v(row.revenue), op = v(row.operatingProfit)
-    const gp  = grossProfitOf(row)   // grossProfit, else revenue - cogs. One formula, in ratios.js.
-    const np = v(row.netProfit), eps = v(row.eps)
+    const rev = v(activeValue(row, 'revenue', data?.basis)), op = v(activeValue(row, 'operatingProfit', data?.basis))
+    const gp  = grossProfitOf(row, data?.basis)   // grossProfit, else revenue - cogs. One formula, in ratios.js.
+    const np = v(activeValue(row, 'netProfit', data?.basis)), eps = v(activeValue(row, 'eps', data?.basis))
     const eq = v(b.totalEquity), debt = v(b.totalDebt) ?? 0
     const ce = eq != null ? eq + debt : null
 

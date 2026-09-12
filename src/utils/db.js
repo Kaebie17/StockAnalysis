@@ -220,6 +220,37 @@ export async function setCached(ticker, data) {
 
     // Run eviction check asynchronously — don't block the caller
     evictIfNeeded().catch(() => {})
+    sweepStalePriceHistory().catch(() => {})
+  } catch { /* non-critical */ }
+}
+
+// Unlike a hand-pasted Screener statement (real, hard-to-reproduce work),
+// daily OHLCV price history is a lossless, trivial re-fetch — so a ticker
+// nobody has actually opened in a while doesn't need to keep paying rent on
+// it in the cache. Strips ONLY priceHistory (the financials — income/
+// balance/cashflow, customFields — are never touched) for any record whose
+// lastAccessed is older than the threshold; AppContext.jsx's load() detects
+// the resulting empty array on the next real visit and silently backfills
+// it via refreshPriceHistory(), the same mechanism the header's own manual
+// "refresh price history" button already uses.
+const PRICE_HISTORY_STALE_MS = 45 * 24 * 60 * 60 * 1000   // 45 days unvisited
+async function sweepStalePriceHistory() {
+  try {
+    const all = await txGetAll('financials')
+    const now = Date.now()
+    for (const rec of all) {
+      const ph = rec?.data?.data?.priceHistory
+      if (!ph?.length) continue
+      if (now - (rec.lastAccessed || 0) < PRICE_HISTORY_STALE_MS) continue
+      const trimmedInner = { ...rec.data.data, priceHistory: [] }
+      const trimmedData = { ...rec.data, data: trimmedInner }
+      const bytes = new TextEncoder().encode(JSON.stringify(trimmedData)).length
+      // lastAccessed is deliberately NOT bumped — this is passive
+      // maintenance, not a real visit; bumping it would make an untouched
+      // ticker look recently used to the next sweep and this eviction
+      // policy alike.
+      await txPut('financials', { ...rec, data: trimmedData, bytes })
+    }
   } catch { /* non-critical */ }
 }
 

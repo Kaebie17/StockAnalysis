@@ -4,6 +4,7 @@ import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
 import { normalizedFieldValue, availableTargets } from '../../engine/normalizationTargets.js'
 import { computeNormalizedRow } from '../../engine/dataQuality.js'
+import { listFormulas, fieldLabel, fieldTable, assignmentsForField, computeDerivedFormulaLatest } from '../../engine/formulas.js'
 import Modal from '../Modal.jsx'
 
 /**
@@ -36,9 +37,10 @@ import Modal from '../Modal.jsx'
  */
 
 const TABLES = [
-  { key: 'income',   label: 'P&L',        icon: '📊' },
-  { key: 'balance',  label: 'Balance',    icon: '⚖️' },
-  { key: 'cashflow', label: 'Cash Flow',  icon: '💵' },
+  { key: 'income',    label: 'P&L',        icon: '📊' },
+  { key: 'balance',   label: 'Balance',    icon: '⚖️' },
+  { key: 'cashflow',  label: 'Cash Flow',  icon: '💵' },
+  { key: 'formulas',  label: 'Formulas',   icon: '🧮' },
 ]
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -48,8 +50,34 @@ function slugify(label) {
   return String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'row'
 }
 
+// A custom row's key is just its (slugified) label — no generated suffix —
+// so duplicate labels are the ONE thing that must be blocked at creation
+// (see AddRowForm/MergeRowsForm): once a key exists, it never needs to
+// change again even as the row keeps getting picked up by new restatements
+// or formula assignments, so there's nothing a stable, human-legible key
+// costs here that a synthetic one would have bought instead.
+function keyCollision(data, slug) {
+  if (METRICS[slug]) return true
+  return (data?.customFields || []).some(f => f.key === slug)
+}
+
+// One-line summary of everything a field currently feeds, across both
+// restatement targets and formula buckets — replaces the old single
+// "feeds X" note, which could only ever describe one destination.
+function assignmentSummary(data, field) {
+  const list = assignmentsForField(data, field)
+  if (!list.length) return null
+  return list.map(a => {
+    const sign = (a.sign ?? 1) > 0 ? '+' : '−'
+    if (a.kind === 'restatement') return `${sign} feeds ${fieldLabel(data, a.target)}`
+    const formula = listFormulas(data).find(f => f.key === a.formula)
+    const bucket = formula?.buckets.find(b => b.key === a.bucket)
+    return `${sign} feeds ${formula?.label ?? a.formula} → ${bucket?.label ?? a.bucket}`
+  }).join('; ')
+}
+
 export default function HistoryTableModal({ open, onClose }) {
-  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields } = useApp()
+  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField } = useApp()
   const data = state?.data
   const currency = data?.currency
   const div  = currency === 'INR' ? 1e7 : 1e6
@@ -61,11 +89,17 @@ export default function HistoryTableModal({ open, onClose }) {
   const [editingKey, setEditingKey] = useState(null)
   const [addingRow, setAddingRow] = useState(false)
   const [merging, setMerging] = useState(false)
+  // Set by a row's "what does this feed" nav button (EditableRow) — lets the
+  // Formulas tab open with that field's own assignment editor already open,
+  // instead of just landing on an undifferentiated list.
+  const [focusField, setFocusField] = useState(null)
 
   useEffect(() => {
     if (!open) return
-    setTable('income'); setPending({}); setEditingKey(null); setAddingRow(false); setMerging(false)
+    setTable('income'); setPending({}); setEditingKey(null); setAddingRow(false); setMerging(false); setFocusField(null)
   }, [open])
+
+  const goToFormulas = (field) => { setFocusField(field); setTable('formulas') }
 
   if (!open || !data) return null
 
@@ -76,7 +110,6 @@ export default function HistoryTableModal({ open, onClose }) {
   // ten plus any other field with data, plus every custom row, across all
   // three statements. Filtered to the current tab where each use needs it.
   const allTargets = availableTargets(data)
-  const targetLabel = key => allTargets.find(t => t.key === key)?.label ?? key
 
   const trackedKeys = Object.keys(METRICS).filter(k => METRICS[k].table === table)
   const signatureKeys = TABLE_SHAPE[table]?.signature || []
@@ -104,6 +137,17 @@ export default function HistoryTableModal({ open, onClose }) {
   const committedFor = (year, field) => {
     const row = history.find(r => String(r?.year) === year)
     return val(row?.[field])
+  }
+
+  // 'pasted' = you put this number in yourself (Add History/Fill Gaps/this
+  // grid) — everything else (Yahoo's 'source'/'cross-source', a scraper's
+  // 'derived') is a lower-confidence fill you didn't supply. Surfaced as a
+  // color, not just a tooltip, so a Yahoo-filled cell sitting inside years
+  // you've otherwise fully pasted is obvious at a glance instead of
+  // requiring an IndexedDB dump to find.
+  const statusFor = (year, field) => {
+    const row = history.find(r => String(r?.year) === year)
+    return row?.[field]?.status ?? null
   }
 
   const cellText = (year, field) => {
@@ -239,13 +283,17 @@ export default function HistoryTableModal({ open, onClose }) {
       <div className="flex gap-2">
         {TABLES.map(t => (
           <button key={t.key}
-            onClick={() => { if (pendingCount > 0 && !window.confirm('Switching statements discards unsaved edits on this one. Continue?')) return; setTable(t.key); setPending({}); setEditingKey(null) }}
+            onClick={() => { if (pendingCount > 0 && !window.confirm('Switching statements discards unsaved edits on this one. Continue?')) return; setTable(t.key); setPending({}); setEditingKey(null); if (t.key !== 'formulas') setFocusField(null) }}
             className={'flex-1 py-1.5 rounded-lg text-xs border ' + (table === t.key ? 'border-accent bg-navy-800 text-white' : 'border-navy-700 text-slate-400')}>
             {t.icon} {t.label}
           </button>
         ))}
       </div>
 
+      {table === 'formulas' ? (
+        <FormulasTab data={data} div={div} focusField={focusField} setAssignmentsForField={setAssignmentsForField} />
+      ) : (
+        <>
       {years.length === 0 ? (
         <p className="text-xs text-slate-500">No {TABLES.find(t => t.key === table)?.label} history stored yet for this ticker.</p>
       ) : (
@@ -261,16 +309,20 @@ export default function HistoryTableModal({ open, onClose }) {
               {shownTrackedKeys.map(field => (
                 <EditableRow key={field} label={METRICS[field]?.label || field} field={field} years={years}
                   cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
-                  commitCell={commitCell} cellKey={cellKey} />
+                  commitCell={commitCell} cellKey={cellKey} statusFor={statusFor}
+                  assignmentNote={assignmentSummary(data, field)}
+                  onNavigate={() => goToFormulas(field)}
+                />
               ))}
               {customFields.map(f => (
                 <EditableRow key={f.key} label={f.label} field={f.key} years={years}
                   cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
-                  commitCell={commitCell} cellKey={cellKey}
+                  commitCell={commitCell} cellKey={cellKey} statusFor={statusFor}
                   onRemove={() => {
                     if (window.confirm(`Remove "${f.label}" and all its values? This can't be undone.`)) removeCustomField(f.key)
                   }}
-                  targetNote={f.target ? `${f.sign > 0 ? '+' : '−'} feeds ${targetLabel(f.target)}` : null}
+                  assignmentNote={assignmentSummary(data, f.key)}
+                  onNavigate={() => goToFormulas(f.key)}
                 />
               ))}
               {computedRows.map(r => (
@@ -303,6 +355,7 @@ export default function HistoryTableModal({ open, onClose }) {
 
       {merging && (
         <MergeRowsForm
+          data={data}
           customFields={customFields}
           onCancel={() => setMerging(false)}
           onMerge={(sourceKeys, opts) => {
@@ -314,10 +367,10 @@ export default function HistoryTableModal({ open, onClose }) {
 
       {addingRow && (
         <AddRowForm
+          data={data}
           table={table}
           years={years}
           shownTrackedKeys={shownTrackedKeys}
-          targetOptions={allTargets.filter(t => t.table === table)}
           div={div}
           onCancel={() => setAddingRow(false)}
           onCreateTracked={(field, valuesByYear) => {
@@ -327,14 +380,14 @@ export default function HistoryTableModal({ open, onClose }) {
             if (edits.length) editHistoryCells(table, edits)
             setAddingRow(false)
           }}
-          onCreateCustom={({ label, target, sign, valuesByYear }) => {
-            const key = `custom_${slugify(label)}_${Date.now().toString(36)}`
+          onCreateCustom={({ key, label, assignments, valuesByYear }) => {
             // The row's own value is the magnitude as entered — never
-            // pre-multiplied by sign. sign lives only as metadata on the
-            // field, applied when a target's Normalized figure is derived
-            // (normalizedFieldValue) — so what's SHOWN in this row always
-            // matches what was typed, whether or not it's mapped to a target.
-            addCustomField({ key, label, table, target: target || null, sign: target ? sign : null })
+            // pre-multiplied by any assignment's sign. Sign lives only as
+            // metadata on the assignment, applied when a target's Normalized
+            // figure (or a formula's bucket sum) is derived — so what's
+            // SHOWN in this row always matches what was typed, whether or
+            // not it feeds anything.
+            addCustomField({ key, label, table }, assignments)
             const edits = Object.entries(valuesByYear)
               .filter(([, v]) => v !== '')
               .map(([year, v]) => ({ year, field: key, value: Number(v) * div }))
@@ -343,11 +396,13 @@ export default function HistoryTableModal({ open, onClose }) {
           }}
         />
       )}
+        </>
+      )}
     </Modal>
   )
 }
 
-function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, targetNote }) {
+function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, assignmentNote, onNavigate, statusFor }) {
   const [showPaste, setShowPaste] = useState(false)
   const [pasteText, setPasteText] = useState('')
   const [pasteWarning, setPasteWarning] = useState('')
@@ -386,9 +441,14 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
     <tr className="border-b border-navy-800/50">
       <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2">
         {label}
-        {targetNote && <span className="block text-[10px] text-slate-600">{targetNote}</span>}
+        {assignmentNote && <span className="block text-[10px] text-slate-600">{assignmentNote}</span>}
         <button onClick={() => { setShowPaste(s => !s); setPasteWarning('') }}
           title="Bulk-fill this row from a paste" className="ml-1 text-slate-600 hover:text-accent">📋</button>
+        {onNavigate && (
+          <button onClick={onNavigate}
+            title={assignmentNote ? 'Go to its formula assignment' : 'Assign this row to a target or formula'}
+            className="ml-1 text-slate-600 hover:text-accent">{assignmentNote ? '🔗' : '🧮'}</button>
+        )}
         {onRemove && (
           <button onClick={onRemove} title="Remove this row" className="ml-1 text-slate-600 hover:text-bear">✕</button>
         )}
@@ -413,14 +473,23 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
                 }}
                 className="w-24 bg-navy-800 border border-accent rounded px-1.5 py-1 text-xs font-mono text-white text-right focus:outline-none"
               />
-            ) : (
-              <button
-                onClick={() => setEditingKey(k)}
-                className={`w-full text-right px-1.5 py-1 rounded font-mono hover:bg-navy-800/60 ${dirty ? 'text-accent' : text ? 'text-white' : 'text-slate-600'}`}
-                title={dirty ? 'Unsaved edit — click to change' : 'Click to edit'}>
-                {text || '—'}
-              </button>
-            )}
+            ) : (() => {
+              const status = statusFor?.(y, field)
+              // Not something you pasted yourself — Yahoo's 'source'/
+              // 'cross-source', or a scraper's 'derived'. Colored
+              // separately so a lower-confidence fill sitting inside years
+              // you've otherwise pasted is obvious without checking the
+              // raw tag on every cell.
+              const isFill = !dirty && text && status && status !== 'pasted'
+              return (
+                <button
+                  onClick={() => setEditingKey(k)}
+                  className={`w-full text-right px-1.5 py-1 rounded font-mono hover:bg-navy-800/60 ${dirty ? 'text-accent' : isFill ? 'text-neutral' : text ? 'text-white' : 'text-slate-600'}`}
+                  title={dirty ? 'Unsaved edit — click to change' : isFill ? `Not pasted — filled from ${status} (Yahoo/scraper), not your own data. Click to correct.` : 'Click to edit'}>
+                  {text || '—'}
+                </button>
+              )
+            })()}
           </td>
         )
       })}
@@ -451,16 +520,83 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
   )
 }
 
-function AddRowForm({ table, years, shownTrackedKeys, targetOptions, div, onCancel, onCreateTracked, onCreateCustom }) {
+// Every place a row can feed, for ONE statement — every valid restatement
+// target on this table (dynamic: any field with data, or a custom row —
+// see availableTargets), plus every derived formula's buckets that live on
+// this table (currently just NWC's two). One flat list so a single dropdown
+// covers both kinds; `value` round-trips through parseDestination below.
+function destinationOptions(data, table) {
+  const out = []
+  for (const t of availableTargets(data)) {
+    if (t.table !== table) continue
+    out.push({ value: `restatement:${t.key}`, label: `Feeds ${t.label} (normalization)` })
+  }
+  for (const formula of listFormulas(data)) {
+    if (formula.kind !== 'derived' || formula.table !== table) continue
+    for (const bucket of formula.buckets) {
+      out.push({ value: `formula:${formula.key}:${bucket.key}`, label: `${formula.label} → ${bucket.label}` })
+    }
+  }
+  return out
+}
+function parseDestination(value) {
+  const [kind, a, b] = String(value).split(':')
+  return kind === 'restatement' ? { kind, target: a } : { kind, formula: a, bucket: b }
+}
+
+/**
+ * A field can feed several targets/formula-buckets at once (message 24 in
+ * the design discussion — "each field can be used in multiple formulas") —
+ * this generalizes the old single target+sign dropdown into a growable
+ * list, reusing the same "+ add another" pattern Merge Rows already used
+ * for picking several source rows. Used both by AddRowForm (a not-yet-
+ * created row) and FormulasTab (an existing field's live assignment list).
+ */
+function AssignmentListEditor({ options, rows, onChange }) {
+  const addRow = () => onChange([...rows, { destination: '', sign: 1 }])
+  const setRow = (i, patch) => onChange(rows.map((r, idx) => idx === i ? { ...r, ...patch } : r))
+  const removeRow = (i) => onChange(rows.filter((_, idx) => idx !== i))
+  return (
+    <div className="space-y-1.5">
+      {rows.map((r, i) => (
+        <div key={i} className="flex gap-2 items-center">
+          <select value={r.destination} onChange={e => setRow(i, { destination: e.target.value })}
+            className="flex-1 bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
+            <option value="">No normalization (reference only)</option>
+            {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          {r.destination && (
+            <select value={r.sign} onChange={e => setRow(i, { sign: Number(e.target.value) })}
+              className="bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
+              <option value={1}>+ add</option>
+              <option value={-1}>− subtract</option>
+            </select>
+          )}
+          {rows.length > 1 && (
+            <button type="button" onClick={() => removeRow(i)} className="text-slate-600 hover:text-bear text-xs">✕</button>
+          )}
+        </div>
+      ))}
+      <button type="button" onClick={addRow} className="text-[11px] text-accent hover:text-accent-light">
+        + Add another assignment
+      </button>
+    </div>
+  )
+}
+
+function AddRowForm({ data, table, years, shownTrackedKeys, div, onCancel, onCreateTracked, onCreateCustom }) {
   const [kind, setKind] = useState('tracked')
   const [trackedField, setTrackedField] = useState('')
   const [label, setLabel] = useState('')
-  const [target, setTarget] = useState('')
-  const [sign, setSign] = useState(1)
+  const [assignRows, setAssignRows] = useState([{ destination: '', sign: 1 }])
   const [values, setValues] = useState({})
   const [showPaste, setShowPaste] = useState(false)
   const [pasteText, setPasteText] = useState('')
   const [pasteWarning, setPasteWarning] = useState('')
+
+  const destOptions = destinationOptions(data, table)
+  const slug = slugify(label)
+  const labelTaken = kind === 'custom' && label.trim().length > 0 && keyCollision(data, slug)
 
   const availableTracked = Object.keys(METRICS).filter(k => METRICS[k].table === table && !shownTrackedKeys.includes(k))
 
@@ -497,7 +633,7 @@ function AddRowForm({ table, years, shownTrackedKeys, targetOptions, div, onCanc
     }
   }
 
-  const canSubmit = kind === 'tracked' ? !!trackedField : label.trim().length > 0
+  const canSubmit = kind === 'tracked' ? !!trackedField : (label.trim().length > 0 && !labelTaken)
 
   return (
     <div className="rounded-lg bg-navy-800/40 px-3 py-3 space-y-2.5">
@@ -523,24 +659,14 @@ function AddRowForm({ table, years, shownTrackedKeys, targetOptions, div, onCanc
       ) : (
         <>
           <input value={label} onChange={e => setLabel(e.target.value)} placeholder="Row label — e.g. Indemnification asset"
-            className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200" />
-          <div className="flex gap-2 items-center">
-            <select value={target} onChange={e => setTarget(e.target.value)}
-              className="flex-1 bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
-              <option value="">No normalization (reference only)</option>
-              {targetOptions.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
-            </select>
-            {target && (
-              <select value={sign} onChange={e => setSign(Number(e.target.value))}
-                className="bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
-                <option value={1}>+ add</option>
-                <option value={-1}>− subtract</option>
-              </select>
-            )}
-          </div>
-          {target && (
+            className={'w-full bg-navy-800 border rounded px-2 py-1.5 text-xs text-slate-200 ' + (labelTaken ? 'border-bear' : 'border-navy-700')} />
+          {labelTaken && (
+            <p className="text-[11px] text-bear">A row named "{label.trim()}" already exists — pick a different name.</p>
+          )}
+          <AssignmentListEditor options={destOptions} rows={assignRows} onChange={setAssignRows} />
+          {assignRows.some(r => r.destination) && (
             <p className="text-[11px] text-slate-500">
-              Values entered below are applied to {targetOptions.find(t => t.key === target)?.label}'s normalized figure immediately on create, same as pasting them through the restatement tool.
+              Values entered below are applied to what's picked above immediately on create, same as pasting them through the restatement tool.
             </p>
           )}
         </>
@@ -591,8 +717,16 @@ function AddRowForm({ table, years, shownTrackedKeys, targetOptions, div, onCanc
         <button
           disabled={!canSubmit}
           onClick={() => {
-            if (kind === 'tracked') onCreateTracked(trackedField, values)
-            else onCreateCustom({ label: label.trim(), target: target || null, sign, valuesByYear: values })
+            if (kind === 'tracked') { onCreateTracked(trackedField, values); return }
+            const assignments = assignRows
+              .filter(r => r.destination)
+              .map(r => {
+                const d = parseDestination(r.destination)
+                return d.kind === 'restatement'
+                  ? { kind: 'restatement', target: d.target, sign: r.sign }
+                  : { kind: 'formula', formula: d.formula, bucket: d.bucket, sign: r.sign }
+              })
+            onCreateCustom({ key: slug, label: label.trim(), assignments, valuesByYear: values })
           }}
           className="btn-primary text-xs flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
           Add row
@@ -613,19 +747,23 @@ function AddRowForm({ table, years, shownTrackedKeys, targetOptions, div, onCanc
  * Two initial dropdowns (every custom row on this statement is a candidate
  * in both), with "+ add another row" to bring in more than two. Then either
  * "merge into a new row" (name it) or "merge into one of the selected rows"
- * (pick which — it keeps its own name, target and sign; only its values
- * change). The merged value per year is just the sum of whatever the
- * selected rows currently hold that year — computed fresh in the reducer
- * from their live values, not from anything cached here.
+ * (pick which — it keeps its own name and whatever it already fed; only its
+ * values change). A new merged row inherits whatever the FIRST selected
+ * source was feeding (MERGE_CUSTOM_FIELDS, AppContext.jsx). The merged value
+ * per year is just the sum of whatever the selected rows currently hold
+ * that year — computed fresh in the reducer from their live values, not
+ * from anything cached here.
  */
-function MergeRowsForm({ customFields, onCancel, onMerge }) {
+function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
   const [slots, setSlots] = useState(['', ''])
   const [mode, setMode] = useState('new')
   const [destKey, setDestKey] = useState('')
   const [newLabel, setNewLabel] = useState('')
 
   const selectedKeys = [...new Set(slots.filter(Boolean))]
-  const canSubmit = selectedKeys.length >= 2 && (mode === 'new' ? newLabel.trim().length > 0 : !!destKey)
+  const newSlug = slugify(newLabel)
+  const newLabelTaken = mode === 'new' && newLabel.trim().length > 0 && keyCollision(data, newSlug)
+  const canSubmit = selectedKeys.length >= 2 && (mode === 'new' ? (newLabel.trim().length > 0 && !newLabelTaken) : !!destKey)
 
   const setSlot = (i, key) => setSlots(prev => prev.map((s, idx) => idx === i ? key : s))
 
@@ -656,8 +794,13 @@ function MergeRowsForm({ customFields, onCancel, onMerge }) {
       </div>
 
       {mode === 'new' ? (
-        <input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Name for the merged row"
-          className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200" />
+        <>
+          <input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Name for the merged row"
+            className={'w-full bg-navy-800 border rounded px-2 py-1.5 text-xs text-slate-200 ' + (newLabelTaken ? 'border-bear' : 'border-navy-700')} />
+          {newLabelTaken && (
+            <p className="text-[11px] text-bear">A row named "{newLabel.trim()}" already exists — pick a different name.</p>
+          )}
+        </>
       ) : (
         selectedKeys.length >= 2 && (
           <select value={destKey} onChange={e => setDestKey(e.target.value)}
@@ -675,13 +818,7 @@ function MergeRowsForm({ customFields, onCancel, onMerge }) {
           onClick={() => {
             if (mode === 'new') {
               const first = customFields.find(f => f.key === selectedKeys[0])
-              const newField = {
-                key: `custom_${slugify(newLabel)}_${Date.now().toString(36)}`,
-                label: newLabel.trim(),
-                table: first?.table,
-                target: first?.target ?? null,
-                sign: first?.sign ?? null,
-              }
+              const newField = { key: newSlug, label: newLabel.trim(), table: first?.table }
               onMerge(selectedKeys, { mode: 'new', newField })
             } else {
               onMerge(selectedKeys, { mode: 'existing', destKey })
@@ -691,6 +828,132 @@ function MergeRowsForm({ customFields, onCancel, onMerge }) {
           Merge
         </button>
       </div>
+    </div>
+  )
+}
+
+/**
+ * FormulasTab — every formula this ticker can compute, what feeds each of
+ * its buckets (field names only, never per-item numbers — the makeup is
+ * inspectable one click away in the statement tabs themselves), and the
+ * live output for the most recent year only. This is the ONE place bucket
+ * membership is assigned; a row's nav button (EditableRow's 🔗/🧮) just
+ * lands here instead of opening a second, duplicate picker in the main
+ * tabs.
+ *
+ * A "restatement" formula (any field with data, or a custom row — see
+ * availableTargets) is really a one-bucket formula whose output overwrites
+ * the target's own {field}Normalized rather than producing a new figure —
+ * shown here with the exact same shape as a genuine multi-bucket "derived"
+ * formula (NWC) so the assignment mechanism doesn't need to know which kind
+ * it's looking at.
+ */
+function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
+  const formulas = listFormulas(data)
+  const fmtNum = v => v == null ? '—' : (v / div).toLocaleString(undefined, { maximumFractionDigits: 1 })
+  const focusAssignments = focusField ? assignmentsForField(data, focusField) : []
+
+  const assignedFieldsFor = (formula, bucket) =>
+    (data.fieldAssignments || []).filter(a =>
+      formula.kind === 'restatement' ? (a.kind === 'restatement' && a.target === formula.key)
+                                      : (a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key))
+
+  const candidatesFor = (formula) =>
+    availableTargets(data).filter(t => t.table === formula.table && t.key !== formula.key)
+
+  const outputFor = (formula) => {
+    if (formula.kind === 'derived') {
+      const r = computeDerivedFormulaLatest(data, formula.key)
+      return r?.output != null ? { year: r.year, value: r.output } : null
+    }
+    const hist = formula.table === 'income' ? (data.reportedIncomeHistory || data.incomeHistory || [])
+      : formula.table === 'balance' ? (data.balanceHistory || []) : (data.cashflowHistory || [])
+    const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
+    const row = realRows[realRows.length - 1]
+    if (!row) return null
+    const n = normalizedFieldValue(row, formula.key)
+    return n?.value != null ? { year: row.year, value: n.value } : null
+  }
+
+  const isFocused = (formula) => focusAssignments.some(a =>
+    formula.kind === 'restatement' ? a.target === formula.key : a.formula === formula.key)
+
+  return (
+    <div className="space-y-3">
+      {focusField && (
+        <div className="rounded-lg border border-accent/50 bg-accent/10 px-3 py-2 text-xs text-slate-200">
+          Focused on <strong>{fieldLabel(data, focusField)}</strong> — its current assignments are highlighted below.
+        </div>
+      )}
+      {formulas.map(formula => (
+        <div key={formula.key}
+          className={'rounded-lg border px-3 py-2.5 space-y-2 ' + (isFocused(formula) ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-slate-200">{formula.label}</span>
+            {(() => {
+              const out = outputFor(formula)
+              return out
+                ? <span className="text-xs font-mono text-accent">{fmtNum(out.value)} <span className="text-slate-500">(FY{out.year})</span></span>
+                : <span className="text-xs text-slate-600">—</span>
+            })()}
+          </div>
+          {formula.buckets.map(bucket => {
+            const assigned = assignedFieldsFor(formula, bucket)
+            return (
+              <div key={bucket.key} className="pl-2 border-l border-navy-700 space-y-1">
+                {formula.buckets.length > 1 && <div className="text-[11px] text-slate-500">{bucket.label}</div>}
+                <div className="flex flex-wrap gap-1.5">
+                  {assigned.length === 0 && <span className="text-[11px] text-slate-600">Nothing assigned yet.</span>}
+                  {assigned.map(a => (
+                    <span key={a.field} className="inline-flex items-center gap-1 text-[11px] bg-navy-900/60 border border-navy-700 rounded px-1.5 py-0.5 text-slate-300">
+                      {(a.sign ?? 1) > 0 ? '+' : '−'} {fieldLabel(data, a.field)}
+                      <button onClick={() => {
+                        const remaining = assignmentsForField(data, a.field).filter(x => x !== a)
+                        setAssignmentsForField(a.field, remaining)
+                      }} className="text-slate-600 hover:text-bear">✕</button>
+                    </span>
+                  ))}
+                </div>
+                <BucketAddControl
+                  candidates={candidatesFor(formula).filter(c => !assigned.some(a => a.field === c.key))}
+                  onAdd={(field, sign) => {
+                    const entry = formula.kind === 'restatement'
+                      ? { kind: 'restatement', target: formula.key, sign }
+                      : { kind: 'formula', formula: formula.key, bucket: bucket.key, sign }
+                    setAssignmentsForField(field, [...assignmentsForField(data, field), entry])
+                  }}
+                />
+              </div>
+            )
+          })}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function BucketAddControl({ candidates, onAdd }) {
+  const [field, setField] = useState('')
+  const [sign, setSign] = useState(1)
+  if (!candidates.length) return null
+  return (
+    <div className="flex gap-1.5 items-center">
+      <select value={field} onChange={e => setField(e.target.value)}
+        className="flex-1 bg-navy-800 border border-navy-700 rounded px-1.5 py-1 text-[11px] text-slate-200">
+        <option value="">+ add a row…</option>
+        {candidates.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+      </select>
+      {field && (
+        <>
+          <select value={sign} onChange={e => setSign(Number(e.target.value))}
+            className="bg-navy-800 border border-navy-700 rounded px-1.5 py-1 text-[11px] text-slate-200">
+            <option value={1}>+</option>
+            <option value={-1}>−</option>
+          </select>
+          <button type="button" onClick={() => { onAdd(field, sign); setField('') }}
+            className="text-[11px] text-accent hover:text-accent-light">Add</button>
+        </>
+      )}
     </div>
   )
 }

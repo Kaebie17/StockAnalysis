@@ -6,7 +6,7 @@ import { normalize, applyDocFacts, migrateStoredData, migrateNormalizedTable } f
 import { calcRatios } from '../engine/ratios.js'
 import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
-import { assessDataQuality, computeNormalizedRow } from '../engine/dataQuality.js'
+import { assessDataQuality, materializeIncomeNormalization, hasAnyNormalization } from '../engine/dataQuality.js'
 import { METRICS } from '../engine/metrics.js'
 import { recomputeNormalizedTargets } from '../engine/normalizationTargets.js'
 import { scoreQuality } from '../engine/quality.js'
@@ -153,13 +153,17 @@ function reducer(s, a) {
       if (!s.data) return s
       const histKey = a.tableType + 'History'
       // Income has no separate normalized table any more — one table
-      // (reportedIncomeHistory), normalized netProfit/eps computed live per
-      // row by computeAll (see computeNormalizedRow). Merge onto the
-      // persisted reported baseline, not onto s.data.incomeHistory — the
-      // active series can differ from it when basis is 'normalized', and
-      // merging a fresh paste onto the ACTIVE (possibly already-normalized)
-      // series would bake normalization into what's supposed to be the
-      // untouched reported source. Balance/cashflow have no such split.
+      // (reportedIncomeHistory), with netProfitNormalized/epsNormalized as
+      // real sibling fields on the same rows (materializeIncomeNormalization
+      // in dataQuality.js, called from computeAll). A paste always merges
+      // onto this persisted reported baseline, never onto some other
+      // "active" series — there isn't one any more; every consumer reads
+      // reportedIncomeHistory directly and resolves netProfit/eps (and every
+      // other normalizable field) itself via activeValue against the
+      // current basis. `|| s.data.
+      // incomeHistory` is a legacy fallback for a record from before the
+      // reported/active split existed at all. Balance/cashflow have no such
+      // split.
       const base = a.tableType === 'income'
         ? (s.data.reportedIncomeHistory || s.data.incomeHistory || [])
         : (s.data[histKey] || [])
@@ -331,14 +335,19 @@ function reducer(s, a) {
     // balance-sheet rows), needs a single batched dispatch rather than N
     // separate ADD_CUSTOM_FIELD + EDIT_HISTORY_CELLS round trips, each of
     // which would otherwise re-run computeAll on its own.
-    // a.fields: [{ key, label, table, target, sign }] — one per mapped row.
-    // a.edits:  [{ key, year, value }] — that row's own values, unsigned
-    // (the magnitude as pasted; `sign` on the field is what tells a target's
-    // live derivation whether to add or subtract it).
+    // a.fields: [{ key, label, table }] — one per mapped row.
+    // a.assignments: [{ field, kind: 'restatement', target, sign }] — that
+    // row's mapping, unsigned magnitude in a.edits (sign lives on the
+    // assignment, applied only when the target's Normalized figure is
+    // derived).
+    // a.edits:  [{ key, year, value }] — that row's own values, unsigned.
     case 'ADD_CUSTOM_FIELDS_BATCH': {
       if (!s.data) return s
       const customFields = [...(s.data.customFields || []), ...(a.fields || [])]
-      let data = { ...s.data, customFields }
+      const fieldAssignments = (a.assignments || []).length
+        ? [...(s.data.fieldAssignments || []), ...a.assignments]
+        : s.data.fieldAssignments
+      let data = { ...s.data, customFields, fieldAssignments }
       const tableByKey = Object.fromEntries((a.fields || []).map(f => [f.key, f.table]))
       const editsByTable = {}
       for (const e of (a.edits || [])) {
@@ -402,9 +411,24 @@ function reducer(s, a) {
       if (mode === 'new') customFields = [...customFields, newField]
       customFields = customFields.filter(f => !keysToRemove.includes(f.key))
 
+      // The merged row inherits whatever the FIRST selected source was
+      // feeding (a new row has no assignments of its own to carry over;
+      // 'existing' mode keeps destKey's own, already correct as-is) — same
+      // "first source wins" precedent the old target/sign inheritance used.
+      // Every source's assignments are dropped either way once its key is
+      // removed below, so nothing doubles up.
+      let fieldAssignments = s.data.fieldAssignments || []
+      if (mode === 'new') {
+        const inherited = fieldAssignments
+          .filter(x => x.field === sourceKeys[0])
+          .map(x => ({ ...x, field: finalDestKey }))
+        fieldAssignments = [...fieldAssignments, ...inherited]
+      }
+      fieldAssignments = fieldAssignments.filter(x => !keysToRemove.includes(x.field))
+
       const data = table === 'income'
-        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, customFields }
-        : { ...s.data, [histKey]: newHistory, customFields }
+        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, customFields, fieldAssignments }
+        : { ...s.data, [histKey]: newHistory, customFields, fieldAssignments }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
@@ -466,17 +490,28 @@ function reducer(s, a) {
     // only the definition (label, which statement, optional normalization
     // mapping) needs its own storage, kept on `data` the same way
     // confirmedPeers/growthWindowYears already are (per-ticker, persisted).
+    // a.field: { key, label, table } — a plain reference row, no mapping.
+    // a.assignments (optional): [{ kind, target|formula, bucket, sign }] —
+    // filled in with field:a.field.key and appended, so a row can be wired
+    // into a normalization/formula the moment it's created rather than
+    // needing a second trip through SET_ASSIGNMENTS_FOR_FIELD.
     case 'ADD_CUSTOM_FIELD': {
       if (!s.data) return s
       const customFields = [...(s.data.customFields || []), a.field]
-      return { ...s, data: { ...s.data, customFields } }
+      const newAssignments = (a.assignments || []).map(x => ({ ...x, field: a.field.key }))
+      const fieldAssignments = newAssignments.length
+        ? [...(s.data.fieldAssignments || []), ...newAssignments]
+        : s.data.fieldAssignments
+      return { ...s, data: { ...s.data, customFields, fieldAssignments } }
     }
-    // Removing a custom row also strips its values off every history row —
-    // otherwise the values would silently linger, orphaned, under a key no
-    // longer listed anywhere for the grid to show or let the user manage.
+    // Removing a custom row also strips its values off every history row,
+    // and any assignments it fed (a formula bucket, a restatement target) —
+    // otherwise both would silently linger, orphaned, under a key no longer
+    // listed anywhere for the grid to show or let the user manage.
     case 'REMOVE_CUSTOM_FIELD': {
       if (!s.data) return s
       const customFields = (s.data.customFields || []).filter(f => f.key !== a.key)
+      const fieldAssignments = (s.data.fieldAssignments || []).filter(x => x.field !== a.key)
       const strip = rows => (rows || []).map(r => {
         if (!(a.key in r)) return r
         const { [a.key]: _drop, ...rest } = r
@@ -485,11 +520,25 @@ function reducer(s, a) {
       const data = {
         ...s.data,
         customFields,
+        fieldAssignments,
         reportedIncomeHistory: strip(s.data.reportedIncomeHistory || s.data.incomeHistory),
-        incomeHistory: strip(s.data.incomeHistory),
         balanceHistory: strip(s.data.balanceHistory),
         cashflowHistory: strip(s.data.cashflowHistory),
       }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      return { ...s, data, ...computed }
+    }
+    // Replaces every assignment for ONE field with a.assignments in a single
+    // go — the "+ add another" list UI (HistoryTableModal's Formulas tab)
+    // edits a field's whole assignment set as a unit rather than issuing one
+    // dispatch per add/remove. a.assignments: [{ kind, target|formula,
+    // bucket, sign }] — field is filled in here, not by the caller.
+    case 'SET_ASSIGNMENTS_FOR_FIELD': {
+      if (!s.data) return s
+      const rest = (s.data.fieldAssignments || []).filter(x => x.field !== a.field)
+      const mine = (a.assignments || []).map(x => ({ ...x, field: a.field }))
+      const data = { ...s.data, fieldAssignments: [...rest, ...mine] }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
@@ -532,42 +581,34 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // change. Idempotent — a no-op once the old array is gone, so calling it
   // again inside migrateStoredData() below is harmless.
   data = migrateNormalizedTable(data)
-// Reported basis by default; normalized only when the user has restated years
+// reportedIncomeHistory is the ONE income table — the true as-reported
+  // baseline, PLUS netProfitNormalized/epsNormalized as real sibling fields
+  // on the same rows (materializeIncomeNormalization, right below) whenever
+  // normalization applies, same discipline recomputeNormalizedTargets
+  // already applies to the other ten fields. There used to also be a
+  // separate `incomeHistory` array — the whole row set copied again, just
+  // to pre-resolve which of TWO fields (netProfit, eps) the current basis
+  // toggle should show — which meant every consumer read a duplicated
+  // array instead of the one real table, and (before a separate fix)
+  // that duplicate was even being persisted to IndexedDB alongside the
+  // original. Gone: every consumer now reads reportedIncomeHistory
+  // directly and resolves netProfit/eps — and every other normalizable
+  // field — itself via activeValue (dataQuality.js) against data.basis,
+  // right where it's actually needed — not a whole array pre-resolved on
+  // the chance something might ask.
+  // Falls back to a legacy `incomeHistory` for a record from before the
+  // reported/active split existed at all.
+  const reportedBase = data.reportedIncomeHistory ?? data.incomeHistory ?? []
+  // Reported basis by default; normalized only when the user has restated years
   // AND toggled to it. One-offs are never silently adjusted — assessDataQuality
   // now only flags them (dq.flags); correction is manual via reconstruction.
-  const dq = assessDataQuality(data?.incomeHistory || [], {
+  const dq = assessDataQuality(reportedBase, {
     balanceHistory: data?.balanceHistory || [],
     cashflowHistory: data?.cashflowHistory || [],
   })
-  // reportedIncomeHistory is a SEPARATE, persisted source — the true
-  // as-reported baseline. It is seeded ONCE, on the very first computeAll
-  // call a fresh fetch/paste ever sees (when genuinely absent), and left
-  // untouched on every call after that. computeAll runs on every basis
-  // toggle and every price tick, so re-deriving it from whatever
-  // data.incomeHistory currently holds — as this used to do — meant the
-  // ACTIVE series (already normalized, after the first toggle) permanently
-  // overwrote the reported baseline on every subsequent recompute. Genuine
-  // reported-data events (initial fetch, a pasted new year, a restated
-  // figure) update it explicitly at the call site instead — see
-  // MERGE_PASTED, the one place besides this bootstrap that's allowed to.
-  const reportedBase = data.reportedIncomeHistory ?? data.incomeHistory
-  // The ACTIVE series always re-derives from reportedBase (never from the
-  // previous call's incomeHistory), so toggling the basis back and forth is
-  // always correct regardless of how many recomputes happened while
-  // normalized. There is no second table any more — normalized netProfit/eps
-  // are computed live, per row, from that SAME row's own fields
-  // (computeNormalizedRow: a manual netProfitNormalized/epsNormalized
-  // override from NormalizeModal if present, else derived from the
-  // exceptional-items group Screener discloses, else unchanged). Every other
-  // field always comes straight from reportedBase, untouched — normalization
-  // in this app only ever adjusts netProfit and eps.
-  const income = opts.basis === 'normalized'
-    ? reportedBase.map(row => {
-        const n = computeNormalizedRow(row)
-        return n ? { ...row, netProfit: n.netProfit, eps: n.eps } : row
-      })
-    : reportedBase
-  data = { ...data, incomeHistory: income, reportedIncomeHistory: reportedBase }
+  const reportedIncomeHistory = materializeIncomeNormalization(reportedBase)
+  const { incomeHistory: _legacyIncomeHistory, ...dataWithoutIncome } = data
+  data = { ...dataWithoutIncome, reportedIncomeHistory }
   data = applyDocFacts(migrateStoredData(data), arData)
   // Rewrites every {target}Normalized row from its current reported value
   // and its current custom-row contributors — the one chokepoint every
@@ -578,6 +619,21 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // recomputeNormalizedTargets for why this writes a real, stored,
   // inspectable row instead of computing the figure only for display.
   data = recomputeNormalizedTargets(data)
+  // Normalize for everything, not a toggle between two equally-weighted
+  // views: every restatement in this app is an explicit, evidence-based,
+  // user-confirmed correction (a NormalizeModal entry, a restatement-tool
+  // mapping) — never an algorithmic guess — so once one exists, it IS the
+  // better figure, the same way a Screener paste automatically outranks a
+  // Yahoo fallback with no toggle involved. `data.basis` unset (no explicit
+  // choice ever made, via the header's Reported/Normalized button)
+  // defaults to 'normalized' the moment there's anything to normalize,
+  // instead of silently sitting on unrestated figures until someone
+  // remembers to click a switch. An EXPLICIT choice — 'reported', to audit
+  // the raw as-disclosed numbers, or 'normalized' again after that — always
+  // wins outright; this only fills the gap before either was ever chosen.
+  if (data.basis == null && hasAnyNormalization(data)) {
+    data = { ...data, basis: 'normalized' }
+  }
   // The growth window reaches ratios, so every consumer — stage classification,
   // fair value, market expectation, the AI verdict and the dashboard card — uses
   // the same figure the user chose.
@@ -600,6 +656,52 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   return { data, ratioResult, sectorType, stage, valuation, technicals, quality, marketExpectation }
 }
 
+// computeAll no longer produces a separate incomeHistory array at all —
+// reportedIncomeHistory is the one income table, with netProfitNormalized/
+// epsNormalized as real sibling fields on its own rows (see
+// materializeIncomeNormalization). So there's nothing left to strip out for
+// income specifically; this is now just the storage chokepoint for trimming
+// price history down to what's actually useful to keep — see
+// trimPriceHistoryForStorage.
+function forStorage(payload) {
+  return trimPriceHistoryForStorage(payload)
+}
+
+// The FETCH stays unbounded (api/yahoo.js's own period1=epoch, deliberately
+// — see its comment: a fixed window used to cap the multiple-band pairing
+// at whatever years it allowed, regardless of how far back the pasted
+// statement history actually went). But nothing ever calculates with price
+// data older than this ticker's OWN statement history reaches, plus a
+// margin for a beta/CAGR window that looks slightly past it — so nothing is
+// lost by not KEEPING what was fetched only to satisfy that one pairing
+// need. At a portfolio of 100-150 tracked tickers, unbounded daily OHLCV
+// alone can exceed the entire 40MB cache budget (db.js) on its own — ~85MB
+// for 150 tickers at 25 years of history, measured — crowding out hand-
+// pasted Screener data (a real, hard-to-reproduce loss) to make room for
+// price data that's a lossless, trivial re-fetch, well before either
+// should ever be evicted.
+function trimPriceHistoryForStorage(payload) {
+  const data = payload?.data
+  const ph = data?.priceHistory
+  if (!ph?.length) return payload
+  const incomeYears = (data.reportedIncomeHistory || data.incomeHistory || [])
+    .map(r => parseInt(r.year, 10)).filter(Number.isFinite)
+  const earliestStatementYear = incomeYears.length ? Math.min(...incomeYears) : null
+  // Whichever needs MORE history: 5 years past the earliest pasted
+  // statement (covers a beta/CAGR window that looks slightly further back
+  // than the statements themselves), or a flat 10-year floor so a ticker
+  // with little or no pasted history yet still keeps a reasonable window
+  // for technicals/beta rather than being trimmed to almost nothing.
+  const cutoffYear = Math.min(
+    earliestStatementYear != null ? earliestStatementYear - 5 : Infinity,
+    new Date().getFullYear() - 10
+  )
+  const cutoff = `${cutoffYear}-01-01`
+  const trimmed = ph.filter(r => r.date >= cutoff)
+  if (trimmed.length === ph.length) return payload
+  return { ...payload, data: { ...data, priceHistory: trimmed } }
+}
+
 export function AppProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, initial)
   const { lastPulledAt } = useSync()
@@ -609,13 +711,13 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (state.status !== 'success' || !state.ticker || !state.data) return
     const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data.basis }) }
-    try { setCached(state.ticker, payload) } catch {}
+    try { setCached(state.ticker, forStorage(payload)) } catch {}
     // Sync merged financials (they hold pasted Screener history the user built).
     // Pure Yahoo data is re-fetchable, so it isn't synced. Shape must match what
     // setCached writes: { key, data: payload, ... }.
     if (state.data.deepSource === 'screener') {
       const t = state.ticker.toUpperCase()
-      queuePush(`financials:${t}`, { key: t, data: payload, timestamp: Date.now(), lastAccessed: Date.now() })
+      queuePush(`financials:${t}`, { key: t, data: forStorage(payload), timestamp: Date.now(), lastAccessed: Date.now() })
     }
   }, [state.data])   // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -665,7 +767,7 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (state.status === 'success' && state.data?.price != null && state.ticker) {
       const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data.basis }) }
-      setCached(state.ticker, payload).catch(() => {})
+      setCached(state.ticker, forStorage(payload)).catch(() => {})
     }
   }, [state.data?.price])
   
@@ -691,6 +793,27 @@ export function AppProvider({ children }) {
         pinnedWindow = cached.data?.growthWindowYears ?? null
         const computed = computeAll(cached.data, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { growthWindowYears: pinnedWindow, basis: cached.data?.basis })
         dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, growthWindowYears: pinnedWindow } })
+        // Empty priceHistory here means either a genuinely fresh record or
+        // db.js's own staleness sweep cleared it (see sweepStalePriceHistory
+        // — it's the one thing safe to drop from an unvisited ticker's
+        // cache, since it's a lossless re-fetch unlike the pasted
+        // financials). Silently backfill it now that this ticker is
+        // actually being opened again. Fire-and-forget, after the dispatch
+        // above — the user sees their data immediately; price history fills
+        // in a moment later rather than delaying the render. Inlined
+        // (rather than calling the refreshPriceHistory callback below)
+        // because that callback closes over `state`, which would still be
+        // whatever it was on mount here — this uses the ticker already
+        // correctly scoped to this call instead.
+        if (!cached.data?.priceHistory?.length) {
+          fetch(`/api/yahoo?endpoint=all&ticker=${encodeURIComponent(ticker)}`)
+            .then(res => res.ok ? res.json() : null)
+            .then(json => {
+              const fresh = Array.isArray(json?.history) ? json.history : null
+              if (fresh?.length) dispatch({ type: 'PRICE_HISTORY_UPDATE', priceHistory: fresh })
+            })
+            .catch(() => {})
+        }
         return
       }
 
@@ -704,7 +827,7 @@ export function AppProvider({ children }) {
 
       const computed = computeAll(data, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow })
       const payload  = { data, ...computed, growthWindowYears: pinnedWindow }
-      await setCached(ticker, payload)
+      await setCached(ticker, forStorage(payload))
       dispatch({ type: 'FETCH_SUCCESS', payload })
 
     } catch (err) {
@@ -959,10 +1082,11 @@ export function AppProvider({ children }) {
     dispatch({ type: 'EDIT_HISTORY_CELLS', tableType, edits })
   }, [])
 
-  // field: { key, label, table, target, sign } — target/sign null for a
-  // plain reference row. See ADD_CUSTOM_FIELD.
-  const addCustomField = useCallback((field) => {
-    dispatch({ type: 'ADD_CUSTOM_FIELD', field })
+  // field: { key, label, table } — a plain reference row. assignments
+  // (optional): [{ kind, target|formula, bucket, sign }], wired in at
+  // creation. See ADD_CUSTOM_FIELD.
+  const addCustomField = useCallback((field, assignments) => {
+    dispatch({ type: 'ADD_CUSTOM_FIELD', field, assignments })
   }, [])
 
   const removeCustomField = useCallback((key) => {
@@ -972,8 +1096,14 @@ export function AppProvider({ children }) {
   // One or more named rows created in a single go, each with its own values
   // — NormalizeModal's restatement paste, which can map several distinct
   // line items to targets at once. See ADD_CUSTOM_FIELDS_BATCH.
-  const addCustomFieldsBatch = useCallback((fields, edits) => {
-    dispatch({ type: 'ADD_CUSTOM_FIELDS_BATCH', fields, edits })
+  const addCustomFieldsBatch = useCallback((fields, edits, assignments) => {
+    dispatch({ type: 'ADD_CUSTOM_FIELDS_BATCH', fields, edits, assignments })
+  }, [])
+
+  // Replace a field's entire assignment list in one go — what does this row
+  // feed, into which bucket(s), with what sign. See SET_ASSIGNMENTS_FOR_FIELD.
+  const setAssignmentsForField = useCallback((field, assignments) => {
+    dispatch({ type: 'SET_ASSIGNMENTS_FOR_FIELD', field, assignments })
   }, [])
 
   // Combine several custom rows into one. opts: { mode: 'new', newField } to
@@ -1035,7 +1165,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>

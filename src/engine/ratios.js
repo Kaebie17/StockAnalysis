@@ -23,39 +23,43 @@
  * how they combine.
  */
 import { detectSectorType, SECTOR_TYPES } from './stage.js'
+import { activeValue } from './dataQuality.js'
+import { computeDerivedFormulaForRow } from './formulas.js'
 
-export function grossProfitOf(row) {
+export function grossProfitOf(row, basis) {
   const gp  = row?.grossProfit?.value
   if (gp != null) return gp
-  const rev = row?.revenue?.value, cogs = row?.cogs?.value
+  // grossProfit/cogs are never normalization targets themselves, but
+  // revenue (the fallback input when grossProfit isn't directly reported)
+  // is — same activeValue resolution as everywhere else, so gross margin
+  // doesn't silently stay on unrestated revenue while every other margin
+  // reflects the current basis.
+  const rev = activeValue(row, 'revenue', basis)?.value, cogs = row?.cogs?.value
   return (rev != null && cogs != null) ? rev - cogs : null
 }
 
 /**
- * Operating net working capital, for one balance-sheet row: tradeReceivables
- * + inventories − tradePayables − advanceFromCustomers. Deliberately just
- * these four — Screener's other current-asset/liability catch-alls (Loans
- * n Advances, Other asset/liability items) aren't tracked at all; checked
- * against a real AR, Screener's own total for that catch-all didn't
- * reconcile with what the company actually discloses (a coverage gap, not
- * a classification one — see metrics.js's comment above tradeReceivables),
- * so there's nothing reliable to add in. This is the standard figure the
- * base DCF/FCFF work uses; a fuller, AR-sourced NWC is a separate,
- * restatement-tool job, not this function's.
- * Returns null if any of the four is missing for this row — no partial sum.
+ * Operating net working capital, for one balance-sheet row — current
+ * operating assets minus current operating liabilities, per the "nwc"
+ * formula's OWN bucket assignments (formulas.js), not a hardcoded field
+ * list. tradeReceivables/inventories/tradePayables/advanceFromCustomers are
+ * seeded as its defaults (seedFormulaDefaults) the moment a ticker has
+ * balance-sheet data, so this behaves exactly as before for any ticker that
+ * hasn't touched the Formulas tab — but a user who's added another current
+ * asset/liability row there (or removed a default that didn't apply) is
+ * reflected here too, rather than this function silently working off a
+ * stale, separate copy of what NWC means.
+ * Returns null if either bucket ends up with nothing assigned/valued for
+ * this row — no partial sum.
  */
-export function netWorkingCapitalOf(row) {
-  const ar   = row?.tradeReceivables?.value
-  const inv  = row?.inventories?.value
-  const ap   = row?.tradePayables?.value
-  const adv  = row?.advanceFromCustomers?.value
-  if (ar == null || inv == null || ap == null || adv == null) return null
-  return (ar + inv) - (ap + adv)
+export function netWorkingCapitalOf(data, row) {
+  return computeDerivedFormulaForRow(data, 'nwc', row)?.output ?? null
 }
 
 export function calcRatios(data, opts = {}) {
-  const { price, marketCap: marketCapRaw, shares: sharesRaw, incomeHistory,
-          balanceHistory, cashflowHistory, meta } = data
+  const { price, marketCap: marketCapRaw, shares: sharesRaw,
+          reportedIncomeHistory: incomeHistory,
+          balanceHistory, cashflowHistory, meta, basis } = data
 
   // Which ratios even apply is sector-dependent — see NIM below.
   const sectorType = detectSectorType(data)
@@ -115,14 +119,21 @@ export function calcRatios(data, opts = {}) {
     return m ? Number(m[0]) : null
   }
   // ── Core raw values ────────────────────────────────────────────────────────
-  const revenue     = val(latestI.revenue)
-  const opProfit    = val(latestI.operatingProfit)
-  const depreciation= val(latestI.depreciation)
-  const interest    = val(latestI.interest)
-  const netProfit   = val(latestI.netProfit)
+  // revenue/opProfit/depreciation/interest/tax/netProfit/eps/capex are ALL
+  // normalization targets (normalizationTargets.js) — the restatement tool
+  // can and does write a {field}Normalized sibling for any of them, so every
+  // one of them is read through activeValue, not just netProfit/eps. Fields
+  // that are never restatement targets (otherIncome, profitBeforeTax,
+  // totalEquity, totalDebt, cash, totalAssets, fixedAssets, ...) are read
+  // directly, as before — there is no Normalized sibling for those to miss.
+  const revenue     = val(activeValue(latestI, 'revenue', basis))
+  const opProfit    = val(activeValue(latestI, 'operatingProfit', basis))
+  const depreciation= val(activeValue(latestI, 'depreciation', basis))
+  const interest    = val(activeValue(latestI, 'interest', basis))
+  const netProfit   = val(activeValue(latestI, 'netProfit', basis))
   const otherIncome = val(latestI.otherIncome)
   let pbt = val(latestI.profitBeforeTax) ?? val(latestI.pbt)
-  let tax = val(latestI.tax)
+  let tax = val(activeValue(latestI, 'tax', basis))
   // Derive-if-missing via the P&L identity — only when absent, never over source.
   if (pbt == null && opProfit != null) {
     pbt = opProfit + (otherIncome || 0) - (interest || 0) - (depreciation || 0)
@@ -178,7 +189,7 @@ export function calcRatios(data, opts = {}) {
   const fixedNow    = val(latestB.fixedAssets)
   const fixedPrev   = val(prevB.fixedAssets)
 
-  let capex      = val(latestCF.capex)
+  let capex      = val(activeValue(latestCF, 'capex', basis))
   let capexBasis = capex != null ? 'reported' : null
   if (capex == null && fixedNow != null && fixedPrev != null && depreciation != null) {
     const c = (fixedNow - fixedPrev) + depreciation
@@ -225,7 +236,7 @@ export function calcRatios(data, opts = {}) {
   const marketCap = marketCapRaw ?? ((price != null && shares != null) ? price * shares : null)
 
   // EPS: statement → derive
-  const epsRaw = val(latestI.eps)
+  const epsRaw = val(activeValue(latestI, 'eps', basis))
   const eps = epsRaw ?? calc('Net Profit ÷ Shares', netProfit, shares, (n, s) => n / s)
 
   // ── EBITDA ─────────────────────────────────────────────────────────────────
@@ -257,7 +268,7 @@ export function calcRatios(data, opts = {}) {
   // never respected the growth-window slider. This is the real multi-year,
   // window-respecting figure.
   const npSeries = incomeReal
-    .map(r => ({ year: yearOf(r), value: val(r.netProfit) }))
+    .map(r => ({ year: yearOf(r), value: val(activeValue(r, 'netProfit', basis)) }))
     .filter(p => p.year != null && p.value > 0)
     .sort((a, b) => a.year - b.year)
   const { cagr: npCagr, windowYears: npCagrWindowYears } = windowedCagr(npSeries, opts)
@@ -279,7 +290,7 @@ export function calcRatios(data, opts = {}) {
   //   2. revenue - cogs            -> calculated
   //   3. operating-margin proxy    -> ONLY where there is genuinely no COGS line
   //      (Indian P&L). Never on a US filer that simply failed a tag lookup.
-  const gpHist          = grossProfitOf(latestI)
+  const gpHist          = grossProfitOf(latestI, basis)
   const gpFormula       = val(latestI.grossProfit) != null
     ? 'Gross Profit ÷ Revenue × 100'
     : 'Gross Profit (Revenue − COGS) ÷ Revenue × 100'
@@ -359,8 +370,8 @@ export function calcRatios(data, opts = {}) {
   const fcfConversion = pct(fcf, netProfit)
 
   // ── Growth ─────────────────────────────────────────────────────────────────
-  const prevRev    = val(prevI.revenue)
-  const prevNP     = val(prevI.netProfit)
+  const prevRev    = val(activeValue(prevI, 'revenue', basis))
+  const prevNP     = val(activeValue(prevI, 'netProfit', basis))
   const revGrowthYoY = pct(revenue - (prevRev || 0), prevRev)
   const npGrowthYoY  = pct(netProfit - (prevNP || 0), prevNP)
 

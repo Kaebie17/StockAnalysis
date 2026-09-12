@@ -1,4 +1,6 @@
 
+import { activeValue } from './dataQuality.js'
+
 /**
  * src/engine/stage.js
  *
@@ -107,7 +109,7 @@ export function detectSectorType(data) {
 }
 
 export function detectStage(data, ratioResult) {
-  const inc = data?.incomeHistory || []
+  const inc = data?.reportedIncomeHistory || []
   const rev = ratioResult?.revenue
 
   if (!rev || rev <= 0) return 'PRE_REVENUE'
@@ -120,7 +122,7 @@ export function detectStage(data, ratioResult) {
   // Is the company CONSISTENTLY profitable? A thin margin alone must NOT be read
   // as "not yet profitable" — a low-margin business (e.g. EMS/retail) can be very
   // profitable on capital (high ROE) and have a long record of positive profit.
-  const npYears = inc.map(y => y?.netProfit?.value).filter(v => v != null)
+  const npYears = inc.map(y => activeValue(y, 'netProfit', data?.basis)?.value).filter(v => v != null)
   const recent  = npYears.slice(-4)
   const positiveCount = recent.filter(v => v > 0).length
   const consistentlyProfitable =

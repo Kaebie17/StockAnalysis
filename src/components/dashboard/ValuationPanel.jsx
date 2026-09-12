@@ -521,7 +521,7 @@ function EstimateRevisions({ state }) {
     opMargin:  r.ratios?.operatingMargin?.value != null ? r.ratios.operatingMargin.value / 100 : null,
     nim: r.ratios?.nim?.value ?? null,
     // For deriving a segment's share of revenue rather than asking for it.
-    incomeHistory: state.data?.incomeHistory || [],
+    incomeHistory: state.data?.reportedIncomeHistory || [],
     // Segment percentages named in the annual report text — step 2 of the
     // precedence chain. Parsed here rather than stored, since the AR text is
     // already in state and the parse is cheap.

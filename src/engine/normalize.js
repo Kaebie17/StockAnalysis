@@ -8,6 +8,8 @@
  * ALL values stored with resolution metadata: { value, status, formula }
  */
 import { computeNormalizedRow } from './dataQuality.js'
+import { METRICS } from './metrics.js'
+import { seedFormulaDefaults } from './formulas.js'
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
@@ -32,7 +34,7 @@ export function applyDocFacts(data, arData) {
     balance:  ['cash', 'totalDebt', 'totalEquity', 'totalAssets'],
     cashflow: ['capex', 'operatingCF', 'freeCashFlow'],
   }
-  const HISTORY = { income: 'incomeHistory', balance: 'balanceHistory', cashflow: 'cashflowHistory' }
+  const HISTORY = { income: 'reportedIncomeHistory', balance: 'balanceHistory', cashflow: 'cashflowHistory' }
 
   // Land each figure on the year the DOCUMENT is for, not blindly on the latest
   // row. An FY23 annual report's cash belongs on FY23. Dropping it on FY25 was a
@@ -99,6 +101,9 @@ export function applyDocFacts(data, arData) {
 export function migrateStoredData(data) {
   data = migrateNormalizedTable(data)
   data = dropTTMRows(data)
+  data = fixAlwaysPositiveFields(data)
+  data = migrateCustomFieldAssignments(data)
+  data = seedFormulaDefaults(data)
   if (!data?.cashflowHistory) return data
   const STALE = /Operating CF\s*[x\u00d7*]\s*0\.7/i
   let scrubbed = 0
@@ -112,6 +117,68 @@ export function migrateStoredData(data) {
   })
   if (!scrubbed) return data
   return { ...data, cashflowHistory, migrated: scrubbed }
+}
+
+/**
+ * Retroactively force positive any stored value for a metrics.js field
+ * marked alwaysPositive (currently just capex \u2014 a spend magnitude, never a
+ * signed quantity, see metrics.js). The ingestion-side fix (pasteParser.js,
+ * normalizeScreener, EDIT_HISTORY_CELLS) only stops a NEW write from going
+ * in wrong; a record already saved before that fix landed \u2014 with whatever
+ * sign was in the original pasted Screener cash-flow row, which shows an
+ * outflow negative the same way the rest of that statement does \u2014 stays
+ * wrong forever unless something corrects it on read. This is that
+ * something: runs on every load, corrects any lingering negative in place,
+ * and is a no-op once a record's already clean (recomputing Math.abs on an
+ * already-positive value changes nothing).
+ */
+function fixAlwaysPositiveFields(data) {
+  if (!data) return data
+  const alwaysPositiveKeys = Object.entries(METRICS)
+    .filter(([, m]) => m.alwaysPositive)
+    .map(([k]) => k)
+  if (!alwaysPositiveKeys.length) return data
+
+  let out = data
+  for (const key of alwaysPositiveKeys) {
+    const table = METRICS[key].table
+    const histKey = table === 'income' ? 'reportedIncomeHistory' : `${table}History`
+    const arr = table === 'income' ? (out.reportedIncomeHistory || out.incomeHistory) : out[histKey]
+    if (!arr?.some(r => r?.[key]?.value < 0)) continue
+    const fixed = arr.map(row => {
+      const v = row?.[key]?.value
+      if (v == null || v >= 0) return row
+      return { ...row, [key]: { ...row[key], value: Math.abs(v) } }
+    })
+    out = table === 'income'
+      ? { ...out, reportedIncomeHistory: fixed }
+      : { ...out, [histKey]: fixed }
+  }
+  return out
+}
+
+/**
+ * A custom row used to carry its normalization mapping directly on itself —
+ * {key, label, table, target, sign} — good for exactly one destination per
+ * row. That's now generalized: a row can feed several formulas/targets at
+ * once via data.fieldAssignments (formulas.js), so target/sign are retired
+ * as storage — this converts any still sitting in an old record into the
+ * equivalent fieldAssignments entry ({field: key, kind: 'restatement',
+ * target, sign}) and drops them off the customField object, once, so this
+ * is a no-op on every subsequent load.
+ */
+function migrateCustomFieldAssignments(data) {
+  const customFields = data?.customFields || []
+  if (!customFields.some(f => f.target)) return data
+  const assignments = [...(data.fieldAssignments || [])]
+  const cleaned = customFields.map(f => {
+    if (!f.target) return f
+    const already = assignments.some(a => a.field === f.key && a.kind === 'restatement' && a.target === f.target)
+    if (!already) assignments.push({ field: f.key, kind: 'restatement', target: f.target, sign: f.sign ?? 1 })
+    const { target, sign, ...rest } = f
+    return rest
+  })
+  return { ...data, customFields: cleaned, fieldAssignments: assignments }
 }
 
 /**
@@ -138,7 +205,6 @@ function dropTTMRows(data) {
   }
   const out = {
     ...data,
-    incomeHistory:         strip(data?.incomeHistory),
     reportedIncomeHistory: strip(data?.reportedIncomeHistory),
     balanceHistory:        strip(data?.balanceHistory),
     cashflowHistory:       strip(data?.cashflowHistory),

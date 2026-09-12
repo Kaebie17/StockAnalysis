@@ -15,7 +15,7 @@ export default function GrowthWindowPicker() {
   const { state, setGrowthWindowYears } = useApp()
   const { estimate } = useEstimate(state)
 
-  const years = (state.data?.incomeHistory || [])
+  const years = (state.data?.reportedIncomeHistory || [])
     .map(r => String(r?.year ?? '').match(/(?:19|20)\d{2}/)?.[0])
     .filter(Boolean).length
   if (years < 3) return null

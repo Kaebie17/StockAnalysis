@@ -6,6 +6,7 @@ import { useEstimate } from '../../store/useEstimate.js'
 import { fmtPctPlain, fmtMultiple, fmtCurrency } from '../../utils/format.js'
 import ProvenanceTag from '../ProvenanceTag.jsx'
 import { tierFromStatus } from '../../engine/methodologyTier.js'
+import { activeValue } from '../../engine/dataQuality.js'
 
 function RatioCard({ label, tagged, fmt }) {
   const display = tagged?.value != null ? fmt(tagged.value) : '—'
@@ -100,21 +101,26 @@ export default function FundamentalsPanel({ open, onClose }) {
   const cur     = data.currency === 'INR' ? '₹' : '$'
   // Label follows the ACTUAL window the engine used.
   const cagrYears = ratios?.revCagrWindowYears?.value
-  ?? Math.max(1, (data.incomeHistory || []).length - 1)
+  ?? Math.max(1, (data.reportedIncomeHistory || []).length - 1)
   const div     = data.currency === 'INR' ? 1e7 : 1e6
   const unit    = data.currency === 'INR' ? 'Cr' : 'M'
 
-  const incomeChart = data.incomeHistory.map(row => ({
-    year:      row.year,
-    Revenue:   row.revenue?.value     != null ? +(row.revenue.value     / div).toFixed(0) : null,
-    NetProfit: row.netProfit?.value   != null ? +(row.netProfit.value   / div).toFixed(0) : null,
-    OpProfit:  row.operatingProfit?.value != null ? +(row.operatingProfit.value / div).toFixed(0) : null,
-  })).filter(r => r.Revenue != null)
+  const incomeChart = data.reportedIncomeHistory.map(row => {
+    const rev = activeValue(row, 'revenue', data.basis)?.value
+    const np  = activeValue(row, 'netProfit', data.basis)?.value
+    const op  = activeValue(row, 'operatingProfit', data.basis)?.value
+    return {
+      year:      row.year,
+      Revenue:   rev != null ? +(rev / div).toFixed(0) : null,
+      NetProfit: np  != null ? +(np  / div).toFixed(0) : null,
+      OpProfit:  op  != null ? +(op  / div).toFixed(0) : null,
+    }
+  }).filter(r => r.Revenue != null)
 
-  const marginChart = data.incomeHistory.map(row => {
-    const rev = row.revenue?.value
-    const np  = row.netProfit?.value
-    const op  = row.operatingProfit?.value
+  const marginChart = data.reportedIncomeHistory.map(row => {
+    const rev = activeValue(row, 'revenue', data.basis)?.value
+    const np  = activeValue(row, 'netProfit', data.basis)?.value
+    const op  = activeValue(row, 'operatingProfit', data.basis)?.value
     const eb  = row.ebitda?.value
     return {
       year:       row.year,

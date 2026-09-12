@@ -6,9 +6,24 @@ import {
 import { queuePush } from '../sync/sync.js'
 import { useSync } from '../sync/SyncProvider.jsx'
 import { buildEstimate } from '../engine/estimate.js'
+import { activeValue } from '../engine/dataQuality.js'
 import { rebuildSnapshot } from '../engine/snapshotRebuild.js'
 import { fetchRegimeOn, fetchMarketRegime } from '../api/marketRegime.js'
 import { analyzeTicker } from './analyzeTicker.js'
+
+// estimate.js's buildEstimate takes incomeHistory as a plain parameter and
+// doesn't know about normalization — this resolves the basis once, from
+// reportedIncomeHistory (the one real table), the same way useEstimate.js's
+// own activeIncomeHistory does. Built fresh wherever it's needed, never
+// attached to state.data, never persisted.
+function activeIncomeHistory(data) {
+  return (data?.reportedIncomeHistory || []).map(row => ({
+    ...row,
+    netProfit: activeValue(row, 'netProfit', data?.basis),
+    eps: activeValue(row, 'eps', data?.basis),
+    revenue: activeValue(row, 'revenue', data?.basis),
+  }))
+}
 
 /**
  * usePositions — the read/write layer for stocks the user actually owns.
@@ -62,7 +77,7 @@ export function buildSnapshot({ state, buyDate, regime }) {
     guidedGrowth: (assumptions?.nearTermGrowth != null && isFinite(assumptions.nearTermGrowth))
       ? assumptions.nearTermGrowth : null,
     priceHistory:   data?.priceHistory   || [],
-    incomeHistory:  data?.incomeHistory  || [],
+    incomeHistory:  activeIncomeHistory(data),
     balanceHistory: data?.balanceHistory || [],
   }) : null
 
@@ -143,7 +158,7 @@ export async function recordBuy({ ticker, name, shares, buyPrice, buyDate, note,
         guidedGrowth: (state.assumptions?.nearTermGrowth != null && isFinite(state.assumptions.nearTermGrowth))
           ? state.assumptions.nearTermGrowth : null,
         priceHistory:   state.data?.priceHistory   || [],
-        incomeHistory:  state.data?.incomeHistory  || [],
+        incomeHistory:  activeIncomeHistory(state.data),
         balanceHistory: state.data?.balanceHistory || [],
       })
       if (est.ok) await saveEstimate(ticker, est, { trigger: 'purchase' })
@@ -316,7 +331,7 @@ export async function backfillSnapshot(position, analysis) {
 
   const est = buildEstimate(analysis.ratioResult, {
     priceHistory:   analysis.data?.priceHistory   || [],
-    incomeHistory:  analysis.data?.incomeHistory  || [],
+    incomeHistory:  activeIncomeHistory(analysis.data),
     balanceHistory: analysis.data?.balanceHistory || [],
   })
   if (!est?.ok) return null

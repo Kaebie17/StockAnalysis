@@ -56,7 +56,7 @@ const latestFiscalRow = (arr) => {
 }
 
 function resolvedValues(r, data) {
-  const latestI = latestFiscalRow(data?.incomeHistory) || {}
+  const latestI = latestFiscalRow(data?.reportedIncomeHistory) || {}
   const latestC = latestFiscalRow(data?.cashflowHistory) || {}
   const latestB = latestFiscalRow(data?.balanceHistory) || {}
   return {

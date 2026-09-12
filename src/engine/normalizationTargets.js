@@ -12,6 +12,7 @@
  * of it here.
  */
 import { METRICS } from './metrics.js'
+import { activeValue } from './dataQuality.js'
 
 export const NORMALIZATION_TARGET_KEYS = [
   'revenue', 'operatingProfit', 'interest', 'tax', 'depreciation', 'capex',
@@ -163,10 +164,16 @@ export function availableTargets(data) {
  * correct by being RECOMPUTED AND REWRITTEN (not read fresh each time)
  * whenever something that feeds it changes — see recomputeNormalizedTargets.
  */
+// Same lookup dataQuality.js's activeValue uses for every calculation
+// consumer — this is its display-purpose twin: the data table's own
+// "(Normalized)" audit rows always show the computed figure when one
+// exists, regardless of which basis the rest of the app is currently
+// viewing (that's the whole point of an audit row), where activeValue
+// respects the toggle because a CALCULATION needs to know which basis it's
+// actually running on. Same field, same {key}Normalized convention, same
+// underlying rule — just called with basis hard-pinned to 'normalized'.
 export function normalizedFieldValue(row, key) {
-  const normalized = row?.[`${key}Normalized`]
-  if (normalized?.value != null) return normalized
-  return row?.[key] ?? null
+  return activeValue(row, key, 'normalized') ?? null
 }
 
 /**
@@ -187,10 +194,11 @@ export function normalizedFieldValue(row, key) {
  */
 export function recomputeNormalizedTargets(data) {
   const customFields = data?.customFields || []
-  const targetsInUse = new Set(customFields.map(f => f.target).filter(Boolean))
+  const restatementAssignments = (data?.fieldAssignments || []).filter(a => a.kind === 'restatement')
+  const targetsInUse = new Set(restatementAssignments.map(a => a.target).filter(Boolean))
 
   // A target whose LAST contributor was just removed has zero entries in
-  // customFields any more — it would never appear above, so its stale
+  // fieldAssignments any more — it would never appear above, so its stale
   // {target}Normalized would never get cleared. Sweep every row for any
   // already-written *Normalized field and add its target too; with no
   // contributors left, that target's own pass below will correctly strip it
@@ -228,8 +236,9 @@ export function recomputeNormalizedTargets(data) {
     }
     const histKey = table === 'income' ? 'reportedIncomeHistory' : `${table}History`
     const base = table === 'income' ? (out.reportedIncomeHistory || out.incomeHistory || []) : (out[histKey] || [])
-    const contributors = customFields.filter(f => f.target === target)
-    const formula = contributors.map(f => `${f.sign > 0 ? '+' : '−'} ${f.label}`).join(' ')
+    const contributors = restatementAssignments.filter(a => a.target === target)
+    const labelOf = key => customFields.find(f => f.key === key)?.label ?? METRICS[key]?.label ?? key
+    const formula = contributors.map(c => `${(c.sign ?? 1) > 0 ? '+' : '−'} ${labelOf(c.field)}`).join(' ')
 
     const newHistory = base.map(row => {
       const reported = row?.[target]
@@ -241,9 +250,9 @@ export function recomputeNormalizedTargets(data) {
       // dataQuality.js already applies elsewhere (a 0% material cost row is
       // null, not a claimed 100% gross margin).
       let delta = 0, touched = false
-      for (const f of contributors) {
-        const v = row?.[f.key]?.value
-        if (v != null) { delta += (f.sign ?? 1) * v; touched = true }
+      for (const c of contributors) {
+        const v = row?.[c.field]?.value
+        if (v != null) { delta += (c.sign ?? 1) * v; touched = true }
       }
       // Explicitly strip rather than leave alone: a year whose only
       // contributor's value was just cleared could otherwise keep whatever

@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react'
 import { usePositions } from '../../store/usePositions.js'
-import { assessDataQuality, hasNormalizableYear } from '../../engine/dataQuality.js'
+import { assessDataQuality, hasAnyNormalization, activeValue } from '../../engine/dataQuality.js'
 import { saveDataResolution, listDataResolutions } from '../../utils/db.js'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
@@ -121,9 +121,10 @@ function IdentityBar() {
   const [tableOpen, setTableOpen] = React.useState(false)
   const basis = data?.basis || 'reported'
   // No separate normalized table any more — whether the toggle shows at all
-  // depends on whether ANY year has something to normalize, manual or
-  // auto-derivable straight from that year's own reported fields.
-  const hasNorm = hasNormalizableYear(data?.reportedIncomeHistory || data?.incomeHistory || [])
+  // depends on whether ANYTHING has something to normalize: netProfit/eps
+  // (manual or auto-derivable) or any of the other targets restated
+  // through the restatement tool.
+  const hasNorm = hasAnyNormalization(data)
   const [refreshing, setRefreshing] = React.useState(false)
   const [fullRefreshing, setFullRefreshing] = React.useState(false)
   // Just the held-lots label; the actions themselves live in PositionFab.
@@ -288,10 +289,10 @@ function DividendLine({ data, ratioResult, cur }) {
   if (!price) return null
 
   const val = t => (t && typeof t === 'object' ? t.value : t)
-  const rows = data?.incomeHistory || []
+  const rows = data?.reportedIncomeHistory || []
   const latest = rows[rows.length - 1] || {}
   const payoutPct = val(latest.dividendPayout)
-  const eps = val(latest.eps) ?? ratioResult?.eps
+  const eps = val(activeValue(latest, 'eps', data?.basis)) ?? ratioResult?.eps
 
   let dps = null, basis = null
   if (payoutPct != null && payoutPct > 0 && eps != null && eps > 0) {
@@ -342,7 +343,7 @@ function DataVintageBadge({ data, state, onNormalize }) {
   // year" with no check that it actually looked like one. Same guard as
   // ratios.js's realRows() and dataGaps.js's resolvedValues(), which had the
   // identical bug for the actual ratio calculations and the gap check.
-  const years = (data.incomeHistory || [])
+  const years = (data.reportedIncomeHistory || [])
     .map(r => r.year).filter(Boolean)
     .filter(y => /^\d{4}$/.test(String(y).trim()))
     .sort()
@@ -363,7 +364,7 @@ function DataVintageBadge({ data, state, onNormalize }) {
   // Everything the app knows about the quality of this history — adjustments it
   // applied, years it can't explain, breaks in comparability. Gathered in one
   // place rather than surfacing wherever a metric happens to look odd.
-  const quality = assessDataQuality(data.incomeHistory || [], {
+  const quality = assessDataQuality(data.reportedIncomeHistory || [], {
     balanceHistory: data.balanceHistory || [],
     cashflowHistory: data.cashflowHistory || [],
   })

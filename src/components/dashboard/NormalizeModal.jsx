@@ -183,19 +183,34 @@ export default function NormalizeModal({ open, onClose, flag = null }) {
   const restMappedRows = (restParsed?.rows || [])
     .map((row, i) => ({ row, i, m: restMap[row.normalizedLabel] }))
     .filter(({ m }) => m?.target)
+  // The row's key is its own (slugified) label — no generated suffix — so a
+  // second paste naming the exact same line item (e.g. "Impairment" showing
+  // up again in a later year's notes) lands on the SAME row instead of a
+  // second "Impairment_2" beside it, same as re-pasting more years into any
+  // other field. A genuine collision with a DIFFERENT existing row sharing
+  // that label is what "just don't allow same names" (custom-row creation
+  // elsewhere) actually guards against — reusing the key here is the
+  // opposite case: the label naming the SAME thing again, which should
+  // merge, not multiply.
   const restNewFields = []
   const restEdits = []
+  const restAssignments = []
+  const existingKeys = new Set((state.data?.customFields || []).map(f => f.key))
   for (const { row, i, m } of restMappedRows) {
     const targetMeta = availableTargets(state.data).find(t => t.key === m.target)
     if (!targetMeta) continue
-    const key = `custom_${slugify(row.rawLabel)}_${Date.now().toString(36)}_${i}`
-    restNewFields.push({ key, label: row.rawLabel, table: targetMeta.table, target: m.target, sign: m.sign ?? 1 })
+    const key = slugify(row.rawLabel)
+    if (!existingKeys.has(key)) {
+      restNewFields.push({ key, label: row.rawLabel, table: targetMeta.table })
+      existingKeys.add(key)
+    }
+    restAssignments.push({ field: key, kind: 'restatement', target: m.target, sign: m.sign ?? 1 })
     for (const [year, v] of Object.entries(row.byYear)) restEdits.push({ key, year, value: v * scale })
   }
 
   const applyRestatement = () => {
-    if (!restNewFields.length) return
-    addCustomFieldsBatch(restNewFields, restEdits)
+    if (!restAssignments.length) return
+    addCustomFieldsBatch(restNewFields, restEdits, restAssignments)
     setBasis('normalized'); setApplied(true)
   }
 
@@ -447,7 +462,7 @@ export default function NormalizeModal({ open, onClose, flag = null }) {
 
                     <div className="flex gap-2">
                       <button onClick={() => setRestParsed(null)} className="btn-ghost text-sm flex-1">{'\u21ba'} Try again</button>
-                      <button onClick={applyRestatement} disabled={!restNewFields.length}
+                      <button onClick={applyRestatement} disabled={!restAssignments.length}
                         className="btn-primary text-sm flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
                         Apply &amp; switch to normalized
                       </button>
