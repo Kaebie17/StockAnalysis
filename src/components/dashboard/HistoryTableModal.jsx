@@ -882,10 +882,20 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
 // call every other consumer in the app already makes, not a formulas.js-
 // specific compute function.
 function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, candidatesFor, onToggleMembership }) {
-  const [basis, setBasis] = useState(data?.basis === 'normalized' ? 'normalized' : 'reported')
   const hist = fieldHistory(data, formula.table)
   const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const latestRow = realRows[realRows.length - 1]
+  // Default to Normalized only if THIS formula's own output actually
+  // differs under it — materializeFormulas only ever writes
+  // {formula.key}Normalized when at least one of its own constituents has
+  // a real override, so its presence/absence here is exactly the right
+  // signal. NOT data?.basis (the app-wide toggle): that flips to
+  // 'normalized' the moment ANYTHING on the ticker is restated — net
+  // profit, say — which has nothing to do with whether NWC itself has
+  // anything normalized, and would default this picker to a label that's
+  // true of the ticker but false of this specific formula.
+  const hasOwnNormalization = latestRow?.[`${formula.key}Normalized`]?.value != null
+  const [basis, setBasis] = useState(hasOwnNormalization ? 'normalized' : 'reported')
   const resolved = latestRow ? activeValue(latestRow, formula.key, basis) : null
   const output = resolved?.value != null ? { year: latestRow.year, value: resolved.value } : null
 
