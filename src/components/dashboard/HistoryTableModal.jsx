@@ -443,7 +443,6 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
     <tr className="border-b border-navy-800/50">
       <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">
         {label}
-        {assignmentNote && <span className="block text-[10px] text-slate-600">{assignmentNote}</span>}
         <button onClick={() => { setShowPaste(s => !s); setPasteWarning('') }}
           title="Bulk-fill this row from a paste" className="ml-1 text-slate-600 hover:text-accent">📋</button>
         {onNavigate && (
