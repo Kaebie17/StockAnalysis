@@ -4,7 +4,7 @@ import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
 import { normalizedFieldValue, availableTargets } from '../../engine/normalizationTargets.js'
 import { computeNormalizedRow } from '../../engine/dataQuality.js'
-import { listFormulas, fieldLabel, fieldTable, assignmentsForField, computeDerivedFormulaLatest } from '../../engine/formulas.js'
+import { listFormulas, fieldLabel, assignmentsForField, computeDerivedFormulaLatest } from '../../engine/formulas.js'
 import Modal from '../Modal.jsx'
 
 /**
@@ -137,17 +137,6 @@ export default function HistoryTableModal({ open, onClose }) {
   const committedFor = (year, field) => {
     const row = history.find(r => String(r?.year) === year)
     return val(row?.[field])
-  }
-
-  // 'pasted' = you put this number in yourself (Add History/Fill Gaps/this
-  // grid) — everything else (Yahoo's 'source'/'cross-source', a scraper's
-  // 'derived') is a lower-confidence fill you didn't supply. Surfaced as a
-  // color, not just a tooltip, so a Yahoo-filled cell sitting inside years
-  // you've otherwise fully pasted is obvious at a glance instead of
-  // requiring an IndexedDB dump to find.
-  const statusFor = (year, field) => {
-    const row = history.find(r => String(r?.year) === year)
-    return row?.[field]?.status ?? null
   }
 
   const cellText = (year, field) => {
@@ -302,14 +291,14 @@ export default function HistoryTableModal({ open, onClose }) {
             <thead>
               <tr className="border-b border-navy-700">
                 <th className="text-left py-1 text-slate-500 sticky left-0 bg-navy-900 pr-2">Field</th>
-                {years.map(y => <th key={y} className="text-right py-1 text-slate-500 px-2 font-mono">{y}</th>)}
+                {years.map(y => <th key={y} className="text-right py-1 text-slate-500 px-2 font-mono whitespace-nowrap min-w-[6.5rem]">{y}</th>)}
               </tr>
             </thead>
             <tbody>
               {shownTrackedKeys.map(field => (
                 <EditableRow key={field} label={METRICS[field]?.label || field} field={field} years={years}
                   cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
-                  commitCell={commitCell} cellKey={cellKey} statusFor={statusFor}
+                  commitCell={commitCell} cellKey={cellKey}
                   assignmentNote={assignmentSummary(data, field)}
                   onNavigate={() => goToFormulas(field)}
                 />
@@ -317,7 +306,7 @@ export default function HistoryTableModal({ open, onClose }) {
               {customFields.map(f => (
                 <EditableRow key={f.key} label={f.label} field={f.key} years={years}
                   cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
-                  commitCell={commitCell} cellKey={cellKey} statusFor={statusFor}
+                  commitCell={commitCell} cellKey={cellKey}
                   onRemove={() => {
                     if (window.confirm(`Remove "${f.label}" and all its values? This can't be undone.`)) removeCustomField(f.key)
                   }}
@@ -370,16 +359,8 @@ export default function HistoryTableModal({ open, onClose }) {
           data={data}
           table={table}
           years={years}
-          shownTrackedKeys={shownTrackedKeys}
           div={div}
           onCancel={() => setAddingRow(false)}
-          onCreateTracked={(field, valuesByYear) => {
-            const edits = Object.entries(valuesByYear)
-              .filter(([, v]) => v !== '')
-              .map(([year, v]) => ({ year, field, value: Number(v) * (SKIP_SCALE.has(field) ? 1 : div) }))
-            if (edits.length) editHistoryCells(table, edits)
-            setAddingRow(false)
-          }}
           onCreateCustom={({ key, label, assignments, valuesByYear }) => {
             // The row's own value is the magnitude as entered — never
             // pre-multiplied by any assignment's sign. Sign lives only as
@@ -402,7 +383,7 @@ export default function HistoryTableModal({ open, onClose }) {
   )
 }
 
-function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, assignmentNote, onNavigate, statusFor }) {
+function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, assignmentNote, onNavigate }) {
   const [showPaste, setShowPaste] = useState(false)
   const [pasteText, setPasteText] = useState('')
   const [pasteWarning, setPasteWarning] = useState('')
@@ -424,7 +405,10 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
     let matched = 0
     const ignored = []
     for (const [y, v] of Object.entries(row.byYear)) {
-      if (years.includes(y)) { commitCell(y, field, String(v)); matched++ }
+      // Round off any parser float noise (e.g. a percent-derived figure)
+      // before staging it — a Screener/AR figure is whole or 2dp at most,
+      // never a long tail of binary-float digits.
+      if (years.includes(y)) { commitCell(y, field, String(Math.round(v * 100) / 100)); matched++ }
       else ignored.push(y)
     }
     if (matched === 0) {
@@ -459,7 +443,7 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
         const text = cellText(y, field)
         const dirty = isDirty(y, field)
         return (
-          <td key={y} className="text-right py-0.5 px-1">
+          <td key={y} className="text-right py-0.5 px-1 min-w-[6.5rem]">
             {editing ? (
               <input
                 autoFocus
@@ -471,25 +455,16 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
                   if (e.key === 'Enter') e.target.blur()
                   if (e.key === 'Escape') { setEditingKey(null) }
                 }}
-                className="w-24 bg-navy-800 border border-accent rounded px-1.5 py-1 text-xs font-mono text-white text-right focus:outline-none"
+                className="w-full bg-navy-800 border border-accent rounded px-1.5 py-1 text-xs font-mono text-white text-right focus:outline-none"
               />
-            ) : (() => {
-              const status = statusFor?.(y, field)
-              // Not something you pasted yourself — Yahoo's 'source'/
-              // 'cross-source', or a scraper's 'derived'. Colored
-              // separately so a lower-confidence fill sitting inside years
-              // you've otherwise pasted is obvious without checking the
-              // raw tag on every cell.
-              const isFill = !dirty && text && status && status !== 'pasted'
-              return (
-                <button
-                  onClick={() => setEditingKey(k)}
-                  className={`w-full text-right px-1.5 py-1 rounded font-mono hover:bg-navy-800/60 ${dirty ? 'text-accent' : isFill ? 'text-neutral' : text ? 'text-white' : 'text-slate-600'}`}
-                  title={dirty ? 'Unsaved edit — click to change' : isFill ? `Not pasted — filled from ${status} (Yahoo/scraper), not your own data. Click to correct.` : 'Click to edit'}>
-                  {text || '—'}
-                </button>
-              )
-            })()}
+            ) : (
+              <button
+                onClick={() => setEditingKey(k)}
+                className={`w-full text-right px-1.5 py-1 rounded font-mono whitespace-nowrap hover:bg-navy-800/60 ${dirty ? 'text-accent' : text ? 'text-white' : 'text-slate-600'}`}
+                title={dirty ? 'Unsaved edit — click to change' : 'Click to edit'}>
+                {text || '—'}
+              </button>
+            )}
           </td>
         )
       })}
@@ -565,13 +540,11 @@ function AssignmentListEditor({ options, rows, onChange }) {
             <option value="">No normalization (reference only)</option>
             {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          {r.destination && (
-            <select value={r.sign} onChange={e => setRow(i, { sign: Number(e.target.value) })}
-              className="bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
-              <option value={1}>+ add</option>
-              <option value={-1}>− subtract</option>
-            </select>
-          )}
+          <select value={r.sign} onChange={e => setRow(i, { sign: Number(e.target.value) })} disabled={!r.destination}
+            className="bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200 disabled:opacity-40">
+            <option value={1}>+ add</option>
+            <option value={-1}>− subtract</option>
+          </select>
           {rows.length > 1 && (
             <button type="button" onClick={() => removeRow(i)} className="text-slate-600 hover:text-bear text-xs">✕</button>
           )}
@@ -584,9 +557,11 @@ function AssignmentListEditor({ options, rows, onChange }) {
   )
 }
 
-function AddRowForm({ data, table, years, shownTrackedKeys, div, onCancel, onCreateTracked, onCreateCustom }) {
-  const [kind, setKind] = useState('tracked')
-  const [trackedField, setTrackedField] = useState('')
+// Custom line items only — a tracked metrics.js field with no data yet
+// already shows up the moment it's populated (or, for a signature field,
+// is shown blank from the start), so there was never a real gap this form's
+// old "tracked field" option filled.
+function AddRowForm({ data, table, years, onCancel, onCreateCustom }) {
   const [label, setLabel] = useState('')
   const [assignRows, setAssignRows] = useState([{ destination: '', sign: 1 }])
   const [values, setValues] = useState({})
@@ -596,9 +571,7 @@ function AddRowForm({ data, table, years, shownTrackedKeys, div, onCancel, onCre
 
   const destOptions = destinationOptions(data, table)
   const slug = slugify(label)
-  const labelTaken = kind === 'custom' && label.trim().length > 0 && keyCollision(data, slug)
-
-  const availableTracked = Object.keys(METRICS).filter(k => METRICS[k].table === table && !shownTrackedKeys.includes(k))
+  const labelTaken = label.trim().length > 0 && keyCollision(data, slug)
 
   // Bulk-fill the per-year boxes below from a paste, instead of typing into
   // each one — same shape every other paste surface in the app already
@@ -615,7 +588,7 @@ function AddRowForm({ data, table, years, shownTrackedKeys, div, onCancel, onCre
     const matched = {}
     const ignoredYears = []
     for (const [y, v] of Object.entries(row.byYear)) {
-      if (years.includes(y)) matched[y] = String(v)
+      if (years.includes(y)) matched[y] = String(Math.round(v * 100) / 100)
       else ignoredYears.push(y)
     }
     if (Object.keys(matched).length === 0) {
@@ -633,91 +606,68 @@ function AddRowForm({ data, table, years, shownTrackedKeys, div, onCancel, onCre
     }
   }
 
-  const canSubmit = kind === 'tracked' ? !!trackedField : (label.trim().length > 0 && !labelTaken)
+  const canSubmit = label.trim().length > 0 && !labelTaken
 
   return (
     <div className="rounded-lg bg-navy-800/40 px-3 py-3 space-y-2.5">
-      <div className="flex gap-3">
-        {[['tracked', 'Tracked field'], ['custom', 'Custom line item']].map(([k, lbl]) => (
-          <label key={k} className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
-            <input type="radio" name="rowKind" checked={kind === k} onChange={() => setKind(k)} />
-            {lbl}
-          </label>
-        ))}
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-300">New custom line item</span>
+        <button type="button" onClick={onCancel} className="text-slate-500 hover:text-bear text-xs">✕ Cancel</button>
       </div>
 
-      {kind === 'tracked' ? (
-        availableTracked.length === 0 ? (
-          <p className="text-[11px] text-slate-500">Every tracked field for this statement is already shown above.</p>
-        ) : (
-          <select value={trackedField} onChange={e => setTrackedField(e.target.value)}
-            className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
-            <option value="">Pick a field…</option>
-            {availableTracked.map(k => <option key={k} value={k}>{METRICS[k].label}</option>)}
-          </select>
-        )
-      ) : (
-        <>
-          <input value={label} onChange={e => setLabel(e.target.value)} placeholder="Row label — e.g. Indemnification asset"
-            className={'w-full bg-navy-800 border rounded px-2 py-1.5 text-xs text-slate-200 ' + (labelTaken ? 'border-bear' : 'border-navy-700')} />
-          {labelTaken && (
-            <p className="text-[11px] text-bear">A row named "{label.trim()}" already exists — pick a different name.</p>
-          )}
-          <AssignmentListEditor options={destOptions} rows={assignRows} onChange={setAssignRows} />
-          {assignRows.some(r => r.destination) && (
-            <p className="text-[11px] text-slate-500">
-              Values entered below are applied to what's picked above immediately on create, same as pasting them through the restatement tool.
-            </p>
-          )}
-        </>
+      <input value={label} onChange={e => setLabel(e.target.value)} placeholder="Row label — e.g. Indemnification asset"
+        className={'w-full bg-navy-800 border rounded px-2 py-1.5 text-xs text-slate-200 ' + (labelTaken ? 'border-bear' : 'border-navy-700')} />
+      {labelTaken && (
+        <p className="text-[11px] text-bear">A row named "{label.trim()}" already exists — pick a different name.</p>
+      )}
+      <AssignmentListEditor options={destOptions} rows={assignRows} onChange={setAssignRows} />
+      {assignRows.some(r => r.destination) && (
+        <p className="text-[11px] text-slate-500">
+          Values entered below are applied to what's picked above immediately on create, same as pasting them through the restatement tool.
+        </p>
       )}
 
-      {(kind === 'tracked' ? trackedField : true) && (
-        <>
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] text-slate-500">Values ({years.join(', ')})</span>
-            <button type="button" onClick={() => { setShowPaste(s => !s); setPasteWarning('') }}
-              className="text-[11px] text-accent hover:text-accent-light">
-              {showPaste ? 'Cancel paste' : '📋 Paste values'}
-            </button>
-          </div>
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] text-slate-500">Values ({years.join(', ')})</span>
+        <button type="button" onClick={() => { setShowPaste(s => !s); setPasteWarning('') }}
+          className="text-[11px] text-accent hover:text-accent-light">
+          {showPaste ? 'Cancel paste' : '📋 Paste values'}
+        </button>
+      </div>
 
-          {showPaste && (
-            <div className="space-y-1.5 rounded-lg border border-navy-700 bg-navy-900/60 p-2">
-              <textarea
-                value={pasteText}
-                onChange={e => { setPasteText(e.target.value); setPasteWarning('') }}
-                rows={3}
-                placeholder={'Paste a year header, then one row of values — same as any Screener paste, e.g.\n2022\t2023\t2024\n600\t400\t900'}
-                className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent resize-none" />
-              {pasteWarning && <p className="text-[11px] text-neutral">{pasteWarning}</p>}
-              <button type="button" onClick={fillFromPaste} disabled={!pasteText.trim()}
-                className="btn-primary text-xs w-full disabled:opacity-40 disabled:cursor-not-allowed">
-                Fill values from paste
-              </button>
-            </div>
-          )}
-
-          <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${years.length}, minmax(4rem,1fr))` }}>
-            {years.map(y => (
-              <div key={y}>
-                <label className="text-[10px] text-slate-500 block">{y}</label>
-                <input type="text" inputMode="decimal" value={values[y] ?? ''}
-                  onChange={e => setValues(v => ({ ...v, [y]: e.target.value }))}
-                  placeholder="—"
-                  className="w-full bg-navy-800 border border-navy-700 rounded px-1.5 py-1 text-xs font-mono text-slate-200" />
-              </div>
-            ))}
-          </div>
-        </>
+      {showPaste && (
+        <div className="space-y-1.5 rounded-lg border border-navy-700 bg-navy-900/60 p-2">
+          <textarea
+            value={pasteText}
+            onChange={e => { setPasteText(e.target.value); setPasteWarning('') }}
+            rows={3}
+            placeholder={'Paste a year header, then one row of values — same as any Screener paste, e.g.\n2022\t2023\t2024\n600\t400\t900'}
+            className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs font-mono text-slate-200 placeholder-slate-600 focus:outline-none focus:border-accent resize-none" />
+          {pasteWarning && <p className="text-[11px] text-neutral">{pasteWarning}</p>}
+          <button type="button" onClick={fillFromPaste} disabled={!pasteText.trim()}
+            className="btn-primary text-xs w-full disabled:opacity-40 disabled:cursor-not-allowed">
+            Fill values from paste
+          </button>
+        </div>
       )}
+
+      <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${years.length}, minmax(4rem,1fr))` }}>
+        {years.map(y => (
+          <div key={y}>
+            <label className="text-[10px] text-slate-500 block">{y}</label>
+            <input type="text" inputMode="decimal" value={values[y] ?? ''}
+              onChange={e => setValues(v => ({ ...v, [y]: e.target.value }))}
+              placeholder="—"
+              className="w-full bg-navy-800 border border-navy-700 rounded px-1.5 py-1 text-xs font-mono text-slate-200" />
+          </div>
+        ))}
+      </div>
 
       <div className="flex gap-2">
         <button onClick={onCancel} className="btn-ghost text-xs flex-1">Cancel</button>
         <button
           disabled={!canSubmit}
           onClick={() => {
-            if (kind === 'tracked') { onCreateTracked(trackedField, values); return }
             const assignments = assignRows
               .filter(r => r.destination)
               .map(r => {
@@ -729,7 +679,7 @@ function AddRowForm({ data, table, years, shownTrackedKeys, div, onCancel, onCre
             onCreateCustom({ key: slug, label: label.trim(), assignments, valuesByYear: values })
           }}
           className="btn-primary text-xs flex-1 disabled:opacity-40 disabled:cursor-not-allowed">
-          Add row
+          Create row
         </button>
       </div>
     </div>
@@ -833,13 +783,18 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
 }
 
 /**
- * FormulasTab — every formula this ticker can compute, what feeds each of
- * its buckets (field names only, never per-item numbers — the makeup is
- * inspectable one click away in the statement tabs themselves), and the
- * live output for the most recent year only. This is the ONE place bucket
- * membership is assigned; a row's nav button (EditableRow's 🔗/🧮) just
- * lands here instead of opening a second, duplicate picker in the main
- * tabs.
+ * FormulasTab — every formula this ticker can compute: which buckets it
+ * has, what feeds each (field names only, never per-item numbers — the
+ * makeup is inspectable one click away in the statement tabs themselves),
+ * the equation those buckets combine into, and the live output for the
+ * most recent year only.
+ *
+ * One row per formula, three parts: the bucket(s) (click to open a
+ * checkbox list and change membership), the equation written out with
+ * field names, and the output. The primary way to wire a NEW row into a
+ * formula is still at creation time (AddRowForm's assignment list) — this
+ * tab is for reviewing what's already assigned and adjusting an EXISTING
+ * row's membership without re-creating it.
  *
  * A "restatement" formula (any field with data, or a custom row — see
  * availableTargets) is really a one-bucket formula whose output overwrites
@@ -875,11 +830,47 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
     return n?.value != null ? { year: row.year, value: n.value } : null
   }
 
+  // "NWC = Trade Receivables + Inventories − Trade Payables − Advance from
+  // Customers" for a derived formula; "Revenue = Revenue + Litigation
+  // Settlement" for a restatement one (its own reported field is the base
+  // term, always first, always effectively "+").
+  const equationFor = (formula) => {
+    const terms = []
+    if (formula.kind === 'restatement') terms.push({ sign: 1, text: formula.label })
+    for (const bucket of formula.buckets) {
+      for (const a of assignedFieldsFor(formula, bucket)) {
+        const effSign = (bucket.sign ?? 1) * (a.sign ?? 1)
+        terms.push({ sign: effSign, text: fieldLabel(data, a.field) })
+      }
+    }
+    if (!terms.length) return `${formula.label} = —`
+    const rhs = terms.map((t, i) => {
+      if (i === 0) return t.sign < 0 ? `− ${t.text}` : t.text
+      return `${t.sign < 0 ? '−' : '+'} ${t.text}`
+    }).join(' ')
+    return `${formula.label} = ${rhs}`
+  }
+
   const isFocused = (formula) => focusAssignments.some(a =>
     formula.kind === 'restatement' ? a.target === formula.key : a.formula === formula.key)
 
+  const toggleMembership = (formula, bucket, field, checked) => {
+    const current = assignmentsForField(data, field)
+    if (checked) {
+      const entry = formula.kind === 'restatement'
+        ? { kind: 'restatement', target: formula.key, sign: 1 }
+        : { kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 }
+      setAssignmentsForField(field, [...current, entry])
+    } else {
+      const remaining = current.filter(a =>
+        formula.kind === 'restatement' ? !(a.kind === 'restatement' && a.target === formula.key)
+                                        : !(a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key))
+      setAssignmentsForField(field, remaining)
+    }
+  }
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {focusField && (
         <div className="rounded-lg border border-accent/50 bg-accent/10 px-3 py-2 text-xs text-slate-200">
           Focused on <strong>{fieldLabel(data, focusField)}</strong> — its current assignments are highlighted below.
@@ -887,73 +878,53 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
       )}
       {formulas.map(formula => (
         <div key={formula.key}
-          className={'rounded-lg border px-3 py-2.5 space-y-2 ' + (isFocused(formula) ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-200">{formula.label}</span>
-            {(() => {
-              const out = outputFor(formula)
-              return out
-                ? <span className="text-xs font-mono text-accent">{fmtNum(out.value)} <span className="text-slate-500">(FY{out.year})</span></span>
-                : <span className="text-xs text-slate-600">—</span>
-            })()}
-          </div>
-          {formula.buckets.map(bucket => {
-            const assigned = assignedFieldsFor(formula, bucket)
-            return (
-              <div key={bucket.key} className="pl-2 border-l border-navy-700 space-y-1">
-                {formula.buckets.length > 1 && <div className="text-[11px] text-slate-500">{bucket.label}</div>}
-                <div className="flex flex-wrap gap-1.5">
-                  {assigned.length === 0 && <span className="text-[11px] text-slate-600">Nothing assigned yet.</span>}
-                  {assigned.map(a => (
-                    <span key={a.field} className="inline-flex items-center gap-1 text-[11px] bg-navy-900/60 border border-navy-700 rounded px-1.5 py-0.5 text-slate-300">
-                      {(a.sign ?? 1) > 0 ? '+' : '−'} {fieldLabel(data, a.field)}
-                      <button onClick={() => {
-                        const remaining = assignmentsForField(data, a.field).filter(x => x !== a)
-                        setAssignmentsForField(a.field, remaining)
-                      }} className="text-slate-600 hover:text-bear">✕</button>
-                    </span>
-                  ))}
-                </div>
-                <BucketAddControl
-                  candidates={candidatesFor(formula).filter(c => !assigned.some(a => a.field === c.key))}
-                  onAdd={(field, sign) => {
-                    const entry = formula.kind === 'restatement'
-                      ? { kind: 'restatement', target: formula.key, sign }
-                      : { kind: 'formula', formula: formula.key, bucket: bucket.key, sign }
-                    setAssignmentsForField(field, [...assignmentsForField(data, field), entry])
-                  }}
-                />
-              </div>
-            )
-          })}
+          className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs ' + (isFocused(formula) ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
+          <span className="flex flex-wrap gap-1 flex-shrink-0 w-32">
+            {formula.buckets.map(bucket => (
+              <BucketChip key={bucket.key} formula={formula} bucket={bucket}
+                assigned={assignedFieldsFor(formula, bucket)} candidates={candidatesFor(formula)}
+                onToggle={(field, checked) => toggleMembership(formula, bucket, field, checked)} />
+            ))}
+          </span>
+          <span className="flex-1 text-slate-400 font-mono truncate" title={equationFor(formula)}>{equationFor(formula)}</span>
+          {(() => {
+            const out = outputFor(formula)
+            return out
+              ? <span className="flex-shrink-0 font-mono text-accent whitespace-nowrap">{fmtNum(out.value)} <span className="text-slate-500">(FY{out.year})</span></span>
+              : <span className="flex-shrink-0 text-slate-600">—</span>
+          })()}
         </div>
       ))}
     </div>
   )
 }
 
-function BucketAddControl({ candidates, onAdd }) {
-  const [field, setField] = useState('')
-  const [sign, setSign] = useState(1)
-  if (!candidates.length) return null
+function BucketChip({ formula, bucket, assigned, candidates, onToggle }) {
+  const [open, setOpen] = useState(false)
+  const label = formula.buckets.length > 1 ? bucket.label : formula.label
   return (
-    <div className="flex gap-1.5 items-center">
-      <select value={field} onChange={e => setField(e.target.value)}
-        className="flex-1 bg-navy-800 border border-navy-700 rounded px-1.5 py-1 text-[11px] text-slate-200">
-        <option value="">+ add a row…</option>
-        {candidates.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
-      </select>
-      {field && (
+    <span className="relative">
+      <button type="button" onClick={() => setOpen(o => !o)}
+        className={'text-[11px] rounded px-1.5 py-0.5 border ' + (assigned.length ? 'border-accent/50 text-accent bg-accent/10' : 'border-navy-700 text-slate-500')}>
+        {label} ({assigned.length})
+      </button>
+      {open && (
         <>
-          <select value={sign} onChange={e => setSign(Number(e.target.value))}
-            className="bg-navy-800 border border-navy-700 rounded px-1.5 py-1 text-[11px] text-slate-200">
-            <option value={1}>+</option>
-            <option value={-1}>−</option>
-          </select>
-          <button type="button" onClick={() => { onAdd(field, sign); setField('') }}
-            className="text-[11px] text-accent hover:text-accent-light">Add</button>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute z-20 mt-1 w-56 max-h-56 overflow-y-auto rounded-lg border border-navy-700 bg-navy-900 p-2 space-y-1 shadow-lg">
+            {candidates.length === 0 && <p className="text-[11px] text-slate-500">Nothing on this statement to assign yet.</p>}
+            {candidates.map(c => {
+              const checked = assigned.some(a => a.field === c.key)
+              return (
+                <label key={c.key} className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
+                  <input type="checkbox" checked={checked} onChange={e => onToggle(c.key, e.target.checked)} />
+                  {c.label}
+                </label>
+              )
+            })}
+          </div>
         </>
       )}
-    </div>
+    </span>
   )
 }
