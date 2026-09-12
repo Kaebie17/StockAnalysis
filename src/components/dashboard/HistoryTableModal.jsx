@@ -512,7 +512,7 @@ function destinationOptions(data, table) {
   const out = []
   for (const t of availableTargets(data)) {
     if (t.table !== table) continue
-    out.push({ value: `restatement:${t.key}`, label: `Feeds ${t.label} (normalization)` })
+    out.push({ value: `restatement:${t.key}`, label: t.label })
   }
   for (const formula of listFormulas(data)) {
     if (formula.kind !== 'derived' || formula.table !== table) continue
@@ -823,34 +823,17 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
   const focusAssignments = focusField ? assignmentsForField(data, focusField) : []
 
   const assignedFieldsFor = (formula, bucket) =>
-    (data.fieldAssignments || []).filter(a =>
-      formula.kind === 'restatement' ? (a.kind === 'restatement' && a.target === formula.key)
-                                      : (a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key))
+    (data.fieldAssignments || []).filter(a => a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key)
 
   const candidatesFor = (formula) =>
-    availableTargets(data).filter(t => t.table === formula.table && t.key !== formula.key)
-
-  const outputFor = (formula) => {
-    if (formula.kind === 'derived') {
-      const r = computeDerivedFormulaLatest(data, formula.key)
-      return r?.output != null ? { year: r.year, value: r.output } : null
-    }
-    const hist = formula.table === 'income' ? (data.reportedIncomeHistory || data.incomeHistory || [])
-      : formula.table === 'balance' ? (data.balanceHistory || []) : (data.cashflowHistory || [])
-    const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
-    const row = realRows[realRows.length - 1]
-    if (!row) return null
-    const n = normalizedFieldValue(row, formula.key)
-    return n?.value != null ? { year: row.year, value: n.value } : null
-  }
+    availableTargets(data).filter(t => t.table === formula.table)
 
   // "NWC = Trade Receivables + Inventories − Trade Payables − Advance from
-  // Customers" for a derived formula; "Revenue = Revenue + Litigation
-  // Settlement" for a restatement one (its own reported field is the base
-  // term, always first, always effectively "+").
+  // Customers" — field names only, same regardless of basis (bucket
+  // MEMBERSHIP doesn't change with the toggle, only the resolved VALUES do,
+  // which is why this doesn't take a basis param).
   const equationFor = (formula) => {
     const terms = []
-    if (formula.kind === 'restatement') terms.push({ sign: 1, text: formula.label })
     for (const bucket of formula.buckets) {
       for (const a of assignedFieldsFor(formula, bucket)) {
         const effSign = (bucket.sign ?? 1) * (a.sign ?? 1)
@@ -865,20 +848,14 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
     return `${formula.label} = ${rhs}`
   }
 
-  const isFocused = (formula) => focusAssignments.some(a =>
-    formula.kind === 'restatement' ? a.target === formula.key : a.formula === formula.key)
+  const isFocused = (formula) => focusAssignments.some(a => a.formula === formula.key)
 
   const toggleMembership = (formula, bucket, field, checked) => {
     const current = assignmentsForField(data, field)
     if (checked) {
-      const entry = formula.kind === 'restatement'
-        ? { kind: 'restatement', target: formula.key, sign: 1 }
-        : { kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 }
-      setAssignmentsForField(field, [...current, entry])
+      setAssignmentsForField(field, [...current, { kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 }])
     } else {
-      const remaining = current.filter(a =>
-        formula.kind === 'restatement' ? !(a.kind === 'restatement' && a.target === formula.key)
-                                        : !(a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key))
+      const remaining = current.filter(a => !(a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key))
       setAssignmentsForField(field, remaining)
     }
   }
@@ -891,24 +868,45 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
         </div>
       )}
       {formulas.map(formula => (
-        <div key={formula.key}
-          className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs ' + (isFocused(formula) ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
-          <span className="flex flex-wrap gap-1 flex-shrink-0 w-32">
-            {formula.buckets.map(bucket => (
-              <BucketChip key={bucket.key} formula={formula} bucket={bucket}
-                assigned={assignedFieldsFor(formula, bucket)} candidates={candidatesFor(formula)}
-                onToggle={(field, checked) => toggleMembership(formula, bucket, field, checked)} />
-            ))}
-          </span>
-          <span className="flex-1 text-slate-400 font-mono truncate" title={equationFor(formula)}>{equationFor(formula)}</span>
-          {(() => {
-            const out = outputFor(formula)
-            return out
-              ? <span className="flex-shrink-0 font-mono text-accent whitespace-nowrap">{fmtNum(out.value)} <span className="text-slate-500">(FY{out.year})</span></span>
-              : <span className="flex-shrink-0 text-slate-600">—</span>
-          })()}
-        </div>
+        <FormulaRow key={formula.key} data={data} formula={formula} div={div}
+          fmtNum={fmtNum} equation={equationFor(formula)} focused={isFocused(formula)}
+          assignedFieldsFor={assignedFieldsFor} candidatesFor={candidatesFor}
+          onToggleMembership={toggleMembership} />
       ))}
+    </div>
+  )
+}
+
+// One formula = one div, three parts (bucket chips | equation, with its own
+// Reported/Normalized picker right beside it | output for that basis) — the
+// picker lives in the SAME space the equation already occupies rather than
+// adding a fourth part, since flipping it only changes which VALUES the
+// existing equation's fields resolve to, not the fields themselves.
+function FormulaRow({ data, formula, div, fmtNum, equation, focused, assignedFieldsFor, candidatesFor, onToggleMembership }) {
+  const [basis, setBasis] = useState(data?.basis === 'normalized' ? 'normalized' : 'reported')
+  const out = computeDerivedFormulaLatest(data, formula.key, basis)
+  const output = out?.output != null ? { year: out.year, value: out.output } : null
+
+  return (
+    <div className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs ' + (focused ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
+      <span className="flex flex-wrap gap-1 flex-shrink-0 w-32">
+        {formula.buckets.map(bucket => (
+          <BucketChip key={bucket.key} formula={formula} bucket={bucket}
+            assigned={assignedFieldsFor(formula, bucket)} candidates={candidatesFor(formula)}
+            onToggle={(field, checked) => onToggleMembership(formula, bucket, field, checked)} />
+        ))}
+      </span>
+      <span className="flex-1 flex items-center gap-2 min-w-0">
+        <select value={basis} onChange={e => setBasis(e.target.value)}
+          className="flex-shrink-0 bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[11px] text-slate-300">
+          <option value="reported">Reported</option>
+          <option value="normalized">Normalized</option>
+        </select>
+        <span className="text-slate-400 font-mono truncate" title={equation}>{equation}</span>
+      </span>
+      {output
+        ? <span className="flex-shrink-0 font-mono text-accent whitespace-nowrap">{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
+        : <span className="flex-shrink-0 text-slate-600">—</span>}
     </div>
   )
 }

@@ -27,6 +27,7 @@
  */
 import { METRICS } from './metrics.js'
 import { availableTargets } from './normalizationTargets.js'
+import { activeValue } from './dataQuality.js'
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
@@ -125,15 +126,28 @@ export function seedFormulaDefaults(data) {
   return { ...data, fieldAssignments: assignments, formulaDefaultsApplied: [...applied] }
 }
 
+// A bucket's own members can THEMSELVES be normalized — tradeReceivables,
+// inventories, tradePayables and advanceFromCustomers are all in the
+// curated restatement-target list, so any of them can carry a
+// {field}Normalized sibling before NWC ever combines them. Resolving
+// through activeValue here, INSIDE the formula, is the fallback the user
+// asked for: 'reported' reads the field itself, 'normalized' reads its
+// Normalized sibling where one exists and falls back to reported where it
+// doesn't — one fallback rule, applied once, at the point a formula reads
+// an input, rather than every consumer file re-deciding it per field.
+function resolvedValue(row, field, basis) {
+  return val(activeValue(row, field, basis))
+}
+
 /**
- * A derived formula's output for ONE already-picked row — the shared core
- * both computeDerivedFormulaLatest (below, for the Formulas tab) and any
- * real calculation consumer (ratios.js's netWorkingCapitalOf) go through, so
- * there is exactly one place that knows how to combine NWC's buckets rather
- * than a second, hardcoded copy that could silently drift from whatever the
- * user has actually assigned in the Formulas tab.
+ * A derived formula's output for ONE already-picked row, under ONE basis —
+ * the shared core both computeDerivedFormulaLatest (below, for the Formulas
+ * tab) and any real calculation consumer (ratios.js's netWorkingCapitalOf)
+ * go through, so there is exactly one place that knows how to combine NWC's
+ * buckets AND how to resolve reported-vs-normalized for each constituent,
+ * rather than a second, hardcoded copy that could silently drift.
  */
-export function computeDerivedFormulaForRow(data, formulaKey, row) {
+export function computeDerivedFormulaForRow(data, formulaKey, row, basis = 'reported') {
   const formula = DERIVED_FORMULAS[formulaKey]
   if (!formula || !row) return null
   const bucketSums = {}
@@ -142,7 +156,7 @@ export function computeDerivedFormulaForRow(data, formulaKey, row) {
       .filter(a => a.kind === 'formula' && a.formula === formulaKey && a.bucket === bucket.key)
     let sum = null
     for (const c of contributors) {
-      const v = rowValue(row, c.field)
+      const v = resolvedValue(row, c.field, basis)
       if (v != null) sum = (sum ?? 0) + (c.sign ?? 1) * v
     }
     bucketSums[bucket.key] = sum
@@ -159,16 +173,17 @@ export function computeDerivedFormulaForRow(data, formulaKey, row) {
  * this tab is an audit view, not a historical series. Returns null output if
  * any bucket ends up with nothing assigned/valued that year (no partial
  * output, same "never show a value nothing produced" rule as the rest of
- * the app).
+ * the app). `basis` defaults to 'reported'; pass 'normalized' for the
+ * Formulas tab's toggle.
  */
-export function computeDerivedFormulaLatest(data, formulaKey) {
+export function computeDerivedFormulaLatest(data, formulaKey, basis = 'reported') {
   const formula = DERIVED_FORMULAS[formulaKey]
   if (!formula) return null
   const hist = fieldHistory(data, formula.table)
   const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const row = realRows[realRows.length - 1]
   if (!row) return null
-  const result = computeDerivedFormulaForRow(data, formulaKey, row)
+  const result = computeDerivedFormulaForRow(data, formulaKey, row, basis)
   return result ? { year: row.year, ...result } : null
 }
 

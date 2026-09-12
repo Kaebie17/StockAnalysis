@@ -53,7 +53,7 @@ export function grossProfitOf(row, basis) {
  * this row — no partial sum.
  */
 export function netWorkingCapitalOf(data, row) {
-  return computeDerivedFormulaForRow(data, 'nwc', row)?.output ?? null
+  return computeDerivedFormulaForRow(data, 'nwc', row, data?.basis)?.output ?? null
 }
 
 export function calcRatios(data, opts = {}) {
