@@ -4,8 +4,8 @@ import { useApp } from '../../store/AppContext.jsx'
 import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
 import { normalizedFieldValue, availableTargets } from '../../engine/normalizationTargets.js'
-import { computeNormalizedRow } from '../../engine/dataQuality.js'
-import { listFormulas, fieldLabel, assignmentsForField, computeDerivedFormulaLatest } from '../../engine/formulas.js'
+import { computeNormalizedRow, activeValue } from '../../engine/dataQuality.js'
+import { listFormulas, fieldLabel, fieldHistory, assignmentsForField } from '../../engine/formulas.js'
 import Modal from '../Modal.jsx'
 
 /**
@@ -882,10 +882,20 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
 // picker lives in the SAME space the equation already occupies rather than
 // adding a fourth part, since flipping it only changes which VALUES the
 // existing equation's fields resolve to, not the fields themselves.
+//
+// The output itself is read the same way any other field is — a derived
+// formula's result is materialized directly onto its row as
+// {formula.key}/{formula.key}Normalized (formulas.js's materializeFormulas,
+// run from computeAll) — so this is activeValue(row, key, basis), the exact
+// call every other consumer in the app already makes, not a formulas.js-
+// specific compute function.
 function FormulaRow({ data, formula, div, fmtNum, equation, focused, assignedFieldsFor, candidatesFor, onToggleMembership }) {
   const [basis, setBasis] = useState(data?.basis === 'normalized' ? 'normalized' : 'reported')
-  const out = computeDerivedFormulaLatest(data, formula.key, basis)
-  const output = out?.output != null ? { year: out.year, value: out.output } : null
+  const hist = fieldHistory(data, formula.table)
+  const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
+  const latestRow = realRows[realRows.length - 1]
+  const resolved = latestRow ? activeValue(latestRow, formula.key, basis) : null
+  const output = resolved?.value != null ? { year: latestRow.year, value: resolved.value } : null
 
   return (
     <div className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs ' + (focused ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>

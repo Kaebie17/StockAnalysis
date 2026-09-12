@@ -24,6 +24,15 @@
  * target's table, or a derived formula's table) so contributor and target
  * are always read off the same row object, no cross-table year alignment
  * needed.
+ *
+ * A derived formula's OUTPUT is not something a consumer calls a function
+ * to get — materializeFormulas (called once, from computeAll) writes it
+ * directly onto the row as {formulaKey}/{formulaKey}Normalized, exactly
+ * like recomputeNormalizedTargets already does for a restatement target.
+ * So NWC is just another field: any file reads it the same way it reads
+ * revenue or netProfit — activeValue(row, 'nwc', basis) — never a
+ * formulas.js-specific accessor, and never re-derived from fieldAssignments
+ * at the point of use.
  */
 import { METRICS } from './metrics.js'
 import { availableTargets } from './normalizationTargets.js'
@@ -87,10 +96,6 @@ export function listFormulas(data) {
   return [...restatement, ...Object.values(DERIVED_FORMULAS)]
 }
 
-export function getFormula(data, key) {
-  return listFormulas(data).find(f => f.key === key) || null
-}
-
 /**
  * One-time seeding of the known constituents of a derived formula (NWC's
  * four tracked working-capital fields) into data.fieldAssignments, so the
@@ -130,24 +135,14 @@ export function seedFormulaDefaults(data) {
 // inventories, tradePayables and advanceFromCustomers are all in the
 // curated restatement-target list, so any of them can carry a
 // {field}Normalized sibling before NWC ever combines them. Resolving
-// through activeValue here, INSIDE the formula, is the fallback the user
-// asked for: 'reported' reads the field itself, 'normalized' reads its
-// Normalized sibling where one exists and falls back to reported where it
-// doesn't — one fallback rule, applied once, at the point a formula reads
-// an input, rather than every consumer file re-deciding it per field.
+// through activeValue here, INSIDE the formula, is the one fallback rule
+// (Normalized-if-present, else reported), applied once per input, rather
+// than every consumer re-deciding it per field.
 function resolvedValue(row, field, basis) {
   return val(activeValue(row, field, basis))
 }
 
-/**
- * A derived formula's output for ONE already-picked row, under ONE basis —
- * the shared core both computeDerivedFormulaLatest (below, for the Formulas
- * tab) and any real calculation consumer (ratios.js's netWorkingCapitalOf)
- * go through, so there is exactly one place that knows how to combine NWC's
- * buckets AND how to resolve reported-vs-normalized for each constituent,
- * rather than a second, hardcoded copy that could silently drift.
- */
-export function computeDerivedFormulaForRow(data, formulaKey, row, basis = 'reported') {
+function computeForRow(data, formulaKey, row, basis) {
   const formula = DERIVED_FORMULAS[formulaKey]
   if (!formula || !row) return null
   const bucketSums = {}
@@ -161,30 +156,57 @@ export function computeDerivedFormulaForRow(data, formulaKey, row, basis = 'repo
     }
     bucketSums[bucket.key] = sum
   }
-  if (Object.values(bucketSums).some(v => v == null)) return { output: null, bucketSums }
-
+  if (Object.values(bucketSums).some(v => v == null)) return null
   let output = 0
   for (const bucket of formula.buckets) output += bucket.sign * bucketSums[bucket.key]
-  return { output, bucketSums }
+  return output
 }
 
 /**
- * The live output of a derived formula for its most recent real year only —
- * this tab is an audit view, not a historical series. Returns null output if
- * any bucket ends up with nothing assigned/valued that year (no partial
- * output, same "never show a value nothing produced" rule as the rest of
- * the app). `basis` defaults to 'reported'; pass 'normalized' for the
- * Formulas tab's toggle.
+ * Writes each derived formula's own output directly onto the row it belongs
+ * to — {key} for the reported figure, {key}Normalized alongside it only
+ * when normalizing an input actually changes the result — the EXACT same
+ * sibling-field convention netProfit/eps and the restatement targets
+ * already use. This is the whole point: a formula's result becomes just
+ * another field on the row, so any consumer (ratios.js, valuation.js, the
+ * Formulas tab) reads it with the SAME activeValue(row, key, basis) call it
+ * already uses for revenue or netProfit — no formulas.js-specific accessor,
+ * no re-deriving it from fieldAssignments at every read site. Called from
+ * computeAll (AppContext.jsx) right after recomputeNormalizedTargets, so a
+ * formula's own inputs (tradeReceivablesNormalized etc.) already exist by
+ * the time it runs, and every path that changes an assignment, a value, or
+ * a normalization automatically keeps this in sync — there's nothing to
+ * carry over by hand, and nothing for an inline copy elsewhere to miss.
  */
-export function computeDerivedFormulaLatest(data, formulaKey, basis = 'reported') {
-  const formula = DERIVED_FORMULAS[formulaKey]
-  if (!formula) return null
-  const hist = fieldHistory(data, formula.table)
-  const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
-  const row = realRows[realRows.length - 1]
-  if (!row) return null
-  const result = computeDerivedFormulaForRow(data, formulaKey, row, basis)
-  return result ? { year: row.year, ...result } : null
+export function materializeFormulas(data) {
+  let out = data
+  for (const formula of Object.values(DERIVED_FORMULAS)) {
+    const histKey = formula.table === 'income' ? 'reportedIncomeHistory' : `${formula.table}History`
+    const base = fieldHistory(out, formula.table)
+    if (!base.length) continue
+    const normKey = `${formula.key}Normalized`
+    const newHistory = base.map(row => {
+      const reported = computeForRow(out, formula.key, row, 'reported')
+      if (reported == null) {
+        if (!(formula.key in row) && !(normKey in row)) return row
+        const { [formula.key]: _a, [normKey]: _b, ...rest } = row
+        return rest
+      }
+      let next = { ...row, [formula.key]: { value: reported, status: 'calculated', formula: null } }
+      const normalized = computeForRow(out, formula.key, row, 'normalized')
+      if (normalized != null && normalized !== reported) {
+        next[normKey] = { value: normalized, adjusted: true, formula: null }
+      } else if (normKey in next) {
+        const { [normKey]: _drop, ...rest } = next
+        next = rest
+      }
+      return next
+    })
+    out = formula.table === 'income'
+      ? { ...out, incomeHistory: newHistory, reportedIncomeHistory: newHistory }
+      : { ...out, [histKey]: newHistory }
+  }
+  return out
 }
 
 /** Every assignment currently on this field, across both kinds. */

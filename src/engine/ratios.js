@@ -24,7 +24,6 @@
  */
 import { detectSectorType, SECTOR_TYPES } from './stage.js'
 import { activeValue } from './dataQuality.js'
-import { computeDerivedFormulaForRow } from './formulas.js'
 
 export function grossProfitOf(row, basis) {
   const gp  = row?.grossProfit?.value
@@ -38,23 +37,12 @@ export function grossProfitOf(row, basis) {
   return (rev != null && cogs != null) ? rev - cogs : null
 }
 
-/**
- * Operating net working capital, for one balance-sheet row — current
- * operating assets minus current operating liabilities, per the "nwc"
- * formula's OWN bucket assignments (formulas.js), not a hardcoded field
- * list. tradeReceivables/inventories/tradePayables/advanceFromCustomers are
- * seeded as its defaults (seedFormulaDefaults) the moment a ticker has
- * balance-sheet data, so this behaves exactly as before for any ticker that
- * hasn't touched the Formulas tab — but a user who's added another current
- * asset/liability row there (or removed a default that didn't apply) is
- * reflected here too, rather than this function silently working off a
- * stale, separate copy of what NWC means.
- * Returns null if either bucket ends up with nothing assigned/valued for
- * this row — no partial sum.
- */
-export function netWorkingCapitalOf(data, row) {
-  return computeDerivedFormulaForRow(data, 'nwc', row, data?.basis)?.output ?? null
-}
+// Net Working Capital is a materialized field (formulas.js's
+// materializeFormulas, run from computeAll) — a balance-sheet row already
+// carries it as row.nwc / row.nwcNormalized, per the "nwc" formula's own
+// bucket assignments, not a hardcoded field list. Read it the same way as
+// any other normalizable field: activeValue(row, 'nwc', basis)?.value —
+// no wrapper function needed here any more.
 
 export function calcRatios(data, opts = {}) {
   const { price, marketCap: marketCapRaw, shares: sharesRaw,

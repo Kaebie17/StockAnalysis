@@ -9,6 +9,7 @@ import { runTechnicals } from '../engine/technicals.js'
 import { assessDataQuality, materializeIncomeNormalization, hasAnyNormalization } from '../engine/dataQuality.js'
 import { METRICS } from '../engine/metrics.js'
 import { recomputeNormalizedTargets } from '../engine/normalizationTargets.js'
+import { materializeFormulas } from '../engine/formulas.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -619,6 +620,12 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // recomputeNormalizedTargets for why this writes a real, stored,
   // inspectable row instead of computing the figure only for display.
   data = recomputeNormalizedTargets(data)
+  // Writes every derived formula's (currently just NWC) own reported/
+  // Normalized output directly onto its row — see materializeFormulas —
+  // AFTER the line above, since a formula's inputs (e.g.
+  // tradeReceivablesNormalized) must already exist on the row by the time
+  // it combines them.
+  data = materializeFormulas(data)
   // Normalize for everything, not a toggle between two equally-weighted
   // views: every restatement in this app is an explicit, evidence-based,
   // user-confirmed correction (a NormalizeModal entry, a restatement-tool
