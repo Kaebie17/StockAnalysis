@@ -17,24 +17,19 @@
  */
 
 /**
- * THE gross-profit formula. One definition, used by calcRatios (latest year) and
- * by moatQuality (the full series). {revenue, cogs, grossProfit} is a group: any
- * two give the third. Sources emit raw fields; this is the only place that knows
- * how they combine.
+ * Gross Profit is a materialized field (formulas.js): reported when a
+ * source directly gives it (Yahoo/SEC filers); Revenue − COGS, both
+ * basis-resolved, when it isn't (every Indian/Screener ticker — see
+ * metrics.js, "Indian P&L has no gross-profit line, ever"). One
+ * definition, used by calcRatios (latest year) and moatQuality (the full
+ * series) — read the same way any other normalizable field is, not
+ * recomputed inline here.
  */
 import { detectSectorType, SECTOR_TYPES } from './stage.js'
 import { activeValue } from './dataQuality.js'
 
 export function grossProfitOf(row, basis) {
-  const gp  = row?.grossProfit?.value
-  if (gp != null) return gp
-  // grossProfit/cogs are never normalization targets themselves, but
-  // revenue (the fallback input when grossProfit isn't directly reported)
-  // is — same activeValue resolution as everywhere else, so gross margin
-  // doesn't silently stay on unrestated revenue while every other margin
-  // reflects the current basis.
-  const rev = activeValue(row, 'revenue', basis)?.value, cogs = row?.cogs?.value
-  return (rev != null && cogs != null) ? rev - cogs : null
+  return activeValue(row, 'grossProfit', basis)?.value ?? null
 }
 
 // Net Working Capital is a materialized field (formulas.js's
@@ -107,36 +102,26 @@ export function calcRatios(data, opts = {}) {
     return m ? Number(m[0]) : null
   }
   // ── Core raw values ────────────────────────────────────────────────────────
-  // revenue/opProfit/depreciation/interest/tax/netProfit/eps/capex are ALL
-  // normalization targets (normalizationTargets.js) — the restatement tool
-  // can and does write a {field}Normalized sibling for any of them, so every
-  // one of them is read through activeValue, not just netProfit/eps. Fields
-  // that are never restatement targets (otherIncome, profitBeforeTax,
-  // totalEquity, totalDebt, cash, totalAssets, fixedAssets, ...) are read
-  // directly, as before — there is no Normalized sibling for those to miss.
+  // Every field a restatement can target — which, since availableTargets()
+  // covers any metrics.js field with data, is potentially ALL of these, not
+  // just the ten originally curated ones — is read through activeValue.
+  // totalEquity/totalDebt/cash used to be read raw here on the theory that
+  // they're "never restatement targets"; that was never actually true (they
+  // qualify the same dynamic way otherIncome does), so normalizing one of
+  // them silently didn't move D/E, Book Value per Share, ROE, EV, or the
+  // Capital Employed/Net Debt formulas below. Fixed.
   const revenue     = val(activeValue(latestI, 'revenue', basis))
   const opProfit    = val(activeValue(latestI, 'operatingProfit', basis))
   const depreciation= val(activeValue(latestI, 'depreciation', basis))
   const interest    = val(activeValue(latestI, 'interest', basis))
   const netProfit   = val(activeValue(latestI, 'netProfit', basis))
-  const otherIncome = val(latestI.otherIncome)
-  let pbt = val(latestI.profitBeforeTax) ?? val(latestI.pbt)
-  let tax = val(activeValue(latestI, 'tax', basis))
-  // Derive-if-missing via the P&L identity — only when absent, never over source.
-  if (pbt == null && opProfit != null) {
-    pbt = opProfit + (otherIncome || 0) - (interest || 0) - (depreciation || 0)
-  }
-  if (tax == null && pbt != null && netProfit != null) {
-    tax = pbt - netProfit
-  }
   // totalEquity: statement only. This used to also derive equity from a TTM
   // D/E ratio or TTM ROE when the statement had no equity line — but both
   // inputs to that derivation came from the same shaky post-migration Yahoo
   // snapshot as everything else TTM touches, so it wasn't a more reliable
   // number, just a more indirect one. Removed rather than kept as the one
   // exception.
-  const rawEquity = val(latestB.totalEquity)
-  const totalEquity = rawEquity
+  const totalEquity = val(activeValue(latestB, 'totalEquity', basis))
   // Debt: statement only. `debtEstimated` stays available as general
   // disclosure scaffolding (surfaced in valuation.js/marketExpectation.js)
   // for any future real source of an estimated-debt figure; nothing sets it
@@ -144,7 +129,7 @@ export function calcRatios(data, opts = {}) {
   // unlike the old `?? 0` this replaced, a genuinely missing debt figure
   // stays missing rather than being fabricated as zero or estimated from a
   // weak source.
-  let totalDebt      = val(latestB.totalDebt) ?? null
+  let totalDebt      = val(activeValue(latestB, 'totalDebt', basis)) ?? null
   let debtEstimated  = false
   // Cash: statement only. No assumed zero.
   //
@@ -153,7 +138,7 @@ export function calcRatios(data, opts = {}) {
   // — and if we had one, cash wouldn't be missing. Nothing else in the statements
   // pins down a level. Assuming nil would silently overstate EV and net debt and
   // understate DCF fair value, which is a wrong valuation, not a cautious one.
-  const cash          = val(latestB.cash) ?? null
+  const cash          = val(activeValue(latestB, 'cash', basis)) ?? null
   const cashEstimated = false
   const opCF        = val(latestCF.operatingCF)
 
@@ -174,8 +159,8 @@ export function calcRatios(data, opts = {}) {
   // every company, measuring nothing.
   const _bRows      = realRows(balanceHistory)
   const prevB       = _bRows[_bRows.length - 2] || {}
-  const fixedNow    = val(latestB.fixedAssets)
-  const fixedPrev   = val(prevB.fixedAssets)
+  const fixedNow    = val(activeValue(latestB, 'fixedAssets', basis))
+  const fixedPrev   = val(activeValue(prevB, 'fixedAssets', basis))
 
   let capex      = val(activeValue(latestCF, 'capex', basis))
   let capexBasis = capex != null ? 'reported' : null
@@ -208,8 +193,7 @@ export function calcRatios(data, opts = {}) {
     estimated: debtEstimated,
     note: debtEstimated ? 'Debt not reported — estimated from Equity × D/E' : '',
   }
-  const totalAssets = val(latestB.totalAssets)
-  const fixedAssets = val(latestB.fixedAssets)
+  const totalAssets = val(activeValue(latestB, 'totalAssets', basis))
 
   // Shares <-> Market Cap: price x shares = marketCap. Any two give the third.
   //
@@ -228,10 +212,16 @@ export function calcRatios(data, opts = {}) {
   const eps = epsRaw ?? calc('Net Profit ÷ Shares', netProfit, shares, (n, s) => n / s)
 
   // ── EBITDA ─────────────────────────────────────────────────────────────────
-  // Priority: direct from source → Op.Profit + Dep → Op.Profit alone
+  // The NUMBER is a materialized field (formulas.js): reported when a
+  // source directly gives it; Op.Profit + Depreciation when not (a bucket
+  // sum tolerates Depreciation being missing, degrading to Op.Profit alone
+  // the same way the old ladder's third rung did — see formulas.js). The
+  // status/formula-string pair below is display-only metadata (which rung
+  // actually produced it, for the UI's tooltip) and stays a local check
+  // against the same raw inputs; it was never part of the VALUE itself.
   const ebitdaDirect = val(latestI.ebitda)
   const ebitdaCalc   = opProfit != null && depreciation != null ? opProfit + depreciation : null
-  const ebitda       = ebitdaDirect ?? ebitdaCalc ?? opProfit
+  const ebitda       = val(activeValue(latestI, 'ebitda', basis))
 
   const ebitdaStatus = ebitdaDirect  != null ? 'source'
     : ebitdaCalc   != null ? 'calculated'
@@ -291,18 +281,18 @@ export function calcRatios(data, opts = {}) {
 
   // ── Returns ────────────────────────────────────────────────────────────────
   // ROE = Net Profit / Average Equity × 100
-  const prevEquity = val(balanceReal[balanceReal.length - 2]?.totalEquity)
+  const prevEquity = val(activeValue(balanceReal[balanceReal.length - 2] || {}, 'totalEquity', basis))
   const avgEquity  = totalEquity != null && prevEquity != null
     ? (totalEquity + prevEquity) / 2 : totalEquity
   const roe  = pct(netProfit, avgEquity)
 
-  // ROCE = EBIT / Capital Employed × 100
-  // Capital Employed = Total Assets - Current Liabilities
-  // We approximate: Capital Employed = Total Equity + Total Debt (= long-term capital)
   // ROCE = EBIT / Capital Employed × 100  (EBIT = operating profit, i.e. after
   // depreciation — NOT EBITDA, which overstates the return). Prefer reported
-  // operating income; else derive EBIT = EBITDA − Depreciation.
-  const capitalEmployed = (totalEquity != null && totalDebt != null) ? totalEquity + totalDebt : null
+  // operating income; else derive EBIT = EBITDA − Depreciation. Capital
+  // Employed itself is a materialized field (formulas.js: Total Equity +
+  // Total Debt, per its own bucket assignments) — read the same way as any
+  // other normalizable field rather than recomputed inline here.
+  const capitalEmployed = val(activeValue(latestB, 'capitalEmployed', basis))
 
   // ── NIM (Net Interest Margin) — banks / NBFCs only ─────────────────────────
   // The lender's answer to gross margin: what's earned on the SPREAD between
@@ -322,7 +312,7 @@ export function calcRatios(data, opts = {}) {
   // consistent period-over-period, which is what makes the trend readable —
   // it just shouldn't be compared against an investor-deck figure verbatim.
   const isLender   = sectorType === SECTOR_TYPES.BANK || sectorType === SECTOR_TYPES.NBFC
-  const prevAssets = val(balanceReal[balanceReal.length - 2]?.totalAssets)
+  const prevAssets = val(activeValue(balanceReal[balanceReal.length - 2] || {}, 'totalAssets', basis))
   const avgAssets  = totalAssets != null && prevAssets != null
     ? (totalAssets + prevAssets) / 2 : totalAssets
   const nim = (isLender && revenue != null && interest != null)
@@ -336,7 +326,9 @@ export function calcRatios(data, opts = {}) {
   const roa  = pct(netProfit, totalAssets)
 
   // ── Leverage ───────────────────────────────────────────────────────────────
-  const netDebt = (totalDebt != null && cash != null) ? totalDebt - cash : null
+  // Net Debt is a materialized field (formulas.js: Total Debt − Cash) —
+  // read the same way as any other normalizable field.
+  const netDebt = val(activeValue(latestB, 'netDebt', basis))
   const de      = div(totalDebt, totalEquity)           // D/E ratio
   const icr     = div(ebitda, interest)                 // Interest coverage
 
