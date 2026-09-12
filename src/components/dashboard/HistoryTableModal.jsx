@@ -899,21 +899,26 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
   const resolved = latestRow ? activeValue(latestRow, formula.key, basis) : null
   const output = resolved?.value != null ? { year: latestRow.year, value: resolved.value } : null
 
-  // "NWC = Trade Receivables + Inventories − Trade Payables (Normalized) −
-  // Advance from Customers" — a constituent only gets the "(Normalized)"
-  // tag when IT ITSELF has an active override on the year actually shown
-  // (not just because the basis picker above is set to Normalized — most
-  // fields never get restated, and tagging every one of them "Normalized"
-  // just because the toggle is in that position would say something false
-  // about which numbers actually moved). Reported and Normalized differ
-  // only in which terms carry the tag; the fields themselves never change.
+  // "NWC = Trade Receivables 520 (Normalized) + Inventories 300 − Trade
+  // Payables 200 − Advance from Customers 50" — each constituent's own
+  // resolved VALUE is shown alongside its name, not just the name, so the
+  // equation is a self-contained audit: you can see exactly what number
+  // each field actually contributed and confirm the total, rather than
+  // trusting a label. "(Normalized)" is appended only when THAT field
+  // itself has an active override on the year shown (not just because the
+  // basis picker is on Normalized — most fields never get restated, and
+  // tagging every one of them "Normalized" just because the toggle is in
+  // that position would say something false about which numbers actually
+  // moved).
   const equation = (() => {
     const terms = []
     for (const bucket of formula.buckets) {
       for (const a of assignedFieldsFor(formula, bucket)) {
         const effSign = (bucket.sign ?? 1) * (a.sign ?? 1)
         const hasOverride = basis === 'normalized' && latestRow?.[`${a.field}Normalized`]?.value != null
-        const text = fieldLabel(data, a.field) + (hasOverride ? ' (Normalized)' : '')
+        const v = latestRow ? activeValue(latestRow, a.field, basis)?.value : null
+        const vText = v == null ? '—' : (SKIP_SCALE.has(a.field) ? v.toLocaleString() : Math.round(v / div).toLocaleString())
+        const text = `${fieldLabel(data, a.field)} ${vText}` + (hasOverride ? ' (Normalized)' : '')
         terms.push({ sign: effSign, text })
       }
     }
