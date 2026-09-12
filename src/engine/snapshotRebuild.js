@@ -126,7 +126,7 @@ export function rebuildSnapshot(analysis, asOfMs, regimeOn = null) {
   // applied to a two-year-old price, which is the same error as freezing a
   // payout: a quantity held still while the things it belongs with moved.
   const bRow = (analysis.data?.balanceHistory || []).find(b => yearOf(b) === yearOf(lastRow))
-  const equityThen = val(bRow?.totalEquity)
+  const equityThen = val(activeValue(bRow, 'totalEquity', basis))
   const sharesThen = (npThen > 0 && epsThen > 0) ? npThen / epsThen : null
   const bpsThen = (equityThen > 0 && sharesThen > 0) ? equityThen / sharesThen : null
   const divThen = val(lastRow?.dividendPaid) ?? val(lastRow?.dividend)

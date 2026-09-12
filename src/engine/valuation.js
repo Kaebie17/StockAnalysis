@@ -420,7 +420,7 @@ function detectBookValueDistortion(data, actualPb) {
   const points = []
   for (const bRow of bal) {
     const y = yearOf(bRow)
-    const eq = bRow?.totalEquity?.value
+    const eq = activeValue(bRow, 'totalEquity', data?.basis)?.value
     if (y == null || !(eq > 0)) continue
     const iRow = inc.find(row => yearOf(row) === y)
     const np  = activeValue(iRow, 'netProfit', data?.basis)?.value
