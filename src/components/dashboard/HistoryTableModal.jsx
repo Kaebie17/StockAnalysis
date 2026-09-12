@@ -505,9 +505,9 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
 
 // Every place a row can feed, for ONE statement — every valid restatement
 // target on this table (dynamic: any field with data, or a custom row —
-// see availableTargets), plus every derived formula's buckets that live on
-// this table (currently just NWC's two). One flat list so a single dropdown
-// covers both kinds; `value` round-trips through parseDestination below.
+// see availableTargets), plus every derived/fallback formula's buckets that
+// live on this table. One flat list so a single dropdown covers all kinds;
+// `value` round-trips through parseDestination below.
 function destinationOptions(data, table) {
   const out = []
   for (const t of availableTargets(data)) {
@@ -515,7 +515,7 @@ function destinationOptions(data, table) {
     out.push({ value: `restatement:${t.key}`, label: t.label })
   }
   for (const formula of listFormulas(data)) {
-    if (formula.kind !== 'derived' || formula.table !== table) continue
+    if (formula.kind === 'restatement' || formula.table !== table) continue
     for (const bucket of formula.buckets) {
       out.push({ value: `formula:${formula.key}:${bucket.key}`, label: `${formula.label} → ${bucket.label}` })
     }
@@ -812,21 +812,29 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
  * it's looking at.
  */
 function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
-  // A plain reported line item (revenue, tax, capex, ...) is not a formula
-  // just because the restatement tool COULD target it — this tab is for
-  // genuine multi-bucket formulas (Net Working Capital) only. Whether a
-  // given field has any restatement adjustment is already visible right on
-  // its own row in the statement tabs (the "feeds X" note) and its
-  // "(Normalized)" audit row — nothing here duplicates that.
-  const formulas = listFormulas(data).filter(f => f.kind === 'derived')
+  // A plain reported line item is not a formula just because the
+  // restatement tool COULD target it (kind: 'restatement') — those stay out
+  // of this tab; that adjustment is already visible on the field's own row
+  // (the "feeds X" note) and its "(Normalized)" audit row. Everything that
+  // actually COMBINES fields into a new or fallback-derived figure — 'derived'
+  // (Net Working Capital, Capital Employed, Net Debt) and 'fallback'
+  // (Gross Profit, Profit Before Tax, Tax, EBITDA — reported wins if
+  // present, buckets fill in when it's genuinely absent) — belongs here.
+  const formulas = listFormulas(data).filter(f => f.kind === 'derived' || f.kind === 'fallback')
   const fmtNum = v => v == null ? '—' : Math.round(v / div).toLocaleString()
   const focusAssignments = focusField ? assignmentsForField(data, focusField) : []
 
   const assignedFieldsFor = (formula, bucket) =>
     (data.fieldAssignments || []).filter(a => a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key)
 
+  // A formula's own bucket shouldn't be able to pick up ANOTHER formula's
+  // output as a raw ingredient via this generic checkbox (tax reading
+  // profitBeforeTax is the one legitimate case, and it's wired as a fixed
+  // default — see formulas.js — not something offered here for arbitrary
+  // reassignment), nor its own key (self-reference).
+  const formulaKeys = new Set(formulas.map(f => f.key))
   const candidatesFor = (formula) =>
-    availableTargets(data).filter(t => t.table === formula.table)
+    availableTargets(data).filter(t => t.table === formula.table && t.key !== formula.key && !formulaKeys.has(t.key))
 
   // "NWC = Trade Receivables + Inventories − Trade Payables − Advance from
   // Customers" — field names only, same regardless of basis (bucket

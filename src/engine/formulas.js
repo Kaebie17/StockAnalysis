@@ -67,6 +67,25 @@ function hasData(data, field) {
 // the user meant by "you need to be smart about how the buckets will be
 // created" — not every formula is assets-minus-liabilities, so each one
 // spells out its own bucket signs rather than inferring a rule.
+//
+// Two kinds:
+//   'derived'  — the buckets ARE the value; there's no separately-reported
+//                figure to prefer (Net Working Capital — no statement ever
+//                discloses "NWC" as its own line).
+//   'fallback' — a figure that MAY already be directly reported (Gross
+//                Profit, Profit Before Tax, Tax, EBITDA all sometimes are)
+//                — if it is, that reported value and ITS OWN normalization
+//                (the ordinary restatement mechanism, since these are all
+//                real metrics.js fields) stand untouched; the buckets only
+//                fill in when it's genuinely absent. Ports ratios.js's old
+//                inline "reported ?? derived" ladders one for one — same
+//                fallback order, just centralized instead of copied inline
+//                wherever the figure was needed.
+//
+// Declaration order matters for 'fallback' entries that consume another
+// formula's own output (tax reads profitBeforeTax) — materializeFormulas
+// processes this object's entries in order, so profitBeforeTax must be
+// declared, and therefore materialized, before tax.
 const DERIVED_FORMULAS = {
   nwc: {
     key: 'nwc',
@@ -76,6 +95,74 @@ const DERIVED_FORMULAS = {
     buckets: [
       { key: 'currentOperatingAssets',      label: 'Current Operating Assets',      sign: 1,  defaults: ['tradeReceivables', 'inventories'] },
       { key: 'currentOperatingLiabilities', label: 'Current Operating Liabilities', sign: -1, defaults: ['tradePayables', 'advanceFromCustomers'] },
+    ],
+  },
+  capitalEmployed: {
+    key: 'capitalEmployed',
+    kind: 'derived',
+    label: 'Capital Employed',
+    table: 'balance',
+    buckets: [
+      { key: 'equity', label: 'Equity', sign: 1, defaults: ['totalEquity'] },
+      { key: 'debt',   label: 'Debt',   sign: 1, defaults: ['totalDebt'] },
+    ],
+  },
+  netDebt: {
+    key: 'netDebt',
+    kind: 'derived',
+    label: 'Net Debt',
+    table: 'balance',
+    buckets: [
+      { key: 'debt', label: 'Debt', sign: 1,  defaults: ['totalDebt'] },
+      { key: 'cash', label: 'Cash', sign: -1, defaults: ['cash'] },
+    ],
+  },
+  grossProfit: {
+    key: 'grossProfit',
+    kind: 'fallback',
+    label: 'Gross Profit',
+    table: 'income',
+    buckets: [
+      { key: 'revenue', label: 'Revenue', sign: 1,  defaults: ['revenue'] },
+      { key: 'cogs',    label: 'COGS',    sign: -1, defaults: ['cogs'] },
+    ],
+  },
+  profitBeforeTax: {
+    key: 'profitBeforeTax',
+    kind: 'fallback',
+    label: 'Profit Before Tax',
+    table: 'income',
+    buckets: [
+      { key: 'operatingProfit', label: 'Operating Profit', sign: 1,  defaults: ['operatingProfit'] },
+      { key: 'otherIncome',     label: 'Other Income',     sign: 1,  defaults: ['otherIncome'] },
+      { key: 'interest',        label: 'Interest',         sign: -1, defaults: ['interest'] },
+      { key: 'depreciation',    label: 'Depreciation',     sign: -1, defaults: ['depreciation'] },
+    ],
+  },
+  // Reads profitBeforeTax's own materialized output, not a raw field — see
+  // the ordering note above.
+  tax: {
+    key: 'tax',
+    kind: 'fallback',
+    label: 'Tax',
+    table: 'income',
+    buckets: [
+      { key: 'pbt',       label: 'Profit Before Tax', sign: 1,  defaults: ['profitBeforeTax'] },
+      { key: 'netProfit', label: 'Net Profit',        sign: -1, defaults: ['netProfit'] },
+    ],
+  },
+  ebitda: {
+    key: 'ebitda',
+    kind: 'fallback',
+    label: 'EBITDA',
+    table: 'income',
+    // One bucket, not two signed ones: a bucket sum tolerates a missing
+    // member (skips it rather than failing the whole formula), which is
+    // exactly the old ladder's "Op Profit + Depreciation, or Op Profit
+    // alone if Depreciation is missing" — for free, from the bucket-sum
+    // rule itself, not a separate ladder.
+    buckets: [
+      { key: 'components', label: 'Components', sign: 1, defaults: ['operatingProfit', 'depreciation'] },
     ],
   },
 }
@@ -186,6 +273,14 @@ export function materializeFormulas(data) {
     if (!base.length) continue
     const normKey = `${formula.key}Normalized`
     const newHistory = base.map(row => {
+      // 'fallback': a real reported value for this exact field already
+      // exists (e.g. a Yahoo/SEC company that DOES report Gross Profit
+      // directly) — leave it, and its OWN Normalized sibling, completely
+      // alone. It's a genuine restatement-eligible metrics.js field, so
+      // recomputeNormalizedTargets (which already ran, above) already
+      // handles its normalization independently of this formula; the
+      // buckets here only fill the figure in when it's genuinely absent.
+      if (formula.kind === 'fallback' && rowValue(row, formula.key) != null) return row
       const reported = computeForRow(out, formula.key, row, 'reported')
       if (reported == null) {
         if (!(formula.key in row) && !(normKey in row)) return row
