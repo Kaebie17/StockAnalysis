@@ -94,6 +94,15 @@ export default function HistoryTableModal({ open, onClose }) {
   // Formulas tab open with that field's own assignment editor already open,
   // instead of just landing on an undifferentiated list.
   const [focusField, setFocusField] = useState(null)
+  // Which formulas' normalized output the user has already viewed —
+  // session-only (plain component state, never persisted to data/storage),
+  // and deliberately NOT reset by the effect below: it survives closing and
+  // reopening this modal within the same page session, and only resets on
+  // an actual reload. A formula's output renders red under the Normalized
+  // basis until it's been marked seen (FormulaRow, below) — a loose,
+  // low-precision "have you at least opened the Formulas tab since this
+  // was last true" check, not a durable per-value audit trail.
+  const [seenNormalized, setSeenNormalized] = useState({})
 
   useEffect(() => {
     if (!open) return
@@ -288,7 +297,8 @@ export default function HistoryTableModal({ open, onClose }) {
       </div>
 
       {table === 'formulas' ? (
-        <FormulasTab data={data} div={div} focusField={focusField} setAssignmentsForField={setAssignmentsForField} />
+        <FormulasTab data={data} div={div} focusField={focusField} setAssignmentsForField={setAssignmentsForField}
+          seenNormalized={seenNormalized} setSeenNormalized={setSeenNormalized} />
       ) : (
         <>
       {years.length === 0 ? (
@@ -811,7 +821,7 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
  * formula (NWC) so the assignment mechanism doesn't need to know which kind
  * it's looking at.
  */
-function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
+function FormulasTab({ data, div, focusField, setAssignmentsForField, seenNormalized, setSeenNormalized }) {
   // Every formula with a real bucket structure ('derived' — NWC, Capital
   // Employed, Net Debt — and 'fallback' — Gross Profit, Profit Before Tax,
   // Tax, EBITDA), no matter how trivial or how often the fallback never
@@ -863,7 +873,9 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
         <FormulaRow key={formula.key} data={data} formula={formula} div={div}
           fmtNum={fmtNum} focused={isFocused(formula)}
           assignedFieldsFor={assignedFieldsFor} candidatesFor={candidatesFor}
-          onToggleMembership={toggleMembership} />
+          onToggleMembership={toggleMembership}
+          seen={!!seenNormalized[formula.key]}
+          markSeen={() => setSeenNormalized(prev => ({ ...prev, [formula.key]: true }))} />
       ))}
     </div>
   )
@@ -881,7 +893,14 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
 // run from computeAll) — so this is activeValue(row, key, basis), the exact
 // call every other consumer in the app already makes, not a formulas.js-
 // specific compute function.
-function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, candidatesFor, onToggleMembership }) {
+function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, candidatesFor, onToggleMembership, seen, markSeen }) {
+  // Marked seen on UNMOUNT (leaving the Formulas tab, or closing the
+  // modal) rather than on mount — marking it the instant it renders would
+  // flip it back to the normal color before the render even settles,
+  // making "red" meaningless. This way it stays red for as long as this
+  // formula is actually being looked at, and only reverts the NEXT time
+  // the tab is opened after that.
+  useEffect(() => () => markSeen(), [markSeen])
   const hist = fieldHistory(data, formula.table)
   const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const latestRow = realRows[realRows.length - 1]
@@ -945,7 +964,7 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
         <span className="text-slate-400 font-mono truncate" title={equation}>{equation}</span>
       </span>
       {output
-        ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (basis === 'normalized' && hasOwnNormalization ? 'text-bear' : 'text-accent')}>{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
+        ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (basis === 'normalized' && hasOwnNormalization && !seen ? 'text-bear' : 'text-accent')}>{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
         : <span className="flex-shrink-0 text-slate-600">—</span>}
     </div>
   )
