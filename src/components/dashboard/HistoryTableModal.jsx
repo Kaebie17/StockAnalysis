@@ -829,17 +829,16 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
   const assignedFieldsFor = (formula, bucket) =>
     (data.fieldAssignments || []).filter(a => a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key)
 
-  // A formula's own bucket shouldn't be able to pick up ANOTHER formula's
-  // output as a raw ingredient via this generic checkbox (tax reading
-  // profitBeforeTax is the one legitimate case, and it's wired as a fixed
-  // default — see formulas.js — not something offered here for arbitrary
-  // reassignment), nor its own key (self-reference). Checked against every
-  // formula (listFormulas(data), unfiltered) — grossProfit/tax/ebitda are
-  // still real formula outputs even though they're hidden from THIS tab's
-  // own list above (they're already visible as ordinary rows instead).
-  const formulaKeys = new Set(listFormulas(data).map(f => f.key))
+  // Another formula's output is a perfectly legitimate ingredient here —
+  // that's how real formulas actually compose (ROCE needs EBIT, EV/EBITDA
+  // needs EBITDA, an effective tax rate needs Tax ÷ PBT); tax already
+  // reads profitBeforeTax this exact way. The only thing genuinely
+  // excluded is a formula feeding ITSELF (a real, nonsensical loop) — the
+  // table-match filter below already keeps a formula from picking up a
+  // candidate that lives on a different statement, which is the only other
+  // hard constraint (a bucket sum reads all its members off ONE row).
   const candidatesFor = (formula) =>
-    availableTargets(data).filter(t => t.table === formula.table && t.key !== formula.key && !formulaKeys.has(t.key))
+    availableTargets(data).filter(t => t.table === formula.table && t.key !== formula.key)
 
   // "NWC = Trade Receivables + Inventories − Trade Payables − Advance from
   // Customers" — field names only, same regardless of basis (bucket
