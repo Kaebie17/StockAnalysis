@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useApp } from '../../store/AppContext.jsx'
 import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
@@ -124,7 +125,14 @@ export default function HistoryTableModal({ open, onClose }) {
 
   const displayOf = (field, raw) => {
     if (raw == null) return ''
-    return SKIP_SCALE.has(field) ? String(raw) : String(+(raw / div).toFixed(2))
+    // Screener shows every line whole (Cr, no paise) — a few fields (COGS
+    // from a "Material Cost %" label, Gross Profit derived from it) are
+    // legitimately computed as revenue × a percentage and land on a real
+    // fraction of a crore, not a formatting artifact — but this grid still
+    // shows whole crores for every scaled field, same convention as the
+    // source. The full precision is unaffected in storage/ratio math; this
+    // only rounds what's DISPLAYED here.
+    return SKIP_SCALE.has(field) ? String(raw) : String(Math.round(raw / div))
   }
   const parseInput = (field, text) => {
     const t = text.trim()
@@ -214,7 +222,7 @@ export default function HistoryTableModal({ open, onClose }) {
       return n ? val(n.netProfit) : null
     })
     if (npNorm.some(v => v != null)) {
-      computedRows.push({ label: 'Net Profit (Normalized)', cells: npNorm, fmt: v => v == null ? null : (v / div).toLocaleString(undefined, { maximumFractionDigits: 1 }) })
+      computedRows.push({ label: 'Net Profit (Normalized)', cells: npNorm, fmt: v => v == null ? null : Math.round(v / div).toLocaleString() })
     }
     const epsNorm = years.map(y => {
       const row = history.find(r => String(r.year) === y)
@@ -241,7 +249,7 @@ export default function HistoryTableModal({ open, onClose }) {
     })
     const hasContribution = years.some(y => val(history.find(r => String(r.year) === y)?.[`${key}Normalized`]) != null)
     if (hasContribution) {
-      computedRows.push({ label: `${meta.label} (Normalized)`, cells, fmt: v => v == null ? null : (SKIP_SCALE.has(key) ? v.toFixed(2) : (v / div).toLocaleString(undefined, { maximumFractionDigits: 1 })) })
+      computedRows.push({ label: `${meta.label} (Normalized)`, cells, fmt: v => v == null ? null : (SKIP_SCALE.has(key) ? v.toFixed(2) : Math.round(v / div).toLocaleString()) })
     }
   }
 
@@ -287,10 +295,10 @@ export default function HistoryTableModal({ open, onClose }) {
         <p className="text-xs text-slate-500">No {TABLES.find(t => t.key === table)?.label} history stored yet for this ticker.</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="w-max min-w-full text-xs">
             <thead>
               <tr className="border-b border-navy-700">
-                <th className="text-left py-1 text-slate-500 sticky left-0 bg-navy-900 pr-2">Field</th>
+                <th className="text-left py-1 text-slate-500 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">Field</th>
                 {years.map(y => <th key={y} className="text-right py-1 text-slate-500 px-2 font-mono whitespace-nowrap min-w-[6.5rem]">{y}</th>)}
               </tr>
             </thead>
@@ -316,9 +324,9 @@ export default function HistoryTableModal({ open, onClose }) {
               ))}
               {computedRows.map(r => (
                 <tr key={r.label} className="border-b border-navy-800/50">
-                  <td className="py-1 text-slate-500 italic sticky left-0 bg-navy-900 pr-2">{r.label}</td>
+                  <td className="py-1 text-slate-500 italic sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">{r.label}</td>
                   {r.cells.map((v, i) => (
-                    <td key={i} className="text-right py-1 px-2 font-mono text-slate-500">
+                    <td key={i} className="text-right py-1 px-2 font-mono text-slate-500 whitespace-nowrap min-w-[6.5rem]">
                       {r.fmt(v) ?? '—'}
                     </td>
                   ))}
@@ -423,7 +431,7 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
   return (
     <>
     <tr className="border-b border-navy-800/50">
-      <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2">
+      <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">
         {label}
         {assignmentNote && <span className="block text-[10px] text-slate-600">{assignmentNote}</span>}
         <button onClick={() => { setShowPaste(s => !s); setPasteWarning('') }}
@@ -804,8 +812,14 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
  * it's looking at.
  */
 function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
-  const formulas = listFormulas(data)
-  const fmtNum = v => v == null ? '—' : (v / div).toLocaleString(undefined, { maximumFractionDigits: 1 })
+  // A plain reported line item (revenue, tax, capex, ...) is not a formula
+  // just because the restatement tool COULD target it — this tab is for
+  // genuine multi-bucket formulas (Net Working Capital) only. Whether a
+  // given field has any restatement adjustment is already visible right on
+  // its own row in the statement tabs (the "feeds X" note) and its
+  // "(Normalized)" audit row — nothing here duplicates that.
+  const formulas = listFormulas(data).filter(f => f.kind === 'derived')
+  const fmtNum = v => v == null ? '—' : Math.round(v / div).toLocaleString()
   const focusAssignments = focusField ? assignmentsForField(data, focusField) : []
 
   const assignedFieldsFor = (formula, bucket) =>
@@ -899,19 +913,60 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
   )
 }
 
+// Rendered via a portal straight onto document.body, positioned from the
+// trigger's own viewport rect — NOT `position: absolute` inside the modal's
+// scrollable body. That nesting was the actual bug: a small dropdown
+// absolutely positioned inside a tall scrolling ancestor gets clipped by
+// that ancestor's overflow the moment it would extend past it, so the part
+// that renders "past the edge" isn't just invisible, it isn't there for the
+// pointer/wheel either — hence scrolling over what looks like the popup
+// instead scrolls the modal underneath. A fixed-position portal has no such
+// ancestor to be clipped by, and flips to open upward when there isn't
+// room below, instead of always downward regardless of space.
 function BucketChip({ formula, bucket, assigned, candidates, onToggle }) {
   const [open, setOpen] = useState(false)
+  const [rect, setRect] = useState(null)
+  const btnRef = useRef(null)
   const label = formula.buckets.length > 1 ? bucket.label : formula.label
+
+  const openPopup = () => {
+    const r = btnRef.current.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - r.bottom
+    const spaceAbove = r.top
+    const openUp = spaceBelow < 200 && spaceAbove > spaceBelow
+    setRect({
+      left: Math.min(r.left, window.innerWidth - 232),
+      top: openUp ? null : r.bottom + 4,
+      bottom: openUp ? window.innerHeight - r.top + 4 : null,
+      maxHeight: Math.max(120, (openUp ? spaceAbove : spaceBelow) - 12),
+    })
+    setOpen(true)
+  }
+
+  // The list a user actually wants scrollable here is short and internal
+  // (overflow-y-auto on the popup itself, unaffected by this) — a scroll of
+  // the PAGE/modal behind it means the trigger has moved, so the popup's
+  // now-stale position is closed rather than left floating in the wrong spot.
+  useEffect(() => {
+    if (!open) return
+    const close = () => setOpen(false)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close) }
+  }, [open])
+
   return (
     <span className="relative">
-      <button type="button" onClick={() => setOpen(o => !o)}
+      <button ref={btnRef} type="button" onClick={() => (open ? setOpen(false) : openPopup())}
         className={'text-[11px] rounded px-1.5 py-0.5 border ' + (assigned.length ? 'border-accent/50 text-accent bg-accent/10' : 'border-navy-700 text-slate-500')}>
         {label} ({assigned.length})
       </button>
-      {open && (
+      {open && rect && createPortal(
         <>
-          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute z-20 mt-1 w-56 max-h-56 overflow-y-auto rounded-lg border border-navy-700 bg-navy-900 p-2 space-y-1 shadow-lg">
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div
+            className="fixed z-50 w-56 overflow-y-auto rounded-lg border border-navy-700 bg-navy-900 p-2 space-y-1 shadow-lg"
+            style={{ left: rect.left, top: rect.top ?? undefined, bottom: rect.bottom ?? undefined, maxHeight: rect.maxHeight }}>
             {candidates.length === 0 && <p className="text-[11px] text-slate-500">Nothing on this statement to assign yet.</p>}
             {candidates.map(c => {
               const checked = assigned.some(a => a.field === c.key)
@@ -923,7 +978,8 @@ function BucketChip({ formula, bucket, assigned, candidates, onToggle }) {
               )
             })}
           </div>
-        </>
+        </>,
+        document.body
       )}
     </span>
   )
