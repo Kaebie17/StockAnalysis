@@ -94,15 +94,18 @@ export default function HistoryTableModal({ open, onClose }) {
   // Formulas tab open with that field's own assignment editor already open,
   // instead of just landing on an undifferentiated list.
   const [focusField, setFocusField] = useState(null)
-  // Which formulas' normalized output the user has already viewed —
-  // session-only (plain component state, never persisted to data/storage),
-  // and deliberately NOT reset by the effect below: it survives closing and
+  // The last output value the user actually saw for each formula, per
+  // basis: { [formulaKey]: { reported, normalized } } — session-only
+  // (plain component state, never persisted to data/storage), and
+  // deliberately NOT reset by the effect below: it survives closing and
   // reopening this modal within the same page session, and only resets on
-  // an actual reload. A formula's output renders red under the Normalized
-  // basis until it's been marked seen (FormulaRow, below) — a loose,
-  // low-precision "have you at least opened the Formulas tab since this
-  // was last true" check, not a durable per-value audit trail.
-  const [seenNormalized, setSeenNormalized] = useState({})
+  // an actual reload. A formula's output renders red whenever it differs
+  // from this stored watermark — ANY change (new data arriving, an edit,
+  // a bucket reassignment, a genuine restatement), not specifically
+  // normalization — since the point is noticing something changed at all,
+  // not just why. A loose, low-precision "have you looked since this
+  // changed" check, not a durable per-value audit trail.
+  const [lastSeenOutputs, setLastSeenOutputs] = useState({})
 
   useEffect(() => {
     if (!open) return
@@ -298,7 +301,7 @@ export default function HistoryTableModal({ open, onClose }) {
 
       {table === 'formulas' ? (
         <FormulasTab data={data} div={div} focusField={focusField} setAssignmentsForField={setAssignmentsForField}
-          seenNormalized={seenNormalized} setSeenNormalized={setSeenNormalized} />
+          lastSeenOutputs={lastSeenOutputs} setLastSeenOutputs={setLastSeenOutputs} />
       ) : (
         <>
       {years.length === 0 ? (
@@ -820,7 +823,7 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
  * formula (NWC) so the assignment mechanism doesn't need to know which kind
  * it's looking at.
  */
-function FormulasTab({ data, div, focusField, setAssignmentsForField, seenNormalized, setSeenNormalized }) {
+function FormulasTab({ data, div, focusField, setAssignmentsForField, lastSeenOutputs, setLastSeenOutputs }) {
   // Every formula with a real bucket structure ('derived' — NWC, Capital
   // Employed, Net Debt — and 'fallback' — Gross Profit, Profit Before Tax,
   // Tax, EBITDA), no matter how trivial or how often the fallback never
@@ -873,8 +876,8 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, seenNormal
           fmtNum={fmtNum} focused={isFocused(formula)}
           assignedFieldsFor={assignedFieldsFor} candidatesFor={candidatesFor}
           onToggleMembership={toggleMembership}
-          seen={!!seenNormalized[formula.key]}
-          markSeen={() => setSeenNormalized(prev => ({ ...prev, [formula.key]: true }))} />
+          lastSeen={lastSeenOutputs[formula.key]}
+          markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
       ))}
     </div>
   )
@@ -892,14 +895,7 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, seenNormal
 // run from computeAll) — so this is activeValue(row, key, basis), the exact
 // call every other consumer in the app already makes, not a formulas.js-
 // specific compute function.
-function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, candidatesFor, onToggleMembership, seen, markSeen }) {
-  // Marked seen on UNMOUNT (leaving the Formulas tab, or closing the
-  // modal) rather than on mount — marking it the instant it renders would
-  // flip it back to the normal color before the render even settles,
-  // making "red" meaningless. This way it stays red for as long as this
-  // formula is actually being looked at, and only reverts the NEXT time
-  // the tab is opened after that.
-  useEffect(() => () => markSeen(), [markSeen])
+function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, candidatesFor, onToggleMembership, lastSeen, markSeen }) {
   const hist = fieldHistory(data, formula.table)
   const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const latestRow = realRows[realRows.length - 1]
@@ -916,6 +912,29 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
   const [basis, setBasis] = useState(hasOwnNormalization ? 'normalized' : 'reported')
   const resolved = latestRow ? activeValue(latestRow, formula.key, basis) : null
   const output = resolved?.value != null ? { year: latestRow.year, value: resolved.value } : null
+
+  // Red means "this differs from the value you last actually looked at" —
+  // ANY change (new data arriving, an edit, a bucket reassignment, a real
+  // restatement), not specifically normalization; the point is catching
+  // that something moved, then letting you judge whether it's expected.
+  // Compared per-basis (Reported and Normalized are tracked as separate
+  // watermarks) so switching the picker doesn't itself read as "changed."
+  // A formula with no watermark yet (never viewed this session) counts as
+  // changed too — there's nothing to compare against, so it's flagged the
+  // same as a genuine first-time change.
+  const currentValue = output?.value ?? null
+  const changed = lastSeen?.[basis] === undefined || lastSeen[basis] !== currentValue
+
+  // Marked seen on UNMOUNT (leaving the Formulas tab, or closing the
+  // modal) rather than on mount — marking it the instant it renders would
+  // flip it back to the normal color before the render even settles,
+  // making "red" meaningless. Read via a ref (kept current every render)
+  // so the cleanup — which only runs once, on true unmount — reports
+  // whatever basis/value was actually showing right before the user left,
+  // not whatever was showing when the component first mounted.
+  const latestRef = useRef({ basis, value: currentValue })
+  latestRef.current = { basis, value: currentValue }
+  useEffect(() => () => markSeen(latestRef.current.basis, latestRef.current.value), [markSeen])
 
   // "NWC = Trade Receivables + Inventories − Trade Payables (Normalized) −
   // Advance from Customers" — field names only, per the original spec (the
@@ -963,7 +982,7 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
         <span className="text-slate-400 font-mono truncate" title={equation}>{equation}</span>
       </span>
       {output
-        ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (basis === 'normalized' && hasOwnNormalization && !seen ? 'text-bear' : 'text-accent')}>{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
+        ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')} title={changed ? 'Different from what you last saw here' : undefined}>{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
         : <span className="flex-shrink-0 text-slate-600">—</span>}
     </div>
   )
