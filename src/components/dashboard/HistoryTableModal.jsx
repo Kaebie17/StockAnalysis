@@ -840,26 +840,6 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
   const candidatesFor = (formula) =>
     availableTargets(data).filter(t => t.table === formula.table && t.key !== formula.key)
 
-  // "NWC = Trade Receivables + Inventories − Trade Payables − Advance from
-  // Customers" — field names only, same regardless of basis (bucket
-  // MEMBERSHIP doesn't change with the toggle, only the resolved VALUES do,
-  // which is why this doesn't take a basis param).
-  const equationFor = (formula) => {
-    const terms = []
-    for (const bucket of formula.buckets) {
-      for (const a of assignedFieldsFor(formula, bucket)) {
-        const effSign = (bucket.sign ?? 1) * (a.sign ?? 1)
-        terms.push({ sign: effSign, text: fieldLabel(data, a.field) })
-      }
-    }
-    if (!terms.length) return `${formula.label} = —`
-    const rhs = terms.map((t, i) => {
-      if (i === 0) return t.sign < 0 ? `− ${t.text}` : t.text
-      return `${t.sign < 0 ? '−' : '+'} ${t.text}`
-    }).join(' ')
-    return `${formula.label} = ${rhs}`
-  }
-
   const isFocused = (formula) => focusAssignments.some(a => a.formula === formula.key)
 
   const toggleMembership = (formula, bucket, field, checked) => {
@@ -881,7 +861,7 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
       )}
       {formulas.map(formula => (
         <FormulaRow key={formula.key} data={data} formula={formula} div={div}
-          fmtNum={fmtNum} equation={equationFor(formula)} focused={isFocused(formula)}
+          fmtNum={fmtNum} focused={isFocused(formula)}
           assignedFieldsFor={assignedFieldsFor} candidatesFor={candidatesFor}
           onToggleMembership={toggleMembership} />
       ))}
@@ -901,13 +881,39 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField }) {
 // run from computeAll) — so this is activeValue(row, key, basis), the exact
 // call every other consumer in the app already makes, not a formulas.js-
 // specific compute function.
-function FormulaRow({ data, formula, div, fmtNum, equation, focused, assignedFieldsFor, candidatesFor, onToggleMembership }) {
+function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, candidatesFor, onToggleMembership }) {
   const [basis, setBasis] = useState(data?.basis === 'normalized' ? 'normalized' : 'reported')
   const hist = fieldHistory(data, formula.table)
   const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const latestRow = realRows[realRows.length - 1]
   const resolved = latestRow ? activeValue(latestRow, formula.key, basis) : null
   const output = resolved?.value != null ? { year: latestRow.year, value: resolved.value } : null
+
+  // "NWC = Trade Receivables + Inventories − Trade Payables (Normalized) −
+  // Advance from Customers" — a constituent only gets the "(Normalized)"
+  // tag when IT ITSELF has an active override on the year actually shown
+  // (not just because the basis picker above is set to Normalized — most
+  // fields never get restated, and tagging every one of them "Normalized"
+  // just because the toggle is in that position would say something false
+  // about which numbers actually moved). Reported and Normalized differ
+  // only in which terms carry the tag; the fields themselves never change.
+  const equation = (() => {
+    const terms = []
+    for (const bucket of formula.buckets) {
+      for (const a of assignedFieldsFor(formula, bucket)) {
+        const effSign = (bucket.sign ?? 1) * (a.sign ?? 1)
+        const hasOverride = basis === 'normalized' && latestRow?.[`${a.field}Normalized`]?.value != null
+        const text = fieldLabel(data, a.field) + (hasOverride ? ' (Normalized)' : '')
+        terms.push({ sign: effSign, text })
+      }
+    }
+    if (!terms.length) return `${formula.label} = —`
+    const rhs = terms.map((t, i) => {
+      if (i === 0) return t.sign < 0 ? `− ${t.text}` : t.text
+      return `${t.sign < 0 ? '−' : '+'} ${t.text}`
+    }).join(' ')
+    return `${formula.label} = ${rhs}`
+  })()
 
   return (
     <div className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs ' + (focused ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
