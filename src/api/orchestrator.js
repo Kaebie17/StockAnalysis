@@ -1,26 +1,23 @@
 /**
  * src/api/orchestrator.js
  *
- * Fetches Yahoo (primary) + Screener (historical extension) in parallel.
- *
- * Merge policy:
- *   - Screener REPLACES Yahoo year for year where both have a value; Yahoo fills
- *     only the fields Screener lacks. Screener reads the filings, Yahoo is a
- *     vendor feed, so the stronger source wins.
- *   - No numeric cross-validation. An earlier version compared 12 metrics and
- *     discarded Screener on any mismatch — which had the sources backwards, and
- *     also failed on Yahoo's own gaps. The only remaining check is structural
- *     (right table, annual not quarterly) and it lives in the parser.
- *   - If Screener is blocked (Cloudflare): Yahoo only, no error shown to user
+ * Fetches Yahoo only for Indian tickers. The automatic Screener scrape
+ * (fetchScreener, api/screener.js) is gone — it was producing data with
+ * fields silently shifted a year off from where they belonged (confirmed:
+ * a year's revenue/operating profit/depreciation/interest, tagged
+ * 'source', turning up bit-for-bit identical to the PRIOR year's actual
+ * figures — four line items matching exactly, two years apart, isn't
+ * something a real company's financials do). Screener data now only
+ * enters through the user's own paste (AddHistoryModal/GapFillModal/
+ * NormalizeModal, via pasteParser.js) — a completely separate code path
+ * from this scrape, tagged 'pasted', unaffected by this removal.
  */
 
 import { fetchYahoo, resolveTicker } from './yahoo.js'
-import { fetchScreener } from './screener.js'
 import { fetchSec } from './secClient.js'
 
 export async function fetchTicker(rawTicker, onProgress) {
   const log  = (msg, step) => onProgress?.({ msg, step })
-  const bare = rawTicker.trim().toUpperCase().replace(/\.(NS|BO)$/i, '')
 
   log('Fetching financial data…', 1)
 
@@ -50,44 +47,10 @@ export async function fetchTicker(rawTicker, onProgress) {
     return { source: 'sec-merged', raw: { yahoo: yahooData, sec: secRes.value } }
   }
 
-  // Yahoo and Screener in parallel
-  const [yahooResult, screenerResult] = await Promise.allSettled([
-    fetchYahoo(rawTicker, resolved),
-    fetchScreener(bare)
-  ])
-
-  const yahooOk    = yahooResult.status    === 'fulfilled'
-  const screenerOk = screenerResult.status === 'fulfilled'
-
-  if (!yahooOk) {
-    console.warn('[orchestrator] Yahoo failed:', yahooResult.reason?.message)
-  }
-  if (!screenerOk) {
-    // Screener failure is expected (Cloudflare) — not logged as error
-    console.info('[orchestrator] Screener unavailable:', screenerResult.reason?.message)
-  }
-
-  // Yahoo is required — cannot function without it
-  if (!yahooOk) throw new Error('Could not fetch data for this ticker from Yahoo Finance.')
-
-  const yahooData    = yahooResult.value
-  const screenerData = screenerOk ? screenerResult.value : null
-
-  // If Screener unavailable — Yahoo only
-  if (!screenerData) {
-    log('Data loaded (Yahoo only)', 2)
-    return { source: 'yahoo', raw: yahooData }
-  }
-
-  // Screener available — merge. No numeric validation: Screener is a read of the
-  // filings, Yahoo is a vendor feed, and Screener now REPLACES Yahoo year for
-  // year. Checking the stronger source against the weaker one had it backwards,
-  // and it also failed on Yahoo's own holes. The only check on a paste is
-  // structural (right table, annual not quarterly) and it lives in the parser.
-  log('Merging Screener history…', 2)
-  return {
-    source: 'merged',
-    raw:    { yahoo: yahooData, screener: screenerData },
-  }
-
+  // Indian tickers: Yahoo only. Historical depth (the years Yahoo doesn't
+  // carry) comes from the user's own Screener paste (AddHistoryModal/
+  // GapFillModal/NormalizeModal), not an automatic scrape.
+  const yahooData = await fetchYahoo(rawTicker, resolved)
+  log('Data loaded (Yahoo only — paste Screener history for deeper years)', 2)
+  return { source: 'yahoo', raw: yahooData }
 }
