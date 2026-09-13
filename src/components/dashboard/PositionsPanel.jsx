@@ -301,12 +301,20 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
       eps: activeValue(row, 'eps', analysis.data?.basis),
       revenue: activeValue(row, 'revenue', analysis.data?.basis),
     }))
+    // Same reasoning, for the balance side: targetMultiple.js's
+    // yearlyObservations and estimate.js's pbBand both read totalEquity
+    // directly off a balance row, so a raw balanceHistory left it
+    // unaffected by a restatement even after the income side was fixed.
+    const activeBalanceHistory = (analysis.data?.balanceHistory || []).map(row => ({
+      ...row,
+      totalEquity: activeValue(row, 'totalEquity', analysis.data?.basis),
+    }))
     const est = buildEstimate(rr, {
       guidedGrowth: (isLive && state.assumptions?.nearTermGrowth != null
         && isFinite(state.assumptions.nearTermGrowth)) ? state.assumptions.nearTermGrowth : null,
       priceHistory:   analysis.data?.priceHistory   || [],
       incomeHistory:  activeIncomeHistory,
-      balanceHistory: analysis.data?.balanceHistory || [],
+      balanceHistory: activeBalanceHistory,
     })
     const ga = assessFromQuarterly(isLive ? state.quarterlyData : null, {
       guidance: isLive ? state.guidance : null,
@@ -320,7 +328,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
     const obs = yearlyObservations({
       priceHistory: analysis.data?.priceHistory || [],
       incomeHistory: activeIncomeHistory,
-      balanceHistory: analysis.data?.balanceHistory || [], basis: 'pe' })
+      balanceHistory: activeBalanceHistory, basis: 'pe' })
     const epsTrend = obs.length >= 2
       ? (obs[obs.length - 1].eps > obs[obs.length - 2].eps ? 'improving' : 'deteriorating') : null
     const setups = detectSetups({

@@ -25,6 +25,18 @@ function activeIncomeHistory(data) {
   }))
 }
 
+// Same reasoning as activeIncomeHistory, for the balance side: every
+// call site here paired the resolved income history with a RAW
+// balanceHistory, so totalEquity (targetMultiple.js/estimate.js's pbBand
+// both read it directly off a balance row) never respected a
+// restatement even after everything else did.
+function activeBalanceHistory(data) {
+  return (data?.balanceHistory || []).map(row => ({
+    ...row,
+    totalEquity: activeValue(row, 'totalEquity', data?.basis),
+  }))
+}
+
 /**
  * usePositions — the read/write layer for stocks the user actually owns.
  *
@@ -78,7 +90,7 @@ export function buildSnapshot({ state, buyDate, regime }) {
       ? assumptions.nearTermGrowth : null,
     priceHistory:   data?.priceHistory   || [],
     incomeHistory:  activeIncomeHistory(data),
-    balanceHistory: data?.balanceHistory || [],
+    balanceHistory: activeBalanceHistory(data),
   }) : null
 
   return {
@@ -159,7 +171,7 @@ export async function recordBuy({ ticker, name, shares, buyPrice, buyDate, note,
           ? state.assumptions.nearTermGrowth : null,
         priceHistory:   state.data?.priceHistory   || [],
         incomeHistory:  activeIncomeHistory(state.data),
-        balanceHistory: state.data?.balanceHistory || [],
+        balanceHistory: activeBalanceHistory(state.data),
       })
       if (est.ok) await saveEstimate(ticker, est, { trigger: 'purchase' })
     }
@@ -332,7 +344,7 @@ export async function backfillSnapshot(position, analysis) {
   const est = buildEstimate(analysis.ratioResult, {
     priceHistory:   analysis.data?.priceHistory   || [],
     incomeHistory:  activeIncomeHistory(analysis.data),
-    balanceHistory: analysis.data?.balanceHistory || [],
+    balanceHistory: activeBalanceHistory(analysis.data),
   })
   if (!est?.ok) return null
 

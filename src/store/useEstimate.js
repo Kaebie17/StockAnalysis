@@ -219,6 +219,14 @@ export function useEstimate(state, opts = {}) {
     eps: activeValue(row, 'eps', state?.data?.basis),
     revenue: activeValue(row, 'revenue', state?.data?.basis),
   }))
+  // Same reasoning, for the balance side: targetMultiple.js's
+  // yearlyObservations and estimate.js's pbBand both read totalEquity
+  // directly off a balance row, so a raw balanceHistory left it
+  // unaffected by a restatement even after the income side was fixed.
+  const activeBalanceHistory = (state?.data?.balanceHistory || []).map(row => ({
+    ...row,
+    totalEquity: activeValue(row, 'totalEquity', state?.data?.basis),
+  }))
 
   // Quarterly results → guidance verdict. Both halves of this were built and
   // never joined: rows sat in `quarterlyData` and nothing read them, so a
@@ -271,7 +279,7 @@ export function useEstimate(state, opts = {}) {
     multipleOverride: overrides.multiple ?? null,
     priceHistory:   state.data?.priceHistory   || [],
     incomeHistory:  activeIncomeHistory,
-    balanceHistory: state.data?.balanceHistory || [],
+    balanceHistory: activeBalanceHistory,
     peerBand,
     // 0-1, how much peerBand pulls the own-history fitted multiple — a
     // per-ticker judgment call the user sets via PeerWeightSlider, not
