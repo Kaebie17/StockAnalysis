@@ -1078,7 +1078,16 @@ function BucketChip({ formula, bucket, assigned, candidates, onToggle }) {
  * it has content" rule as every other computed row in this modal.
  */
 function DerivedMetricsTab({ data, div }) {
-  const formulas = listFormulas(data).filter(f => f.kind !== 'restatement')
+  // 'fallback' formulas (Gross Profit, Profit Before Tax, Tax, EBITDA)
+  // don't belong in a tab called Derived Metrics — for the large majority
+  // of tickers they're simply the reported figure passed through untouched
+  // (the fallback math only runs on the rare ticker where the line is
+  // genuinely missing), so showing them here would claim a computation
+  // that usually isn't happening. Only 'derived' (never a real reported
+  // line, ever) and 'ratio' (always computed, never itself a statement
+  // row) are honestly "derived" every single time. Fallback formulas stay
+  // visible in their own P&L row and in the Formulas tab.
+  const formulas = listFormulas(data).filter(f => f.kind === 'derived' || f.kind === 'ratio')
   const isRealYear = y => /^\d{4}$/.test(String(y ?? '').trim())
   const years = [...new Set(formulas.flatMap(f => fieldHistory(data, f.table).map(r => r.year)))]
     .filter(isRealYear).sort()
