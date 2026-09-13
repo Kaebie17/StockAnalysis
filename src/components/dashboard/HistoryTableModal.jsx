@@ -197,22 +197,22 @@ export default function HistoryTableModal({ open, onClose }) {
   const computedRows = []
   if (table === 'income') {
     const seriesOf = field => years.map(y => val(history.find(r => String(r.year) === y)?.[field]))
-    const yoyRow = (field, label) => {
+    const yoyRow = (field, label, anchor) => {
       const series = seriesOf(field)
       const cells = years.map((y, i) => {
         const prev = series[i - 1], cur = series[i]
         return (prev != null && prev !== 0 && cur != null) ? ((cur / prev - 1) * 100) : null
       })
       if (cells.every(c => c == null)) return null
-      return { label, cells, fmt: v => v == null ? null : `${v.toFixed(1)}%` }
+      return { label, cells, fmt: v => v == null ? null : `${v.toFixed(1)}%`, anchor }
     }
     // Operating Margin/Net Margin used to be computed right here, inline,
     // from raw (never basis-resolved) values — superseded below by the
     // same 'ratio' formulas every other consumer reads, which actually
     // respect normalization.
     ;[
-      yoyRow('revenue', 'Revenue YoY'),
-      yoyRow('netProfit', 'Net Profit YoY'),
+      yoyRow('revenue', 'Revenue YoY', 'revenue'),
+      yoyRow('netProfit', 'Net Profit YoY', 'netProfit'),
     ].forEach(r => r && computedRows.push(r))
 
     // Net Profit / EPS Normalized — computeNormalizedRow covers both the
@@ -226,7 +226,7 @@ export default function HistoryTableModal({ open, onClose }) {
       return n ? val(n.netProfit) : null
     })
     if (npNorm.some(v => v != null)) {
-      computedRows.push({ label: 'Net Profit (Normalized)', cells: npNorm, fmt: v => v == null ? null : Math.round(v / div).toLocaleString() })
+      computedRows.push({ label: 'Net Profit (Normalized)', cells: npNorm, fmt: v => v == null ? null : Math.round(v / div).toLocaleString(), anchor: 'netProfit' })
     }
     const epsNorm = years.map(y => {
       const row = history.find(r => String(r.year) === y)
@@ -234,7 +234,7 @@ export default function HistoryTableModal({ open, onClose }) {
       return n ? val(n.eps) : null
     })
     if (epsNorm.some(v => v != null)) {
-      computedRows.push({ label: 'EPS (Normalized)', cells: epsNorm, fmt: v => v == null ? null : v.toFixed(2) })
+      computedRows.push({ label: 'EPS (Normalized)', cells: epsNorm, fmt: v => v == null ? null : v.toFixed(2), anchor: 'eps' })
     }
   }
   // Restatement-tool Normalized siblings — a real, stored row
@@ -242,7 +242,9 @@ export default function HistoryTableModal({ open, onClose }) {
   // THIS statement that currently has at least one custom row feeding it —
   // not just the curated ten, since Part C let the restatement tool target
   // any field with data (or a custom row), and hiding one here would defeat
-  // this table's whole point of showing what's actually stored.
+  // this table's whole point of showing what's actually stored. Anchored
+  // to the target's own key, so it renders directly under that field's row
+  // rather than in an undifferentiated block at the bottom.
   const targetsForTable = allTargets.filter(t => t.table === table)
   for (const meta of targetsForTable) {
     const key = meta.key
@@ -253,7 +255,7 @@ export default function HistoryTableModal({ open, onClose }) {
     })
     const hasContribution = years.some(y => val(history.find(r => String(r.year) === y)?.[`${key}Normalized`]) != null)
     if (hasContribution) {
-      computedRows.push({ label: `${meta.label} (Normalized)`, cells, fmt: v => v == null ? null : (SKIP_SCALE.has(key) ? v.toFixed(2) : Math.round(v / div).toLocaleString()) })
+      computedRows.push({ label: `${meta.label} (Normalized)`, cells, fmt: v => v == null ? null : (SKIP_SCALE.has(key) ? v.toFixed(2) : Math.round(v / div).toLocaleString()), anchor: key })
     }
   }
   // Every 'derived' (Net Working Capital, Capital Employed, Net Debt) and
@@ -265,8 +267,25 @@ export default function HistoryTableModal({ open, onClose }) {
   // (Gross Profit, Profit Before Tax, Tax, EBITDA) are excluded — they're
   // real tracked fields with their own row already shown further up, not a
   // second, computed copy of it.
+  //
+  // Each formula is anchored to whichever raw field it reads most
+  // naturally as an extension of (a margin under its own numerator, a
+  // leverage ratio under Total Debt, ...) so it renders immediately below
+  // that field's row — Revenue then Revenue YoY, EBITDA then EBITDA
+  // Margin — rather than in a separate block. Anything with no sensible
+  // single anchor (or whose anchor isn't a row actually shown) falls
+  // through to the render loop's "leftover" bucket at the very end.
+  const FORMULA_ANCHOR = {
+    netMargin: 'netProfit', roa: 'netProfit', roe: 'netProfit',
+    operatingMargin: 'operatingProfit',
+    ebitdaMargin: 'ebitda', icr: 'ebitda', netDebtToEbitda: 'ebitda',
+    grossMarginPct: 'grossProfit',
+    de: 'totalDebt', capitalEmployed: 'totalDebt', netDebt: 'totalDebt',
+    nwc: 'advanceFromCustomers',
+  }
   const formulaRowsForTable = listFormulas(data).filter(f => (f.kind === 'derived' || f.kind === 'ratio') && f.table === table)
   for (const formula of formulaRowsForTable) {
+    const anchor = FORMULA_ANCHOR[formula.key]
     const fmtFormula = v => {
       if (v == null) return null
       if (formula.kind === 'ratio') return formula.scale === 100 ? `${v.toFixed(1)}%` : v.toFixed(2)
@@ -274,14 +293,38 @@ export default function HistoryTableModal({ open, onClose }) {
     }
     const reportedCells = years.map(y => activeValue(history.find(r => String(r.year) === y), formula.key, 'reported')?.value ?? null)
     if (reportedCells.some(v => v != null)) {
-      computedRows.push({ label: formula.label, cells: reportedCells, fmt: fmtFormula })
+      computedRows.push({ label: formula.label, cells: reportedCells, fmt: fmtFormula, anchor })
     }
     const hasFormulaNorm = years.some(y => val(history.find(r => String(r.year) === y)?.[`${formula.key}Normalized`]) != null)
     if (hasFormulaNorm) {
       const normalizedCells = years.map(y => activeValue(history.find(r => String(r.year) === y), formula.key, 'normalized')?.value ?? null)
-      computedRows.push({ label: `${formula.label} (Normalized)`, cells: normalizedCells, fmt: fmtFormula })
+      computedRows.push({ label: `${formula.label} (Normalized)`, cells: normalizedCells, fmt: fmtFormula, anchor })
     }
   }
+
+  // Group computed rows under whichever shown row they're anchored to, so
+  // they render immediately below it (Revenue, then Revenue YoY; EBITDA,
+  // then EBITDA Margin) instead of in one undifferentiated block at the
+  // bottom. Anything with no anchor, or whose anchor isn't actually a row
+  // shown on this statement, falls through to the leftover bucket at the
+  // very end — the same place every computed row used to render.
+  const computedRowsByAnchor = {}
+  const leftoverComputedRows = []
+  const shownRowKeys = new Set([...shownTrackedKeys, ...customFields.map(f => f.key)])
+  for (const r of computedRows) {
+    if (r.anchor && shownRowKeys.has(r.anchor)) (computedRowsByAnchor[r.anchor] ??= []).push(r)
+    else leftoverComputedRows.push(r)
+  }
+  const renderComputedRow = r => (
+    <tr key={r.label} className="border-b border-navy-800/50">
+      <td className="py-1 text-slate-500 italic sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">{r.label}</td>
+      {r.cells.map((v, i) => (
+        <td key={i} className="text-right py-1 px-2 font-mono text-slate-500 whitespace-nowrap min-w-[6.5rem]">
+          {r.fmt(v) ?? '—'}
+        </td>
+      ))}
+    </tr>
+  )
 
   return (
     <Modal
@@ -335,34 +378,31 @@ export default function HistoryTableModal({ open, onClose }) {
             </thead>
             <tbody>
               {shownTrackedKeys.map(field => (
-                <EditableRow key={field} label={METRICS[field]?.label || field} field={field} years={years}
-                  cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
-                  commitCell={commitCell} cellKey={cellKey}
-                  assignmentNote={assignmentSummary(data, field)}
-                  onNavigate={() => goToFormulas(field)}
-                />
+                <React.Fragment key={field}>
+                  <EditableRow label={METRICS[field]?.label || field} field={field} years={years}
+                    cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
+                    commitCell={commitCell} cellKey={cellKey}
+                    assignmentNote={assignmentSummary(data, field)}
+                    onNavigate={() => goToFormulas(field)}
+                  />
+                  {(computedRowsByAnchor[field] || []).map(renderComputedRow)}
+                </React.Fragment>
               ))}
               {customFields.map(f => (
-                <EditableRow key={f.key} label={f.label} field={f.key} years={years}
-                  cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
-                  commitCell={commitCell} cellKey={cellKey}
-                  onRemove={() => {
-                    if (window.confirm(`Remove "${f.label}" and all its values? This can't be undone.`)) removeCustomField(f.key)
-                  }}
-                  assignmentNote={assignmentSummary(data, f.key)}
-                  onNavigate={() => goToFormulas(f.key)}
-                />
+                <React.Fragment key={f.key}>
+                  <EditableRow label={f.label} field={f.key} years={years}
+                    cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
+                    commitCell={commitCell} cellKey={cellKey}
+                    onRemove={() => {
+                      if (window.confirm(`Remove "${f.label}" and all its values? This can't be undone.`)) removeCustomField(f.key)
+                    }}
+                    assignmentNote={assignmentSummary(data, f.key)}
+                    onNavigate={() => goToFormulas(f.key)}
+                  />
+                  {(computedRowsByAnchor[f.key] || []).map(renderComputedRow)}
+                </React.Fragment>
               ))}
-              {computedRows.map(r => (
-                <tr key={r.label} className="border-b border-navy-800/50">
-                  <td className="py-1 text-slate-500 italic sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">{r.label}</td>
-                  {r.cells.map((v, i) => (
-                    <td key={i} className="text-right py-1 px-2 font-mono text-slate-500 whitespace-nowrap min-w-[6.5rem]">
-                      {r.fmt(v) ?? '—'}
-                    </td>
-                  ))}
-                </tr>
-              ))}
+              {leftoverComputedRows.map(renderComputedRow)}
             </tbody>
           </table>
         </div>
