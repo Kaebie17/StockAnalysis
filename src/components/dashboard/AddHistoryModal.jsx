@@ -135,6 +135,15 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
     const v = row?.[field]
     return v && typeof v === 'object' ? v.value : v
   }
+  // A pasted figure always beats a non-pasted one (Yahoo, a scrape, any
+  // 'derived'/'cross-source' fill) even under Gap Fill — see MERGE_PASTED's
+  // actual merge rule (AppContext.jsx). Gap Fill only protects a field a
+  // PRIOR PASTE already set. This mirrors that exact rule so the preview
+  // shows what will really happen, not just "is anything here already."
+  const existingIsPasted = (tableType, year, field) => {
+    const row = existingHistoryFor(tableType).find(r => r.year === year)
+    return row?.[field]?.status === 'pasted'
+  }
 
   const handleParseAll = () => {
     const out = {}
@@ -405,10 +414,14 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
                                 {r.rows.map((row, i) => {
                                   const ex = existingVal(k, row.year, f)
                                   const has = ex != null
-                                  const kept = has && !overwrite
-                                  const replacing = has && overwrite && row[f] != null && ex !== row[f]
-                                  const title = kept ? `Already ${ex.toLocaleString()} — kept (check Overwrite to replace)`
-                                    : replacing ? `Replaces ${ex.toLocaleString()}` : ''
+                                  // Matches MERGE_PASTED's real rule: a pasted value
+                                  // always wins over a non-pasted one, gap-fill or
+                                  // not — only a PRIOR PASTE is protected here.
+                                  const willOverwrite = overwrite || !existingIsPasted(k, row.year, f)
+                                  const kept = has && !willOverwrite
+                                  const replacing = has && willOverwrite && row[f] != null && ex !== row[f]
+                                  const title = kept ? `Already ${ex.toLocaleString()} (your own earlier paste) — kept (check Overwrite to replace)`
+                                    : replacing ? `Replaces ${ex.toLocaleString()}${overwrite ? '' : ' (not from a paste, so Gap Fill replaces it too)'}` : ''
                                   return (
                                     <td key={i} className="text-right py-1 px-2 font-mono whitespace-nowrap min-w-[6.5rem]" title={title}>
                                       {row[f] != null

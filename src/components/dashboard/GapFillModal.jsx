@@ -44,8 +44,12 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
   // Same choice as AddHistoryModal, previously missing here entirely — this
   // wizard's own steps are only ever driven by what's MISSING, but a paste
   // made to fill one gap can easily be the whole table, which also touches
-  // fields that already have a value. Gap fill (default) never overwrites
-  // those; Replace does, with the same confirmation before it runs.
+  // fields that already have a value. Gap fill (default) protects a value
+  // from a PRIOR PASTE; a non-pasted one (Yahoo, a scrape, any
+  // 'derived'/'cross-source' fill) gets overwritten even under Gap Fill —
+  // see MERGE_PASTED's actual merge rule. Replace overwrites everything
+  // that overlaps regardless of its status, with the same confirmation
+  // before it runs.
   const [pasteMode, setPasteMode] = useState('gapFill')
   const overwrite = pasteMode === 'replace'
 
