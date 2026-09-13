@@ -393,15 +393,15 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
                     <div key={k} className="space-y-1">
                       <div className="text-xs font-medium text-slate-300">{TABLES.find(t => t.key === k)?.label} — parsed values</div>
                       <div className="overflow-x-auto">
-                        <table className="w-full text-xs">
+                        <table className="w-max min-w-full text-xs">
                           <thead><tr className="border-b border-navy-700">
-                            <th className="text-left py-1 text-slate-500">Field</th>
-                            {r.years.map(y => <th key={y} className="text-right py-1 text-slate-500 px-2">{y}</th>)}
+                            <th className="text-left py-1 text-slate-500 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">Field</th>
+                            {r.years.map(y => <th key={y} className="text-right py-1 text-slate-500 px-2 whitespace-nowrap min-w-[6.5rem]">{y}</th>)}
                           </tr></thead>
                           <tbody>
                             {present.map(f => (
                               <tr key={f} className="border-b border-navy-800/50">
-                                <td className="py-1 text-slate-300">{labels[f]}</td>
+                                <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">{labels[f]}</td>
                                 {r.rows.map((row, i) => {
                                   const ex = existingVal(k, row.year, f)
                                   const has = ex != null
@@ -410,7 +410,7 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
                                   const title = kept ? `Already ${ex.toLocaleString()} — kept (check Overwrite to replace)`
                                     : replacing ? `Replaces ${ex.toLocaleString()}` : ''
                                   return (
-                                    <td key={i} className="text-right py-1 px-2 font-mono" title={title}>
+                                    <td key={i} className="text-right py-1 px-2 font-mono whitespace-nowrap min-w-[6.5rem]" title={title}>
                                       {row[f] != null
                                         ? <span className={kept ? 'text-slate-600 line-through' : replacing ? 'text-accent' : 'text-white'}>
                                             {row[f].toLocaleString()}

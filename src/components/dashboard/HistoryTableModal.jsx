@@ -937,11 +937,13 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
   latestRef.current = { basis, value: currentValue }
   useEffect(() => () => markSeen(latestRef.current.basis, latestRef.current.value), [markSeen])
 
-  // "NWC = Trade Receivables + Inventories − Trade Payables (Normalized) −
-  // Advance from Customers" — field names only, per the original spec (the
-  // per-item numbers are visible one click away, on each field's own row
-  // in the statement tab — this stays an at-a-glance list of WHAT feeds
-  // the formula, not a second display of the numbers themselves).
+  // "Trade Receivables + Inventories − Trade Payables (Normalized) −
+  // Advance from Customers" — just the right-hand side; the formula's own
+  // name is now the <legend> on the fieldset below, not a "NWC = " prefix
+  // repeated in the equation text itself. Field names only (the per-item
+  // numbers are visible one click away, on each field's own row in the
+  // statement tab — this stays an at-a-glance list of WHAT feeds the
+  // formula, not a second display of the numbers themselves).
   // "(Normalized)" is appended only when THAT field itself has an active
   // override on the year shown (not just because the basis picker is on
   // Normalized — most fields never get restated, and tagging every one of
@@ -957,16 +959,16 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
         terms.push({ sign: effSign, text })
       }
     }
-    if (!terms.length) return `${formula.label} = —`
-    const rhs = terms.map((t, i) => {
+    if (!terms.length) return '—'
+    return terms.map((t, i) => {
       if (i === 0) return t.sign < 0 ? `− ${t.text}` : t.text
       return `${t.sign < 0 ? '−' : '+'} ${t.text}`
     }).join(' ')
-    return `${formula.label} = ${rhs}`
   })()
 
   return (
-    <div className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs ' + (focused ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
+    <fieldset className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs ' + (focused ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
+      <legend className="px-1 text-[11px] text-slate-400">{formula.label}</legend>
       <span className="flex flex-wrap gap-1 flex-shrink-0 w-32">
         {formula.buckets.map(bucket => (
           <BucketChip key={bucket.key} formula={formula} bucket={bucket}
@@ -985,7 +987,7 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
       {output
         ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')} title={changed ? 'Different from what you last saw here' : undefined}>{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
         : <span className="flex-shrink-0 text-slate-600">—</span>}
-    </div>
+    </fieldset>
   )
 }
 

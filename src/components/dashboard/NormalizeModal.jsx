@@ -482,11 +482,11 @@ function PreviewTable({ reported, row, fields, div, sym, unit, g }) {
     <div className="space-y-1">
       <div className="text-xs font-medium text-slate-300">Reported {'\u2192'} Normalized</div>
       <div className="overflow-x-auto">
-        <table className="w-full text-xs">
+        <table className="w-max min-w-full text-xs">
           <thead><tr className="border-b border-navy-700">
-            <th className="text-left py-1 text-slate-500">Field</th>
-            <th className="text-right py-1 text-slate-500 px-2">Reported</th>
-            <th className="text-right py-1 text-slate-500 px-2">Normalized</th>
+            <th className="text-left py-1 text-slate-500 sticky left-0 bg-navy-900 pr-2 min-w-[9rem]">Field</th>
+            <th className="text-right py-1 text-slate-500 px-2 whitespace-nowrap min-w-[6.5rem]">Reported</th>
+            <th className="text-right py-1 text-slate-500 px-2 whitespace-nowrap min-w-[6.5rem]">Normalized</th>
           </tr></thead>
           <tbody>
             {fields.map(([f, l]) => {
@@ -497,9 +497,9 @@ function PreviewTable({ reported, row, fields, div, sym, unit, g }) {
               const showA = isEps ? (after?.toFixed?.(2) ?? '\u2014')  : (after == null ? '\u2014' : Math.round(after / div).toLocaleString('en-IN'))
               return (
                 <tr key={f} className="border-b border-navy-800/50">
-                  <td className="py-1 text-slate-300">{l}</td>
-                  <td className="text-right py-1 px-2 font-mono text-slate-400">{showB}</td>
-                  <td className={'text-right py-1 px-2 font-mono ' + (moved ? 'text-accent' : 'text-slate-400')}>{showA}</td>
+                  <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2 min-w-[9rem]">{l}</td>
+                  <td className="text-right py-1 px-2 font-mono text-slate-400 whitespace-nowrap min-w-[6.5rem]">{showB}</td>
+                  <td className={'text-right py-1 px-2 font-mono whitespace-nowrap min-w-[6.5rem] ' + (moved ? 'text-accent' : 'text-slate-400')}>{showA}</td>
                 </tr>
               )
             })}

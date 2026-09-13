@@ -290,21 +290,21 @@ export default function GapFillModal({ open, onClose, ratioResult, ticker, onApp
                 )}
                 {preview.rows.length > 0 && (
                   <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
+                    <table className="w-max min-w-full text-xs">
                       <thead>
                         <tr className="border-b border-navy-700">
-                          <th className="text-left py-1 text-slate-500">Field</th>
+                          <th className="text-left py-1 text-slate-500 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">Field</th>
                           {preview.years.map(y => (
-                            <th key={y} className="text-right py-1 text-slate-500 px-2">{y}</th>
+                            <th key={y} className="text-right py-1 text-slate-500 px-2 whitespace-nowrap min-w-[6.5rem]">{y}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
                         {currentMissing.map(m => (
                           <tr key={m.metric} className="border-b border-navy-800/50">
-                            <td className="py-1 text-slate-300">{m.label}</td>
+                            <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">{m.label}</td>
                             {preview.rows.map((row, i) => (
-                              <td key={i} className="text-right py-1 px-2 font-mono">
+                              <td key={i} className="text-right py-1 px-2 font-mono whitespace-nowrap min-w-[6.5rem]">
                                 {row[m.metric] != null
                                   ? <span className="text-white">{row[m.metric].toLocaleString()}</span>
                                   : <span className="text-slate-600">—</span>}
