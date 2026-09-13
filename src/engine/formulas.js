@@ -41,11 +41,13 @@ import { activeValue } from './dataQuality.js'
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
 export function fieldTable(data, field) {
-  return METRICS[field]?.table ?? (data?.customFields || []).find(f => f.key === field)?.table ?? null
+  return METRICS[field]?.table ?? DERIVED_FORMULAS[field]?.table
+    ?? (data?.customFields || []).find(f => f.key === field)?.table ?? null
 }
 
 export function fieldLabel(data, field) {
-  return METRICS[field]?.label ?? (data?.customFields || []).find(f => f.key === field)?.label ?? field
+  return METRICS[field]?.label ?? DERIVED_FORMULAS[field]?.label
+    ?? (data?.customFields || []).find(f => f.key === field)?.label ?? field
 }
 
 export function fieldHistory(data, table) {
@@ -165,6 +167,81 @@ const DERIVED_FORMULAS = {
       { key: 'components', label: 'Components', sign: 1, defaults: ['operatingProfit', 'depreciation'] },
     ],
   },
+  // ── 'ratio' formulas: numerator ÷ denominator × scale ─────────────────────
+  // Each bucket may declare its OWN `table` when it differs from the
+  // formula's primary one (ROA/ROE/Net Debt÷EBITDA all mix a P&L figure
+  // with a balance-sheet one) — resolved by matching YEAR across the two
+  // statements (see rowForBucket), not by sharing a row object. Declared
+  // after grossProfit/ebitda/netDebt/capitalEmployed since several of
+  // these use THOSE formulas' own materialized output as a default
+  // ingredient (EBITDA, Net Debt) — same ordering rule as tax/profitBeforeTax.
+  netMargin: {
+    key: 'netMargin', kind: 'ratio', label: 'Net Margin', table: 'income', scale: 100,
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'Net Profit', sign: 1, defaults: ['netProfit'] },
+      { key: 'denominator', role: 'denominator', label: 'Revenue',    sign: 1, defaults: ['revenue'] },
+    ],
+  },
+  operatingMargin: {
+    key: 'operatingMargin', kind: 'ratio', label: 'Operating Margin', table: 'income', scale: 100,
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'Operating Profit', sign: 1, defaults: ['operatingProfit'] },
+      { key: 'denominator', role: 'denominator', label: 'Revenue',          sign: 1, defaults: ['revenue'] },
+    ],
+  },
+  ebitdaMargin: {
+    key: 'ebitdaMargin', kind: 'ratio', label: 'EBITDA Margin', table: 'income', scale: 100,
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'EBITDA',  sign: 1, defaults: ['ebitda'] },
+      { key: 'denominator', role: 'denominator', label: 'Revenue', sign: 1, defaults: ['revenue'] },
+    ],
+  },
+  grossMarginPct: {
+    key: 'grossMarginPct', kind: 'ratio', label: 'Gross Margin', table: 'income', scale: 100,
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'Gross Profit', sign: 1, defaults: ['grossProfit'] },
+      { key: 'denominator', role: 'denominator', label: 'Revenue',      sign: 1, defaults: ['revenue'] },
+    ],
+  },
+  roa: {
+    key: 'roa', kind: 'ratio', label: 'Return on Assets', table: 'income', scale: 100,
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'Net Profit',  sign: 1, defaults: ['netProfit'] },
+      { key: 'denominator', role: 'denominator', label: 'Total Assets', table: 'balance', sign: 1, defaults: ['totalAssets'] },
+    ],
+  },
+  de: {
+    key: 'de', kind: 'ratio', label: 'Debt-to-Equity', table: 'balance',
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'Total Debt',   sign: 1, defaults: ['totalDebt'] },
+      { key: 'denominator', role: 'denominator', label: 'Total Equity', sign: 1, defaults: ['totalEquity'] },
+    ],
+  },
+  icr: {
+    key: 'icr', kind: 'ratio', label: 'Interest Coverage', table: 'income',
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'EBITDA',   sign: 1, defaults: ['ebitda'] },
+      { key: 'denominator', role: 'denominator', label: 'Interest', sign: 1, defaults: ['interest'] },
+    ],
+  },
+  netDebtToEbitda: {
+    key: 'netDebtToEbitda', kind: 'ratio', label: 'Net Debt / EBITDA', table: 'balance',
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'Net Debt', sign: 1, defaults: ['netDebt'] },
+      { key: 'denominator', role: 'denominator', label: 'EBITDA',   table: 'income', sign: 1, defaults: ['ebitda'] },
+    ],
+  },
+  // Only formula needing averageDenominator: ROE compares one year's profit
+  // against the AVERAGE of this year's and last year's equity, not either
+  // year alone — the standard convention (a year-end balance is a snapshot;
+  // averaging approximates the capital actually deployed across the year).
+  roe: {
+    key: 'roe', kind: 'ratio', label: 'Return on Equity', table: 'income', scale: 100, averageDenominator: true,
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'Net Profit',   sign: 1, defaults: ['netProfit'] },
+      { key: 'denominator', role: 'denominator', label: 'Total Equity', table: 'balance', sign: 1, defaults: ['totalEquity'] },
+    ],
+  },
 }
 
 /**
@@ -229,20 +306,65 @@ function resolvedValue(row, field, basis) {
   return val(activeValue(row, field, basis))
 }
 
+function yearOf(row) {
+  const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
+  return m ? Number(m[0]) : null
+}
+
+// A bucket's OWN statement, when it declares one (ROA/ROE/Net Debt÷EBITDA
+// mix a P&L figure with a balance-sheet one) — matched to the primary row's
+// YEAR, since the two tables are separate arrays, not the same row object.
+function rowForBucket(data, formula, bucket, primaryRow) {
+  const table = bucket.table || formula.table
+  if (table === formula.table) return primaryRow
+  const year = yearOf(primaryRow)
+  if (year == null) return null
+  return fieldHistory(data, table).find(r => yearOf(r) === year) || null
+}
+
+function bucketSum(data, formulaKey, bucket, row, basis) {
+  if (!row) return null
+  const contributors = (data?.fieldAssignments || [])
+    .filter(a => a.kind === 'formula' && a.formula === formulaKey && a.bucket === bucket.key)
+  let sum = null
+  for (const c of contributors) {
+    const v = resolvedValue(row, c.field, basis)
+    if (v != null) sum = (sum ?? 0) + (c.sign ?? 1) * v
+  }
+  return sum
+}
+
 function computeForRow(data, formulaKey, row, basis) {
   const formula = DERIVED_FORMULAS[formulaKey]
   if (!formula || !row) return null
-  const bucketSums = {}
-  for (const bucket of formula.buckets) {
-    const contributors = (data?.fieldAssignments || [])
-      .filter(a => a.kind === 'formula' && a.formula === formulaKey && a.bucket === bucket.key)
-    let sum = null
-    for (const c of contributors) {
-      const v = resolvedValue(row, c.field, basis)
-      if (v != null) sum = (sum ?? 0) + (c.sign ?? 1) * v
+
+  if (formula.kind === 'ratio') {
+    const numBucket = formula.buckets.find(b => b.role === 'numerator')
+    const denBucket = formula.buckets.find(b => b.role === 'denominator')
+    const num = bucketSum(data, formulaKey, numBucket, rowForBucket(data, formula, numBucket, row), basis)
+    let den = bucketSum(data, formulaKey, denBucket, rowForBucket(data, formula, denBucket, row), basis)
+    // ROE-only: average this year's and last year's denominator rather than
+    // using either alone (a year-end balance is a snapshot; averaging
+    // approximates capital deployed across the whole year). Falls back to
+    // the single current-year figure when there's no prior year to average
+    // against, same as ratios.js's own avgEquity.
+    if (formula.averageDenominator) {
+      const denTable = denBucket.table || formula.table
+      const denHist = fieldHistory(data, denTable)
+      const year = yearOf(row)
+      const idx = denHist.findIndex(r => yearOf(r) === year)
+      const prevDenRow = idx > 0 ? denHist[idx - 1] : null
+      const denPrev = prevDenRow ? bucketSum(data, formulaKey, denBucket, prevDenRow, basis) : null
+      den = (den != null && denPrev != null) ? (den + denPrev) / 2 : den
     }
-    bucketSums[bucket.key] = sum
+    if (num == null || !den) return null
+    return (num / den) * (formula.scale ?? 1)
   }
+
+  // 'derived' / 'fallback': the buckets ARE the value, combined by sum with
+  // each bucket's own sign — always single-table today.
+  const bucketSums = {}
+  for (const bucket of formula.buckets) bucketSums[bucket.key] = bucketSum(data, formulaKey, bucket, row, basis)
   if (Object.values(bucketSums).some(v => v == null)) return null
   let output = 0
   for (const bucket of formula.buckets) output += bucket.sign * bucketSums[bucket.key]

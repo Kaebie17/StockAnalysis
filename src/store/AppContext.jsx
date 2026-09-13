@@ -9,7 +9,7 @@ import { runTechnicals } from '../engine/technicals.js'
 import { assessDataQuality, materializeIncomeNormalization, hasAnyNormalization } from '../engine/dataQuality.js'
 import { METRICS } from '../engine/metrics.js'
 import { recomputeNormalizedTargets } from '../engine/normalizationTargets.js'
-import { materializeFormulas } from '../engine/formulas.js'
+import { materializeFormulas, seedFormulaDefaults } from '../engine/formulas.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -620,11 +620,22 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // recomputeNormalizedTargets for why this writes a real, stored,
   // inspectable row instead of computing the figure only for display.
   data = recomputeNormalizedTargets(data)
-  // Writes every derived formula's (currently just NWC) own reported/
-  // Normalized output directly onto its row — see materializeFormulas —
-  // AFTER the line above, since a formula's inputs (e.g.
-  // tradeReceivablesNormalized) must already exist on the row by the time
-  // it combines them.
+  // Writes every derived/fallback/ratio formula's own reported/Normalized
+  // output directly onto its row — see materializeFormulas — AFTER the
+  // line above, since a formula's inputs (e.g. tradeReceivablesNormalized)
+  // must already exist on the row by the time it combines them.
+  data = materializeFormulas(data)
+  // Seeded and re-materialized again, now that this pass's own formula
+  // outputs exist: a formula like Net Debt ÷ EBITDA defaults to two OTHER
+  // formulas' outputs (Net Debt, EBITDA) as its ingredients, which don't
+  // exist until the materialize call just above has run at least once —
+  // without this second pass, that default would sit unseeded (and its
+  // assignment, once seeded, unmaterialized) for one whole extra
+  // reload/edit before hasData() ever saw it. Both calls are idempotent
+  // (formulaDefaultsApplied; materializeFormulas recomputing an unchanged
+  // input just rewrites the same value), so re-running them here costs
+  // nothing when there's nothing new to seed.
+  data = seedFormulaDefaults(data)
   data = materializeFormulas(data)
   // Normalize for everything, not a toggle between two equally-weighted
   // views: every restatement in this app is an explicit, evidence-based,

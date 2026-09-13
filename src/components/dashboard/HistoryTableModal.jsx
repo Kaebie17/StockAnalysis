@@ -842,15 +842,16 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, lastSeenOu
     (data.fieldAssignments || []).filter(a => a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key)
 
   // Another formula's output is a perfectly legitimate ingredient here —
-  // that's how real formulas actually compose (ROCE needs EBIT, EV/EBITDA
-  // needs EBITDA, an effective tax rate needs Tax ÷ PBT); tax already
+  // that's how real formulas actually compose (ROE needs Net Profit AND
+  // Total Equity, Net Debt÷EBITDA needs both statements); tax already
   // reads profitBeforeTax this exact way. The only thing genuinely
-  // excluded is a formula feeding ITSELF (a real, nonsensical loop) — the
-  // table-match filter below already keeps a formula from picking up a
-  // candidate that lives on a different statement, which is the only other
-  // hard constraint (a bucket sum reads all its members off ONE row).
-  const candidatesFor = (formula) =>
-    availableTargets(data).filter(t => t.table === formula.table && t.key !== formula.key)
+  // excluded is a formula feeding ITSELF (a real, nonsensical loop). Table
+  // match is checked per BUCKET, not per formula — a ratio formula's two
+  // sides can live on different statements (ROA: Net Profit from income,
+  // Total Assets from balance), each bucket only offers candidates from
+  // its OWN statement, since a bucket sum reads all its members off one row.
+  const candidatesFor = (formula, bucket) =>
+    availableTargets(data).filter(t => t.table === (bucket.table || formula.table) && t.key !== formula.key)
 
   const isFocused = (formula) => focusAssignments.some(a => a.formula === formula.key)
 
@@ -969,7 +970,7 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
       <span className="flex flex-wrap gap-1 flex-shrink-0 w-32">
         {formula.buckets.map(bucket => (
           <BucketChip key={bucket.key} formula={formula} bucket={bucket}
-            assigned={assignedFieldsFor(formula, bucket)} candidates={candidatesFor(formula)}
+            assigned={assignedFieldsFor(formula, bucket)} candidates={candidatesFor(formula, bucket)}
             onToggle={(field, checked) => onToggleMembership(formula, bucket, field, checked)} />
         ))}
       </span>
