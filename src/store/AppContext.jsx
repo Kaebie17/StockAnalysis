@@ -206,7 +206,7 @@ function reducer(s, a) {
       // it. That silently made every ticker built up via "Add History" un-
       // syncable: real pasted effort, sitting on one device forever.
       const data = a.tableType === 'income'
-        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
+        ? { ...s.data, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
         : { ...s.data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
@@ -367,7 +367,7 @@ function reducer(s, a) {
         }
         const newHistory = Object.values(byYear).sort((x, y) => x.year.localeCompare(y.year))
         data = table === 'income'
-          ? { ...data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
+          ? { ...data, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
           : { ...data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
       }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
@@ -428,7 +428,7 @@ function reducer(s, a) {
       fieldAssignments = fieldAssignments.filter(x => !keysToRemove.includes(x.field))
 
       const data = table === 'income'
-        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, customFields, fieldAssignments }
+        ? { ...s.data, reportedIncomeHistory: newHistory, customFields, fieldAssignments }
         : { ...s.data, [histKey]: newHistory, customFields, fieldAssignments }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
@@ -479,7 +479,7 @@ function reducer(s, a) {
       // hand-curated work exactly like a Screener paste, so it needs the same
       // deepSource flag or exportSyncableRecords() silently never syncs it.
       const data = a.tableType === 'income'
-        ? { ...s.data, incomeHistory: newHistory, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
+        ? { ...s.data, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
         : { ...s.data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })

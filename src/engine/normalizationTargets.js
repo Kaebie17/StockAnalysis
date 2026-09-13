@@ -230,7 +230,7 @@ export function recomputeNormalizedTargets(data) {
         const arr = t === 'income' ? (out.reportedIncomeHistory || out.incomeHistory) : out[hk]
         if (!arr?.some(r => normKey in r)) continue
         const cleaned = arr.map(r => { if (!(normKey in r)) return r; const { [normKey]: _d, ...rest } = r; return rest })
-        out = t === 'income' ? { ...out, incomeHistory: cleaned, reportedIncomeHistory: cleaned } : { ...out, [hk]: cleaned }
+        out = t === 'income' ? { ...out, reportedIncomeHistory: cleaned } : { ...out, [hk]: cleaned }
       }
       continue
     }
@@ -269,7 +269,7 @@ export function recomputeNormalizedTargets(data) {
     })
 
     out = table === 'income'
-      ? { ...out, incomeHistory: newHistory, reportedIncomeHistory: newHistory }
+      ? { ...out, reportedIncomeHistory: newHistory }
       : { ...out, [histKey]: newHistory }
   }
   return out

@@ -420,7 +420,7 @@ export function materializeFormulas(data) {
       return next
     })
     out = formula.table === 'income'
-      ? { ...out, incomeHistory: newHistory, reportedIncomeHistory: newHistory }
+      ? { ...out, reportedIncomeHistory: newHistory }
       : { ...out, [histKey]: newHistory }
   }
   return out
