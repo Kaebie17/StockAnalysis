@@ -38,11 +38,10 @@ import Modal from '../Modal.jsx'
  */
 
 const TABLES = [
-  { key: 'income',    label: 'P&L',            icon: '📊' },
-  { key: 'balance',   label: 'Balance',        icon: '⚖️' },
-  { key: 'cashflow',  label: 'Cash Flow',      icon: '💵' },
-  { key: 'formulas',  label: 'Formulas',       icon: '🧮' },
-  { key: 'derived',   label: 'Derived Metrics', icon: '📐' },
+  { key: 'income',    label: 'P&L',        icon: '📊' },
+  { key: 'balance',   label: 'Balance',    icon: '⚖️' },
+  { key: 'cashflow',  label: 'Cash Flow',  icon: '💵' },
+  { key: 'formulas',  label: 'Formulas',   icon: '🧮' },
 ]
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -207,21 +206,13 @@ export default function HistoryTableModal({ open, onClose }) {
       if (cells.every(c => c == null)) return null
       return { label, cells, fmt: v => v == null ? null : `${v.toFixed(1)}%` }
     }
-    const marginRow = (field, label) => {
-      const revSeries = seriesOf('revenue')
-      const series = seriesOf(field)
-      const cells = years.map((y, i) => {
-        const rev = revSeries[i], v = series[i]
-        return (rev != null && rev !== 0 && v != null) ? (v / rev * 100) : null
-      })
-      if (cells.every(c => c == null)) return null
-      return { label, cells, fmt: v => v == null ? null : `${v.toFixed(1)}%` }
-    }
+    // Operating Margin/Net Margin used to be computed right here, inline,
+    // from raw (never basis-resolved) values — superseded below by the
+    // same 'ratio' formulas every other consumer reads, which actually
+    // respect normalization.
     ;[
       yoyRow('revenue', 'Revenue YoY'),
       yoyRow('netProfit', 'Net Profit YoY'),
-      marginRow('operatingProfit', 'Operating Margin'),
-      marginRow('netProfit', 'Net Margin'),
     ].forEach(r => r && computedRows.push(r))
 
     // Net Profit / EPS Normalized — computeNormalizedRow covers both the
@@ -265,6 +256,32 @@ export default function HistoryTableModal({ open, onClose }) {
       computedRows.push({ label: `${meta.label} (Normalized)`, cells, fmt: v => v == null ? null : (SKIP_SCALE.has(key) ? v.toFixed(2) : Math.round(v / div).toLocaleString()) })
     }
   }
+  // Every 'derived' (Net Working Capital, Capital Employed, Net Debt) and
+  // 'ratio' (margins, ROA, ROE, D/E, ICR, Net Debt/EBITDA) formula that
+  // lives on THIS statement — shown right here instead of a separate tab,
+  // with the exact same provenance as the restatement audit rows just
+  // above: a plain row, and (only if at least one year actually has one) a
+  // second, italicized "(Normalized)" row underneath. 'fallback' formulas
+  // (Gross Profit, Profit Before Tax, Tax, EBITDA) are excluded — they're
+  // real tracked fields with their own row already shown further up, not a
+  // second, computed copy of it.
+  const formulaRowsForTable = listFormulas(data).filter(f => (f.kind === 'derived' || f.kind === 'ratio') && f.table === table)
+  for (const formula of formulaRowsForTable) {
+    const fmtFormula = v => {
+      if (v == null) return null
+      if (formula.kind === 'ratio') return formula.scale === 100 ? `${v.toFixed(1)}%` : v.toFixed(2)
+      return Math.round(v / div).toLocaleString()
+    }
+    const reportedCells = years.map(y => activeValue(history.find(r => String(r.year) === y), formula.key, 'reported')?.value ?? null)
+    if (reportedCells.some(v => v != null)) {
+      computedRows.push({ label: formula.label, cells: reportedCells, fmt: fmtFormula })
+    }
+    const hasFormulaNorm = years.some(y => val(history.find(r => String(r.year) === y)?.[`${formula.key}Normalized`]) != null)
+    if (hasFormulaNorm) {
+      const normalizedCells = years.map(y => activeValue(history.find(r => String(r.year) === y), formula.key, 'normalized')?.value ?? null)
+      computedRows.push({ label: `${formula.label} (Normalized)`, cells: normalizedCells, fmt: fmtFormula })
+    }
+  }
 
   return (
     <Modal
@@ -303,8 +320,6 @@ export default function HistoryTableModal({ open, onClose }) {
       {table === 'formulas' ? (
         <FormulasTab data={data} div={div} focusField={focusField} setAssignmentsForField={setAssignmentsForField}
           lastSeenOutputs={lastSeenOutputs} setLastSeenOutputs={setLastSeenOutputs} />
-      ) : table === 'derived' ? (
-        <DerivedMetricsTab data={data} div={div} />
       ) : (
         <>
       {years.length === 0 ? (
@@ -1066,83 +1081,3 @@ function BucketChip({ formula, bucket, assigned, candidates, onToggle }) {
   )
 }
 
-/**
- * DerivedMetricsTab — every formula's FULL historical series, one table,
- * years as columns, same shape as the Income/Balance/Cash Flow tabs. The
- * Formulas tab is where bucket membership gets assigned (and still is —
- * nothing here duplicates that); this is purely a read-only view of the
- * numbers those assignments actually produce across every year, which the
- * Formulas tab's own latest-year-only row was never meant to show. A
- * metric that's ever normalized for at least one shown year gets a second,
- * italicized "(Normalized)" row underneath it — same "only show a row if
- * it has content" rule as every other computed row in this modal.
- */
-function DerivedMetricsTab({ data, div }) {
-  // 'fallback' formulas (Gross Profit, Profit Before Tax, Tax, EBITDA)
-  // don't belong in a tab called Derived Metrics — for the large majority
-  // of tickers they're simply the reported figure passed through untouched
-  // (the fallback math only runs on the rare ticker where the line is
-  // genuinely missing), so showing them here would claim a computation
-  // that usually isn't happening. Only 'derived' (never a real reported
-  // line, ever) and 'ratio' (always computed, never itself a statement
-  // row) are honestly "derived" every single time. Fallback formulas stay
-  // visible in their own P&L row and in the Formulas tab.
-  const formulas = listFormulas(data).filter(f => f.kind === 'derived' || f.kind === 'ratio')
-  const isRealYear = y => /^\d{4}$/.test(String(y ?? '').trim())
-  const years = [...new Set(formulas.flatMap(f => fieldHistory(data, f.table).map(r => r.year)))]
-    .filter(isRealYear).sort()
-
-  const fmtVal = (formula, v) => {
-    if (v == null) return null
-    if (formula.kind === 'ratio') return formula.scale === 100 ? `${v.toFixed(1)}%` : v.toFixed(2)
-    return Math.round(v / div).toLocaleString()
-  }
-
-  if (years.length === 0) {
-    return <p className="text-xs text-slate-500">No derived metrics available yet for this ticker.</p>
-  }
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-max min-w-full text-xs">
-        <thead>
-          <tr className="border-b border-navy-700">
-            <th className="text-left py-1 text-slate-500 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">Metric</th>
-            {years.map(y => <th key={y} className="text-right py-1 text-slate-500 px-2 font-mono whitespace-nowrap min-w-[6.5rem]">{y}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {formulas.map(formula => {
-            const hist = fieldHistory(data, formula.table)
-            const byYear = Object.fromEntries(hist.map(r => [r.year, r]))
-            const reportedCells = years.map(y => activeValue(byYear[y], formula.key, 'reported')?.value ?? null)
-            const normalizedCells = years.map(y => activeValue(byYear[y], formula.key, 'normalized')?.value ?? null)
-            const hasNormalized = years.some(y => byYear[y]?.[`${formula.key}Normalized`]?.value != null)
-            return (
-              <React.Fragment key={formula.key}>
-                <tr className="border-b border-navy-800/50">
-                  <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">{formula.label}</td>
-                  {reportedCells.map((v, i) => (
-                    <td key={i} className="text-right py-1 px-2 font-mono whitespace-nowrap min-w-[6.5rem] text-white">
-                      {fmtVal(formula, v) ?? <span className="text-slate-600">—</span>}
-                    </td>
-                  ))}
-                </tr>
-                {hasNormalized && (
-                  <tr className="border-b border-navy-800/50">
-                    <td className="py-1 text-slate-500 italic sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">{formula.label} (Normalized)</td>
-                    {normalizedCells.map((v, i) => (
-                      <td key={i} className="text-right py-1 px-2 font-mono whitespace-nowrap min-w-[6.5rem] text-slate-500">
-                        {fmtVal(formula, v) ?? '—'}
-                      </td>
-                    ))}
-                  </tr>
-                )}
-              </React.Fragment>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
-  )
-}
