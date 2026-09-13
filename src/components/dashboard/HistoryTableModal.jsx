@@ -38,10 +38,11 @@ import Modal from '../Modal.jsx'
  */
 
 const TABLES = [
-  { key: 'income',    label: 'P&L',        icon: '📊' },
-  { key: 'balance',   label: 'Balance',    icon: '⚖️' },
-  { key: 'cashflow',  label: 'Cash Flow',  icon: '💵' },
-  { key: 'formulas',  label: 'Formulas',   icon: '🧮' },
+  { key: 'income',    label: 'P&L',            icon: '📊' },
+  { key: 'balance',   label: 'Balance',        icon: '⚖️' },
+  { key: 'cashflow',  label: 'Cash Flow',      icon: '💵' },
+  { key: 'formulas',  label: 'Formulas',       icon: '🧮' },
+  { key: 'derived',   label: 'Derived Metrics', icon: '📐' },
 ]
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -302,6 +303,8 @@ export default function HistoryTableModal({ open, onClose }) {
       {table === 'formulas' ? (
         <FormulasTab data={data} div={div} focusField={focusField} setAssignmentsForField={setAssignmentsForField}
           lastSeenOutputs={lastSeenOutputs} setLastSeenOutputs={setLastSeenOutputs} />
+      ) : table === 'derived' ? (
+        <DerivedMetricsTab data={data} div={div} />
       ) : (
         <>
       {years.length === 0 ? (
@@ -1060,5 +1063,77 @@ function BucketChip({ formula, bucket, assigned, candidates, onToggle }) {
         document.body
       )}
     </span>
+  )
+}
+
+/**
+ * DerivedMetricsTab — every formula's FULL historical series, one table,
+ * years as columns, same shape as the Income/Balance/Cash Flow tabs. The
+ * Formulas tab is where bucket membership gets assigned (and still is —
+ * nothing here duplicates that); this is purely a read-only view of the
+ * numbers those assignments actually produce across every year, which the
+ * Formulas tab's own latest-year-only row was never meant to show. A
+ * metric that's ever normalized for at least one shown year gets a second,
+ * italicized "(Normalized)" row underneath it — same "only show a row if
+ * it has content" rule as every other computed row in this modal.
+ */
+function DerivedMetricsTab({ data, div }) {
+  const formulas = listFormulas(data).filter(f => f.kind !== 'restatement')
+  const isRealYear = y => /^\d{4}$/.test(String(y ?? '').trim())
+  const years = [...new Set(formulas.flatMap(f => fieldHistory(data, f.table).map(r => r.year)))]
+    .filter(isRealYear).sort()
+
+  const fmtVal = (formula, v) => {
+    if (v == null) return null
+    if (formula.kind === 'ratio') return formula.scale === 100 ? `${v.toFixed(1)}%` : v.toFixed(2)
+    return Math.round(v / div).toLocaleString()
+  }
+
+  if (years.length === 0) {
+    return <p className="text-xs text-slate-500">No derived metrics available yet for this ticker.</p>
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-max min-w-full text-xs">
+        <thead>
+          <tr className="border-b border-navy-700">
+            <th className="text-left py-1 text-slate-500 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">Metric</th>
+            {years.map(y => <th key={y} className="text-right py-1 text-slate-500 px-2 font-mono whitespace-nowrap min-w-[6.5rem]">{y}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {formulas.map(formula => {
+            const hist = fieldHistory(data, formula.table)
+            const byYear = Object.fromEntries(hist.map(r => [r.year, r]))
+            const reportedCells = years.map(y => activeValue(byYear[y], formula.key, 'reported')?.value ?? null)
+            const normalizedCells = years.map(y => activeValue(byYear[y], formula.key, 'normalized')?.value ?? null)
+            const hasNormalized = years.some(y => byYear[y]?.[`${formula.key}Normalized`]?.value != null)
+            return (
+              <React.Fragment key={formula.key}>
+                <tr className="border-b border-navy-800/50">
+                  <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">{formula.label}</td>
+                  {reportedCells.map((v, i) => (
+                    <td key={i} className="text-right py-1 px-2 font-mono whitespace-nowrap min-w-[6.5rem] text-white">
+                      {fmtVal(formula, v) ?? <span className="text-slate-600">—</span>}
+                    </td>
+                  ))}
+                </tr>
+                {hasNormalized && (
+                  <tr className="border-b border-navy-800/50">
+                    <td className="py-1 text-slate-500 italic sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">{formula.label} (Normalized)</td>
+                    {normalizedCells.map((v, i) => (
+                      <td key={i} className="text-right py-1 px-2 font-mono whitespace-nowrap min-w-[6.5rem] text-slate-500">
+                        {fmtVal(formula, v) ?? '—'}
+                      </td>
+                    ))}
+                  </tr>
+                )}
+              </React.Fragment>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
   )
 }
