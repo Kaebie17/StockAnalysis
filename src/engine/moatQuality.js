@@ -25,7 +25,6 @@
  * overlay (or apply moatOverride) to elevate. Numbers alone never award Very Wide.
  */
 
-import { grossProfitOf } from './ratios.js'
 import { activeValue } from './dataQuality.js'
 import { latest, hasContent } from './reconcileDocs.js'
 
@@ -158,20 +157,28 @@ function buildSeries(data, r) {
   for (const row of inc) {
     const y = row.year
     const b = balByYear[y] || {}
-    const rev = v(activeValue(row, 'revenue', data?.basis)), op = v(activeValue(row, 'operatingProfit', data?.basis))
-    const gp  = grossProfitOf(row, data?.basis)   // grossProfit, else revenue - cogs. One formula, in ratios.js.
+    const op = v(activeValue(row, 'operatingProfit', data?.basis))
     const np = v(activeValue(row, 'netProfit', data?.basis)), eps = v(activeValue(row, 'eps', data?.basis))
-    const eq = v(activeValue(b, 'totalEquity', data?.basis))
     // Capital Employed is a materialized field (formulas.js: Total Equity +
     // Total Debt, per its own bucket assignments) — read the same way as
     // any other normalizable field rather than recomputed inline here.
     const ce = v(activeValue(b, 'capitalEmployed', data?.basis))
+    // Gross/Operating/Net Margin and ROE are all materialized 'ratio'
+    // formulas (formulas.js) — read the same way rather than recomputed
+    // inline. ROE here now averages this year's and last year's equity
+    // (the formula's own logic), where this series previously used a
+    // single year's equity — a real methodology fix, not just a refactor:
+    // it now matches ratios.js's own (already-averaged) snapshot ROE.
+    const gpMargin  = v(activeValue(row, 'grossMarginPct', data?.basis))
+    const opMarginV = v(activeValue(row, 'operatingMargin', data?.basis))
+    const npMargin  = v(activeValue(row, 'netMargin', data?.basis))
+    const roeV      = v(activeValue(row, 'roe', data?.basis))
 
     if (op != null && ce && ce > 0) roce.push(pct(op, ce))
-    if (gp != null && rev) grossMargin.push(pct(gp, rev))
-    if (op != null && rev) opMargin.push(pct(op, rev))
-    if (np != null && rev) netMargin.push(pct(np, rev))
-    if (np != null && eq && eq > 0) roe.push(pct(np, eq))
+    if (gpMargin != null) grossMargin.push(gpMargin)
+    if (opMarginV != null) opMargin.push(opMarginV)
+    if (npMargin != null) netMargin.push(npMargin)
+    if (roeV != null) roe.push(roeV)
     if (np != null && eps && eps !== 0) impliedShares.push(np / eps)   // dilution proxy
   }
   return { roce, grossMargin, opMargin, netMargin, roe, impliedShares }

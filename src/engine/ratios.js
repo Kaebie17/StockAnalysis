@@ -258,33 +258,36 @@ export function calcRatios(data, opts = {}) {
   // ── Margins ────────────────────────────────────────────────────────────────
   // Note: Indian P&L has no "Gross Profit" line — Operating Profit IS the first
   // meaningful margin. We flag grossMargin as "Operating Margin (Indian P&L format)"
-  const operatingMargin = pct(opProfit, revenue)
-  const ebitdaMargin    = pct(ebitda, revenue)
-  const netMargin       = pct(netProfit, revenue)
-  // Gross margin — ONE formula, switching on what is available. {revenue, cogs,
-  // grossProfit} is a group: any two give the third. Sources emit raw fields only;
-  // the derivation lives here, not in api/sec.js or the parser.
-  //   1. grossProfit reported      -> calculated
-  //   2. revenue - cogs            -> calculated
-  //   3. operating-margin proxy    -> ONLY where there is genuinely no COGS line
+  // Margins are materialized 'ratio' formulas (formulas.js) — read the same
+  // way as any other normalizable field rather than recomputed inline here.
+  const operatingMargin = val(activeValue(latestI, 'operatingMargin', basis))
+  const ebitdaMargin    = val(activeValue(latestI, 'ebitdaMargin', basis))
+  const netMargin       = val(activeValue(latestI, 'netMargin', basis))
+  // Gross margin keeps its own fallback ladder ON TOP of the registry value,
+  // since the registry has no concept of "fall back to a DIFFERENT ratio
+  // entirely" (Operating Margin standing in when there's genuinely no COGS
+  // line to derive Gross Profit from — Indian P&L). {revenue, cogs,
+  // grossProfit} is a group: any two give the third; grossMarginPct already
+  // handles "grossProfit reported, else revenue − cogs" internally.
+  //   1./2. grossMarginPct (reported or revenue − cogs) -> calculated
+  //   3. operating-margin proxy -> ONLY where there is genuinely no COGS line
   //      (Indian P&L). Never on a US filer that simply failed a tag lookup.
-  const gpHist          = grossProfitOf(latestI, basis)
   const gpFormula       = val(latestI.grossProfit) != null
     ? 'Gross Profit ÷ Revenue × 100'
     : 'Gross Profit (Revenue − COGS) ÷ Revenue × 100'
   const indianPL        = data.deepSource === 'screener' || data.source === 'screener'
-  const grossMargin     = (gpHist != null && revenue)
-    ? { value: pct(gpHist, revenue), status: 'calculated', formula: gpFormula }
+  const grossMarginCalc = val(activeValue(latestI, 'grossMarginPct', basis))
+  const grossMargin     = grossMarginCalc != null
+    ? { value: grossMarginCalc, status: 'calculated', formula: gpFormula }
     : (indianPL && operatingMargin != null)
     ? { value: operatingMargin, status: 'proxy', formula: 'Operating Margin (Indian P&L — no separate Gross Profit line)' }
     : { value: null, status: 'unavailable', formula: null }
 
   // ── Returns ────────────────────────────────────────────────────────────────
-  // ROE = Net Profit / Average Equity × 100
-  const prevEquity = val(activeValue(balanceReal[balanceReal.length - 2] || {}, 'totalEquity', basis))
-  const avgEquity  = totalEquity != null && prevEquity != null
-    ? (totalEquity + prevEquity) / 2 : totalEquity
-  const roe  = pct(netProfit, avgEquity)
+  // ROE is a materialized 'ratio' formula (Net Profit ÷ Average Equity × 100,
+  // averaging this year's and last year's equity internally) — read the same
+  // way as any other normalizable field.
+  const roe  = val(activeValue(latestI, 'roe', basis))
 
   // ROCE = EBIT / Capital Employed × 100  (EBIT = operating profit, i.e. after
   // depreciation — NOT EBITDA, which overstates the return). Prefer reported
@@ -322,15 +325,15 @@ export function calcRatios(data, opts = {}) {
     : ebitda
   const roce = pct(ebit, capitalEmployed)
 
-  // ROA = Net Profit / Total Assets × 100
-  const roa  = pct(netProfit, totalAssets)
+  // ROA is a materialized 'ratio' formula (Net Profit ÷ Total Assets × 100).
+  const roa  = val(activeValue(latestI, 'roa', basis))
 
   // ── Leverage ───────────────────────────────────────────────────────────────
-  // Net Debt is a materialized field (formulas.js: Total Debt − Cash) —
-  // read the same way as any other normalizable field.
+  // Net Debt, D/E and Interest Coverage are all materialized fields
+  // (formulas.js) — read the same way as any other normalizable field.
   const netDebt = val(activeValue(latestB, 'netDebt', basis))
-  const de      = div(totalDebt, totalEquity)           // D/E ratio
-  const icr     = div(ebitda, interest)                 // Interest coverage
+  const de      = val(activeValue(latestB, 'de', basis))
+  const icr     = val(activeValue(latestI, 'icr', basis))
 
   // ── Valuation multiples ────────────────────────────────────────────────────
   // All calculated from raw numbers — never from source
@@ -383,7 +386,7 @@ export function calcRatios(data, opts = {}) {
       // Leverage
       de:              tag(de,              'calculated', 'Total Debt ÷ Total Equity'),
       icr:             tag(icr,             'calculated', 'EBITDA ÷ Interest Expense'),
-      netDebtRatio:    tagBs(div(netDebt, ebitda), 'calculated', 'Net Debt ÷ EBITDA'),
+      netDebtRatio:    tagBs(val(activeValue(latestB, 'netDebtToEbitda', basis)), 'calculated', 'Net Debt ÷ EBITDA'),
       // Valuation multiples
       pe:              tag(pe,              pe === meta?.pe ? 'source-reference' : 'calculated', 'Price ÷ EPS'),
       pb:              tag(pb,              pb === meta?.pb ? 'source-reference' : 'calculated', 'Price ÷ Book Value per Share'),
