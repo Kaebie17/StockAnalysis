@@ -167,6 +167,24 @@ const DERIVED_FORMULAS = {
       { key: 'components', label: 'Components', sign: 1, defaults: ['operatingProfit', 'depreciation'] },
     ],
   },
+  // EBIT is never itself a disclosed line — but Operating Profit effectively
+  // IS EBIT whenever it's reported (this app's own convention — see ROCE),
+  // so its reportedField points at operatingProfit instead of at 'ebit'
+  // itself. Falls back to EBITDA − Depreciation (tolerating Depreciation
+  // being missing, same bucket-sum rule as EBITDA's own fallback) only when
+  // Operating Profit is genuinely absent. Declared after ebitda since the
+  // fallback path depends on its materialized output.
+  ebit: {
+    key: 'ebit',
+    kind: 'fallback',
+    label: 'EBIT',
+    table: 'income',
+    reportedField: 'operatingProfit',
+    buckets: [
+      { key: 'ebitda',       label: 'EBITDA',       sign: 1,  defaults: ['ebitda'] },
+      { key: 'depreciation', label: 'Depreciation', sign: -1, defaults: ['depreciation'] },
+    ],
+  },
   // ── 'ratio' formulas: numerator ÷ denominator × scale ─────────────────────
   // Each bucket may declare its OWN `table` when it differs from the
   // formula's primary one (ROA/ROE/Net Debt÷EBITDA all mix a P&L figure
@@ -208,6 +226,16 @@ const DERIVED_FORMULAS = {
     buckets: [
       { key: 'numerator',   role: 'numerator',   label: 'Net Profit',  sign: 1, defaults: ['netProfit'] },
       { key: 'denominator', role: 'denominator', label: 'Total Assets', table: 'balance', sign: 1, defaults: ['totalAssets'] },
+    ],
+  },
+  // Depends on EBIT's own materialized output (declared above) and Capital
+  // Employed (declared earlier still) — both real fields by the time this
+  // runs, so ROCE itself needs no fallback ladder of its own any more.
+  roce: {
+    key: 'roce', kind: 'ratio', label: 'Return on Capital Employed', table: 'income', scale: 100,
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'EBIT',              sign: 1, defaults: ['ebit'] },
+      { key: 'denominator', role: 'denominator', label: 'Capital Employed',  table: 'balance', sign: 1, defaults: ['capitalEmployed'] },
     ],
   },
   de: {
@@ -395,14 +423,32 @@ export function materializeFormulas(data) {
     if (!base.length) continue
     const normKey = `${formula.key}Normalized`
     const newHistory = base.map(row => {
-      // 'fallback': a real reported value for this exact field already
-      // exists (e.g. a Yahoo/SEC company that DOES report Gross Profit
-      // directly) — leave it, and its OWN Normalized sibling, completely
-      // alone. It's a genuine restatement-eligible metrics.js field, so
-      // recomputeNormalizedTargets (which already ran, above) already
-      // handles its normalization independently of this formula; the
-      // buckets here only fill the figure in when it's genuinely absent.
-      if (formula.kind === 'fallback' && rowValue(row, formula.key) != null) return row
+      // 'fallback': a real reported value already exists for whichever
+      // field counts as "reported" for this formula (formula.key itself,
+      // e.g. Gross Profit — or a DIFFERENT field entirely, when the
+      // formula's own output has no metrics.js field of its own to check:
+      // EBIT is never a disclosed line, but Operating Profit effectively
+      // IS EBIT whenever it's reported, so EBIT's reportedField points at
+      // operatingProfit instead of at itself) — leave it, and its OWN
+      // Normalized sibling, completely alone. A genuine restatement-
+      // eligible metrics.js field already gets its normalization handled
+      // independently by recomputeNormalizedTargets (which already ran,
+      // above); the buckets here only fill the figure in when it's
+      // genuinely absent.
+      const reportedField = formula.reportedField || formula.key
+      if (formula.kind === 'fallback' && rowValue(row, reportedField) != null) {
+        if (formula.key === reportedField) return row
+        // Copying a DIFFERENT field's value forward (EBIT <- Operating
+        // Profit) — carry its Normalized sibling forward too, so a
+        // restatement on the real field (Operating Profit) still reaches
+        // EBIT, which has no metrics.js entry of its own to be restated
+        // through directly.
+        const next = { ...row, [formula.key]: row[reportedField] }
+        const reportedNormKey = `${reportedField}Normalized`
+        if (row[reportedNormKey] != null) next[normKey] = row[reportedNormKey]
+        else if (normKey in next) { const { [normKey]: _drop, ...rest } = next; return rest }
+        return next
+      }
       const reported = computeForRow(out, formula.key, row, 'reported')
       if (reported == null) {
         if (!(formula.key in row) && !(normKey in row)) return row

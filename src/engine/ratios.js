@@ -289,10 +289,7 @@ export function calcRatios(data, opts = {}) {
   // way as any other normalizable field.
   const roe  = val(activeValue(latestI, 'roe', basis))
 
-  // ROCE = EBIT / Capital Employed × 100  (EBIT = operating profit, i.e. after
-  // depreciation — NOT EBITDA, which overstates the return). Prefer reported
-  // operating income; else derive EBIT = EBITDA − Depreciation. Capital
-  // Employed itself is a materialized field (formulas.js: Total Equity +
+  // Capital Employed is a materialized field (formulas.js: Total Equity +
   // Total Debt, per its own bucket assignments) — read the same way as any
   // other normalizable field rather than recomputed inline here.
   const capitalEmployed = val(activeValue(latestB, 'capitalEmployed', basis))
@@ -320,10 +317,11 @@ export function calcRatios(data, opts = {}) {
     ? (totalAssets + prevAssets) / 2 : totalAssets
   const nim = (isLender && revenue != null && interest != null)
     ? pct(revenue - interest, avgAssets) : null
-  const ebit = opProfit != null ? opProfit
-    : (ebitda != null && depreciation != null) ? ebitda - depreciation
-    : ebitda
-  const roce = pct(ebit, capitalEmployed)
+  // EBIT and ROCE are both materialized fields (formulas.js) — EBIT
+  // (Operating Profit if reported, else EBITDA − Depreciation) and ROCE
+  // (EBIT ÷ Capital Employed × 100) built on it — read the same way as any
+  // other normalizable field, no ladder recomputed here any more.
+  const roce = val(activeValue(latestI, 'roce', basis))
 
   // ROA is a materialized 'ratio' formula (Net Profit ÷ Total Assets × 100).
   const roa  = val(activeValue(latestI, 'roa', basis))

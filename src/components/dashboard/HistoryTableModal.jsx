@@ -280,6 +280,7 @@ export default function HistoryTableModal({ open, onClose }) {
     operatingMargin: 'operatingProfit',
     ebitdaMargin: 'ebitda', icr: 'ebitda', netDebtToEbitda: 'ebitda',
     grossMarginPct: 'grossProfit',
+    roce: 'ebit',
     de: 'totalDebt', capitalEmployed: 'totalDebt', netDebt: 'totalDebt',
     nwc: 'advanceFromCustomers',
   }

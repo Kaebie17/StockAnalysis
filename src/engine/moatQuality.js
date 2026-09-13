@@ -157,24 +157,23 @@ function buildSeries(data, r) {
   for (const row of inc) {
     const y = row.year
     const b = balByYear[y] || {}
-    const op = v(activeValue(row, 'operatingProfit', data?.basis))
     const np = v(activeValue(row, 'netProfit', data?.basis)), eps = v(activeValue(row, 'eps', data?.basis))
-    // Capital Employed is a materialized field (formulas.js: Total Equity +
-    // Total Debt, per its own bucket assignments) — read the same way as
-    // any other normalizable field rather than recomputed inline here.
-    const ce = v(activeValue(b, 'capitalEmployed', data?.basis))
-    // Gross/Operating/Net Margin and ROE are all materialized 'ratio'
+    // Gross/Operating/Net Margin, ROE and ROCE are all materialized 'ratio'
     // formulas (formulas.js) — read the same way rather than recomputed
     // inline. ROE here now averages this year's and last year's equity
     // (the formula's own logic), where this series previously used a
     // single year's equity — a real methodology fix, not just a refactor:
-    // it now matches ratios.js's own (already-averaged) snapshot ROE.
+    // it now matches ratios.js's own (already-averaged) snapshot ROE. ROCE
+    // similarly now uses EBIT's own materialized field (Operating Profit
+    // if reported, else EBITDA − Depreciation) instead of Operating Profit
+    // alone, matching ratios.js's snapshot ROCE exactly.
     const gpMargin  = v(activeValue(row, 'grossMarginPct', data?.basis))
     const opMarginV = v(activeValue(row, 'operatingMargin', data?.basis))
     const npMargin  = v(activeValue(row, 'netMargin', data?.basis))
     const roeV      = v(activeValue(row, 'roe', data?.basis))
+    const roceV     = v(activeValue(row, 'roce', data?.basis))
 
-    if (op != null && ce && ce > 0) roce.push(pct(op, ce))
+    if (roceV != null) roce.push(roceV)
     if (gpMargin != null) grossMargin.push(gpMargin)
     if (opMarginV != null) opMargin.push(opMarginV)
     if (npMargin != null) netMargin.push(npMargin)

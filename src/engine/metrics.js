@@ -98,6 +98,16 @@ export const METRICS = {
     csv: ['ebitda', 'EBITDA'],
     needs: 'EV/EBITDA, interest coverage',
   },
+  // Never itself reported/scraped/pasted from any source — always the
+  // 'ebit' formula's own output (formulas.js: Operating Profit, else
+  // EBITDA − Depreciation), materialized here so it shows as an ordinary
+  // row in the P&L tab the same way Gross Profit/EBITDA/Tax do, instead of
+  // only being visible inside the Formulas tab.
+  ebit: {
+    table: 'income', label: 'EBIT', base: false,
+    yahoo: [], sec: [], screener: [], expandFrom: null, ar: [], csv: [],
+    needs: 'ROCE',
+  },
   depreciation: {
     table: 'income', label: 'Depreciation', base: true,
     yahoo: ['reconciledDepreciation', 'depreciationAndAmortizationInIncomeStatement',
