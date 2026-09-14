@@ -1026,7 +1026,7 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
   // are no chips to toggle membership on, since there's nothing to rebucket.
   const equation = formula.kind === 'weighted'
     ? formula.terms.map((t, i) => {
-        const negative = t.weight === -1 || (typeof t.weight === 'object' && t.weight?.oneMinus === false && t.weight?.negative)
+        const negative = typeof t.weight === 'number' && t.weight < 0
         const sign = negative ? '−' : (i === 0 ? '' : '+')
         return `${sign} ${t.label}`.trim()
       }).join(' ')

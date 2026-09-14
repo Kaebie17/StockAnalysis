@@ -188,6 +188,21 @@ const DERIVED_FORMULAS = {
       { key: 'depreciation', label: 'Depreciation', sign: -1, defaults: ['depreciation'] },
     ],
   },
+  // Free Cash Flow: a real metrics.js field (base:false, estimable:true) —
+  // ratios.js used to estimate it inline (operatingCF − capex) the exact
+  // same way EBITDA/EBIT used to before THEY were registered; this is that
+  // same move for FCF. table:'cashflow' since both its own reported figure
+  // and both bucket members live there.
+  freeCashFlow: {
+    key: 'freeCashFlow',
+    kind: 'fallback',
+    label: 'Free Cash Flow',
+    table: 'cashflow',
+    buckets: [
+      { key: 'operatingCF', label: 'Operating Cash Flow', sign: 1,  defaults: ['operatingCF'] },
+      { key: 'capex',       label: 'CapEx',               sign: -1, defaults: ['capex'] },
+    ],
+  },
   // ── 'ratio' formulas: numerator ÷ denominator × scale ─────────────────────
   // Each bucket may declare its OWN `table` when it differs from the
   // formula's primary one (ROA/ROE/Net Debt÷EBITDA all mix a P&L figure
@@ -271,6 +286,47 @@ const DERIVED_FORMULAS = {
     buckets: [
       { key: 'numerator',   role: 'numerator',   label: 'Net Profit',   sign: 1, defaults: ['netProfit'] },
       { key: 'denominator', role: 'denominator', label: 'Total Equity', table: 'balance', sign: 1, defaults: ['totalEquity'] },
+    ],
+  },
+  // Measured (not statutory) effective tax rate — a decimal, not a percent
+  // (no `scale`, same convention D/E and ICR already use for a raw ratio
+  // rather than a displayed percentage): what THIS company actually paid
+  // against pre-tax profit, used as FCFF's tax-shield weight below. Declared
+  // after tax/profitBeforeTax since it reads both formulas' own outputs.
+  effectiveTaxRate: {
+    key: 'effectiveTaxRate', kind: 'ratio', label: 'Effective Tax Rate', table: 'income',
+    buckets: [
+      { key: 'numerator',   role: 'numerator',   label: 'Tax',                sign: 1, defaults: ['tax'] },
+      { key: 'denominator', role: 'denominator', label: 'Profit Before Tax',  sign: 1, defaults: ['profitBeforeTax'] },
+    ],
+  },
+  // Free Cash Flow to Firm — unlevered cash flow available to ALL
+  // capital providers (equity + debt), the numerator DCF/enterprise-value
+  // work actually wants, vs freeCashFlow above which is already net of
+  // interest (a levered, equity-side figure). The one term that isn't a
+  // plain additive field — EBIT × (1 − effective tax rate) — is exactly
+  // why this needs 'weighted' rather than 'derived': a bucket sum can only
+  // ADD signed fields, never multiply two of them together.
+  //
+  // ΔNWC is expressed as two lagged terms (this year's NWC minus last
+  // year's) rather than one "change" bucket, because there's no such thing
+  // as a single stored "NWC change" field to point at — nwc itself only
+  // exists per-year, so the subtraction has to happen HERE, at the point
+  // FCFF needs it, via the same `lag` mechanism rowForBucket/resolveTermValue
+  // already support for any cross-year term.
+  fcff: {
+    key: 'fcff', kind: 'weighted', label: 'Free Cash Flow to Firm', table: 'income',
+    terms: [
+      { key: 'nopat', label: 'EBIT × (1 − Effective Tax Rate)',
+        value: { field: 'ebit' }, weight: { field: 'effectiveTaxRate', oneMinus: true } },
+      { key: 'da', label: 'Depreciation & Amortization',
+        value: { field: 'depreciation' }, weight: 1 },
+      { key: 'capex', label: 'CapEx',
+        value: { field: 'capex', table: 'cashflow' }, weight: -1 },
+      { key: 'nwc', label: 'Net Working Capital (current year)',
+        value: { field: 'nwc', table: 'balance' }, weight: -1 },
+      { key: 'nwcPrior', label: 'Net Working Capital (prior year)',
+        value: { field: 'nwc', table: 'balance', lag: 1 }, weight: 1 },
     ],
   },
   // ── 'growth' formulas: a multi-year SUMMARY of one field's whole history,
