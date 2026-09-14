@@ -543,6 +543,39 @@ function reducer(s, a) {
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
+    // Perimeter breaks live directly on data, edited straight from the
+    // Formulas tab (formulas.js's 'growth' kind reads them) — no separate
+    // confirm step: a break is exactly as easy to add, change, or remove as
+    // any other formula assignment, so the RIGHT fix for "I found more
+    // evidence" or "I was wrong" is editing it here, the same place, not a
+    // one-way suggestion that has to be dismissed and re-derived.
+    case 'TOGGLE_PERIMETER_BREAK': {
+      if (!s.data) return s
+      const existing = s.data.perimeterBreaks || []
+      const has = existing.some(b => b.table === a.table && b.year === a.year)
+      const perimeterBreaks = has
+        ? existing.filter(b => !(b.table === a.table && b.year === a.year))
+        : [...existing, { table: a.table, year: a.year }]
+      const data = { ...s.data, perimeterBreaks }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      return { ...s, data, ...computed }
+    }
+    // "Use recent growth instead of full history" — the one manual dial
+    // computeGrowthBundle (formulas.js) exposes for "the recent period is
+    // demonstrably more representative" without needing a full perimeter
+    // break to justify it. Off by default; toggled per growth formula.
+    case 'TOGGLE_RECENT_GROWTH_OVERRIDE': {
+      if (!s.data) return s
+      const existing = s.data.recentGrowthOverrides || []
+      const recentGrowthOverrides = existing.includes(a.formulaKey)
+        ? existing.filter(k => k !== a.formulaKey)
+        : [...existing, a.formulaKey]
+      const data = { ...s.data, recentGrowthOverrides }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      return { ...s, data, ...computed }
+    }
     default:              return s
   }
 }
@@ -1123,6 +1156,19 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_ASSIGNMENTS_FOR_FIELD', field, assignments })
   }, [])
 
+  // Add/remove one confirmed perimeter-break year for a table — see
+  // TOGGLE_PERIMETER_BREAK. Idempotent toggle, not a set-whole-list replace,
+  // so a chip's own onClick doesn't need to know the rest of the list.
+  const togglePerimeterBreak = useCallback((table, year) => {
+    dispatch({ type: 'TOGGLE_PERIMETER_BREAK', table, year })
+  }, [])
+
+  // "Prefer recent growth over full history" per growth formula — see
+  // TOGGLE_RECENT_GROWTH_OVERRIDE.
+  const toggleRecentGrowthOverride = useCallback((formulaKey) => {
+    dispatch({ type: 'TOGGLE_RECENT_GROWTH_OVERRIDE', formulaKey })
+  }, [])
+
   // Combine several custom rows into one. opts: { mode: 'new', newField } to
   // create a fresh row, or { mode: 'existing', destKey } to fold the rest
   // into one of the rows being merged. See MERGE_CUSTOM_FIELDS.
@@ -1182,7 +1228,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, toggleRecentGrowthOverride, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>

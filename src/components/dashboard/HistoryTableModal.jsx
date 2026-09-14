@@ -71,13 +71,13 @@ function assignmentSummary(data, field) {
     const sign = (a.sign ?? 1) > 0 ? '+' : '−'
     if (a.kind === 'restatement') return `${sign} feeds ${fieldLabel(data, a.target)}`
     const formula = listFormulas(data).find(f => f.key === a.formula)
-    const bucket = formula?.buckets.find(b => b.key === a.bucket)
+    const bucket = formula?.buckets?.find(b => b.key === a.bucket)
     return `${sign} feeds ${formula?.label ?? a.formula} → ${bucket?.label ?? a.bucket}`
   }).join('; ')
 }
 
 export default function HistoryTableModal({ open, onClose }) {
-  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField } = useApp()
+  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, toggleRecentGrowthOverride } = useApp()
   const data = state?.data
   const currency = data?.currency
   const div  = currency === 'INR' ? 1e7 : 1e6
@@ -362,6 +362,7 @@ export default function HistoryTableModal({ open, onClose }) {
 
       {table === 'formulas' ? (
         <FormulasTab data={data} div={div} focusField={focusField} setAssignmentsForField={setAssignmentsForField}
+          togglePerimeterBreak={togglePerimeterBreak} toggleRecentGrowthOverride={toggleRecentGrowthOverride}
           lastSeenOutputs={lastSeenOutputs} setLastSeenOutputs={setLastSeenOutputs} />
       ) : (
         <>
@@ -586,7 +587,11 @@ function destinationOptions(data, table) {
   }
   for (const formula of listFormulas(data)) {
     if (formula.kind === 'restatement' || formula.table !== table) continue
-    for (const bucket of formula.buckets) {
+    // 'growth' has no buckets (a whole-series summary); 'weighted' names its
+    // inputs directly rather than through assignable buckets (see
+    // resolveTermValue, formulas.js) — neither is a valid destination for a
+    // row to feed.
+    for (const bucket of (formula.buckets || [])) {
       out.push({ value: `formula:${formula.key}:${bucket.key}`, label: `${formula.label} → ${bucket.label}` })
     }
   }
@@ -881,7 +886,7 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
  * formula (NWC) so the assignment mechanism doesn't need to know which kind
  * it's looking at.
  */
-function FormulasTab({ data, div, focusField, setAssignmentsForField, lastSeenOutputs, setLastSeenOutputs }) {
+function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePerimeterBreak, toggleRecentGrowthOverride, lastSeenOutputs, setLastSeenOutputs }) {
   // Every formula with a real bucket structure ('derived' — NWC, Capital
   // Employed, Net Debt — and 'fallback' — Gross Profit, Profit Before Tax,
   // Tax, EBITDA), no matter how trivial or how often the fallback never
@@ -931,12 +936,20 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, lastSeenOu
         </div>
       )}
       {formulas.map(formula => (
-        <FormulaRow key={formula.key} data={data} formula={formula} div={div}
-          fmtNum={fmtNum} focused={isFocused(formula)}
-          assignedFieldsFor={assignedFieldsFor} candidatesFor={candidatesFor}
-          onToggleMembership={toggleMembership}
-          lastSeen={lastSeenOutputs[formula.key]}
-          markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
+        formula.kind === 'growth' ? (
+          <GrowthFormulaRow key={formula.key} data={data} formula={formula}
+            fmtNum={fmtNum}
+            togglePerimeterBreak={togglePerimeterBreak} toggleRecentGrowthOverride={toggleRecentGrowthOverride}
+            lastSeen={lastSeenOutputs[formula.key]}
+            markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
+        ) : (
+          <FormulaRow key={formula.key} data={data} formula={formula} div={div}
+            fmtNum={fmtNum} focused={isFocused(formula)}
+            assignedFieldsFor={assignedFieldsFor} candidatesFor={candidatesFor}
+            onToggleMembership={toggleMembership}
+            lastSeen={lastSeenOutputs[formula.key]}
+            markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
+        )
       ))}
     </div>
   )
@@ -1007,9 +1020,19 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
   // Normalized — most fields never get restated, and tagging every one of
   // them "Normalized" just because the toggle is in that position would
   // say something false about which numbers actually moved).
-  const equation = (() => {
+  // 'weighted' formulas (FCFF) name their inputs directly rather than
+  // through assignable buckets (see resolveTermValue, formulas.js) — the
+  // equation reads term labels straight off the registry entry, and there
+  // are no chips to toggle membership on, since there's nothing to rebucket.
+  const equation = formula.kind === 'weighted'
+    ? formula.terms.map((t, i) => {
+        const negative = t.weight === -1 || (typeof t.weight === 'object' && t.weight?.oneMinus === false && t.weight?.negative)
+        const sign = negative ? '−' : (i === 0 ? '' : '+')
+        return `${sign} ${t.label}`.trim()
+      }).join(' ')
+    : (() => {
     const terms = []
-    for (const bucket of formula.buckets) {
+    for (const bucket of (formula.buckets || [])) {
       for (const a of assignedFieldsFor(formula, bucket)) {
         const effSign = (bucket.sign ?? 1) * (a.sign ?? 1)
         const hasOverride = basis === 'normalized' && latestRow?.[`${a.field}Normalized`]?.value != null
@@ -1027,13 +1050,15 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
   return (
     <fieldset className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs ' + (focused ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
       <legend className="px-1 text-[11px] text-slate-400">{formula.label}</legend>
-      <span className="flex flex-wrap gap-1 flex-shrink-0 w-32">
-        {formula.buckets.map(bucket => (
-          <BucketChip key={bucket.key} formula={formula} bucket={bucket}
-            assigned={assignedFieldsFor(formula, bucket)} candidates={candidatesFor(formula, bucket)}
-            onToggle={(field, checked) => onToggleMembership(formula, bucket, field, checked)} />
-        ))}
-      </span>
+      {formula.kind !== 'weighted' && (
+        <span className="flex flex-wrap gap-1 flex-shrink-0 w-32">
+          {(formula.buckets || []).map(bucket => (
+            <BucketChip key={bucket.key} formula={formula} bucket={bucket}
+              assigned={assignedFieldsFor(formula, bucket)} candidates={candidatesFor(formula, bucket)}
+              onToggle={(field, checked) => onToggleMembership(formula, bucket, field, checked)} />
+          ))}
+        </span>
+      )}
       <span className="flex-1 flex items-center gap-2 min-w-0">
         <select value={basis} onChange={e => setBasis(e.target.value)}
           className="flex-shrink-0 bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[11px] text-slate-300">
@@ -1044,6 +1069,71 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
       </span>
       {output
         ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')} title={changed ? 'Different from what you last saw here' : undefined}>{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
+        : <span className="flex-shrink-0 text-slate-600">—</span>}
+    </fieldset>
+  )
+}
+
+// A growth formula (revenueGrowth, netProfitGrowth — see formulas.js's
+// 'growth' kind) isn't a bucket combination, so it gets its own row shape:
+// no chips, no membership toggles. What it needs edited instead is which
+// years count as a perimeter break — and per the explicit design decision,
+// that's NOT a suggest-then-confirm flow. It sits right here, exactly as
+// changeable as any other formula assignment: add a year, remove one,
+// or normalize the underlying figure at the source instead (the restatement
+// tool) — all three keep working together since computeGrowthBundle reads
+// Normalized values first regardless of whether a break is also set.
+function GrowthFormulaRow({ data, formula, fmtNum, togglePerimeterBreak, toggleRecentGrowthOverride, lastSeen, markSeen }) {
+  const hist = fieldHistory(data, formula.table)
+  const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
+  const latestRow = realRows[realRows.length - 1]
+  const hasOwnNormalization = latestRow?.[`${formula.key}Normalized`]?.value != null
+  const [basis, setBasis] = useState(hasOwnNormalization ? 'normalized' : 'reported')
+  const resolved = latestRow ? activeValue(latestRow, formula.key, basis) : null
+  const output = resolved?.value != null ? { year: latestRow.year, value: resolved.value } : null
+
+  const currentValue = output?.value ?? null
+  const changed = lastSeen?.[basis] === undefined || lastSeen[basis] !== currentValue
+  const latestRef = useRef({ basis, value: currentValue })
+  latestRef.current = { basis, value: currentValue }
+  useEffect(() => () => markSeen(latestRef.current.basis, latestRef.current.value), [markSeen])
+
+  const breakYears = (data?.perimeterBreaks || [])
+    .filter(b => b.table === formula.table).map(b => b.year).sort((a, b) => a - b)
+  const useRecent = (data?.recentGrowthOverrides || []).includes(formula.key)
+  const availableYears = realRows.map(r => Number(r.year)).filter(y => !breakYears.includes(y))
+
+  return (
+    <fieldset className="flex items-center gap-3 rounded-lg border border-navy-700 bg-navy-800/30 px-3 py-2 text-xs">
+      <legend className="px-1 text-[11px] text-slate-400">{formula.label}</legend>
+      <span className="flex flex-wrap gap-1 items-center flex-shrink-0 max-w-[11rem]">
+        {breakYears.map(y => (
+          <button key={y} type="button" onClick={() => togglePerimeterBreak(formula.table, y)}
+            title="Confirmed perimeter break — click to remove"
+            className="rounded bg-navy-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-bear/20 hover:text-bear">
+            FY{y} ✕
+          </button>
+        ))}
+        <select value="" onChange={e => { const y = Number(e.target.value); if (y) togglePerimeterBreak(formula.table, y) }}
+          className="bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[10px] text-slate-500">
+          <option value="">+ break</option>
+          {availableYears.map(y => <option key={y} value={y}>FY{y}</option>)}
+        </select>
+        <label className="flex items-center gap-1 text-[10px] text-slate-500 cursor-pointer" title="Prefer recent comparable growth over the full history median">
+          <input type="checkbox" checked={useRecent} onChange={() => toggleRecentGrowthOverride(formula.key)} />
+          recent
+        </label>
+      </span>
+      <span className="flex-1 flex items-center gap-2 min-w-0">
+        <select value={basis} onChange={e => setBasis(e.target.value)}
+          className="flex-shrink-0 bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[11px] text-slate-300">
+          <option value="reported">Reported</option>
+          <option value="normalized">Normalized</option>
+        </select>
+        <span className="text-slate-400 truncate" title={resolved?.formula || ''}>{resolved?.formula || '—'}</span>
+      </span>
+      {output
+        ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')} title={changed ? 'Different from what you last saw here' : undefined}>{output.value.toFixed(1)}% <span className="text-slate-500">(FY{output.year})</span></span>
         : <span className="flex-shrink-0 text-slate-600">—</span>}
     </fieldset>
   )

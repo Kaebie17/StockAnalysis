@@ -583,7 +583,11 @@ export function seedFormulaDefaults(data) {
   let changed = false
 
   for (const formula of Object.values(DERIVED_FORMULAS)) {
-    for (const bucket of formula.buckets) {
+    // 'growth' has no buckets at all (a whole-series summary, not a
+    // per-row combination); 'weighted' names its inputs directly (see
+    // resolveTermValue) rather than through assignable buckets — neither
+    // has anything for this seeding step to do.
+    for (const bucket of (formula.buckets || [])) {
       for (const field of (bucket.defaults || [])) {
         const triple = `${field}:${formula.key}:${bucket.key}`
         if (applied.has(triple)) continue
@@ -619,12 +623,42 @@ function yearOf(row) {
 // A bucket's OWN statement, when it declares one (ROA/ROE/Net Debt÷EBITDA
 // mix a P&L figure with a balance-sheet one) — matched to the primary row's
 // YEAR, since the two tables are separate arrays, not the same row object.
+// `bucket.lag` (years back from the primary row's year) is the other way a
+// bucket can point somewhere other than "this same row" — ΔNWC-style terms
+// (FCFF) need THIS year's value minus LAST year's of the SAME field, which
+// is a lag of 1 on the SAME table, not a different one; the two are
+// independent (a bucket can set either, both, or neither).
 function rowForBucket(data, formula, bucket, primaryRow) {
   const table = bucket.table || formula.table
-  if (table === formula.table) return primaryRow
+  const lag = bucket.lag || 0
+  if (table === formula.table && lag === 0) return primaryRow
   const year = yearOf(primaryRow)
   if (year == null) return null
-  return fieldHistory(data, table).find(r => yearOf(r) === year) || null
+  return fieldHistory(data, table).find(r => yearOf(r) === year - lag) || null
+}
+
+// 'weighted' formulas (Free Cash Flow to Firm — see DERIVED_FORMULAS) name
+// their inputs DIRECTLY (a metrics.js field, or another formula's own
+// output field, e.g. 'ebit'/'nwc') rather than going through the
+// user-assignable fieldAssignments/bucketSum indirection every other kind
+// uses — there's nothing to REBUCKET here (nobody maps a custom row into
+// "the EBIT term of FCFF"; they'd map it into EBIT itself, upstream, and
+// this reads whatever EBIT resolves to). A term spec is either a bare
+// number (a fixed weight, e.g. -1 for a subtracted term) or
+// {field, table?, lag?, oneMinus?} — table/lag mirror rowForBucket's own
+// cross-table/prior-year resolution; oneMinus turns a resolved rate r into
+// (1 - r), the shape a tax-shield weight (1 - effective tax rate) needs.
+function resolveTermValue(data, formula, spec, row, basis) {
+  if (spec == null) return null
+  if (typeof spec === 'number') return spec
+  const table = spec.table || formula.table
+  const lag = spec.lag || 0
+  const specRow = (table === formula.table && lag === 0) ? row
+    : fieldHistory(data, table).find(r => yearOf(r) === yearOf(row) - lag)
+  if (!specRow) return null
+  const v = resolvedValue(specRow, spec.field, basis)
+  if (v == null) return null
+  return spec.oneMinus ? (1 - v) : v
 }
 
 function bucketSum(data, formulaKey, bucket, row, basis) {
@@ -664,6 +698,26 @@ function computeForRow(data, formulaKey, row, basis) {
     }
     if (num == null || !den) return null
     return (num / den) * (formula.scale ?? 1)
+  }
+
+  if (formula.kind === 'weighted') {
+    // Strict: every term must resolve, or the whole formula declines — same
+    // "don't fabricate a partial answer" rule as every other kind. Unlike
+    // WACC's own weights (E/(E+D), D/(E+D) — genuinely conditional: an
+    // all-equity company legitimately has a ZERO debt weight, not a missing
+    // one, so a term can validly drop out without the formula failing),
+    // FCFF's terms are all real, always-applicable statement lines — there's
+    // no valid state where one of them is supposed to be absent. That
+    // conditional-weight case is exactly why WACC itself stays procedural in
+    // valuation.js rather than being forced into this generic shape.
+    let sum = 0
+    for (const term of formula.terms) {
+      const v = resolveTermValue(data, formula, term.value, row, basis)
+      const w = resolveTermValue(data, formula, term.weight, row, basis)
+      if (v == null || w == null) return null
+      sum += v * w
+    }
+    return sum * (formula.scale ?? 1)
   }
 
   // 'derived' / 'fallback': the buckets ARE the value, combined by sum with
