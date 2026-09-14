@@ -918,20 +918,34 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePeri
   // sides can live on different statements (ROA: Net Profit from income,
   // Total Assets from balance), each bucket only offers candidates from
   // its OWN statement, since a bucket sum reads all its members off one row.
-  // bucket.candidateKeys (formulas.js — NWC/Capital Employed/Net Debt's
-  // buckets) narrows a bucket to the tracked fields that are actually
-  // sensible there (current assets can't be filled with debt just because
-  // both live on the balance sheet) — but a custom field the user created
-  // is ALWAYS still offered regardless, since there's no way to know in
-  // advance which category a genuinely new line item belongs to; that's
-  // the user's own call to make, not this list's.
-  const candidatesFor = (formula, bucket) =>
-    availableTargets(data).filter(t => {
-      if (t.table !== (bucket.table || formula.table) || t.key === formula.key) return false
-      if (!bucket.candidateKeys) return true
-      const isCustom = (data.customFields || []).some(f => f.key === t.key)
-      return isCustom || bucket.candidateKeys.includes(t.key)
+  // A tracked (metrics.js/registry) candidate is only offered when it's
+  // genuinely interchangeable with the bucket's own default field(s) — not
+  // just "same table." Two ways that's true:
+  //   1. It IS one of the bucket's declared defaults (netDebt/EBIT/etc. —
+  //      a required, non-substitutable formula input has no group at all,
+  //      so this is the ONLY thing that ever matches for it: "the main
+  //      metric... [is] the default value," nothing else belongs there).
+  //   2. It shares metrics.js's own `expandFrom` tag with a default field
+  //      — real, already-declared category siblings (Trade Receivables and
+  //      Inventories both expand from "Other Assets"), not a second,
+  //      separately hand-maintained list. A NEW metrics.js field sharing
+  //      that same expandFrom automatically qualifies the moment it's
+  //      added — no per-bucket list to remember to update.
+  // A custom field the user creates is ALWAYS offered regardless of either
+  // rule — there's no way to pre-classify a genuinely new line item; that's
+  // the user's own call to make, not this filter's.
+  const candidatesFor = (formula, bucket) => {
+    const table = bucket.table || formula.table
+    const defaults = bucket.defaults || []
+    const defaultGroups = new Set(defaults.map(k => METRICS[k]?.expandFrom).filter(Boolean))
+    return availableTargets(data).filter(t => {
+      if (t.table !== table || t.key === formula.key) return false
+      if (defaults.includes(t.key)) return true
+      if ((data.customFields || []).some(f => f.key === t.key)) return true
+      const tGroup = METRICS[t.key]?.expandFrom
+      return tGroup != null && defaultGroups.has(tGroup)
     })
+  }
 
   const isFocused = (formula) => focusAssignments.some(a => a.formula === formula.key)
 
@@ -957,12 +971,16 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePeri
       ))}
       {formulas.map(formula => (
         formula.kind === 'growth' ? (
-          <GrowthFormulaRow key={formula.key} data={data} formula={formula}
-            fmtNum={fmtNum}
-            togglePerimeterBreak={togglePerimeterBreak}
-            setGrowthSegmentOverride={setGrowthSegmentOverride}
-            lastSeen={lastSeenOutputs[formula.key]}
-            markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
+          <React.Fragment key={formula.key}>
+            <GrowthSettingsRow data={data} formula={formula}
+              togglePerimeterBreak={togglePerimeterBreak}
+              setGrowthSegmentOverride={setGrowthSegmentOverride}
+              lastSeen={lastSeenOutputs[formula.key]}
+              markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
+            <GrowthMethodRow data={data} formula={formula} methodKey="fullPeriodCagr" label="Full-period CAGR" />
+            <GrowthMethodRow data={data} formula={formula} methodKey="medianYoY" label="Median YoY" />
+            <GrowthMethodRow data={data} formula={formula} methodKey="recentMedianYoY" label="Recent median YoY" />
+          </React.Fragment>
         ) : (
           <FormulaRow key={formula.key} data={data} formula={formula} div={div}
             fmtNum={fmtNum} focused={isFocused(formula)}
@@ -1162,28 +1180,28 @@ function InputFormulaRow({ data, formula }) {
 }
 
 // A growth formula (revenueGrowth, netProfitGrowth — see formulas.js's
-// 'growth' kind) isn't a bucket combination, so it gets its own row shape:
-// no chips, no membership toggles. What it needs edited instead is which
-// years count as a perimeter break — and per the explicit design decision,
-// that's NOT a suggest-then-confirm flow. It sits right here, exactly as
-// changeable as any other formula assignment: add a year, remove one,
-// or normalize the underlying figure at the source instead (the restatement
-// tool) — all three keep working together since computeGrowthBundle reads
-// Normalized values first regardless of whether a break is also set.
-function GrowthFormulaRow({ data, formula, fmtNum, togglePerimeterBreak, setGrowthSegmentOverride, lastSeen, markSeen }) {
+// 'growth' kind) isn't a bucket combination, so it doesn't render as one
+// row: GrowthSettingsRow carries the genuine edits (which years are a
+// confirmed perimeter break, which segment to pin) plus the summary of
+// what's actually in effect; GrowthMethodRow renders EACH method as its
+// own separate, ordinary-looking formula row — "Revenue Growth (Full-
+// period CAGR)", "Revenue Growth (Median YoY)", etc. — same shape as every
+// other formula in this tab, read-only, for inspection. The one thing that
+// actually CHANGES which method is used is the header's GrowthMethodBadge;
+// nothing here sets it.
+function growthMethodsFor(data, formula) {
   const hist = fieldHistory(data, formula.table)
   const realRows = hist.filter(r => !r?.synthetic && /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const latestRow = realRows[realRows.length - 1]
-  // No basis picker here — computeGrowthBundle already reads Normalized-
-  // over-Reported per field internally (activeValue's own rule); a second,
-  // manual switch on top of that would just duplicate what the underlying
-  // field's own row already shows.
+  // computeGrowthBundle already reads Normalized-over-Reported per field
+  // internally (activeValue's own rule) — no separate basis picker needed.
   const resolved = latestRow ? activeValue(latestRow, formula.key, 'normalized') : null
-  const methods = resolved?.methods || null
+  return { realRows, methods: resolved?.methods || null }
+}
 
-  // Red-if-changed tracks the SELECTED value only — the one figure actually
-  // materialized/consumed elsewhere (ratios.js, valuation.js, once
-  // connected).
+function GrowthSettingsRow({ data, formula, togglePerimeterBreak, setGrowthSegmentOverride, lastSeen, markSeen }) {
+  const { realRows, methods } = growthMethodsFor(data, formula)
+
   const currentValue = methods?.selected ?? null
   const changed = lastSeen?.normalized === undefined || lastSeen.normalized !== currentValue
   const latestRef = useRef(currentValue)
@@ -1193,75 +1211,61 @@ function GrowthFormulaRow({ data, formula, fmtNum, togglePerimeterBreak, setGrow
   const breakYears = (data?.perimeterBreaks || [])
     .filter(b => b.table === formula.table).map(b => b.year).sort((a, b) => a - b)
   const availableYears = realRows.map(r => Number(r.year)).filter(y => !breakYears.includes(y))
-  // With 2+ breaks there are 3+ segments and no longer one obvious "the"
-  // post-break window — segments (formulas.js) exposes every one; this lets
-  // a specific segment be pinned instead of always taking the automatic
-  // "latest, if long enough" pick.
   const segments = methods?.segments || []
   const overrideStart = data?.growthSegmentOverride?.[formula.key] ?? ''
 
-  // Every method shown as its OWN static formula — a real equation and its
-  // current value, for inspection only. The ACTUAL choice of which one
-  // feeds `selected` is made from the header (GrowthMethodBadge), never
-  // here — this row only displays, it never sets growthMethodOverride.
-  const METHOD_CARDS = [
-    { key: 'fullPeriodCagr',  label: 'Full-period CAGR',        value: methods?.fullPeriodCagr,  equation: methods?.fullPeriodCagrEquation },
-    { key: 'medianYoY',       label: 'Median YoY (comparable)', value: methods?.medianYoY,       equation: methods?.medianYoYEquation },
-    { key: 'recentMedianYoY', label: 'Recent median YoY',       value: methods?.recentMedianYoY, equation: methods?.recentMedianYoYEquation },
-  ].filter(c => c.value != null)
-  const activeKey = methods?.methodOverride
-    || METHOD_CARDS.find(c => c.value === methods?.selected)?.key
-    || null
+  return (
+    <fieldset className="flex flex-wrap items-center gap-2 rounded-lg border border-navy-700 bg-navy-800/30 px-3 py-2 text-xs min-w-0">
+      <legend className="px-1 text-[11px] text-slate-400">{formula.label} — settings</legend>
+      {breakYears.map(y => (
+        <button key={y} type="button" onClick={() => togglePerimeterBreak(formula.table, y)}
+          title="Confirmed perimeter break — click to remove"
+          className="rounded bg-navy-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-bear/20 hover:text-bear">
+          FY{y} ✕
+        </button>
+      ))}
+      <select value="" onChange={e => { const y = Number(e.target.value); if (y) togglePerimeterBreak(formula.table, y) }}
+        className="bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[10px] text-slate-500">
+        <option value="">+ break</option>
+        {availableYears.map(y => <option key={y} value={y}>FY{y}</option>)}
+      </select>
+      {segments.length > 1 && (
+        <select value={overrideStart} title="2+ breaks confirmed — pick which segment's median feeds the selected rate, or leave on Auto"
+          onChange={e => setGrowthSegmentOverride(formula.key, e.target.value === '' ? null : Number(e.target.value))}
+          className="bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[10px] text-slate-500">
+          <option value="">Auto (latest segment)</option>
+          {segments.map(s => (
+            <option key={s.startYear} value={s.startYear}>
+              FY{s.startYear}–FY{s.endYear} ({s.count})
+            </option>
+          ))}
+        </select>
+      )}
+      <span className={'ml-auto font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')}
+        title={changed ? 'Different from what you last saw here' : methods?.method}>
+        Selected: {methods?.selected != null ? `${methods.selected.toFixed(1)}%` : '—'}
+      </span>
+      {methods?.method && (
+        <p className="basis-full text-[10px] text-slate-500 truncate" title={methods.method}>{methods.method}</p>
+      )}
+    </fieldset>
+  )
+}
+
+function GrowthMethodRow({ data, formula, methodKey, label }) {
+  const { methods } = growthMethodsFor(data, formula)
+  const value = methods?.[methodKey]
+  const equation = methods?.[`${methodKey}Equation`]
+  if (value == null) return null
+  const isActive = methods?.methodOverride
+    ? methods.methodOverride === methodKey
+    : methods?.selected === value
 
   return (
-    <fieldset className="rounded-lg border border-navy-700 bg-navy-800/30 px-3 py-2 text-xs min-w-0 space-y-2">
-      <legend className="px-1 text-[11px] text-slate-400">{formula.label}</legend>
-
-      <div className="flex flex-wrap gap-1 items-center">
-        {breakYears.map(y => (
-          <button key={y} type="button" onClick={() => togglePerimeterBreak(formula.table, y)}
-            title="Confirmed perimeter break — click to remove"
-            className="rounded bg-navy-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-bear/20 hover:text-bear">
-            FY{y} ✕
-          </button>
-        ))}
-        <select value="" onChange={e => { const y = Number(e.target.value); if (y) togglePerimeterBreak(formula.table, y) }}
-          className="bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[10px] text-slate-500">
-          <option value="">+ break</option>
-          {availableYears.map(y => <option key={y} value={y}>FY{y}</option>)}
-        </select>
-        {segments.length > 1 && (
-          <select value={overrideStart} title="2+ breaks confirmed — pick which segment's median feeds the selected rate, or leave on Auto"
-            onChange={e => setGrowthSegmentOverride(formula.key, e.target.value === '' ? null : Number(e.target.value))}
-            className="bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[10px] text-slate-500">
-            <option value="">Auto (latest segment)</option>
-            {segments.map(s => (
-              <option key={s.startYear} value={s.startYear}>
-                FY{s.startYear}–FY{s.endYear} ({s.count})
-              </option>
-            ))}
-          </select>
-        )}
-        <span className={'ml-auto font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')}
-          title={changed ? 'Different from what you last saw here' : methods?.method}>
-          Selected: {methods?.selected != null ? `${methods.selected.toFixed(1)}%` : '—'}
-        </span>
-      </div>
-
-      {methods?.method && (
-        <p className="text-[10px] text-slate-500 truncate" title={methods.method}>{methods.method}</p>
-      )}
-
-      <div className="grid gap-1 sm:grid-cols-3">
-        {METHOD_CARDS.map(c => (
-          <div key={c.key}
-            className={'rounded border px-2 py-1 min-w-0 ' + (c.key === activeKey ? 'border-accent/50 bg-accent/10' : 'border-navy-700/60')}>
-            <div className="text-[10px] text-slate-500">{c.label}</div>
-            <div className="text-slate-400 font-mono text-[10px] truncate" title={c.equation || ''}>{c.equation}</div>
-            <div className="font-mono text-slate-300">{c.value.toFixed(1)}%</div>
-          </div>
-        ))}
-      </div>
+    <fieldset className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs min-w-0 ' + (isActive ? 'border-accent/50 bg-accent/10' : 'border-navy-700 bg-navy-800/30')}>
+      <legend className="px-1 text-[11px] text-slate-400">{formula.label} ({label})</legend>
+      <span className="flex-1 text-slate-400 font-mono truncate min-w-0" title={equation || ''}>{equation || '—'}</span>
+      <span className="flex-shrink-0 font-mono text-slate-300">{value.toFixed(1)}%</span>
     </fieldset>
   )
 }

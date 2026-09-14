@@ -98,18 +98,15 @@ const DERIVED_FORMULAS = {
     label: 'Net Working Capital',
     table: 'balance',
     buckets: [
-      // candidateKeys: current assets can never be filled with a liability
-      // (or vice versa) just because both happen to live on the balance
-      // sheet — table-match alone was too loose a filter (it offered Total
-      // Debt as a candidate for "current operating LIABILITIES," which
-      // isn't even a current item, let alone the right kind). A custom
-      // field the user creates is ALWAYS still offered regardless of this
-      // list (see candidatesFor, HistoryTableModal.jsx) — this only bounds
-      // which TRACKED metrics.js/registry fields make sense here.
-      { key: 'currentOperatingAssets',      label: 'Current Operating Assets',      sign: 1,  defaults: ['tradeReceivables', 'inventories'],
-        candidateKeys: ['tradeReceivables', 'inventories'] },
-      { key: 'currentOperatingLiabilities', label: 'Current Operating Liabilities', sign: -1, defaults: ['tradePayables', 'advanceFromCustomers'],
-        candidateKeys: ['tradePayables', 'advanceFromCustomers'] },
+      // Candidate filtering is NOT declared per bucket here any more — see
+      // candidatesFor (HistoryTableModal.jsx): it derives the valid set from
+      // metrics.js's own expandFrom tag (tradeReceivables/inventories both
+      // expand from "Other Assets"; tradePayables/advanceFromCustomers both
+      // expand from "Other Liabilities" — real, already-declared category
+      // siblings, not a second hand-maintained list that a newly added
+      // metrics.js field would silently fall outside of).
+      { key: 'currentOperatingAssets',      label: 'Current Operating Assets',      sign: 1,  defaults: ['tradeReceivables', 'inventories'] },
+      { key: 'currentOperatingLiabilities', label: 'Current Operating Liabilities', sign: -1, defaults: ['tradePayables', 'advanceFromCustomers'] },
     ],
   },
   capitalEmployed: {
@@ -118,8 +115,8 @@ const DERIVED_FORMULAS = {
     label: 'Capital Employed',
     table: 'balance',
     buckets: [
-      { key: 'equity', label: 'Equity', sign: 1, defaults: ['totalEquity'], candidateKeys: ['totalEquity'] },
-      { key: 'debt',   label: 'Debt',   sign: 1, defaults: ['totalDebt'],   candidateKeys: ['totalDebt'] },
+      { key: 'equity', label: 'Equity', sign: 1, defaults: ['totalEquity'] },
+      { key: 'debt',   label: 'Debt',   sign: 1, defaults: ['totalDebt'] },
     ],
   },
   netDebt: {
@@ -128,8 +125,8 @@ const DERIVED_FORMULAS = {
     label: 'Net Debt',
     table: 'balance',
     buckets: [
-      { key: 'debt', label: 'Debt', sign: 1,  defaults: ['totalDebt'], candidateKeys: ['totalDebt'] },
-      { key: 'cash', label: 'Cash', sign: -1, defaults: ['cash'],      candidateKeys: ['cash'] },
+      { key: 'debt', label: 'Debt', sign: 1,  defaults: ['totalDebt'] },
+      { key: 'cash', label: 'Cash', sign: -1, defaults: ['cash'] },
     ],
   },
   grossProfit: {
