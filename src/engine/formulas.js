@@ -62,281 +62,157 @@ export function fieldHistory(data, table) {
 
 export function rowValue(row, field) { return val(row?.[field]) }
 
-// Fixed, code-defined shape: buckets and how they combine. This is the part
-// the user meant by "you need to be smart about how the buckets will be
-// created" — not every formula is assets-minus-liabilities, so each one
-// spells out its own bucket signs rather than inferring a rule.
-//
-// Two kinds:
-//   'derived'  — the buckets ARE the value; there's no separately-reported
-//                figure to prefer (Net Working Capital — no statement ever
-//                discloses "NWC" as its own line).
-//   'fallback' — a figure that MAY already be directly reported (Gross
-//                Profit, Profit Before Tax, Tax, EBITDA all sometimes are)
-//                — if it is, that reported value and ITS OWN normalization
-//                (the ordinary restatement mechanism, since these are all
-//                real metrics.js fields) stand untouched; the buckets only
-//                fill in when it's genuinely absent. Ports ratios.js's old
-//                inline "reported ?? derived" ladders one for one — same
-//                fallback order, just centralized instead of copied inline
-//                wherever the figure was needed.
-//
-// Declaration order matters for 'fallback' entries that consume another
-// formula's own output (tax reads profitBeforeTax) — materializeFormulas
-// processes this object's entries in order, so profitBeforeTax must be
-// declared, and therefore materialized, before tax.
+// DERIVED_FORMULAS now holds ONLY the two kinds that genuinely cannot be a
+// per-year data-table row: 'growth' (a multi-year SUMMARY, not one year's
+// value) and, via INPUT_FORMULAS below, live market-wide inputs. Every
+// other formula that used to live here (NWC, PBT, EBITDA, every margin,
+// ROE, FCFF, ...) is now a `computed: true` custom row — see
+// STANDARD_FORMULA_ROWS and computeCustomRowValue/materializeCustomRows
+// below. That move: (1) removed the bucket-seeding indirection that
+// silently broke on a long-lived ticker (a formula's ingredients are now
+// just data.fieldAssignments entries, edited straight through the data
+// table, nothing pre-declared in code to fall out of sync with), and
+// (2) gave every one of them the SAME free, unrestricted add/subtract
+// editing a custom row already had — no fixed bucket shape.
 const DERIVED_FORMULAS = {
+  revenueGrowth:   { key: 'revenueGrowth',   kind: 'growth', label: 'Revenue Growth',    table: 'income', field: 'revenue' },
+  netProfitGrowth: { key: 'netProfitGrowth', kind: 'growth', label: 'Net Profit Growth', table: 'income', field: 'netProfit' },
+}
+
+// ── Standard formula rows ────────────────────────────────────────────────
+// The starting definition every one of these ~20 formulas seeds as, the
+// FIRST time a ticker is loaded (see seedStandardFormulaRows) — after
+// that, the row is the user's own, editable however they want (rebuild PBT
+// from EBITDA instead of Operating Profit, add a 5th item to NWC, whatever)
+// and this seed is never consulted again for that ticker.
+//
+// mode:
+//   'sum'      — terms: [{field, sign, table?, lag?}], value = Σ sign×term.
+//                The plain "add these, subtract those" case (NWC, PBT,
+//                EBITDA, EBIT, Free Cash Flow, Tax, Gross Profit, Capital
+//                Employed, Net Debt).
+//   'ratio'    — numerator/denominator: each its own signed term list (a
+//                ratio is inherently two groups, not one flat sum — Net
+//                Profit ÷ Revenue can't be "+Net Profit −Revenue"), value =
+//                Σnum / Σden × scale. averageDenominator: true (ROE only)
+//                averages this year's and last year's denominator.
+//   'weighted' — terms: [{field, sign, weightField?, weightOneMinus?}],
+//                value = Σ sign × field × (weightField resolved, optionally
+//                1−that / else 1). The one shape needing this: FCFF's
+//                EBIT × (1 − Effective Tax Rate) term is a genuine product,
+//                which a signed sum can't express.
+//
+// A term's `table`/`lag` mirror the old bucket mechanism's cross-table/
+// prior-year resolution (ROA pulling Total Assets from the balance sheet
+// while anchored on an income-table row; FCFF's ΔNWC needing this year's
+// AND last year's NWC) — same idea, just living as plain term data instead
+// of a fixed per-formula declaration.
+const STANDARD_FORMULA_ROWS = {
   nwc: {
-    key: 'nwc',
-    kind: 'derived',
-    label: 'Net Working Capital',
-    table: 'balance',
-    buckets: [
-      // Candidate filtering is NOT declared per bucket here any more — see
-      // candidatesFor (HistoryTableModal.jsx): it derives the valid set from
-      // metrics.js's own expandFrom tag (tradeReceivables/inventories both
-      // expand from "Other Assets"; tradePayables/advanceFromCustomers both
-      // expand from "Other Liabilities" — real, already-declared category
-      // siblings, not a second hand-maintained list that a newly added
-      // metrics.js field would silently fall outside of).
-      { key: 'currentOperatingAssets',      label: 'Current Operating Assets',      sign: 1,  defaults: ['tradeReceivables', 'inventories'] },
-      { key: 'currentOperatingLiabilities', label: 'Current Operating Liabilities', sign: -1, defaults: ['tradePayables', 'advanceFromCustomers'] },
+    key: 'nwc', label: 'Net Working Capital', table: 'balance', mode: 'sum',
+    terms: [
+      { field: 'tradeReceivables', sign: 1 }, { field: 'inventories', sign: 1 },
+      { field: 'tradePayables', sign: -1 }, { field: 'advanceFromCustomers', sign: -1 },
     ],
   },
   capitalEmployed: {
-    key: 'capitalEmployed',
-    kind: 'derived',
-    label: 'Capital Employed',
-    table: 'balance',
-    buckets: [
-      { key: 'equity', label: 'Equity', sign: 1, defaults: ['totalEquity'] },
-      { key: 'debt',   label: 'Debt',   sign: 1, defaults: ['totalDebt'] },
-    ],
+    key: 'capitalEmployed', label: 'Capital Employed', table: 'balance', mode: 'sum',
+    terms: [{ field: 'totalEquity', sign: 1 }, { field: 'totalDebt', sign: 1 }],
   },
   netDebt: {
-    key: 'netDebt',
-    kind: 'derived',
-    label: 'Net Debt',
-    table: 'balance',
-    buckets: [
-      { key: 'debt', label: 'Debt', sign: 1,  defaults: ['totalDebt'] },
-      { key: 'cash', label: 'Cash', sign: -1, defaults: ['cash'] },
-    ],
+    key: 'netDebt', label: 'Net Debt', table: 'balance', mode: 'sum',
+    terms: [{ field: 'totalDebt', sign: 1 }, { field: 'cash', sign: -1 }],
   },
   grossProfit: {
-    key: 'grossProfit',
-    kind: 'fallback',
-    label: 'Gross Profit',
-    table: 'income',
-    buckets: [
-      { key: 'revenue', label: 'Revenue', sign: 1,  defaults: ['revenue'] },
-      { key: 'cogs',    label: 'COGS',    sign: -1, defaults: ['cogs'] },
-    ],
+    key: 'grossProfit', label: 'Gross Profit', table: 'income', mode: 'sum',
+    terms: [{ field: 'revenue', sign: 1 }, { field: 'cogs', sign: -1 }],
   },
   profitBeforeTax: {
-    key: 'profitBeforeTax',
-    kind: 'fallback',
-    label: 'Profit Before Tax',
-    table: 'income',
-    buckets: [
-      { key: 'operatingProfit', label: 'Operating Profit', sign: 1,  defaults: ['operatingProfit'] },
-      { key: 'otherIncome',     label: 'Other Income',     sign: 1,  defaults: ['otherIncome'] },
-      { key: 'interest',        label: 'Interest',         sign: -1, defaults: ['interest'] },
-      { key: 'depreciation',    label: 'Depreciation',     sign: -1, defaults: ['depreciation'] },
+    key: 'profitBeforeTax', label: 'Profit Before Tax', table: 'income', mode: 'sum',
+    terms: [
+      { field: 'operatingProfit', sign: 1 }, { field: 'otherIncome', sign: 1 },
+      { field: 'interest', sign: -1 }, { field: 'depreciation', sign: -1 },
     ],
   },
-  // Reads profitBeforeTax's own materialized output, not a raw field — see
-  // the ordering note above.
   tax: {
-    key: 'tax',
-    kind: 'fallback',
-    label: 'Tax',
-    table: 'income',
-    buckets: [
-      { key: 'pbt',       label: 'Profit Before Tax', sign: 1,  defaults: ['profitBeforeTax'] },
-      { key: 'netProfit', label: 'Net Profit',        sign: -1, defaults: ['netProfit'] },
-    ],
+    key: 'tax', label: 'Tax', table: 'income', mode: 'sum',
+    terms: [{ field: 'profitBeforeTax', sign: 1 }, { field: 'netProfit', sign: -1 }],
   },
   ebitda: {
-    key: 'ebitda',
-    kind: 'fallback',
-    label: 'EBITDA',
-    table: 'income',
-    // One bucket, not two signed ones: a bucket sum tolerates a missing
-    // member (skips it rather than failing the whole formula), which is
-    // exactly the old ladder's "Op Profit + Depreciation, or Op Profit
-    // alone if Depreciation is missing" — for free, from the bucket-sum
-    // rule itself, not a separate ladder.
-    buckets: [
-      { key: 'components', label: 'Components', sign: 1, defaults: ['operatingProfit', 'depreciation'] },
-    ],
+    key: 'ebitda', label: 'EBITDA', table: 'income', mode: 'sum',
+    terms: [{ field: 'operatingProfit', sign: 1 }, { field: 'depreciation', sign: 1 }],
   },
-  // EBIT is never itself a disclosed line — but Operating Profit effectively
-  // IS EBIT whenever it's reported (this app's own convention — see ROCE),
-  // so its reportedField points at operatingProfit instead of at 'ebit'
-  // itself. Falls back to EBITDA − Depreciation (tolerating Depreciation
-  // being missing, same bucket-sum rule as EBITDA's own fallback) only when
-  // Operating Profit is genuinely absent. Declared after ebitda since the
-  // fallback path depends on its materialized output.
+  // Algebraically equal to Operating Profit whenever EBITDA follows its own
+  // default (EBITDA − Depreciation = Op Profit + Depreciation − Depreciation
+  // = Op Profit) — but expressed via EBITDA/Depreciation rather than reading
+  // Operating Profit directly, so it still resolves when EBITDA/Depreciation
+  // are available from other sources but Op Profit itself isn't cleanly one.
   ebit: {
-    key: 'ebit',
-    kind: 'fallback',
-    label: 'EBIT',
-    table: 'income',
-    reportedField: 'operatingProfit',
-    buckets: [
-      { key: 'ebitda',       label: 'EBITDA',       sign: 1,  defaults: ['ebitda'] },
-      { key: 'depreciation', label: 'Depreciation', sign: -1, defaults: ['depreciation'] },
-    ],
+    key: 'ebit', label: 'EBIT', table: 'income', mode: 'sum',
+    terms: [{ field: 'ebitda', sign: 1 }, { field: 'depreciation', sign: -1 }],
   },
-  // Free Cash Flow: a real metrics.js field (base:false, estimable:true) —
-  // ratios.js used to estimate it inline (operatingCF − capex) the exact
-  // same way EBITDA/EBIT used to before THEY were registered; this is that
-  // same move for FCF. table:'cashflow' since both its own reported figure
-  // and both bucket members live there.
   freeCashFlow: {
-    key: 'freeCashFlow',
-    kind: 'fallback',
-    label: 'Free Cash Flow',
-    table: 'cashflow',
-    buckets: [
-      { key: 'operatingCF', label: 'Operating Cash Flow', sign: 1,  defaults: ['operatingCF'] },
-      { key: 'capex',       label: 'CapEx',               sign: -1, defaults: ['capex'] },
-    ],
+    key: 'freeCashFlow', label: 'Free Cash Flow', table: 'cashflow', mode: 'sum',
+    terms: [{ field: 'operatingCF', sign: 1 }, { field: 'capex', sign: -1 }],
   },
-  // ── 'ratio' formulas: numerator ÷ denominator × scale ─────────────────────
-  // Each bucket may declare its OWN `table` when it differs from the
-  // formula's primary one (ROA/ROE/Net Debt÷EBITDA all mix a P&L figure
-  // with a balance-sheet one) — resolved by matching YEAR across the two
-  // statements (see rowForBucket), not by sharing a row object. Declared
-  // after grossProfit/ebitda/netDebt/capitalEmployed since several of
-  // these use THOSE formulas' own materialized output as a default
-  // ingredient (EBITDA, Net Debt) — same ordering rule as tax/profitBeforeTax.
   netMargin: {
-    key: 'netMargin', kind: 'ratio', label: 'Net Margin', table: 'income', scale: 100,
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'Net Profit', sign: 1, defaults: ['netProfit'] },
-      { key: 'denominator', role: 'denominator', label: 'Revenue',    sign: 1, defaults: ['revenue'] },
-    ],
+    key: 'netMargin', label: 'Net Margin', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'netProfit', sign: 1 }], denominator: [{ field: 'revenue', sign: 1 }],
   },
   operatingMargin: {
-    key: 'operatingMargin', kind: 'ratio', label: 'Operating Margin', table: 'income', scale: 100,
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'Operating Profit', sign: 1, defaults: ['operatingProfit'] },
-      { key: 'denominator', role: 'denominator', label: 'Revenue',          sign: 1, defaults: ['revenue'] },
-    ],
+    key: 'operatingMargin', label: 'Operating Margin', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'operatingProfit', sign: 1 }], denominator: [{ field: 'revenue', sign: 1 }],
   },
   ebitdaMargin: {
-    key: 'ebitdaMargin', kind: 'ratio', label: 'EBITDA Margin', table: 'income', scale: 100,
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'EBITDA',  sign: 1, defaults: ['ebitda'] },
-      { key: 'denominator', role: 'denominator', label: 'Revenue', sign: 1, defaults: ['revenue'] },
-    ],
+    key: 'ebitdaMargin', label: 'EBITDA Margin', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'ebitda', sign: 1 }], denominator: [{ field: 'revenue', sign: 1 }],
   },
   grossMarginPct: {
-    key: 'grossMarginPct', kind: 'ratio', label: 'Gross Margin', table: 'income', scale: 100,
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'Gross Profit', sign: 1, defaults: ['grossProfit'] },
-      { key: 'denominator', role: 'denominator', label: 'Revenue',      sign: 1, defaults: ['revenue'] },
-    ],
+    key: 'grossMarginPct', label: 'Gross Margin', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'grossProfit', sign: 1 }], denominator: [{ field: 'revenue', sign: 1 }],
   },
   roa: {
-    key: 'roa', kind: 'ratio', label: 'Return on Assets', table: 'income', scale: 100,
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'Net Profit',  sign: 1, defaults: ['netProfit'] },
-      { key: 'denominator', role: 'denominator', label: 'Total Assets', table: 'balance', sign: 1, defaults: ['totalAssets'] },
-    ],
+    key: 'roa', label: 'Return on Assets', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'netProfit', sign: 1 }],
+    denominator: [{ field: 'totalAssets', sign: 1, table: 'balance' }],
   },
-  // Depends on EBIT's own materialized output (declared above) and Capital
-  // Employed (declared earlier still) — both real fields by the time this
-  // runs, so ROCE itself needs no fallback ladder of its own any more.
   roce: {
-    key: 'roce', kind: 'ratio', label: 'Return on Capital Employed', table: 'income', scale: 100,
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'EBIT',              sign: 1, defaults: ['ebit'] },
-      { key: 'denominator', role: 'denominator', label: 'Capital Employed',  table: 'balance', sign: 1, defaults: ['capitalEmployed'] },
-    ],
+    key: 'roce', label: 'Return on Capital Employed', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'ebit', sign: 1 }],
+    denominator: [{ field: 'capitalEmployed', sign: 1, table: 'balance' }],
   },
   de: {
-    key: 'de', kind: 'ratio', label: 'Debt-to-Equity', table: 'balance',
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'Total Debt',   sign: 1, defaults: ['totalDebt'] },
-      { key: 'denominator', role: 'denominator', label: 'Total Equity', sign: 1, defaults: ['totalEquity'] },
-    ],
+    key: 'de', label: 'Debt-to-Equity', table: 'balance', mode: 'ratio',
+    numerator: [{ field: 'totalDebt', sign: 1 }], denominator: [{ field: 'totalEquity', sign: 1 }],
   },
   icr: {
-    key: 'icr', kind: 'ratio', label: 'Interest Coverage', table: 'income',
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'EBITDA',   sign: 1, defaults: ['ebitda'] },
-      { key: 'denominator', role: 'denominator', label: 'Interest', sign: 1, defaults: ['interest'] },
-    ],
+    key: 'icr', label: 'Interest Coverage', table: 'income', mode: 'ratio',
+    numerator: [{ field: 'ebitda', sign: 1 }], denominator: [{ field: 'interest', sign: 1 }],
   },
   netDebtToEbitda: {
-    key: 'netDebtToEbitda', kind: 'ratio', label: 'Net Debt / EBITDA', table: 'balance',
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'Net Debt', sign: 1, defaults: ['netDebt'] },
-      { key: 'denominator', role: 'denominator', label: 'EBITDA',   table: 'income', sign: 1, defaults: ['ebitda'] },
-    ],
+    key: 'netDebtToEbitda', label: 'Net Debt / EBITDA', table: 'balance', mode: 'ratio',
+    numerator: [{ field: 'netDebt', sign: 1 }],
+    denominator: [{ field: 'ebitda', sign: 1, table: 'income' }],
   },
-  // Only formula needing averageDenominator: ROE compares one year's profit
-  // against the AVERAGE of this year's and last year's equity, not either
-  // year alone — the standard convention (a year-end balance is a snapshot;
-  // averaging approximates the capital actually deployed across the year).
   roe: {
-    key: 'roe', kind: 'ratio', label: 'Return on Equity', table: 'income', scale: 100, averageDenominator: true,
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'Net Profit',   sign: 1, defaults: ['netProfit'] },
-      { key: 'denominator', role: 'denominator', label: 'Total Equity', table: 'balance', sign: 1, defaults: ['totalEquity'] },
-    ],
+    key: 'roe', label: 'Return on Equity', table: 'income', mode: 'ratio', scale: 100, averageDenominator: true,
+    numerator: [{ field: 'netProfit', sign: 1 }],
+    denominator: [{ field: 'totalEquity', sign: 1, table: 'balance' }],
   },
-  // Measured (not statutory) effective tax rate — a decimal, not a percent
-  // (no `scale`, same convention D/E and ICR already use for a raw ratio
-  // rather than a displayed percentage): what THIS company actually paid
-  // against pre-tax profit, used as FCFF's tax-shield weight below. Declared
-  // after tax/profitBeforeTax since it reads both formulas' own outputs.
   effectiveTaxRate: {
-    key: 'effectiveTaxRate', kind: 'ratio', label: 'Effective Tax Rate', table: 'income',
-    buckets: [
-      { key: 'numerator',   role: 'numerator',   label: 'Tax',                sign: 1, defaults: ['tax'] },
-      { key: 'denominator', role: 'denominator', label: 'Profit Before Tax',  sign: 1, defaults: ['profitBeforeTax'] },
-    ],
+    key: 'effectiveTaxRate', label: 'Effective Tax Rate', table: 'income', mode: 'ratio',
+    numerator: [{ field: 'tax', sign: 1 }], denominator: [{ field: 'profitBeforeTax', sign: 1 }],
   },
-  // Free Cash Flow to Firm — unlevered cash flow available to ALL
-  // capital providers (equity + debt), the numerator DCF/enterprise-value
-  // work actually wants, vs freeCashFlow above which is already net of
-  // interest (a levered, equity-side figure). The one term that isn't a
-  // plain additive field — EBIT × (1 − effective tax rate) — is exactly
-  // why this needs 'weighted' rather than 'derived': a bucket sum can only
-  // ADD signed fields, never multiply two of them together.
-  //
-  // ΔNWC is expressed as two lagged terms (this year's NWC minus last
-  // year's) rather than one "change" bucket, because there's no such thing
-  // as a single stored "NWC change" field to point at — nwc itself only
-  // exists per-year, so the subtraction has to happen HERE, at the point
-  // FCFF needs it, via the same `lag` mechanism rowForBucket/resolveTermValue
-  // already support for any cross-year term.
   fcff: {
-    key: 'fcff', kind: 'weighted', label: 'Free Cash Flow to Firm', table: 'income',
+    key: 'fcff', label: 'Free Cash Flow to Firm', table: 'income', mode: 'weighted',
     terms: [
-      { key: 'nopat', label: 'EBIT × (1 − Effective Tax Rate)',
-        value: { field: 'ebit' }, weight: { field: 'effectiveTaxRate', oneMinus: true } },
-      { key: 'da', label: 'Depreciation & Amortization',
-        value: { field: 'depreciation' }, weight: 1 },
-      { key: 'capex', label: 'CapEx',
-        value: { field: 'capex', table: 'cashflow' }, weight: -1 },
-      { key: 'nwc', label: 'Net Working Capital (current year)',
-        value: { field: 'nwc', table: 'balance' }, weight: -1 },
-      { key: 'nwcPrior', label: 'Net Working Capital (prior year)',
-        value: { field: 'nwc', table: 'balance', lag: 1 }, weight: 1 },
+      { field: 'ebit', sign: 1, weightField: 'effectiveTaxRate', weightOneMinus: true },
+      { field: 'depreciation', sign: 1 },
+      { field: 'capex', sign: -1, table: 'cashflow' },
+      { field: 'nwc', sign: -1, table: 'balance' },
+      { field: 'nwc', sign: 1, table: 'balance', lag: 1 },
     ],
   },
-  // ── 'growth' formulas: a multi-year SUMMARY of one field's whole history,
-  // not a per-row bucket combination — see computeGrowthBundle below for the
-  // actual statistics (full-period CAGR, comparable-YoY median, recent
-  // median, volatility, and the deterministic selected rate). No `buckets`:
-  // there's exactly one input field, named directly.
-  revenueGrowth:   { key: 'revenueGrowth',   kind: 'growth', label: 'Revenue Growth',    table: 'income', field: 'revenue' },
-  netProfitGrowth: { key: 'netProfitGrowth', kind: 'growth', label: 'Net Profit Growth', table: 'income', field: 'netProfit' },
 }
 
 // ── Market-input "formulas" ────────────────────────────────────────────
@@ -490,6 +366,13 @@ export function availableTargets(data) {
     seen.add(key)
   }
   for (const f of (data.customFields || [])) {
+    // A computed row (Net Margin, PBT, ...) is a FORMULA, not a target the
+    // restatement tool can adjust — "restate Net Margin" isn't a
+    // meaningful action the way "restate Revenue" is. Without this, a
+    // computed row's own key collided with itself here, and listFormulas
+    // returned this restatement stand-in instead of the real computed
+    // entry for it (spread first in listFormulas' output array).
+    if (f.computed) continue
     if (seen.has(f.key)) continue
     out.push({ key: f.key, label: f.label, table: f.table, aligned: [] })
     seen.add(f.key)
@@ -637,7 +520,55 @@ export function listFormulas(data) {
     key: t.key, kind: 'restatement', label: t.label, table: t.table,
     buckets: [{ key: 'adjustments', label: 'Adjustments', sign: 1, defaults: [] }],
   }))
-  return [...restatement, ...Object.values(DERIVED_FORMULAS)]
+  // Every `computed: true` custom row — the ~20 formulas that used to be
+  // DERIVED_FORMULAS entries, now ordinary data-table rows (see
+  // STANDARD_FORMULA_ROWS/materializeCustomRows). Read-only in the
+  // Formulas tab: the row IS the definition, edited through the data
+  // table, not through a picker here.
+  const computed = (data?.customFields || []).filter(f => f.computed).map(f => ({
+    key: f.key, kind: 'computed', label: f.label, table: f.table,
+    mode: f.mode, scale: f.scale, averageDenominator: f.averageDenominator,
+  }))
+  return [...restatement, ...computed, ...Object.values(DERIVED_FORMULAS)]
+}
+
+/**
+ * Field-name equation string for a computed custom row's current
+ * definition — "(Net Profit) ÷ (Revenue) × 100", "Operating Profit +
+ * Other Income − Interest − Depreciation" — built from whatever
+ * data.fieldAssignments currently holds for it, the same "names only, the
+ * actual figures are one click away" convention every formula's equation
+ * already follows.
+ */
+export function computedRowEquation(data, field) {
+  const termsText = (terms) => {
+    if (!terms.length) return '—'
+    return terms.map((t, i) => {
+      const text = fieldLabel(data, t.field)
+      const negative = (t.sign ?? 1) < 0
+      if (i === 0) return negative ? `− ${text}` : text
+      return `${negative ? '−' : '+'} ${text}`
+    }).join(' ')
+  }
+  if (field.mode === 'ratio') {
+    const num = termsFor(data, field.key, 'numerator')
+    const den = termsFor(data, field.key, 'denominator')
+    const scaleText = field.scale && field.scale !== 1 ? ` × ${field.scale}` : ''
+    return `(${termsText(num)}) ÷ (${termsText(den)})${scaleText}`
+  }
+  if (field.mode === 'weighted') {
+    const terms = termsFor(data, field.key, 'terms')
+    if (!terms.length) return '—'
+    return terms.map((t, i) => {
+      const label = t.weightField
+        ? `${fieldLabel(data, t.field)} × (1 − ${fieldLabel(data, t.weightField)})`
+        : fieldLabel(data, t.field)
+      const negative = (t.sign ?? 1) < 0
+      if (i === 0) return negative ? `− ${label}` : label
+      return `${negative ? '−' : '+'} ${label}`
+    }).join(' ')
+  }
+  return termsText(termsFor(data, field.key, 'terms'))
 }
 
 // A bucket's own members can THEMSELVES be normalized — tradeReceivables,
@@ -656,151 +587,110 @@ function yearOf(row) {
   return m ? Number(m[0]) : null
 }
 
-// A bucket's OWN statement, when it declares one (ROA/ROE/Net Debt÷EBITDA
-// mix a P&L figure with a balance-sheet one) — matched to the primary row's
+// A term's own statement, when it declares one (ROA/ROE/Net Debt÷EBITDA mix
+// a P&L figure with a balance-sheet one) — matched to the primary row's
 // YEAR, since the two tables are separate arrays, not the same row object.
-// `bucket.lag` (years back from the primary row's year) is the other way a
-// bucket can point somewhere other than "this same row" — ΔNWC-style terms
-// (FCFF) need THIS year's value minus LAST year's of the SAME field, which
-// is a lag of 1 on the SAME table, not a different one; the two are
-// independent (a bucket can set either, both, or neither).
-function rowForBucket(data, formula, bucket, primaryRow) {
-  const table = bucket.table || formula.table
-  const lag = bucket.lag || 0
-  if (table === formula.table && lag === 0) return primaryRow
+// `lag` (years back from the primary row's year) is the other way a term
+// can point somewhere other than "this same row" — FCFF's ΔNWC needs THIS
+// year's value minus LAST year's of the SAME field; the two are
+// independent (a term can set either, both, or neither).
+function rowForTerm(data, rowTable, term, primaryRow) {
+  const table = term.table || rowTable
+  const lag = term.lag || 0
+  if (table === rowTable && lag === 0) return primaryRow
   const year = yearOf(primaryRow)
   if (year == null) return null
   return fieldHistory(data, table).find(r => yearOf(r) === year - lag) || null
 }
 
-// 'weighted' formulas (Free Cash Flow to Firm — see DERIVED_FORMULAS) name
-// their inputs DIRECTLY (a metrics.js field, or another formula's own
-// output field, e.g. 'ebit'/'nwc') rather than going through the
-// user-assignable fieldAssignments/bucketSum indirection every other kind
-// uses — there's nothing to REBUCKET here (nobody maps a custom row into
-// "the EBIT term of FCFF"; they'd map it into EBIT itself, upstream, and
-// this reads whatever EBIT resolves to). A term spec is either a bare
-// number (a fixed weight, e.g. -1 for a subtracted term) or
-// {field, table?, lag?, oneMinus?} — table/lag mirror rowForBucket's own
-// cross-table/prior-year resolution; oneMinus turns a resolved rate r into
-// (1 - r), the shape a tax-shield weight (1 - effective tax rate) needs.
-function resolveTermValue(data, formula, spec, row, basis) {
-  if (spec == null) return null
-  if (typeof spec === 'number') return spec
-  const table = spec.table || formula.table
-  const lag = spec.lag || 0
-  const specRow = (table === formula.table && lag === 0) ? row
-    : fieldHistory(data, table).find(r => yearOf(r) === yearOf(row) - lag)
-  if (!specRow) return null
-  const v = resolvedValue(specRow, spec.field, basis)
-  if (v == null) return null
-  return spec.oneMinus ? (1 - v) : v
+// Every term currently assigned to one bucket of one computed row — ALWAYS
+// read live from data.fieldAssignments, never from a code-side declaration.
+// A computed row's own metadata (key/label/table/mode/scale) lives on its
+// data.customFields entry; its actual ingredients live here, exactly like
+// any other field's fieldAssignments entries, editable through the same
+// mechanism — there is no separate, parallel "formula definition" object.
+function termsFor(data, rowKey, bucketName) {
+  return (data?.fieldAssignments || [])
+    .filter(a => a.kind === 'formula' && a.formula === rowKey && a.bucket === bucketName)
 }
 
-// A bucket's own declared defaults are read LIVE, straight off the row,
-// every single time — the same way any other consumer reads Net Profit or
-// Revenue directly off the statement. They are NEVER required to be
-// "seeded" into data.fieldAssignments first: a formula whose defaults
-// exist on the row simply works, with zero setup, the instant the row has
-// data — there is no separate "have we recorded this assignment yet"
-// state that can fall out of sync with what the registry actually
-// declares. This replaced an earlier design where defaults had to be
-// seeded once into fieldAssignments and remembered via a persisted
-// formulaDefaultsApplied ledger — on a ticker with months of accumulated
-// registry changes (buckets renamed, formulas added/restructured), that
-// ledger could mark a triple "already seeded" while the real entry was
-// gone or never written, silently zeroing a bucket's sum (0, not "—",
-// since an EMPTY contributor list is what actually produces null) with no
-// way to self-heal short of clearing the ledger by hand.
-//
-// data.fieldAssignments now exists ONLY for genuine customization on top
-// of the live defaults:
-//   - a NEW contributor beyond the defaults (a custom row, another tracked
-//     field) — kind:'formula', normal entry, sign as chosen.
-//   - REMOVING one of the defaults — kind:'formula', same field/bucket,
-//     removed:true. This is a real, explicit fact the user recorded
-//     ("don't include this one"), never something a stale ledger can
-//     silently reintroduce or drop.
-//   - OVERRIDING a default's sign — kind:'formula', removed:false (or
-//     omitted) with a different `sign`; present for that field/bucket, so
-//     it replaces the implicit +1 the live default would otherwise use.
-function bucketSum(data, formulaKey, bucket, row, basis) {
-  if (!row) return null
-  const assignments = (data?.fieldAssignments || [])
-    .filter(a => a.kind === 'formula' && a.formula === formulaKey && a.bucket === bucket.key)
-  const overrideByField = new Map(assignments.map(a => [a.field, a]))
-
-  let sum = null
-  for (const field of (bucket.defaults || [])) {
-    const override = overrideByField.get(field)
-    if (override?.removed) continue
-    const v = resolvedValue(row, field, basis)
-    if (v != null) sum = (sum ?? 0) + (override?.sign ?? 1) * v
+// Every term currently on a computed row, across all of its buckets, with a
+// human label — for UI that lets a new row "attach to" an existing formula
+// (pick NWC, then pick "Trade Receivables" to inherit its sign from) without
+// needing to know which bucket a given field happens to live in.
+export function formulaTerms(data, formulaKey) {
+  const out = []
+  for (const bucket of ['terms', 'numerator', 'denominator']) {
+    for (const t of termsFor(data, formulaKey, bucket)) {
+      out.push({ field: t.field, label: fieldLabel(data, t.field), bucket, sign: t.sign ?? 1 })
+    }
   }
-  // Contributors beyond the defaults — the genuinely-extra case.
-  for (const a of assignments) {
-    if (a.removed || (bucket.defaults || []).includes(a.field)) continue
-    const v = resolvedValue(row, a.field, basis)
-    if (v != null) sum = (sum ?? 0) + (a.sign ?? 1) * v
+  return out
+}
+
+// Σ sign × resolvedValue(term) — the one summing rule a 'sum'-mode row, and
+// each side of a 'ratio'-mode row, uses.
+function sumTerms(data, rowTable, terms, row, basis) {
+  if (!row) return null
+  let sum = null
+  for (const term of terms) {
+    const termRow = rowForTerm(data, rowTable, term, row)
+    const v = termRow ? resolvedValue(termRow, term.field, basis) : null
+    if (v != null) sum = (sum ?? 0) + (term.sign ?? 1) * v
   }
   return sum
 }
 
-function computeForRow(data, formulaKey, row, basis) {
-  const formula = DERIVED_FORMULAS[formulaKey]
-  if (!formula || !row) return null
-
-  if (formula.kind === 'ratio') {
-    const numBucket = formula.buckets.find(b => b.role === 'numerator')
-    const denBucket = formula.buckets.find(b => b.role === 'denominator')
-    const num = bucketSum(data, formulaKey, numBucket, rowForBucket(data, formula, numBucket, row), basis)
-    let den = bucketSum(data, formulaKey, denBucket, rowForBucket(data, formula, denBucket, row), basis)
+// Computes one row's value from a computed custom field's CURRENT
+// definition — field.mode (from data.customFields) plus whatever terms are
+// currently assigned to it (from data.fieldAssignments) — whatever that
+// currently is, seed or user-edited; there's nothing else to consult. See
+// STANDARD_FORMULA_ROWS for the three modes' shapes.
+function computeCustomRowValue(data, field, row, basis) {
+  if (!row) return null
+  if (field.mode === 'ratio') {
+    const numTerms = termsFor(data, field.key, 'numerator')
+    const denTerms = termsFor(data, field.key, 'denominator')
+    const num = sumTerms(data, field.table, numTerms, row, basis)
+    let den = sumTerms(data, field.table, denTerms, row, basis)
     // ROE-only: average this year's and last year's denominator rather than
     // using either alone (a year-end balance is a snapshot; averaging
-    // approximates capital deployed across the whole year). Falls back to
-    // the single current-year figure when there's no prior year to average
-    // against, same as ratios.js's own avgEquity.
-    if (formula.averageDenominator) {
-      const denTable = denBucket.table || formula.table
+    // approximates capital deployed across the whole year).
+    if (field.averageDenominator) {
+      const denTable = denTerms[0]?.table || field.table
       const denHist = fieldHistory(data, denTable)
       const year = yearOf(row)
       const idx = denHist.findIndex(r => yearOf(r) === year)
-      const prevDenRow = idx > 0 ? denHist[idx - 1] : null
-      const denPrev = prevDenRow ? bucketSum(data, formulaKey, denBucket, prevDenRow, basis) : null
+      const prevRow = idx > 0 ? denHist[idx - 1] : null
+      const denPrev = prevRow ? sumTerms(data, field.table, denTerms, prevRow, basis) : null
       den = (den != null && denPrev != null) ? (den + denPrev) / 2 : den
     }
     if (num == null || !den) return null
-    return (num / den) * (formula.scale ?? 1)
+    return (num / den) * (field.scale ?? 1)
   }
-
-  if (formula.kind === 'weighted') {
-    // Strict: every term must resolve, or the whole formula declines — same
-    // "don't fabricate a partial answer" rule as every other kind. Unlike
-    // WACC's own weights (E/(E+D), D/(E+D) — genuinely conditional: an
-    // all-equity company legitimately has a ZERO debt weight, not a missing
-    // one, so a term can validly drop out without the formula failing),
-    // FCFF's terms are all real, always-applicable statement lines — there's
-    // no valid state where one of them is supposed to be absent. That
-    // conditional-weight case is exactly why WACC itself stays procedural in
-    // valuation.js rather than being forced into this generic shape.
+  if (field.mode === 'weighted') {
+    // Strict: every term must resolve, or the whole row declines — same
+    // "don't fabricate a partial answer" rule as everywhere else. This is
+    // deliberately the one mode that isn't a pure signed sum (FCFF's
+    // EBIT × (1 − Effective Tax Rate) term is a genuine product); a term's
+    // OWN sign still applies to that product, same as any other term.
     let sum = 0
-    for (const term of formula.terms) {
-      const v = resolveTermValue(data, formula, term.value, row, basis)
-      const w = resolveTermValue(data, formula, term.weight, row, basis)
-      if (v == null || w == null) return null
-      sum += v * w
+    for (const term of termsFor(data, field.key, 'terms')) {
+      const termRow = rowForTerm(data, field.table, term, row)
+      const v = termRow ? resolvedValue(termRow, term.field, basis) : null
+      if (v == null) return null
+      let w = 1
+      if (term.weightField) {
+        const wv = resolvedValue(row, term.weightField, basis)
+        if (wv == null) return null
+        w = term.weightOneMinus ? (1 - wv) : wv
+      }
+      sum += (term.sign ?? 1) * v * w
     }
-    return sum * (formula.scale ?? 1)
+    return sum * (field.scale ?? 1)
   }
-
-  // 'derived' / 'fallback': the buckets ARE the value, combined by sum with
-  // each bucket's own sign — always single-table today.
-  const bucketSums = {}
-  for (const bucket of formula.buckets) bucketSums[bucket.key] = bucketSum(data, formulaKey, bucket, row, basis)
-  if (Object.values(bucketSums).some(v => v == null)) return null
-  let output = 0
-  for (const bucket of formula.buckets) output += bucket.sign * bucketSums[bucket.key]
-  return output
+  // 'sum' (default)
+  return sumTerms(data, field.table, termsFor(data, field.key, 'terms'), row, basis)
 }
 
 // ── 'growth' formulas ────────────────────────────────────────────────────
@@ -969,20 +859,17 @@ function computeGrowthBundle(data, formula, basis) {
 }
 
 /**
- * Writes each derived formula's own output directly onto the row it belongs
- * to — {key} for the reported figure, {key}Normalized alongside it only
- * when normalizing an input actually changes the result — the EXACT same
- * sibling-field convention netProfit/eps and the restatement targets
- * already use. This is the whole point: a formula's result becomes just
- * another field on the row, so any consumer (ratios.js, valuation.js, the
- * Formulas tab) reads it with the SAME activeValue(row, key, basis) call it
- * already uses for revenue or netProfit — no formulas.js-specific accessor,
- * no re-deriving it from fieldAssignments at every read site. Called from
- * computeAll (AppContext.jsx) right after recomputeNormalizedTargets, so a
- * formula's own inputs (tradeReceivablesNormalized etc.) already exist by
- * the time it runs, and every path that changes an assignment, a value, or
- * a normalization automatically keeps this in sync — there's nothing to
- * carry over by hand, and nothing for an inline copy elsewhere to miss.
+ * Writes each DERIVED_FORMULAS entry's own output onto the row it belongs
+ * to — {key}/{key}Normalized, the same sibling-field convention every
+ * other formula in this app uses. DERIVED_FORMULAS today holds only
+ * 'growth' entries (revenueGrowth/netProfitGrowth) — everything else lives
+ * as a computed custom row now (see materializeCustomRows below).
+ *
+ * 'growth' is a summary of the WHOLE series, not a per-row value — written
+ * onto the latest row only (nothing downstream ever wants "growth as of
+ * 2015 mid-history," only the current reading), with the full bundle
+ * (every method, not just the selected one) riding along as `.methods` so
+ * a UI can offer every candidate for inspection, not just the pick.
  */
 export function materializeFormulas(data) {
   let out = data
@@ -992,86 +879,31 @@ export function materializeFormulas(data) {
     if (!base.length) continue
     const normKey = `${formula.key}Normalized`
 
-    // 'growth': a summary of the WHOLE series, not a per-row value — written
-    // onto the latest row only (nothing downstream ever wants "growth as of
-    // 2015 mid-history," only the current reading), with the full bundle
-    // (every method, not just the selected one) riding along as `.methods`
-    // so a UI can offer every candidate for inspection, not just the pick.
-    if (formula.kind === 'growth') {
-      // Real fiscal-year rows only (see isFiscalYearRow) — a synthetic/TTM
-      // stub with a later-looking year must never win "latest," or the
-      // whole bundle gets written onto (and read back from) a row that
-      // isn't a real, complete year.
-      const realBase = base.filter(isFiscalYearRow)
-      const latestPool = realBase.length ? realBase : base
-      const latest = latestPool.reduce((a, b) => (yearOf(b) > yearOf(a) ? b : a))
-      const reportedBundle = computeGrowthBundle(out, formula, 'reported')
-      const normalizedBundle = computeGrowthBundle(out, formula, 'normalized')
-      const newHistory = base.map(row => {
-        if (row !== latest) {
-          if (!(formula.key in row) && !(normKey in row)) return row
-          const { [formula.key]: _a, [normKey]: _b, ...rest } = row
-          return rest
-        }
-        let next = { ...row }
-        if (reportedBundle) {
-          next[formula.key] = { value: reportedBundle.selected, status: 'calculated', formula: reportedBundle.method, methods: reportedBundle }
-        } else if (formula.key in next) {
-          const { [formula.key]: _a, ...rest } = next; next = rest
-        }
-        if (normalizedBundle && normalizedBundle.selected !== reportedBundle?.selected) {
-          next[normKey] = { value: normalizedBundle.selected, adjusted: true, formula: normalizedBundle.method, methods: normalizedBundle }
-        } else if (normKey in next) {
-          const { [normKey]: _d, ...rest } = next; next = rest
-        }
-        return next
-      })
-      out = formula.table === 'income'
-        ? { ...out, reportedIncomeHistory: newHistory }
-        : { ...out, [histKey]: newHistory }
-      continue
-    }
-
+    // Real fiscal-year rows only (see isFiscalYearRow) — a synthetic/TTM
+    // stub with a later-looking year must never win "latest," or the
+    // whole bundle gets written onto (and read back from) a row that
+    // isn't a real, complete year.
+    const realBase = base.filter(isFiscalYearRow)
+    const latestPool = realBase.length ? realBase : base
+    const latest = latestPool.reduce((a, b) => (yearOf(b) > yearOf(a) ? b : a))
+    const reportedBundle = computeGrowthBundle(out, formula, 'reported')
+    const normalizedBundle = computeGrowthBundle(out, formula, 'normalized')
     const newHistory = base.map(row => {
-      // 'fallback': a real reported value already exists for whichever
-      // field counts as "reported" for this formula (formula.key itself,
-      // e.g. Gross Profit — or a DIFFERENT field entirely, when the
-      // formula's own output has no metrics.js field of its own to check:
-      // EBIT is never a disclosed line, but Operating Profit effectively
-      // IS EBIT whenever it's reported, so EBIT's reportedField points at
-      // operatingProfit instead of at itself) — leave it, and its OWN
-      // Normalized sibling, completely alone. A genuine restatement-
-      // eligible metrics.js field already gets its normalization handled
-      // independently by recomputeNormalizedTargets (which already ran,
-      // above); the buckets here only fill the figure in when it's
-      // genuinely absent.
-      const reportedField = formula.reportedField || formula.key
-      if (formula.kind === 'fallback' && rowValue(row, reportedField) != null) {
-        if (formula.key === reportedField) return row
-        // Copying a DIFFERENT field's value forward (EBIT <- Operating
-        // Profit) — carry its Normalized sibling forward too, so a
-        // restatement on the real field (Operating Profit) still reaches
-        // EBIT, which has no metrics.js entry of its own to be restated
-        // through directly.
-        const next = { ...row, [formula.key]: row[reportedField] }
-        const reportedNormKey = `${reportedField}Normalized`
-        if (row[reportedNormKey] != null) next[normKey] = row[reportedNormKey]
-        else if (normKey in next) { const { [normKey]: _drop, ...rest } = next; return rest }
-        return next
-      }
-      const reported = computeForRow(out, formula.key, row, 'reported')
-      if (reported == null) {
+      if (row !== latest) {
         if (!(formula.key in row) && !(normKey in row)) return row
         const { [formula.key]: _a, [normKey]: _b, ...rest } = row
         return rest
       }
-      let next = { ...row, [formula.key]: { value: reported, status: 'calculated', formula: null } }
-      const normalized = computeForRow(out, formula.key, row, 'normalized')
-      if (normalized != null && normalized !== reported) {
-        next[normKey] = { value: normalized, adjusted: true, formula: null }
+      let next = { ...row }
+      if (reportedBundle) {
+        next[formula.key] = { value: reportedBundle.selected, status: 'calculated', formula: reportedBundle.method, methods: reportedBundle }
+      } else if (formula.key in next) {
+        const { [formula.key]: _a, ...rest } = next; next = rest
+      }
+      if (normalizedBundle && normalizedBundle.selected !== reportedBundle?.selected) {
+        next[normKey] = { value: normalizedBundle.selected, adjusted: true, formula: normalizedBundle.method, methods: normalizedBundle }
       } else if (normKey in next) {
-        const { [normKey]: _drop, ...rest } = next
-        next = rest
+        const { [normKey]: _d, ...rest } = next; next = rest
       }
       return next
     })
@@ -1082,18 +914,116 @@ export function materializeFormulas(data) {
   return out
 }
 
-// materializeAllFormulas / seedFormulaDefaults used to exist here as a
-// multi-pass workaround for buckets that had to be "seeded" into
-// data.fieldAssignments before they had anything to sum — a formula
-// depending on another formula's output needed one extra seed+materialize
-// round per level of depth, and a stale formulaDefaultsApplied ledger
-// could silently block re-seeding forever on a long-lived ticker. Removed
-// entirely: bucketSum now reads a bucket's own declared defaults LIVE off
-// the row (see bucketSum's own comment), so a single materializeFormulas
-// pass already resolves any depth of formula-depends-on-formula chain —
-// each formula's buckets read whatever the PRIOR formulas in this same
-// pass already wrote onto `out`, in registry declaration order. Nothing
-// to seed, nothing to loop.
+/**
+ * Materializes every `computed: true` custom field's value onto its own
+ * row, from whatever definition it currently has (a STANDARD_FORMULA_ROWS
+ * seed, or the user's own edit — see seedStandardFormulaRows/normalize.js
+ * for how a row gets its first definition, ONCE, and never again). This is
+ * the data-driven replacement for the old DERIVED_FORMULAS
+ * 'derived'/'fallback'/'ratio'/'weighted' kinds.
+ *
+ * A computed row can reference ANOTHER computed row (Tax reading Profit
+ * Before Tax, FCFF reading EBIT and Effective Tax Rate) — since there's no
+ * fixed code declaration order any more (the set of computed rows, and
+ * what each one reads, is entirely data), this iterates: materialize
+ * whatever resolves, repeat until a pass changes nothing. Capped at 10
+ * rounds purely as a runaway guard — every real chain in this registry
+ * resolves in well under that.
+ *
+ * A field whose key ALSO happens to be a real, independently-reportable
+ * metrics.js field (Gross Profit, Profit Before Tax, Tax, EBITDA, EBIT,
+ * Free Cash Flow all sometimes are) never overwrites a genuine reported
+ * value already sitting on the row — it only computes when that's absent,
+ * or when what's there was itself written by an EARLIER pass of this same
+ * function (status:'calculated' — the one thing distinguishing "a real
+ * reported figure" from "nothing here yet, compute it"). A real reported
+ * value's own Normalized sibling stays exactly as recomputeNormalizedTargets
+ * (the ordinary restatement mechanism) already produced it — never touched
+ * here.
+ */
+export function materializeCustomRows(data) {
+  let out = data
+  for (let pass = 0; pass < 10; pass++) {
+    const computedFields = (out.customFields || []).filter(f => f.computed)
+    if (!computedFields.length) break
+    let changedThisPass = false
+
+    for (const field of computedFields) {
+      const base = fieldHistory(out, field.table)
+      if (!base.length) continue
+      const histKey = field.table === 'income' ? 'reportedIncomeHistory' : `${field.table}History`
+      const normKey = `${field.key}Normalized`
+
+      const newHistory = base.map(row => {
+        const existing = row[field.key]
+        if (existing != null && existing.status !== 'calculated') return row
+
+        const reported = computeCustomRowValue(out, field, row, 'reported')
+        if (reported == null) {
+          if (!(field.key in row) && !(normKey in row)) return row
+          changedThisPass = true
+          const { [field.key]: _a, [normKey]: _b, ...rest } = row
+          return rest
+        }
+        let next = { ...row, [field.key]: { value: reported, status: 'calculated', formula: null } }
+        const normalized = computeCustomRowValue(out, field, row, 'normalized')
+        if (normalized != null && normalized !== reported) {
+          next[normKey] = { value: normalized, adjusted: true, formula: null }
+        } else if (normKey in next) {
+          const { [normKey]: _drop, ...rest } = next
+          next = rest
+        }
+        if (existing?.value !== reported) changedThisPass = true
+        return next
+      })
+      out = field.table === 'income'
+        ? { ...out, reportedIncomeHistory: newHistory }
+        : { ...out, [histKey]: newHistory }
+    }
+    if (!changedThisPass) break
+  }
+  return out
+}
+
+/**
+ * One-time creation of the ~20 standard computed rows (STANDARD_FORMULA_ROWS)
+ * for a ticker that doesn't have them yet — checked by KEY, not a separate
+ * ledger: if data.customFields already has an entry for this key, it's
+ * left completely alone (it's the user's own row now, whatever they've
+ * built it into — never reverted to the seed). Called once from
+ * migrateStoredData (normalize.js), the same idempotent-migration
+ * chokepoint every other retroactive fix in this app already uses.
+ */
+export function seedStandardFormulaRows(data) {
+  if (!data) return data
+  const existingKeys = new Set((data.customFields || []).map(f => f.key))
+  const missing = Object.values(STANDARD_FORMULA_ROWS).filter(f => !existingKeys.has(f.key))
+  if (!missing.length) return data
+
+  const newFields = missing.map(f => ({
+    key: f.key, label: f.label, table: f.table, computed: true,
+    mode: f.mode, scale: f.scale, averageDenominator: f.averageDenominator,
+  }))
+  const newAssignments = []
+  for (const f of missing) {
+    const pushTerms = (terms, bucket) => {
+      for (const t of (terms || [])) {
+        newAssignments.push({
+          field: t.field, kind: 'formula', formula: f.key, bucket,
+          sign: t.sign ?? 1, table: t.table, lag: t.lag,
+          weightField: t.weightField, weightOneMinus: t.weightOneMinus,
+        })
+      }
+    }
+    if (f.mode === 'ratio') { pushTerms(f.numerator, 'numerator'); pushTerms(f.denominator, 'denominator') }
+    else pushTerms(f.terms, 'terms')
+  }
+  return {
+    ...data,
+    customFields: [...(data.customFields || []), ...newFields],
+    fieldAssignments: [...(data.fieldAssignments || []), ...newAssignments],
+  }
+}
 
 /** Every assignment currently on this field, across both kinds. */
 export function assignmentsForField(data, field) {

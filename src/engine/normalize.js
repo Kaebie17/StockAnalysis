@@ -9,6 +9,7 @@
  */
 import { computeNormalizedRow } from './dataQuality.js'
 import { METRICS } from './metrics.js'
+import { seedStandardFormulaRows } from './formulas.js'
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
@@ -102,6 +103,12 @@ export function migrateStoredData(data) {
   data = dropTTMRows(data)
   data = fixAlwaysPositiveFields(data)
   data = migrateCustomFieldAssignments(data)
+  // One-time creation of the ~20 standard computed rows (NWC, PBT, EBITDA,
+  // margins, ROE, FCFF, ...) for a ticker that doesn't have them yet —
+  // checked by key existing in data.customFields, never re-applied once a
+  // row exists (it's the user's own row from then on). See
+  // seedStandardFormulaRows (formulas.js).
+  data = seedStandardFormulaRows(data)
   if (!data?.cashflowHistory) return data
   const STALE = /Operating CF\s*[x\u00d7*]\s*0\.7/i
   let scrubbed = 0

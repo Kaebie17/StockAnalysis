@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { createPortal } from 'react-dom'
 import { useApp } from '../../store/AppContext.jsx'
 import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
 import { computeNormalizedRow, activeValue } from '../../engine/dataQuality.js'
-import { normalizedFieldValue, availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField, INPUT_FORMULAS } from '../../engine/formulas.js'
+import { normalizedFieldValue, availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField, INPUT_FORMULAS, computedRowEquation, formulaTerms } from '../../engine/formulas.js'
 import { marketOf } from '../../engine/requiredReturn.js'
 import { getRiskFreeRate, refreshRiskFreeRate } from '../../api/riskFreeClient.js'
 import { getEquityRiskPremium, refreshEquityRiskPremium } from '../../api/erpClient.js'
@@ -66,43 +65,27 @@ function keyCollision(data, slug) {
 }
 
 // One-line summary of everything a field currently feeds, across both
-// restatement targets and formula buckets — replaces the old single
+// restatement targets and computed-row terms — replaces the old single
 // "feeds X" note, which could only ever describe one destination.
 //
-// A bucket's own defaults are live now (bucketSum reads them straight off
-// the row, formulas.js) rather than stored in data.fieldAssignments, so
-// this has to know about them too, or a plain default relationship (Net
-// Profit feeding Net Margin's numerator) would show nothing at all here
-// just because nobody ever had to record it. Only an EXPLICIT
-// fieldAssignments entry (a customization, or a removed:true exclusion)
-// overrides what's shown for a given formula/bucket.
+// A computed row's terms all live directly in data.fieldAssignments now —
+// there's no separate "live default" layer to merge in any more (that
+// existed only for the old code-declared bucket shapes); this is a plain
+// read of what's actually assigned.
 function assignmentSummary(data, field) {
-  const stored = assignmentsForField(data, field)
-  const explicit = stored.filter(a => !a.removed)
-  const explicitKeys = new Set(explicit.filter(a => a.kind === 'formula').map(a => `${a.formula}:${a.bucket}`))
-  const removedKeys = new Set(stored.filter(a => a.kind === 'formula' && a.removed).map(a => `${a.formula}:${a.bucket}`))
-  const liveDefaults = []
-  for (const formula of listFormulas(data)) {
-    for (const bucket of (formula.buckets || [])) {
-      const key = `${formula.key}:${bucket.key}`
-      if (!(bucket.defaults || []).includes(field)) continue
-      if (removedKeys.has(key) || explicitKeys.has(key)) continue
-      liveDefaults.push({ kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 })
-    }
-  }
-  const list = [...explicit, ...liveDefaults]
+  const list = assignmentsForField(data, field).filter(a => !a.removed)
   if (!list.length) return null
   return list.map(a => {
     const sign = (a.sign ?? 1) > 0 ? '+' : '−'
     if (a.kind === 'restatement') return `${sign} feeds ${fieldLabel(data, a.target)}`
-    const formula = listFormulas(data).find(f => f.key === a.formula)
-    const bucket = formula?.buckets?.find(b => b.key === a.bucket)
-    return `${sign} feeds ${formula?.label ?? a.formula} → ${bucket?.label ?? a.bucket}`
+    const formula = listFormulas(data).find(f => f.key === a.formula && f.kind !== 'restatement')
+    const side = a.bucket === 'numerator' ? ' (numerator)' : a.bucket === 'denominator' ? ' (denominator)' : ''
+    return `${sign} feeds ${formula?.label ?? a.formula}${side}`
   }).join('; ')
 }
 
 export default function HistoryTableModal({ open, onClose }) {
-  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, setGrowthMethodWindow } = useApp()
+  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setGrowthMethodWindow } = useApp()
   const data = state?.data
   const currency = data?.currency
   const div  = currency === 'INR' ? 1e7 : 1e6
@@ -156,6 +139,14 @@ export default function HistoryTableModal({ open, onClose }) {
   // appears once it actually has something in it, so an all-blank ticker
   // doesn't render sixty empty rows nobody asked for.
   const shownTrackedKeys = trackedKeys.filter(k => signatureKeys.includes(k) || populatedKeys.includes(k))
+  // Merge candidates for this statement — reported/tracked rows with data,
+  // same as custom rows: there's no reason merge should be custom-only, a
+  // reported field's values live the exact same way (row[key].value) and
+  // MERGE_CUSTOM_FIELDS already sums/strips by key generically either way.
+  const mergeCandidates = [
+    ...shownTrackedKeys.map(k => ({ key: k, label: METRICS[k]?.label || k, table })),
+    ...customFields.map(f => ({ key: f.key, label: f.label, table: f.table })),
+  ]
 
   const cellKey = (year, field) => `${year}|${field}`
 
@@ -282,50 +273,13 @@ export default function HistoryTableModal({ open, onClose }) {
       computedRows.push({ label: `${meta.label} (Normalized)`, cells, fmt: v => v == null ? null : (SKIP_SCALE.has(key) ? v.toFixed(2) : Math.round(v / div).toLocaleString()), anchor: key })
     }
   }
-  // Every 'derived' (Net Working Capital, Capital Employed, Net Debt) and
-  // 'ratio' (margins, ROA, ROE, D/E, ICR, Net Debt/EBITDA) formula that
-  // lives on THIS statement — shown right here instead of a separate tab,
-  // with the exact same provenance as the restatement audit rows just
-  // above: a plain row, and (only if at least one year actually has one) a
-  // second, italicized "(Normalized)" row underneath. 'fallback' formulas
-  // (Gross Profit, Profit Before Tax, Tax, EBITDA) are excluded — they're
-  // real tracked fields with their own row already shown further up, not a
-  // second, computed copy of it.
-  //
-  // Each formula is anchored to whichever raw field it reads most
-  // naturally as an extension of (a margin under its own numerator, a
-  // leverage ratio under Total Debt, ...) so it renders immediately below
-  // that field's row — Revenue then Revenue YoY, EBITDA then EBITDA
-  // Margin — rather than in a separate block. Anything with no sensible
-  // single anchor (or whose anchor isn't a row actually shown) falls
-  // through to the render loop's "leftover" bucket at the very end.
-  const FORMULA_ANCHOR = {
-    netMargin: 'netProfit', roa: 'netProfit', roe: 'netProfit',
-    operatingMargin: 'operatingProfit',
-    ebitdaMargin: 'ebitda', icr: 'ebitda', netDebtToEbitda: 'ebitda',
-    grossMarginPct: 'grossProfit',
-    roce: 'ebit',
-    de: 'totalDebt', capitalEmployed: 'totalDebt', netDebt: 'totalDebt',
-    nwc: 'advanceFromCustomers',
-  }
-  const formulaRowsForTable = listFormulas(data).filter(f => (f.kind === 'derived' || f.kind === 'ratio') && f.table === table)
-  for (const formula of formulaRowsForTable) {
-    const anchor = FORMULA_ANCHOR[formula.key]
-    const fmtFormula = v => {
-      if (v == null) return null
-      if (formula.kind === 'ratio') return formula.scale === 100 ? `${v.toFixed(1)}%` : v.toFixed(2)
-      return Math.round(v / div).toLocaleString()
-    }
-    const reportedCells = years.map(y => activeValue(history.find(r => String(r.year) === y), formula.key, 'reported')?.value ?? null)
-    if (reportedCells.some(v => v != null)) {
-      computedRows.push({ label: formula.label, cells: reportedCells, fmt: fmtFormula, anchor })
-    }
-    const hasFormulaNorm = years.some(y => val(history.find(r => String(r.year) === y)?.[`${formula.key}Normalized`]) != null)
-    if (hasFormulaNorm) {
-      const normalizedCells = years.map(y => activeValue(history.find(r => String(r.year) === y), formula.key, 'normalized')?.value ?? null)
-      computedRows.push({ label: `${formula.label} (Normalized)`, cells: normalizedCells, fmt: fmtFormula, anchor })
-    }
-  }
+  // NWC/PBT/EBITDA/every margin/ROE/FCFF/etc. used to be pushed here as a
+  // separate "computed" row layer, anchored under whichever raw field they
+  // read most naturally as an extension of — they're `computed: true`
+  // custom fields now (see formulas.js's STANDARD_FORMULA_ROWS), so they
+  // already render through the ordinary customFields row loop below, in
+  // whatever position a custom row normally sorts, same as any other row
+  // in the table. Nothing left to inject here.
 
   // Group computed rows under whichever shown row they're anchored to, so
   // they render immediately below it (Revenue, then Revenue YoY; EBITDA,
@@ -386,7 +340,7 @@ export default function HistoryTableModal({ open, onClose }) {
       </div>
 
       {table === 'formulas' ? (
-        <FormulasTab data={data} div={div} focusField={focusField} setAssignmentsForField={setAssignmentsForField}
+        <FormulasTab data={data} div={div} focusField={focusField}
           setGrowthMethodWindow={setGrowthMethodWindow}
           lastSeenOutputs={lastSeenOutputs} setLastSeenOutputs={setLastSeenOutputs} />
       ) : (
@@ -439,7 +393,7 @@ export default function HistoryTableModal({ open, onClose }) {
           <button onClick={() => setAddingRow(true)} className="text-xs text-accent hover:text-accent-light">
             + Add row
           </button>
-          {customFields.length >= 2 && (
+          {mergeCandidates.length >= 2 && (
             <button onClick={() => setMerging(true)} className="text-xs text-accent hover:text-accent-light">
               ⇄ Merge rows
             </button>
@@ -450,7 +404,7 @@ export default function HistoryTableModal({ open, onClose }) {
       {merging && (
         <MergeRowsForm
           data={data}
-          customFields={customFields}
+          fields={mergeCandidates}
           onCancel={() => setMerging(false)}
           onMerge={(sourceKeys, opts) => {
             mergeCustomFields(table, sourceKeys, opts)
@@ -601,9 +555,12 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
 
 // Every place a row can feed, for ONE statement — every valid restatement
 // target on this table (dynamic: any field with data, or a custom row —
-// see availableTargets), plus every derived/fallback formula's buckets that
-// live on this table. One flat list so a single dropdown covers all kinds;
-// `value` round-trips through parseDestination below.
+// see availableTargets), plus every EXISTING TERM of every computed formula
+// row (NWC, PBT, EBITDA, ...) — picking one attaches the new row as an
+// ADDITIONAL term alongside it, inheriting its sign (formulaTerms,
+// formulas.js), never replacing or altering the term it's attached to. One
+// flat list so a single dropdown covers all kinds; `value` round-trips
+// through parseDestination below.
 function destinationOptions(data, table) {
   const out = []
   for (const t of availableTargets(data)) {
@@ -611,20 +568,16 @@ function destinationOptions(data, table) {
     out.push({ value: `restatement:${t.key}`, label: t.label })
   }
   for (const formula of listFormulas(data)) {
-    if (formula.kind === 'restatement' || formula.table !== table) continue
-    // 'growth' has no buckets (a whole-series summary); 'weighted' names its
-    // inputs directly rather than through assignable buckets (see
-    // resolveTermValue, formulas.js) — neither is a valid destination for a
-    // row to feed.
-    for (const bucket of (formula.buckets || [])) {
-      out.push({ value: `formula:${formula.key}:${bucket.key}`, label: `${formula.label} → ${bucket.label}` })
+    if (formula.kind !== 'computed' || formula.table !== table) continue
+    for (const term of formulaTerms(data, formula.key)) {
+      out.push({ value: `formula:${formula.key}:${term.bucket}:${term.sign}`, label: `${formula.label} → ${term.label}` })
     }
   }
   return out
 }
 function parseDestination(value) {
-  const [kind, a, b] = String(value).split(':')
-  return kind === 'restatement' ? { kind, target: a } : { kind, formula: a, bucket: b }
+  const [kind, a, b, c] = String(value).split(':')
+  return kind === 'restatement' ? { kind, target: a } : { kind, formula: a, bucket: b, sign: c ? Number(c) : undefined }
 }
 
 /**
@@ -639,11 +592,18 @@ function AssignmentListEditor({ options, rows, onChange }) {
   const addRow = () => onChange([...rows, { destination: '', sign: 1 }])
   const setRow = (i, patch) => onChange(rows.map((r, idx) => idx === i ? { ...r, ...patch } : r))
   const removeRow = (i) => onChange(rows.filter((_, idx) => idx !== i))
+  // Selecting a formula-term destination pre-fills the sign with the
+  // attached-to term's own sign (still editable) — a restatement target has
+  // no such term to inherit from, so its sign is left as-is.
+  const pickDestination = (i, value) => {
+    const d = parseDestination(value)
+    setRow(i, d.sign != null ? { destination: value, sign: d.sign } : { destination: value })
+  }
   return (
     <div className="space-y-1.5">
       {rows.map((r, i) => (
         <div key={i} className="flex gap-2 items-center">
-          <select value={r.destination} onChange={e => setRow(i, { destination: e.target.value })}
+          <select value={r.destination} onChange={e => pickDestination(i, e.target.value)}
             className="flex-1 bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
             <option value="">No normalization (reference only)</option>
             {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -780,9 +740,13 @@ function AddRowForm({ data, table, years, onCancel, onCreateCustom }) {
               .filter(r => r.destination)
               .map(r => {
                 const d = parseDestination(r.destination)
-                return d.kind === 'restatement'
-                  ? { kind: 'restatement', target: d.target, sign: r.sign }
-                  : { kind: 'formula', formula: d.formula, bucket: d.bucket, sign: r.sign }
+                if (d.kind === 'restatement') return { kind: 'restatement', target: d.target, sign: r.sign }
+                // The term resolves against the row it's attached to, not
+                // necessarily this new row's own table — an explicit
+                // override is only needed when they differ (see
+                // rowForTerm, formulas.js).
+                const formulaTable = listFormulas(data).find(f => f.key === d.formula)?.table
+                return { kind: 'formula', formula: d.formula, bucket: d.bucket, sign: r.sign, table: formulaTable !== table ? table : undefined }
               })
             onCreateCustom({ key: slug, label: label.trim(), assignments, valuesByYear: values })
           }}
@@ -795,14 +759,15 @@ function AddRowForm({ data, table, years, onCancel, onCreateCustom }) {
 }
 
 /**
- * MergeRowsForm — combine several custom rows into one (e.g. several
- * restatement-tool rows that all landed as separate entries) into a single,
- * more readable row. Scoped to CUSTOM rows only — never a tracked metrics.js
- * field: those are read directly, by name, by ratios.js/valuation.js's own
- * formulas, so merging one away would silently sever a real calculation
- * rather than just tidy up a label.
+ * MergeRowsForm — combine several rows on this statement into one (e.g.
+ * several restatement-tool rows that all landed as separate entries) into a
+ * single, more readable row. Available for ANY row with data on this
+ * statement, tracked/reported fields included, not just custom ones —
+ * MERGE_CUSTOM_FIELDS (AppContext.jsx) sums and strips by key generically
+ * either way, reading row[key].value the same way regardless of whether the
+ * key is a metrics.js field or a custom one.
  *
- * Two initial dropdowns (every custom row on this statement is a candidate
+ * Two initial dropdowns (every candidate row on this statement is an option
  * in both), with "+ add another row" to bring in more than two. Then either
  * "merge into a new row" (name it) or "merge into one of the selected rows"
  * (pick which — it keeps its own name and whatever it already fed; only its
@@ -812,7 +777,7 @@ function AddRowForm({ data, table, years, onCancel, onCreateCustom }) {
  * that year — computed fresh in the reducer from their live values, not
  * from anything cached here.
  */
-function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
+function MergeRowsForm({ data, fields, onCancel, onMerge }) {
   const [slots, setSlots] = useState(['', ''])
   const [mode, setMode] = useState('new')
   const [destKey, setDestKey] = useState('')
@@ -833,11 +798,11 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
         <select key={i} value={s} onChange={e => setSlot(i, e.target.value)}
           className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
           <option value="">Row {i + 1}…</option>
-          {customFields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
+          {fields.map(f => <option key={f.key} value={f.key}>{f.label}</option>)}
         </select>
       ))}
       <button type="button" onClick={() => setSlots(prev => [...prev, ''])}
-        disabled={slots.length >= customFields.length}
+        disabled={slots.length >= fields.length}
         className="text-[11px] text-accent hover:text-accent-light disabled:opacity-40 disabled:cursor-not-allowed">
         + Add another row to merge
       </button>
@@ -864,7 +829,7 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
           <select value={destKey} onChange={e => setDestKey(e.target.value)}
             className="w-full bg-navy-800 border border-navy-700 rounded px-2 py-1.5 text-xs text-slate-200">
             <option value="">Which row keeps its name?</option>
-            {selectedKeys.map(k => <option key={k} value={k}>{customFields.find(f => f.key === k)?.label}</option>)}
+            {selectedKeys.map(k => <option key={k} value={k}>{fields.find(f => f.key === k)?.label}</option>)}
           </select>
         )
       )}
@@ -875,7 +840,7 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
           disabled={!canSubmit}
           onClick={() => {
             if (mode === 'new') {
-              const first = customFields.find(f => f.key === selectedKeys[0])
+              const first = fields.find(f => f.key === selectedKeys[0])
               const newField = { key: newSlug, label: newLabel.trim(), table: first?.table }
               onMerge(selectedKeys, { mode: 'new', newField })
             } else {
@@ -891,27 +856,19 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
 }
 
 /**
- * FormulasTab — every formula this ticker can compute: which buckets it
- * has, what feeds each (field names only, never per-item numbers — the
- * makeup is inspectable one click away in the statement tabs themselves),
- * the equation those buckets combine into, and the live output for the
- * most recent year only.
- *
- * One row per formula, three parts: the bucket(s) (click to open a
- * checkbox list and change membership), the equation written out with
- * field names, and the output. The primary way to wire a NEW row into a
- * formula is still at creation time (AddRowForm's assignment list) — this
- * tab is for reviewing what's already assigned and adjusting an EXISTING
- * row's membership without re-creating it.
- *
- * A "restatement" formula (any field with data, or a custom row — see
- * availableTargets) is really a one-bucket formula whose output overwrites
- * the target's own {field}Normalized rather than producing a new figure —
- * shown here with the exact same shape as a genuine multi-bucket "derived"
- * formula (NWC) so the assignment mechanism doesn't need to know which kind
- * it's looking at.
+ * FormulasTab — read-only display of every computed formula this ticker
+ * has (NWC, PBT, EBITDA, every margin, ROE, FCFF, ...), plus growth/CAGR
+ * and the two AI-fetched market inputs. The row itself IS the definition
+ * now (a `computed: true` custom field, its terms in data.fieldAssignments
+ * — see formulas.js's STANDARD_FORMULA_ROWS/materializeCustomRows), so
+ * there's nothing to edit here: the equation (field names only — the
+ * per-item numbers are one click away in the statement tabs) and the
+ * latest output are just read straight off it. Editing happens through the
+ * data table itself — add/remove a term the same way any custom row's
+ * contributors are edited, or attach a new row to an existing formula at
+ * creation time (AddRowForm's assignment list).
  */
-function FormulasTab({ data, div, focusField, setAssignmentsForField, setGrowthMethodWindow, lastSeenOutputs, setLastSeenOutputs }) {
+function FormulasTab({ data, div, focusField, setGrowthMethodWindow, lastSeenOutputs, setLastSeenOutputs }) {
   // Every formula with a real bucket structure ('derived' — NWC, Capital
   // Employed, Net Debt — and 'fallback' — Gross Profit, Profit Before Tax,
   // Tax, EBITDA), no matter how trivial or how often the fallback never
@@ -926,90 +883,7 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, setGrowthM
   const fmtNum = v => v == null ? '—' : Math.round(v / div).toLocaleString()
   const focusAssignments = focusField ? assignmentsForField(data, focusField) : []
 
-  // Mirrors bucketSum's own logic exactly (formulas.js): a bucket's own
-  // declared defaults are shown as assigned LIVE, straight off the
-  // registry, unless an explicit removed:true entry says otherwise — never
-  // because data.fieldAssignments happens to be empty. fieldAssignments is
-  // read here only for the user's own customizations on top of that.
-  const assignedFieldsFor = (formula, bucket) => {
-    const overrides = (data.fieldAssignments || [])
-      .filter(a => a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key)
-    const overrideByField = new Map(overrides.map(o => [o.field, o]))
-    const defaults = bucket.defaults || []
-    const result = []
-    for (const field of defaults) {
-      const o = overrideByField.get(field)
-      if (o?.removed) continue
-      result.push(o || { field, kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 })
-    }
-    for (const o of overrides) {
-      if (o.removed || defaults.includes(o.field)) continue
-      result.push(o)
-    }
-    return result
-  }
-
-  // Another formula's output is a perfectly legitimate ingredient here —
-  // that's how real formulas actually compose (ROE needs Net Profit AND
-  // Total Equity, Net Debt÷EBITDA needs both statements); tax already
-  // reads profitBeforeTax this exact way. The only thing genuinely
-  // excluded is a formula feeding ITSELF (a real, nonsensical loop). Table
-  // match is checked per BUCKET, not per formula — a ratio formula's two
-  // sides can live on different statements (ROA: Net Profit from income,
-  // Total Assets from balance), each bucket only offers candidates from
-  // its OWN statement, since a bucket sum reads all its members off one row.
-  // A tracked (metrics.js/registry) candidate is only offered when it's
-  // genuinely interchangeable with the bucket's own default field(s) — not
-  // just "same table." Two ways that's true:
-  //   1. It IS one of the bucket's declared defaults (netDebt/EBIT/etc. —
-  //      a required, non-substitutable formula input has no assetClass at
-  //      all, so this is the ONLY thing that ever matches for it: "the main
-  //      metric... [is] the default value," nothing else belongs there).
-  //   2. It shares metrics.js's own `assetClass` ('asset' | 'liability' |
-  //      'equity' — a real, deliberate classification, NOT `expandFrom`,
-  //      which only records which broader disclosed line a source buries a
-  //      figure inside for extraction purposes and says nothing about what
-  //      kind of item it economically IS) with a default field. A current-
-  //      liability bucket can never offer an asset as a candidate just
-  //      because both live on the balance sheet, and a NEW metrics.js field
-  //      tagged with a matching assetClass automatically qualifies the
-  //      moment it's added — no per-bucket list to remember to update.
-  // A custom field the user creates is ALWAYS offered regardless of either
-  // rule — there's no way to pre-classify a genuinely new line item; that's
-  // the user's own call to make, not this filter's.
-  const candidatesFor = (formula, bucket) => {
-    const table = bucket.table || formula.table
-    const defaults = bucket.defaults || []
-    const defaultClasses = new Set(defaults.map(k => METRICS[k]?.assetClass).filter(Boolean))
-    return availableTargets(data).filter(t => {
-      if (t.table !== table || t.key === formula.key) return false
-      if (defaults.includes(t.key)) return true
-      if ((data.customFields || []).some(f => f.key === t.key)) return true
-      const tClass = METRICS[t.key]?.assetClass
-      return tClass != null && defaultClasses.has(tClass)
-    })
-  }
-
   const isFocused = (formula) => focusAssignments.some(a => a.formula === formula.key)
-
-  const toggleMembership = (formula, bucket, field, checked) => {
-    const current = assignmentsForField(data, field)
-    const withoutThis = current.filter(a => !(a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key))
-    const isDefault = (bucket.defaults || []).includes(field)
-    if (checked) {
-      // Re-including one of the bucket's own defaults just clears any
-      // earlier removal — defaults are live by default, nothing to add.
-      setAssignmentsForField(field, isDefault ? withoutThis
-        : [...withoutThis, { kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 }])
-    } else {
-      // Excluding a default is a real, recorded fact (removed:true) — the
-      // ABSENCE of an assignment no longer means excluded, since defaults
-      // are included live regardless of whether anything's recorded.
-      setAssignmentsForField(field, isDefault
-        ? [...withoutThis, { kind: 'formula', formula: formula.key, bucket: bucket.key, removed: true }]
-        : withoutThis)
-    }
-  }
 
   return (
     <div className="space-y-2">
@@ -1038,10 +912,8 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, setGrowthM
               markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
           </React.Fragment>
         ) : (
-          <FormulaRow key={formula.key} data={data} formula={formula} div={div}
+          <FormulaRow key={formula.key} data={data} formula={formula}
             fmtNum={fmtNum} focused={isFocused(formula)}
-            assignedFieldsFor={assignedFieldsFor} candidatesFor={candidatesFor}
-            onToggleMembership={toggleMembership}
             lastSeen={lastSeenOutputs[formula.key]}
             markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
         )
@@ -1050,168 +922,60 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, setGrowthM
   )
 }
 
-// One formula = one div, three parts (bucket chips | equation, with its own
-// Reported/Normalized picker right beside it | output for that basis) — the
-// picker lives in the SAME space the equation already occupies rather than
-// adding a fourth part, since flipping it only changes which VALUES the
-// existing equation's fields resolve to, not the fields themselves.
+// Read-only display for a computed custom row (NWC, PBT, EBITDA, every
+// margin, ROE, FCFF, ...) — the ROW itself is the definition now (see
+// formulas.js's STANDARD_FORMULA_ROWS/materializeCustomRows), edited
+// through the data table (add/remove a term the same way any custom row's
+// contributors are edited) or the "attach to an existing formula" option
+// when creating a new row, never through a picker here — there is nothing
+// left for this row to toggle.
 //
-// The output itself is read the same way any other field is — a derived
-// formula's result is materialized directly onto its row as
-// {formula.key}/{formula.key}Normalized (formulas.js's materializeFormulas,
+// The output itself is read the same way any other field is — a computed
+// row's result is materialized directly onto its row as
+// {formula.key}/{formula.key}Normalized (formulas.js's materializeCustomRows,
 // run from computeAll) — so this is activeValue(row, key, basis), the exact
-// call every other consumer in the app already makes, not a formulas.js-
-// specific compute function.
-function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, candidatesFor, onToggleMembership, lastSeen, markSeen }) {
+// call every other consumer in the app already makes.
+function FormulaRow({ data, formula, fmtNum, focused, lastSeen, markSeen }) {
   const hist = fieldHistory(data, formula.table)
   const realRows = hist.filter(r => !r?.synthetic && /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const latestRow = realRows[realRows.length - 1]
-  // Default to Normalized only if THIS formula's own output actually
-  // differs under it — materializeFormulas only ever writes
-  // {formula.key}Normalized when at least one of its own constituents has
-  // a real override, so its presence/absence here is exactly the right
-  // signal. NOT data?.basis (the app-wide toggle): that flips to
-  // 'normalized' the moment ANYTHING on the ticker is restated — net
-  // profit, say — which has nothing to do with whether NWC itself has
-  // anything normalized, and would default this picker to a label that's
-  // true of the ticker but false of this specific formula.
+  // Default to Normalized only if THIS row's own output actually differs
+  // under it — materializeCustomRows only ever writes {formula.key}Normalized
+  // when at least one of its own terms has a real override, so its
+  // presence/absence here is exactly the right signal. NOT data?.basis (the
+  // app-wide toggle): that flips to 'normalized' the moment ANYTHING on the
+  // ticker is restated, which has nothing to do with whether THIS row's
+  // own inputs are.
   const hasOwnNormalization = latestRow?.[`${formula.key}Normalized`]?.value != null
   const [basis, setBasis] = useState(hasOwnNormalization ? 'normalized' : 'reported')
   const resolved = latestRow ? activeValue(latestRow, formula.key, basis) : null
   const output = resolved?.value != null ? { year: latestRow.year, value: resolved.value } : null
 
   // Red means "this differs from the value you last actually looked at" —
-  // ANY change (new data arriving, an edit, a bucket reassignment, a real
+  // ANY change (new data arriving, an edit, a term added/removed, a real
   // restatement), not specifically normalization; the point is catching
   // that something moved, then letting you judge whether it's expected.
-  // Compared per-basis (Reported and Normalized are tracked as separate
-  // watermarks) so switching the picker doesn't itself read as "changed."
-  // A formula with no watermark yet (never viewed this session) counts as
-  // changed too — there's nothing to compare against, so it's flagged the
-  // same as a genuine first-time change.
   const currentValue = output?.value ?? null
   const changed = lastSeen?.[basis] === undefined || lastSeen[basis] !== currentValue
 
-  // Marked seen on UNMOUNT (leaving the Formulas tab, or closing the
-  // modal) rather than on mount — marking it the instant it renders would
-  // flip it back to the normal color before the render even settles,
-  // making "red" meaningless. Read via a ref (kept current every render)
-  // so the cleanup — which only runs once, on true unmount — reports
-  // whatever basis/value was actually showing right before the user left,
-  // not whatever was showing when the component first mounted.
+  // Marked seen on UNMOUNT, not mount — see GrowthMethodRow's own comment
+  // for why (marking on mount would flip it back before the render settles).
   const latestRef = useRef({ basis, value: currentValue })
   latestRef.current = { basis, value: currentValue }
   useEffect(() => () => markSeen(latestRef.current.basis, latestRef.current.value), [markSeen])
 
-  // "Trade Receivables + Inventories − Trade Payables (Normalized) −
-  // Advance from Customers" — just the right-hand side; the formula's own
-  // name is now the <legend> on the fieldset below, not a "NWC = " prefix
-  // repeated in the equation text itself. Field names only (the per-item
-  // numbers are visible one click away, on each field's own row in the
-  // statement tab — this stays an at-a-glance list of WHAT feeds the
-  // formula, not a second display of the numbers themselves).
-  // "(Normalized)" is appended only when THAT field itself has an active
-  // override on the year shown (not just because the basis picker is on
-  // Normalized — most fields never get restated, and tagging every one of
-  // them "Normalized" just because the toggle is in that position would
-  // say something false about which numbers actually moved).
-  // 'weighted' formulas (FCFF) name their inputs directly rather than
-  // through assignable buckets (see resolveTermValue, formulas.js) — the
-  // equation reads term labels straight off the registry entry, and there
-  // are no chips to toggle membership on, since there's nothing to rebucket.
-  // A bucket's own assigned contributors, combined additively with their
-  // OWN signs — shared by both branches below, since a numerator/
-  // denominator bucket can (rarely) have more than one contributor too.
-  const bucketTermsText = (bucket) => {
-    const terms = []
-    for (const a of assignedFieldsFor(formula, bucket)) {
-      const effSign = (bucket.sign ?? 1) * (a.sign ?? 1)
-      const hasOverride = basis === 'normalized' && latestRow?.[`${a.field}Normalized`]?.value != null
-      const text = fieldLabel(data, a.field) + (hasOverride ? ' (Normalized)' : '')
-      terms.push({ sign: effSign, text })
-    }
-    if (!terms.length) return '—'
-    return terms.map((t, i) => {
-      if (i === 0) return t.sign < 0 ? `− ${t.text}` : t.text
-      return `${t.sign < 0 ? '−' : '+'} ${t.text}`
-    }).join(' ')
-  }
-
-  const equation = formula.kind === 'weighted'
-    ? formula.terms.map((t, i) => {
-        const negative = typeof t.weight === 'number' && t.weight < 0
-        const sign = negative ? '−' : (i === 0 ? '' : '+')
-        return `${sign} ${t.label}`.trim()
-      }).join(' ')
-    // 'ratio': numerator ÷ denominator, NOT an additive sum — every bucket
-    // here carries sign:1 regardless of role (sign means something else
-    // for 'derived'/'fallback'), so reusing the additive joiner below for
-    // this kind is exactly the bug that made ROA render as "Total Assets +
-    // Net Profit." Each SIDE can still be its own additive group (a bucket
-    // can have more than one contributor), just joined to the other side
-    // with ÷, not +.
-    : formula.kind === 'ratio'
-    ? (() => {
-        const numBucket = formula.buckets.find(b => b.role === 'numerator')
-        const denBucket = formula.buckets.find(b => b.role === 'denominator')
-        const numText = bucketTermsText(numBucket)
-        const denText = bucketTermsText(denBucket)
-        const scaleText = formula.scale && formula.scale !== 1 ? ` × ${formula.scale}` : ''
-        return `(${numText}) ÷ (${denText})${scaleText}`
-      })()
-    : (() => {
-    const terms = []
-    for (const bucket of (formula.buckets || [])) {
-      for (const a of assignedFieldsFor(formula, bucket)) {
-        const effSign = (bucket.sign ?? 1) * (a.sign ?? 1)
-        const hasOverride = basis === 'normalized' && latestRow?.[`${a.field}Normalized`]?.value != null
-        const text = fieldLabel(data, a.field) + (hasOverride ? ' (Normalized)' : '')
-        terms.push({ sign: effSign, text })
-      }
-    }
-    if (!terms.length) return '—'
-    return terms.map((t, i) => {
-      if (i === 0) return t.sign < 0 ? `− ${t.text}` : t.text
-      return `${t.sign < 0 ? '−' : '+'} ${t.text}`
-    }).join(' ')
-  })()
+  const equation = computedRowEquation(data, formula)
 
   return (
     <fieldset className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs min-w-0 ' + (focused ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
       <legend className="px-1 text-[11px] text-slate-400">{formula.label}</legend>
-      {formula.kind === 'weighted' ? (
-        // Same visual language as BucketChip (an assigned-field badge), but
-        // fixed rather than editable — a 'weighted' term names its input
-        // DIRECTLY (see resolveTermValue, formulas.js) because nothing else
-        // is a economically valid substitute: FCFF's tax-shield term is
-        // EBIT x (1 - tax rate) specifically, not "whatever the user maps
-        // in" the way NWC's buckets genuinely are. Still shown as a chip,
-        // not omitted, so the row LOOKS like every other formula's — it's
-        // just not clickable, and says why.
-        <span className="flex flex-wrap gap-1 flex-shrink-0 w-32">
-          {formula.terms.map(t => (
-            <span key={t.key} title={`${t.label} — the only economically valid input here, not user-assignable`}
-              className="text-[11px] rounded px-1.5 py-0.5 border border-accent/50 text-accent bg-accent/10 cursor-default">
-              {fieldLabel(data, t.value?.field)}
-            </span>
-          ))}
-        </span>
-      ) : (
-        <span className="flex flex-wrap gap-1 flex-shrink-0 w-32">
-          {(formula.buckets || []).map(bucket => (
-            <BucketChip key={bucket.key} formula={formula} bucket={bucket}
-              assigned={assignedFieldsFor(formula, bucket)} candidates={candidatesFor(formula, bucket)}
-              onToggle={(field, checked) => onToggleMembership(formula, bucket, field, checked)} />
-          ))}
-        </span>
-      )}
       <span className="flex-1 flex items-center gap-2 min-w-0">
         <select value={basis} onChange={e => setBasis(e.target.value)}
           className="flex-shrink-0 bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[11px] text-slate-300">
           <option value="reported">Reported</option>
           <option value="normalized">Normalized</option>
         </select>
-        <span className="text-slate-400 font-mono truncate" title={equation}>{equation}</span>
+        <span className="text-slate-400 font-mono truncate min-w-0" title={equation}>{equation}</span>
       </span>
       {output
         ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')} title={changed ? 'Different from what you last saw here' : undefined}>{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
@@ -1339,76 +1103,3 @@ function GrowthMethodRow({ data, formula, methodKey, label, setGrowthMethodWindo
     </fieldset>
   )
 }
-
-// Rendered via a portal straight onto document.body, positioned from the
-// trigger's own viewport rect — NOT `position: absolute` inside the modal's
-// scrollable body. That nesting was the actual bug: a small dropdown
-// absolutely positioned inside a tall scrolling ancestor gets clipped by
-// that ancestor's overflow the moment it would extend past it, so the part
-// that renders "past the edge" isn't just invisible, it isn't there for the
-// pointer/wheel either — hence scrolling over what looks like the popup
-// instead scrolls the modal underneath. A fixed-position portal has no such
-// ancestor to be clipped by, and flips to open upward when there isn't
-// room below, instead of always downward regardless of space.
-function BucketChip({ formula, bucket, assigned, candidates, onToggle }) {
-  const [open, setOpen] = useState(false)
-  const [rect, setRect] = useState(null)
-  const btnRef = useRef(null)
-  const label = formula.buckets.length > 1 ? bucket.label : formula.label
-
-  const openPopup = () => {
-    const r = btnRef.current.getBoundingClientRect()
-    const spaceBelow = window.innerHeight - r.bottom
-    const spaceAbove = r.top
-    const openUp = spaceBelow < 200 && spaceAbove > spaceBelow
-    setRect({
-      left: Math.min(r.left, window.innerWidth - 232),
-      top: openUp ? null : r.bottom + 4,
-      bottom: openUp ? window.innerHeight - r.top + 4 : null,
-      maxHeight: Math.max(120, (openUp ? spaceAbove : spaceBelow) - 12),
-    })
-    setOpen(true)
-  }
-
-  // The list a user actually wants scrollable here is short and internal
-  // (overflow-y-auto on the popup itself, unaffected by this) — a scroll of
-  // the PAGE/modal behind it means the trigger has moved, so the popup's
-  // now-stale position is closed rather than left floating in the wrong spot.
-  useEffect(() => {
-    if (!open) return
-    const close = () => setOpen(false)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('resize', close)
-    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close) }
-  }, [open])
-
-  return (
-    <span className="relative">
-      <button ref={btnRef} type="button" onClick={() => (open ? setOpen(false) : openPopup())}
-        className={'text-[11px] rounded px-1.5 py-0.5 border ' + (assigned.length ? 'border-accent/50 text-accent bg-accent/10' : 'border-navy-700 text-slate-500')}>
-        {label} ({assigned.length})
-      </button>
-      {open && rect && createPortal(
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            className="fixed z-50 w-56 overflow-y-auto rounded-lg border border-navy-700 bg-navy-900 p-2 space-y-1 shadow-lg"
-            style={{ left: rect.left, top: rect.top ?? undefined, bottom: rect.bottom ?? undefined, maxHeight: rect.maxHeight }}>
-            {candidates.length === 0 && <p className="text-[11px] text-slate-500">Nothing on this statement to assign yet.</p>}
-            {candidates.map(c => {
-              const checked = assigned.some(a => a.field === c.key)
-              return (
-                <label key={c.key} className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={checked} onChange={e => onToggle(c.key, e.target.checked)} />
-                  {c.label}
-                </label>
-              )
-            })}
-          </div>
-        </>,
-        document.body
-      )}
-    </span>
-  )
-}
-

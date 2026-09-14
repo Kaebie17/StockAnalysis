@@ -8,7 +8,7 @@ import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
 import { assessDataQuality, materializeIncomeNormalization, hasAnyNormalization } from '../engine/dataQuality.js'
 import { METRICS } from '../engine/metrics.js'
-import { materializeFormulas, recomputeNormalizedTargets } from '../engine/formulas.js'
+import { materializeFormulas, materializeCustomRows, recomputeNormalizedTargets } from '../engine/formulas.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -657,18 +657,20 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // recomputeNormalizedTargets for why this writes a real, stored,
   // inspectable row instead of computing the figure only for display.
   data = recomputeNormalizedTargets(data)
-  // Writes every derived/fallback/ratio/weighted/growth formula's own
-  // reported/Normalized output directly onto its row — see
-  // materializeFormulas — AFTER the line above, since a formula's inputs
-  // (e.g. tradeReceivablesNormalized) must already exist on the row by the
-  // time it combines them. A single pass is enough regardless of how deep
-  // a formula-depends-on-formula chain gets (profitBeforeTax -> tax ->
-  // effectiveTaxRate -> FCFF, four levels): each bucket reads its inputs
-  // LIVE off the row (see bucketSum's own comment, formulas.js), so by the
-  // time this loop reaches a formula, every earlier formula in registry
-  // declaration order has already written its value onto the SAME row
-  // this pass is building. Nothing pre-seeded, nothing to re-run.
+  // Writes revenueGrowth/netProfitGrowth (the only two DERIVED_FORMULAS
+  // entries left — see formulas.js) onto their rows — AFTER the line
+  // above, since a formula's inputs (e.g. tradeReceivablesNormalized) must
+  // already exist on the row by the time it combines them.
   data = materializeFormulas(data)
+  // Writes every `computed: true` custom row (NWC, PBT, EBITDA, every
+  // margin, ROE, FCFF, ... — the ~20 formulas that used to be
+  // DERIVED_FORMULAS entries, now ordinary data-table rows a user can
+  // freely edit) onto its own row — see materializeCustomRows. Iterates
+  // internally until a pass changes nothing, since a computed row can
+  // reference another computed row (Tax reading Profit Before Tax, FCFF
+  // reading EBIT and Effective Tax Rate) and there's no fixed code
+  // declaration order any more to guarantee resolution in one linear pass.
+  data = materializeCustomRows(data)
   // Normalize for everything, not a toggle between two equally-weighted
   // views: every restatement in this app is an explicit, evidence-based,
   // user-confirmed correction (a NormalizeModal entry, a restatement-tool
