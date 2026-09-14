@@ -859,12 +859,7 @@ function computeGrowthBundle(data, formula, basis) {
   if (series.length < 2) return null
 
   const n = series.length - 1
-  const fullPeriodCagr = (Math.pow(series[n].value / series[0].value, 1 / n) - 1) * 100
-  // A real equation (field/year names, no raw numbers — same "names only,
-  // the actual figures are one click away" convention every other
-  // formula's equation already follows), not a prose description.
-  const fullPeriodCagrEquation = `(${fLabel} FY${series[n].year} ÷ ${fLabel} FY${series[0].year})^(1/${n}) − 1`
-  const fullPeriodCagrDesc = `Endpoint CAGR, FY${series[0].year} → FY${series[n].year} (${n} year${n === 1 ? '' : 's'})`
+  const latestYear = series[n].year
 
   const breakYears = new Set((data?.perimeterBreaks || [])
     .filter(b => b.table === formula.table).map(b => b.year))
@@ -874,28 +869,73 @@ function computeGrowthBundle(data, formula, basis) {
   // change between them isn't a growth OBSERVATION at all. Nothing else is
   // ever excluded: a volatile-but-real year is real evidence, not noise —
   // it's what feeds medianYoY/stdDev/IQR below, not something they filter.
-  const yoy = []
+  // Breaks stay usable on their own regardless of which start year a method
+  // below is windowed to — a break inside the CHOSEN window still drops
+  // that one transition, it just no longer drives any separate segment
+  // logic (see the removed segment ladder this replaced).
+  const yoyAll = []
   for (let i = 1; i < series.length; i++) {
     if (breakYears.has(series[i].year)) continue
-    yoy.push({ year: series[i].year, g: (series[i].value / series[i - 1].value - 1) * 100 })
+    yoyAll.push({ year: series[i].year, g: (series[i].value / series[i - 1].value - 1) * 100 })
   }
-  const medianYoY = median(yoy.map(p => p.g))
-  const medianYoYEquation = yoy.length
-    ? `Median( ${fLabel} YoY, FY${yoy[0].year} → FY${yoy[yoy.length - 1].year} )`
-    : null
-  const medianYoYDesc = yoy.length
-    ? `Median YoY, FY${yoy[0].year} → FY${yoy[yoy.length - 1].year} (${yoy.length} comparable observation${yoy.length === 1 ? '' : 's'}${breakYears.size ? ', excluding confirmed breaks' : ''})`
-    : null
-  const recentYoY = yoy.slice(-RECENT_GROWTH_YEARS)
-  const recentMedianYoY = recentYoY.length ? median(recentYoY.map(p => p.g)) : null
-  const recentMedianYoYEquation = recentYoY.length
-    ? `Median( ${fLabel} YoY, last ${recentYoY.length}: FY${recentYoY[0].year} → FY${recentYoY[recentYoY.length - 1].year} )`
-    : null
-  const recentMedianYoYDesc = recentYoY.length
-    ? `Median YoY, FY${recentYoY[0].year} → FY${recentYoY[recentYoY.length - 1].year} (${recentYoY.length} observation${recentYoY.length === 1 ? '' : 's'})`
-    : null
 
-  const vals = yoy.map(p => p.g)
+  // The one thing each method is windowed by: a start year, editable per
+  // method straight from its own dropdown (GrowthMethodRow) rather than a
+  // separate "settings" control — populated from the years actually
+  // present in this field's own history (the data's real breadth), not an
+  // arbitrary range. Defaults: full history for CAGR/median, the last
+  // RECENT_GROWTH_YEARS for the "recent" card. `n` (CAGR's exponent) and
+  // the observation count are always recomputed from whichever start year
+  // is actually in effect, never left fixed.
+  const overrides = data?.growthMethodStartYear?.[formula.key] || {}
+  // Snap a requested start year to the nearest AVAILABLE year at or after
+  // it, so a gappy series never silently produces an empty window.
+  const snapStart = (requested) => {
+    if (requested == null) return null
+    const exact = series.find(p => p.year === requested)
+    if (exact) return exact.year
+    const next = series.filter(p => p.year > requested).sort((a, b) => a.year - b.year)[0]
+    return next ? next.year : series[0].year
+  }
+
+  const buildEndpointMethod = (defaultStartYear) => {
+    const startYear = snapStart(overrides.fullPeriodCagr ?? defaultStartYear) ?? series[0].year
+    const startPoint = series.find(p => p.year === startYear) || series[0]
+    const span = latestYear - startPoint.year
+    if (span <= 0) return { value: null, equation: null, desc: null, startYear: startPoint.year }
+    const value = (Math.pow(series[n].value / startPoint.value, 1 / span) - 1) * 100
+    return {
+      value,
+      equation: `(${fLabel} FY${latestYear} ÷ ${fLabel} FY${startPoint.year})^(1/${span}) − 1`,
+      desc: `Endpoint CAGR, FY${startPoint.year} → FY${latestYear} (${span} year${span === 1 ? '' : 's'})`,
+      startYear: startPoint.year,
+    }
+  }
+  const buildMedianMethod = (overrideKey, defaultStartYear) => {
+    const startYear = snapStart(overrides[overrideKey] ?? defaultStartYear) ?? series[0].year
+    const windowed = yoyAll.filter(p => p.year > startYear)
+    if (!windowed.length) return { value: null, equation: null, desc: null, startYear, count: 0 }
+    return {
+      value: median(windowed.map(p => p.g)),
+      equation: `Median( ${fLabel} YoY, FY${windowed[0].year} → FY${windowed[windowed.length - 1].year} )`,
+      desc: `Median YoY, FY${windowed[0].year} → FY${windowed[windowed.length - 1].year} (${windowed.length} comparable observation${windowed.length === 1 ? '' : 's'}${breakYears.size ? ', excluding confirmed breaks' : ''})`,
+      startYear, count: windowed.length,
+    }
+  }
+
+  const cagr = buildEndpointMethod(series[0].year)
+  const med = buildMedianMethod('medianYoY', series[0].year)
+  const defaultRecentStart = series[Math.max(0, n - RECENT_GROWTH_YEARS)].year
+  const recent = buildMedianMethod('recentMedianYoY', defaultRecentStart)
+
+  const fullPeriodCagr = cagr.value, fullPeriodCagrEquation = cagr.equation, fullPeriodCagrDesc = cagr.desc
+  const medianYoY = med.value, medianYoYEquation = med.equation, medianYoYDesc = med.desc
+  const recentMedianYoY = recent.value, recentMedianYoYEquation = recent.equation, recentMedianYoYDesc = recent.desc
+
+  // Volatility is measured over the FULL comparable history regardless of
+  // any per-method window — it's a property of how this field behaves
+  // overall, not of whichever window a method happens to be looking at.
+  const vals = yoyAll.map(p => p.g)
   const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null
   const stdDev = vals.length > 1
     ? Math.sqrt(vals.reduce((a, v) => a + (v - mean) ** 2, 0) / (vals.length - 1)) : null
@@ -910,84 +950,34 @@ function computeGrowthBundle(data, formula, basis) {
     : stdDev < VOLATILITY_BANDS.low ? 'low'
     : stdDev < VOLATILITY_BANDS.medium ? 'medium' : 'high'
 
-  // Every break splits the series into segments — [start..break1],
-  // [break1..break2], ..., [breakN..end]. With ONE break this collapses to
-  // the old pre/post split; with several, there's no longer a single
-  // "the" post-break segment to default to blindly, so every segment is
-  // computed and exposed (see `segments` below), and
-  // data.growthSegmentOverride lets the user pick a SPECIFIC one instead of
-  // always taking the latest — the same "editable, not a one-way suggestion"
-  // principle perimeterBreaks itself follows.
-  const sortedBreaks = [...breakYears].sort((a, b) => a - b)
-  const segments = []
-  if (sortedBreaks.length) {
-    const bounds = [null, ...sortedBreaks, null]
-    for (let i = 0; i < bounds.length - 1; i++) {
-      const lo = bounds[i], hi = bounds[i + 1]
-      const segYoY = yoy.filter(p => (lo == null || p.year > lo) && (hi == null || p.year <= hi))
-      segments.push({
-        startYear: lo ?? series[0].year,
-        endYear: hi ?? series[n].year,
-        count: segYoY.length,
-        median: segYoY.length ? median(segYoY.map(p => p.g)) : null,
-      })
-    }
-  }
-  const lastBreakYear = sortedBreaks.length ? sortedBreaks[sortedBreaks.length - 1] : null
-  const overrideStart = data?.growthSegmentOverride?.[formula.key]
-  const overriddenSegment = overrideStart != null ? segments.find(s => s.startYear === overrideStart) : null
-
-  // The ONE real control — set from the header (GrowthMethodBadge), not
-  // inspected-and-forgotten from the Formulas tab, which only ever DISPLAYS
-  // every method as its own static card. `null`/'auto' defers to the
-  // automatic rule below (median by default; the break ladder once a break
-  // exists) — an explicit choice of any base method always wins over that,
-  // break or no break, since it's a more specific instruction than the
-  // general-purpose default.
+  // The ONE real control — set from the header (GrowthMethodBadge), not the
+  // Formulas tab, which only ever DISPLAYS every method as its own static
+  // card. No break/segment ladder any more: if a break makes the default
+  // full-history median unrepresentative, the fix is picking a later start
+  // year on whichever method card you actually want to use — same
+  // mechanism as "no break at all," not a separate auto-selection path.
   const methodOverride = data?.growthMethodOverride?.[formula.key]
   const BASE_METHODS = {
     fullPeriodCagr:  { value: fullPeriodCagr,  label: 'Full-period CAGR' },
     medianYoY:       { value: medianYoY,       label: 'Median YoY (comparable)' },
     recentMedianYoY: { value: recentMedianYoY, label: 'Recent median YoY' },
   }
-
   let selected, method
   if (methodOverride && BASE_METHODS[methodOverride]?.value != null) {
     selected = BASE_METHODS[methodOverride].value
     method = `Manually selected: ${BASE_METHODS[methodOverride].label}`
-  } else if (overriddenSegment) {
-    selected = overriddenSegment.median
-    method = overriddenSegment.count
-      ? `Manually selected segment: FY${overriddenSegment.startYear} → FY${overriddenSegment.endYear} median (${overriddenSegment.count} observation${overriddenSegment.count === 1 ? '' : 's'})`
-      : `Manually selected segment: FY${overriddenSegment.startYear} → FY${overriddenSegment.endYear} has no comparable observations yet`
-  } else if (lastBreakYear == null) {
-    selected = medianYoY
-    method = `Median of ${yoy.length} comparable years`
   } else {
-    const postBreak = segments[segments.length - 1]
-    const preBreak = segments.length > 1 ? segments[segments.length - 2] : null
-    if (postBreak.count >= 3) {
-      selected = postBreak.median
-      method = `Post-break median (${postBreak.count} observations since FY${lastBreakYear})`
-    } else if (postBreak.count === 2) {
-      selected = postBreak.median
-      method = `Post-break median — low sample size (2 observations since FY${lastBreakYear})`
-    } else if (postBreak.count === 1) {
-      selected = preBreak?.median ?? null
-      method = `1 post-break observation — insufficient on its own; using the pre-break median (business changed since FY${lastBreakYear})`
-    } else {
-      selected = null
-      method = `No post-break history yet (break confirmed at FY${lastBreakYear}) — insufficient evidence for a forecast`
-    }
+    selected = medianYoY
+    method = medianYoYDesc || `Median of ${med.count || 0} comparable years`
   }
 
   return {
-    fullPeriodCagr, fullPeriodCagrEquation, fullPeriodCagrDesc,
-    medianYoY, medianYoYEquation, medianYoYDesc,
-    recentMedianYoY, recentMedianYoYEquation, recentMedianYoYDesc,
+    fullPeriodCagr, fullPeriodCagrEquation, fullPeriodCagrDesc, fullPeriodCagrStartYear: cagr.startYear,
+    medianYoY, medianYoYEquation, medianYoYDesc, medianYoYStartYear: med.startYear,
+    recentMedianYoY, recentMedianYoYEquation, recentMedianYoYDesc, recentMedianYoYStartYear: recent.startYear,
     stdDev, iqr, volatilityClass,
     perimeterBreakYears: [...breakYears],
-    segments,
+    availableStartYears: series.slice(0, -1).map(p => p.year),
     selected, method, methodOverride: methodOverride || null,
   }
 }
@@ -1102,6 +1092,41 @@ export function materializeFormulas(data) {
     out = formula.table === 'income'
       ? { ...out, reportedIncomeHistory: newHistory }
       : { ...out, [histKey]: newHistory }
+  }
+  return out
+}
+
+/**
+ * Runs seedFormulaDefaults + materializeFormulas repeatedly until a pass
+ * seeds nothing new, instead of the caller guessing a fixed number of
+ * rounds. That guess is exactly what broke: a formula whose default is
+ * ANOTHER formula's output can only be seeded once that other formula has
+ * actually materialized (hasData() reads the real row), so each extra
+ * level of formula-depends-on-formula needs one more seed+materialize
+ * round than the last. Two rounds covered the shallow chains this
+ * registry had for most of this session (Net Debt/EBITDA needing Net
+ * Debt + EBITDA, one level deep) — but profitBeforeTax → tax →
+ * effectiveTaxRate → FCFF is FOUR levels deep, and two rounds silently
+ * left effectiveTaxRate and FCFF permanently unmaterialized (their bucket
+ * assignments never got seeded in time), not a data problem, a genuine
+ * gap in how many passes computeAll ran. This is the fix: keep going
+ * until seeding stops finding anything new, so the number of rounds
+ * tracks the registry's actual dependency depth automatically, not a
+ * number someone has to remember to bump the next time a formula is
+ * added on top of another formula on top of another formula.
+ *
+ * Capped at maxPasses purely as a runaway guard (a real dependency chain
+ * anywhere near this deep would be a design problem worth noticing, not
+ * something to loop through silently) — every realistic chain in this
+ * registry today resolves in well under 8.
+ */
+export function materializeAllFormulas(data, { maxPasses = 8 } = {}) {
+  let out = materializeFormulas(data)
+  for (let i = 0; i < maxPasses; i++) {
+    const seeded = seedFormulaDefaults(out)
+    const seedChanged = seeded !== out
+    out = materializeFormulas(seeded)
+    if (!seedChanged) break
   }
   return out
 }

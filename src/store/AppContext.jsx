@@ -8,7 +8,7 @@ import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
 import { assessDataQuality, materializeIncomeNormalization, hasAnyNormalization } from '../engine/dataQuality.js'
 import { METRICS } from '../engine/metrics.js'
-import { materializeFormulas, seedFormulaDefaults, recomputeNormalizedTargets } from '../engine/formulas.js'
+import { materializeAllFormulas, recomputeNormalizedTargets } from '../engine/formulas.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -576,18 +576,22 @@ function reducer(s, a) {
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
-    // With 2+ confirmed perimeter breaks there's no longer a single "the"
-    // post-break segment to default to — computeGrowthBundle (formulas.js)
-    // exposes every segment (bounded by the confirmed breaks) as `segments`,
-    // and this lets the user pin ONE of them (by its startYear) as the
-    // source for `selected`, overriding the automatic "latest segment if
-    // long enough" rule. `startYear: null` clears the override.
-    case 'SET_GROWTH_SEGMENT_OVERRIDE': {
+    // Per-method window start year — the one control each growth method
+    // card (GrowthMethodRow) exposes directly via its own dropdown, in
+    // place of the earlier break/segment settings block. `year: null`
+    // clears back to that method's own default (full history for CAGR/
+    // median, the last few years for "recent"). Breaks (perimeterBreaks)
+    // still exclude a specific YoY transition regardless of which window a
+    // method is set to — this only changes where the window STARTS.
+    case 'SET_GROWTH_METHOD_START_YEAR': {
       if (!s.data) return s
-      const existing = { ...(s.data.growthSegmentOverride || {}) }
-      if (a.startYear == null) delete existing[a.formulaKey]
-      else existing[a.formulaKey] = a.startYear
-      const data = { ...s.data, growthSegmentOverride: existing }
+      const existing = { ...(s.data.growthMethodStartYear || {}) }
+      const perFormula = { ...(existing[a.formulaKey] || {}) }
+      if (a.year == null) delete perFormula[a.methodKey]
+      else perFormula[a.methodKey] = a.year
+      if (Object.keys(perFormula).length) existing[a.formulaKey] = perFormula
+      else delete existing[a.formulaKey]
+      const data = { ...s.data, growthMethodStartYear: existing }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
@@ -668,23 +672,19 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // recomputeNormalizedTargets for why this writes a real, stored,
   // inspectable row instead of computing the figure only for display.
   data = recomputeNormalizedTargets(data)
-  // Writes every derived/fallback/ratio formula's own reported/Normalized
-  // output directly onto its row — see materializeFormulas — AFTER the
-  // line above, since a formula's inputs (e.g. tradeReceivablesNormalized)
-  // must already exist on the row by the time it combines them.
-  data = materializeFormulas(data)
-  // Seeded and re-materialized again, now that this pass's own formula
-  // outputs exist: a formula like Net Debt ÷ EBITDA defaults to two OTHER
-  // formulas' outputs (Net Debt, EBITDA) as its ingredients, which don't
-  // exist until the materialize call just above has run at least once —
-  // without this second pass, that default would sit unseeded (and its
-  // assignment, once seeded, unmaterialized) for one whole extra
-  // reload/edit before hasData() ever saw it. Both calls are idempotent
-  // (formulaDefaultsApplied; materializeFormulas recomputing an unchanged
-  // input just rewrites the same value), so re-running them here costs
-  // nothing when there's nothing new to seed.
-  data = seedFormulaDefaults(data)
-  data = materializeFormulas(data)
+  // Writes every derived/fallback/ratio/weighted/growth formula's own
+  // reported/Normalized output directly onto its row — see
+  // materializeAllFormulas — AFTER the line above, since a formula's
+  // inputs (e.g. tradeReceivablesNormalized) must already exist on the row
+  // by the time it combines them. Loops seed+materialize internally until
+  // a pass seeds nothing new, rather than a fixed count here — a formula
+  // whose own default is ANOTHER formula's output (Net Debt ÷ EBITDA; more
+  // recently profitBeforeTax → tax → effectiveTaxRate → FCFF, four levels
+  // deep) can only be seeded once that dependency has actually
+  // materialized, and a fixed "run it twice" guess silently stopped
+  // working the moment a chain got deeper than that. See
+  // materializeAllFormulas's own doc comment (formulas.js).
+  data = materializeAllFormulas(data)
   // Normalize for everything, not a toggle between two equally-weighted
   // views: every restatement in this app is an explicit, evidence-based,
   // user-confirmed correction (a NormalizeModal entry, a restatement-tool
@@ -1186,11 +1186,10 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_GROWTH_METHOD_OVERRIDE', formulaKey, methodKey })
   }, [])
 
-  // Pin one specific segment (by its startYear) as the source for a growth
-  // formula's `selected` rate, when 2+ perimeter breaks mean there's more
-  // than one plausible segment to choose from — see SET_GROWTH_SEGMENT_OVERRIDE.
-  const setGrowthSegmentOverride = useCallback((formulaKey, startYear) => {
-    dispatch({ type: 'SET_GROWTH_SEGMENT_OVERRIDE', formulaKey, startYear })
+  // A growth method's own window start year — see SET_GROWTH_METHOD_START_YEAR.
+  // year: null clears back to that method's default window.
+  const setGrowthMethodStartYear = useCallback((formulaKey, methodKey, year) => {
+    dispatch({ type: 'SET_GROWTH_METHOD_START_YEAR', formulaKey, methodKey, year })
   }, [])
 
   // Combine several custom rows into one. opts: { mode: 'new', newField } to
@@ -1252,7 +1251,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, setGrowthMethodOverride, setGrowthSegmentOverride, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, setGrowthMethodOverride, setGrowthMethodStartYear, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>
