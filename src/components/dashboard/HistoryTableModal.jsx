@@ -81,7 +81,7 @@ function assignmentSummary(data, field) {
 }
 
 export default function HistoryTableModal({ open, onClose }) {
-  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, setGrowthMethodStartYear } = useApp()
+  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, setGrowthMethodWindow } = useApp()
   const data = state?.data
   const currency = data?.currency
   const div  = currency === 'INR' ? 1e7 : 1e6
@@ -366,8 +366,7 @@ export default function HistoryTableModal({ open, onClose }) {
 
       {table === 'formulas' ? (
         <FormulasTab data={data} div={div} focusField={focusField} setAssignmentsForField={setAssignmentsForField}
-          togglePerimeterBreak={togglePerimeterBreak}
-          setGrowthMethodStartYear={setGrowthMethodStartYear}
+          setGrowthMethodWindow={setGrowthMethodWindow}
           lastSeenOutputs={lastSeenOutputs} setLastSeenOutputs={setLastSeenOutputs} />
       ) : (
         <>
@@ -891,7 +890,7 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
  * formula (NWC) so the assignment mechanism doesn't need to know which kind
  * it's looking at.
  */
-function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePerimeterBreak, setGrowthMethodStartYear, lastSeenOutputs, setLastSeenOutputs }) {
+function FormulasTab({ data, div, focusField, setAssignmentsForField, setGrowthMethodWindow, lastSeenOutputs, setLastSeenOutputs }) {
   // Every formula with a real bucket structure ('derived' — NWC, Capital
   // Employed, Net Debt — and 'fallback' — Gross Profit, Profit Before Tax,
   // Tax, EBITDA), no matter how trivial or how often the fallback never
@@ -975,17 +974,16 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePeri
       {formulas.map(formula => (
         formula.kind === 'growth' ? (
           <React.Fragment key={formula.key}>
-            <GrowthBreaksRow data={data} formula={formula} togglePerimeterBreak={togglePerimeterBreak} />
             <GrowthMethodRow data={data} formula={formula} methodKey="fullPeriodCagr" label="Full-period CAGR"
-              setGrowthMethodStartYear={setGrowthMethodStartYear}
+              setGrowthMethodWindow={setGrowthMethodWindow}
               lastSeen={lastSeenOutputs[formula.key]}
               markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
             <GrowthMethodRow data={data} formula={formula} methodKey="medianYoY" label="Median YoY"
-              setGrowthMethodStartYear={setGrowthMethodStartYear}
+              setGrowthMethodWindow={setGrowthMethodWindow}
               lastSeen={lastSeenOutputs[formula.key]}
               markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
             <GrowthMethodRow data={data} formula={formula} methodKey="recentMedianYoY" label="Recent median YoY"
-              setGrowthMethodStartYear={setGrowthMethodStartYear}
+              setGrowthMethodWindow={setGrowthMethodWindow}
               lastSeen={lastSeenOutputs[formula.key]}
               markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
           </React.Fragment>
@@ -1223,17 +1221,15 @@ function InputFormulaRow({ data, formula }) {
 
 // A growth formula (revenueGrowth, netProfitGrowth — see formulas.js's
 // 'growth' kind) isn't a bucket combination, so it doesn't render as one
-// row: GrowthBreaksRow carries the one genuine edit that doesn't belong on
-// an individual method (which years are a confirmed perimeter break — a
-// real fact about the data, not a per-method viewing choice); GrowthMethodRow
-// renders EACH method as its own separate, ordinary-looking formula row —
-// "Revenue Growth (Full-period CAGR)", "Revenue Growth (Median YoY)", etc.
-// — same shape as every other formula in this tab, each with its own start-
-// year dropdown (populated from the years this field actually has data for
-// — the real data breadth, not an arbitrary range) so the window is a
-// direct, per-method choice instead of a separate settings/segment layer.
-// The one thing that changes which method feeds valuation is the header's
-// GrowthMethodBadge; nothing here sets that.
+// row: GrowthMethodRow renders EACH method as its own separate, ordinary-
+// looking formula row — "Revenue Growth (Full-period CAGR)", "Revenue
+// Growth (Median YoY)", etc. — same shape as every other formula in this
+// tab, each with its own start-year AND end-year dropdown (populated from
+// the years this field actually has data for — the real data breadth, not
+// an arbitrary range), so excluding any year — including the latest, in-
+// progress one — is just picking a start/end pair around it; no separate
+// "perimeter break" concept. The one thing that changes which method feeds
+// valuation is the header's GrowthMethodBadge; nothing here sets that.
 function growthMethodsFor(data, formula) {
   const hist = fieldHistory(data, formula.table)
   const realRows = hist.filter(r => !r?.synthetic && /^\d{4}$/.test(String(r?.year ?? '').trim()))
@@ -1244,39 +1240,14 @@ function growthMethodsFor(data, formula) {
   return { realRows, methods: resolved?.methods || null }
 }
 
-function GrowthBreaksRow({ data, formula, togglePerimeterBreak }) {
-  const { realRows, methods } = growthMethodsFor(data, formula)
-  const breakYears = (data?.perimeterBreaks || [])
-    .filter(b => b.table === formula.table).map(b => b.year).sort((a, b) => a - b)
-  const availableYears = (methods?.availableStartYears || realRows.map(r => Number(r.year)))
-    .filter(y => !breakYears.includes(y))
-
-  return (
-    <fieldset className="flex flex-wrap items-center gap-2 rounded-lg border border-navy-700 bg-navy-800/30 px-3 py-2 text-xs min-w-0">
-      <legend className="px-1 text-[11px] text-slate-400">{formula.label} — perimeter breaks</legend>
-      {breakYears.length === 0 && <span className="text-[10px] text-slate-600">None confirmed</span>}
-      {breakYears.map(y => (
-        <button key={y} type="button" onClick={() => togglePerimeterBreak(formula.table, y)}
-          title="Confirmed perimeter break — click to remove"
-          className="rounded bg-navy-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-bear/20 hover:text-bear">
-          FY{y} ✕
-        </button>
-      ))}
-      <select value="" onChange={e => { const y = Number(e.target.value); if (y) togglePerimeterBreak(formula.table, y) }}
-        className="bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[10px] text-slate-500">
-        <option value="">+ mark a year as a break</option>
-        {availableYears.map(y => <option key={y} value={y}>FY{y}</option>)}
-      </select>
-    </fieldset>
-  )
-}
-
-function GrowthMethodRow({ data, formula, methodKey, label, setGrowthMethodStartYear, lastSeen, markSeen }) {
+function GrowthMethodRow({ data, formula, methodKey, label, setGrowthMethodWindow, lastSeen, markSeen }) {
   const { methods } = growthMethodsFor(data, formula)
   const value = methods?.[methodKey]
   const equation = methods?.[`${methodKey}Equation`]
   const startYear = methods?.[`${methodKey}StartYear`] ?? ''
-  const availableYears = methods?.availableStartYears || []
+  const endYear = methods?.[`${methodKey}EndYear`] ?? ''
+  const availableStartYears = methods?.availableStartYears || []
+  const availableEndYears = methods?.availableEndYears || []
   const isActive = methods?.methodOverride
     ? methods.methodOverride === methodKey
     : methods?.selected === value
@@ -1300,9 +1271,15 @@ function GrowthMethodRow({ data, formula, methodKey, label, setGrowthMethodStart
       <legend className="px-1 text-[11px] text-slate-400">{formula.label} ({label})</legend>
       <select value={startYear}
         title="Window start year — populated from the years this field actually has data for"
-        onChange={e => setGrowthMethodStartYear(formula.key, methodKey, e.target.value === '' ? null : Number(e.target.value))}
+        onChange={e => setGrowthMethodWindow(formula.key, methodKey, 'start', e.target.value === '' ? null : Number(e.target.value))}
         className="flex-shrink-0 bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[11px] text-slate-300">
-        {availableYears.map(y => <option key={y} value={y}>from FY{y}</option>)}
+        {availableStartYears.map(y => <option key={y} value={y}>from FY{y}</option>)}
+      </select>
+      <select value={endYear}
+        title="Window end year — defaults to the latest year, but not pinned to it (an in-progress/bad latest year can be excluded)"
+        onChange={e => setGrowthMethodWindow(formula.key, methodKey, 'end', e.target.value === '' ? null : Number(e.target.value))}
+        className="flex-shrink-0 bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[11px] text-slate-300">
+        {availableEndYears.map(y => <option key={y} value={y}>to FY{y}</option>)}
       </select>
       <span className="flex-1 text-slate-400 font-mono truncate min-w-0" title={equation || ''}>{equation || '—'}</span>
       <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (trackChange && changed ? 'text-bear' : 'text-slate-300')}

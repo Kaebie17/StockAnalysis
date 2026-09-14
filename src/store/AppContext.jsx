@@ -543,29 +543,10 @@ function reducer(s, a) {
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
-    // Perimeter breaks live directly on data, edited straight from the
-    // Formulas tab (formulas.js's 'growth' kind reads them) — no separate
-    // confirm step: a break is exactly as easy to add, change, or remove as
-    // any other formula assignment, so the RIGHT fix for "I found more
-    // evidence" or "I was wrong" is editing it here, the same place, not a
-    // one-way suggestion that has to be dismissed and re-derived.
-    case 'TOGGLE_PERIMETER_BREAK': {
-      if (!s.data) return s
-      const existing = s.data.perimeterBreaks || []
-      const has = existing.some(b => b.table === a.table && b.year === a.year)
-      const perimeterBreaks = has
-        ? existing.filter(b => !(b.table === a.table && b.year === a.year))
-        : [...existing, { table: a.table, year: a.year }]
-      const data = { ...s.data, perimeterBreaks }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
-      return { ...s, data, ...computed }
-    }
     // The ONE real control for which growth method feeds `selected` — set
     // from the header (GrowthMethodBadge). The Formulas tab only ever
     // DISPLAYS every method as its own static card; it never sets this.
-    // startYear/'auto' clears back to the automatic rule (median by
-    // default; the break ladder once a break exists).
+    // methodKey 'auto' clears back to the default (full-history median).
     case 'SET_GROWTH_METHOD_OVERRIDE': {
       if (!s.data) return s
       const existing = { ...(s.data.growthMethodOverride || {}) }
@@ -576,22 +557,26 @@ function reducer(s, a) {
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
-    // Per-method window start year — the one control each growth method
-    // card (GrowthMethodRow) exposes directly via its own dropdown, in
-    // place of the earlier break/segment settings block. `year: null`
-    // clears back to that method's own default (full history for CAGR/
-    // median, the last few years for "recent"). Breaks (perimeterBreaks)
-    // still exclude a specific YoY transition regardless of which window a
-    // method is set to — this only changes where the window STARTS.
-    case 'SET_GROWTH_METHOD_START_YEAR': {
+    // Per-method window — the two controls (start year, end year) each
+    // growth method card (GrowthMethodRow) exposes directly. No separate
+    // "perimeter break" concept: excluding a bad year is just picking a
+    // start/end pair that doesn't span it. `edge` is 'start' or 'end';
+    // `year: null` clears that edge back to its default (full history for
+    // CAGR/median with end always defaulting to the latest year, not
+    // pinned to it — an adjustable end is what lets a bad LATEST year be
+    // excluded, which a start-only control structurally couldn't do).
+    case 'SET_GROWTH_METHOD_WINDOW': {
       if (!s.data) return s
-      const existing = { ...(s.data.growthMethodStartYear || {}) }
+      const existing = { ...(s.data.growthMethodWindow || {}) }
       const perFormula = { ...(existing[a.formulaKey] || {}) }
-      if (a.year == null) delete perFormula[a.methodKey]
-      else perFormula[a.methodKey] = a.year
+      const perMethod = { ...(perFormula[a.methodKey] || {}) }
+      if (a.year == null) delete perMethod[a.edge]
+      else perMethod[a.edge] = a.year
+      if (Object.keys(perMethod).length) perFormula[a.methodKey] = perMethod
+      else delete perFormula[a.methodKey]
       if (Object.keys(perFormula).length) existing[a.formulaKey] = perFormula
       else delete existing[a.formulaKey]
-      const data = { ...s.data, growthMethodStartYear: existing }
+      const data = { ...s.data, growthMethodWindow: existing }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
@@ -1172,13 +1157,6 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_ASSIGNMENTS_FOR_FIELD', field, assignments })
   }, [])
 
-  // Add/remove one confirmed perimeter-break year for a table — see
-  // TOGGLE_PERIMETER_BREAK. Idempotent toggle, not a set-whole-list replace,
-  // so a chip's own onClick doesn't need to know the rest of the list.
-  const togglePerimeterBreak = useCallback((table, year) => {
-    dispatch({ type: 'TOGGLE_PERIMETER_BREAK', table, year })
-  }, [])
-
   // The one real control for which growth method a formula uses — see
   // SET_GROWTH_METHOD_OVERRIDE. methodKey: 'fullPeriodCagr' | 'medianYoY' |
   // 'recentMedianYoY' | 'auto' (clears back to the automatic rule).
@@ -1186,10 +1164,10 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_GROWTH_METHOD_OVERRIDE', formulaKey, methodKey })
   }, [])
 
-  // A growth method's own window start year — see SET_GROWTH_METHOD_START_YEAR.
-  // year: null clears back to that method's default window.
-  const setGrowthMethodStartYear = useCallback((formulaKey, methodKey, year) => {
-    dispatch({ type: 'SET_GROWTH_METHOD_START_YEAR', formulaKey, methodKey, year })
+  // A growth method's own window edge — see SET_GROWTH_METHOD_WINDOW.
+  // edge: 'start' | 'end'; year: null clears that edge back to its default.
+  const setGrowthMethodWindow = useCallback((formulaKey, methodKey, edge, year) => {
+    dispatch({ type: 'SET_GROWTH_METHOD_WINDOW', formulaKey, methodKey, edge, year })
   }, [])
 
   // Combine several custom rows into one. opts: { mode: 'new', newField } to
@@ -1251,7 +1229,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, setGrowthMethodOverride, setGrowthMethodStartYear, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, setGrowthMethodOverride, setGrowthMethodWindow, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>
