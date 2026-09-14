@@ -3,7 +3,7 @@ import { useApp } from '../../store/AppContext.jsx'
 import { reconstructRow } from '../../engine/reconstruct.js'
 import { parseExcerpt, proposalToEdit } from '../../engine/parseExcerpt.js'
 import { parsePastedTable, tagPastedRows, parseRestatementRows } from '../../utils/pasteParser.js'
-import { suggestNormalizationTarget, availableTargets } from '../../engine/normalizationTargets.js'
+import { suggestNormalizationTarget, availableTargets } from '../../engine/formulas.js'
 import Modal from '../Modal.jsx'
 /**
  * NormalizeModal — manual normalization via paste. Three modes, all paste boxes:
@@ -23,7 +23,7 @@ import Modal from '../Modal.jsx'
  *                  an AR notes breakdown — doesn't matter which, no need to
  *                  say). Every mapped row becomes its OWN new, named row in
  *                  the data table — a target field (keyword-suggested from
- *                  normalizationTargets.js, always editable, and no longer
+ *                  formulas.js, always editable, and no longer
  *                  limited to the curated ten — see availableTargets) and a
  *                  +/− sign, never summed away into an anonymous total (see
  *                  ADD_CUSTOM_FIELDS_BATCH). This is the only mode that

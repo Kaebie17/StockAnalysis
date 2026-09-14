@@ -8,8 +8,7 @@ import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
 import { assessDataQuality, materializeIncomeNormalization, hasAnyNormalization } from '../engine/dataQuality.js'
 import { METRICS } from '../engine/metrics.js'
-import { recomputeNormalizedTargets } from '../engine/normalizationTargets.js'
-import { materializeFormulas, seedFormulaDefaults } from '../engine/formulas.js'
+import { materializeFormulas, seedFormulaDefaults, recomputeNormalizedTargets } from '../engine/formulas.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -328,7 +327,7 @@ function reducer(s, a) {
     // its own persisted custom field instead — see ADD_CUSTOM_FIELDS_BATCH —
     // so there's nothing left for this action to do; a target's Normalized
     // figure is derived live from whichever custom rows currently target it
-    // (normalizationTargets.js's normalizedFieldValue), not from a stored
+    // (formulas.js's normalizedFieldValue), not from a stored
     // total. Nothing dispatches this any more.
     //
     // Creating several named rows in one paste, plus their values (which can

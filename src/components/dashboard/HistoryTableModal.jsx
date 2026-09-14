@@ -3,9 +3,8 @@ import { createPortal } from 'react-dom'
 import { useApp } from '../../store/AppContext.jsx'
 import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
-import { normalizedFieldValue, availableTargets } from '../../engine/normalizationTargets.js'
 import { computeNormalizedRow, activeValue } from '../../engine/dataQuality.js'
-import { listFormulas, fieldLabel, fieldHistory, assignmentsForField } from '../../engine/formulas.js'
+import { normalizedFieldValue, availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField } from '../../engine/formulas.js'
 import Modal from '../Modal.jsx'
 
 /**

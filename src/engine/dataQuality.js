@@ -239,7 +239,7 @@ export function hasAnyNormalization(data) {
  * plain reported {key}. ONE function for ANY field, not just netProfit/eps:
  * revenue, operatingProfit, interest, tax, depreciation, capex, and the
  * four working-capital fields are ALL normalization targets too (the
- * restatement tool, normalizationTargets.js — recomputeNormalizedTargets
+ * restatement tool, formulas.js — recomputeNormalizedTargets
  * already writes {key}Normalized for every one of them, the same
  * convention materializeIncomeNormalization uses for netProfit/eps below).
  * Two separate accessors — one for netProfit/eps, a different one
@@ -260,7 +260,7 @@ export function activeValue(row, key, basis) {
 /**
  * Writes netProfitNormalized/epsNormalized onto reportedIncomeHistory's own
  * rows as real, stored, inspectable fields — same discipline as
- * recomputeNormalizedTargets (normalizationTargets.js) already applies to
+ * recomputeNormalizedTargets (formulas.js) already applies to
  * the other ten fields: a Normalized figure belongs in the table itself,
  * not only computable on demand by whichever function happens to ask for
  * it. A manual NormalizeModal entry is left exactly as it is (this function
