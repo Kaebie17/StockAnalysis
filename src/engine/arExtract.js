@@ -24,6 +24,20 @@ export const SECTION_CONFIG = [
     keywords: [/production[\s-]?linked/i, /\bPLI\b/, /incentive scheme/i, /government scheme/i, /\bsubsid(?:y|ies|ised)\b/i] },
   { field: 'initiatives', label: 'Capex / capacity / new initiatives',
     keywords: [/\bcapex\b/i, /capital expenditure/i, /capacity expansion/i, /green ?field/i, /brown ?field/i, /new (?:plant|facility|segment|product)/i, /diversif/i, /joint venture/i, /acquisition of/i, /commissioned/i, /expansion (?:of|plan)/i] },
+  // Perimeter events — the evidence a growth-normalization "break" flag needs
+  // before it's allowed to exclude a year from comparable YoY/CAGR (see
+  // formulas.js's growth-kind formulas). Distinct from `initiatives` above:
+  // that field is capex/expansion NARRATIVE (how growth happened), this one
+  // is specifically "did the reporting entity itself change size" — a
+  // demerger or discontinued-operation notice reads nothing like a capex
+  // announcement and would never surface there. Surfaced as a snippet the
+  // user reads and confirms (or dismisses) — never applied on its own; a
+  // keyword hit is evidence to go verify, not a verdict.
+  { field: 'perimeterEvent', label: 'Acquisition / demerger / discontinued operations',
+    keywords: [/\bdemerger\b/i, /scheme of arrangement/i, /slump sale/i, /amalgamat(?:ion|ed)/i,
+               /discontinued operations?/i, /divest(?:ment|ed|iture)?/i, /acquisition of/i,
+               /\bacquired\b/i, /exceptional item/i, /\bone[\s-]?time\b/i, /\brestated\b/i,
+               /pro ?forma (?:financial|results|statements?)/i] },
   { field: 'runway', label: 'Market opportunity / growth runway',
     keywords: [/addressable market/i, /market opportunity/i, /\bTAM\b/, /market potential/i,
                /\bopportunity\b/i, /penetrat/i, /per capita/i, /under[\s-]?penetrat/i, /head ?room/i,
