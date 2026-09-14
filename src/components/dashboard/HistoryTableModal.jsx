@@ -81,7 +81,7 @@ function assignmentSummary(data, field) {
 }
 
 export default function HistoryTableModal({ open, onClose }) {
-  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, toggleRecentGrowthOverride } = useApp()
+  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, toggleRecentGrowthOverride, setGrowthSegmentOverride } = useApp()
   const data = state?.data
   const currency = data?.currency
   const div  = currency === 'INR' ? 1e7 : 1e6
@@ -367,6 +367,7 @@ export default function HistoryTableModal({ open, onClose }) {
       {table === 'formulas' ? (
         <FormulasTab data={data} div={div} focusField={focusField} setAssignmentsForField={setAssignmentsForField}
           togglePerimeterBreak={togglePerimeterBreak} toggleRecentGrowthOverride={toggleRecentGrowthOverride}
+          setGrowthSegmentOverride={setGrowthSegmentOverride}
           lastSeenOutputs={lastSeenOutputs} setLastSeenOutputs={setLastSeenOutputs} />
       ) : (
         <>
@@ -890,7 +891,7 @@ function MergeRowsForm({ data, customFields, onCancel, onMerge }) {
  * formula (NWC) so the assignment mechanism doesn't need to know which kind
  * it's looking at.
  */
-function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePerimeterBreak, toggleRecentGrowthOverride, lastSeenOutputs, setLastSeenOutputs }) {
+function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePerimeterBreak, toggleRecentGrowthOverride, setGrowthSegmentOverride, lastSeenOutputs, setLastSeenOutputs }) {
   // Every formula with a real bucket structure ('derived' — NWC, Capital
   // Employed, Net Debt — and 'fallback' — Gross Profit, Profit Before Tax,
   // Tax, EBITDA), no matter how trivial or how often the fallback never
@@ -947,6 +948,7 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePeri
           <GrowthFormulaRow key={formula.key} data={data} formula={formula}
             fmtNum={fmtNum}
             togglePerimeterBreak={togglePerimeterBreak} toggleRecentGrowthOverride={toggleRecentGrowthOverride}
+            setGrowthSegmentOverride={setGrowthSegmentOverride}
             lastSeen={lastSeenOutputs[formula.key]}
             markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
         ) : (
@@ -976,7 +978,7 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePeri
 // specific compute function.
 function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, candidatesFor, onToggleMembership, lastSeen, markSeen }) {
   const hist = fieldHistory(data, formula.table)
-  const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
+  const realRows = hist.filter(r => !r?.synthetic && /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const latestRow = realRows[realRows.length - 1]
   // Default to Normalized only if THIS formula's own output actually
   // differs under it — materializeFormulas only ever writes
@@ -1055,7 +1057,7 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
   })()
 
   return (
-    <fieldset className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs ' + (focused ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
+    <fieldset className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs min-w-0 ' + (focused ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
       <legend className="px-1 text-[11px] text-slate-400">{formula.label}</legend>
       {formula.kind !== 'weighted' && (
         <span className="flex flex-wrap gap-1 flex-shrink-0 w-32">
@@ -1114,7 +1116,7 @@ function InputFormulaRow({ data, formula }) {
   }
 
   return (
-    <fieldset className="flex items-center gap-3 rounded-lg border border-navy-700 bg-navy-800/30 px-3 py-2 text-xs">
+    <fieldset className="flex items-center gap-3 rounded-lg border border-navy-700 bg-navy-800/30 px-3 py-2 text-xs min-w-0">
       <legend className="px-1 text-[11px] text-slate-400">{formula.label}</legend>
       <span className="flex-1 min-w-0 text-slate-400 truncate" title={formula.formula}>{formula.formula}</span>
       {result?.value != null
@@ -1139,14 +1141,15 @@ function InputFormulaRow({ data, formula }) {
 // or normalize the underlying figure at the source instead (the restatement
 // tool) — all three keep working together since computeGrowthBundle reads
 // Normalized values first regardless of whether a break is also set.
-function GrowthFormulaRow({ data, formula, fmtNum, togglePerimeterBreak, toggleRecentGrowthOverride, lastSeen, markSeen }) {
+function GrowthFormulaRow({ data, formula, fmtNum, togglePerimeterBreak, toggleRecentGrowthOverride, setGrowthSegmentOverride, lastSeen, markSeen }) {
   const hist = fieldHistory(data, formula.table)
-  const realRows = hist.filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
+  const realRows = hist.filter(r => !r?.synthetic && /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const latestRow = realRows[realRows.length - 1]
   const hasOwnNormalization = latestRow?.[`${formula.key}Normalized`]?.value != null
   const [basis, setBasis] = useState(hasOwnNormalization ? 'normalized' : 'reported')
   const resolved = latestRow ? activeValue(latestRow, formula.key, basis) : null
   const output = resolved?.value != null ? { year: latestRow.year, value: resolved.value } : null
+  const methods = resolved?.methods || null
 
   const currentValue = output?.value ?? null
   const changed = lastSeen?.[basis] === undefined || lastSeen[basis] !== currentValue
@@ -1158,9 +1161,15 @@ function GrowthFormulaRow({ data, formula, fmtNum, togglePerimeterBreak, toggleR
     .filter(b => b.table === formula.table).map(b => b.year).sort((a, b) => a - b)
   const useRecent = (data?.recentGrowthOverrides || []).includes(formula.key)
   const availableYears = realRows.map(r => Number(r.year)).filter(y => !breakYears.includes(y))
+  // With 2+ breaks there are 3+ segments and no longer one obvious "the"
+  // post-break window — segments (formulas.js) exposes every one; this lets
+  // a specific segment be pinned instead of always taking the automatic
+  // "latest, if long enough" pick.
+  const segments = methods?.segments || []
+  const overrideStart = data?.growthSegmentOverride?.[formula.key] ?? ''
 
   return (
-    <fieldset className="flex items-center gap-3 rounded-lg border border-navy-700 bg-navy-800/30 px-3 py-2 text-xs">
+    <fieldset className="flex items-center gap-3 rounded-lg border border-navy-700 bg-navy-800/30 px-3 py-2 text-xs min-w-0">
       <legend className="px-1 text-[11px] text-slate-400">{formula.label}</legend>
       <span className="flex flex-wrap gap-1 items-center flex-shrink-0 max-w-[11rem]">
         {breakYears.map(y => (
@@ -1179,6 +1188,18 @@ function GrowthFormulaRow({ data, formula, fmtNum, togglePerimeterBreak, toggleR
           <input type="checkbox" checked={useRecent} onChange={() => toggleRecentGrowthOverride(formula.key)} />
           recent
         </label>
+        {segments.length > 1 && (
+          <select value={overrideStart} title="2+ breaks confirmed — pick which segment's median feeds the selected rate, or leave on Auto"
+            onChange={e => setGrowthSegmentOverride(formula.key, e.target.value === '' ? null : Number(e.target.value))}
+            className="bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[10px] text-slate-500">
+            <option value="">Auto (latest segment)</option>
+            {segments.map(s => (
+              <option key={s.startYear} value={s.startYear}>
+                FY{s.startYear}–FY{s.endYear} ({s.count})
+              </option>
+            ))}
+          </select>
+        )}
       </span>
       <span className="flex-1 flex items-center gap-2 min-w-0">
         <select value={basis} onChange={e => setBasis(e.target.value)}
@@ -1186,7 +1207,7 @@ function GrowthFormulaRow({ data, formula, fmtNum, togglePerimeterBreak, toggleR
           <option value="reported">Reported</option>
           <option value="normalized">Normalized</option>
         </select>
-        <span className="text-slate-400 truncate" title={resolved?.formula || ''}>{resolved?.formula || '—'}</span>
+        <span className="text-slate-400 truncate min-w-0" title={resolved?.formula || ''}>{resolved?.formula || '—'}</span>
       </span>
       {output
         ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')} title={changed ? 'Different from what you last saw here' : undefined}>{output.value.toFixed(1)}% <span className="text-slate-500">(FY{output.year})</span></span>

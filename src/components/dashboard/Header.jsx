@@ -337,9 +337,17 @@ function DividendLine({ data, ratioResult, cur }) {
  */
 function GrowthMethodBadge({ data }) {
   const years = (data?.reportedIncomeHistory || [])
-    .filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
+    .filter(r => !r?.synthetic && /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const latestRow = years[years.length - 1]
-  const basis = data?.basis === 'normalized' ? 'normalized' : 'reported'
+  // Own independent Reported/Normalized picker, same convention FormulaRow/
+  // GrowthFormulaRow already use (default per THIS formula's own
+  // materialized Normalized output, never the app-wide data.basis toggle,
+  // which flips the moment ANYTHING on the ticker is restated regardless of
+  // whether revenue itself has anything normalized) — every formula in this
+  // app gets its own basis control; this badge doesn't get to be the
+  // exception.
+  const hasOwnNormalization = latestRow?.revenueGrowthNormalized?.value != null
+  const [basis, setBasis] = useState(hasOwnNormalization ? 'normalized' : 'reported')
   const resolved = latestRow ? activeValue(latestRow, 'revenueGrowth', basis) : null
   const methods = resolved?.methods
   const [choice, setChoice] = useState('selected')
@@ -347,21 +355,23 @@ function GrowthMethodBadge({ data }) {
   if (!methods) return null
 
   const OPTIONS = [
-    { key: 'selected',        label: 'Selected growth',       value: methods.selected },
-    { key: 'fullPeriodCagr',  label: 'Full-period CAGR',       value: methods.fullPeriodCagr },
-    { key: 'medianYoY',       label: 'Median YoY (comparable)', value: methods.medianYoY },
-    { key: 'recentMedianYoY', label: 'Recent median YoY',       value: methods.recentMedianYoY },
-    ...(methods.postBreakMedian != null
-      ? [{ key: 'postBreakMedian', label: 'Post-break median', value: methods.postBreakMedian }] : []),
+    { key: 'selected',        label: 'Selected growth',        value: methods.selected,        desc: methods.method },
+    { key: 'fullPeriodCagr',  label: 'Full-period CAGR',        value: methods.fullPeriodCagr,  desc: methods.fullPeriodCagrDesc },
+    { key: 'medianYoY',       label: 'Median YoY (comparable)', value: methods.medianYoY,       desc: methods.medianYoYDesc },
+    { key: 'recentMedianYoY', label: 'Recent median YoY',       value: methods.recentMedianYoY, desc: methods.recentMedianYoYDesc },
   ].filter(o => o.value != null)
   if (!OPTIONS.length) return null
 
   const active = OPTIONS.find(o => o.key === choice) || OPTIONS[0]
-  const title = choice === 'selected' ? (methods.method || '') : active.label
 
   return (
-    <span className="text-xs flex items-center gap-1 min-w-0 max-w-full" title={title}>
+    <span className="text-xs flex items-center gap-1 min-w-0 max-w-full" title={active.desc || ''}>
       <span className="flex-shrink-0 text-slate-600">Revenue growth:</span>
+      <select value={basis} onChange={e => setBasis(e.target.value)}
+        className="bg-transparent border-none text-slate-500 text-[11px] focus:outline-none cursor-pointer">
+        <option value="reported">Reported</option>
+        <option value="normalized">Normalized</option>
+      </select>
       <select value={active.key} onChange={e => setChoice(e.target.value)}
         className="bg-transparent border-none text-slate-500 text-[11px] max-w-[9rem] sm:max-w-none truncate focus:outline-none cursor-pointer">
         {OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}

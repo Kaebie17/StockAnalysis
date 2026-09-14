@@ -576,6 +576,22 @@ function reducer(s, a) {
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
+    // With 2+ confirmed perimeter breaks there's no longer a single "the"
+    // post-break segment to default to — computeGrowthBundle (formulas.js)
+    // exposes every segment (bounded by the confirmed breaks) as `segments`,
+    // and this lets the user pin ONE of them (by its startYear) as the
+    // source for `selected`, overriding the automatic "latest segment if
+    // long enough" rule. `startYear: null` clears the override.
+    case 'SET_GROWTH_SEGMENT_OVERRIDE': {
+      if (!s.data) return s
+      const existing = { ...(s.data.growthSegmentOverride || {}) }
+      if (a.startYear == null) delete existing[a.formulaKey]
+      else existing[a.formulaKey] = a.startYear
+      const data = { ...s.data, growthSegmentOverride: existing }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      return { ...s, data, ...computed }
+    }
     default:              return s
   }
 }
@@ -1169,6 +1185,13 @@ export function AppProvider({ children }) {
     dispatch({ type: 'TOGGLE_RECENT_GROWTH_OVERRIDE', formulaKey })
   }, [])
 
+  // Pin one specific segment (by its startYear) as the source for a growth
+  // formula's `selected` rate, when 2+ perimeter breaks mean there's more
+  // than one plausible segment to choose from — see SET_GROWTH_SEGMENT_OVERRIDE.
+  const setGrowthSegmentOverride = useCallback((formulaKey, startYear) => {
+    dispatch({ type: 'SET_GROWTH_SEGMENT_OVERRIDE', formulaKey, startYear })
+  }, [])
+
   // Combine several custom rows into one. opts: { mode: 'new', newField } to
   // create a fresh row, or { mode: 'existing', destKey } to fold the rest
   // into one of the rows being merged. See MERGE_CUSTOM_FIELDS.
@@ -1228,7 +1251,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, toggleRecentGrowthOverride, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, toggleRecentGrowthOverride, setGrowthSegmentOverride, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>

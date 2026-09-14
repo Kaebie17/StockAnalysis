@@ -832,8 +832,19 @@ function median(arr) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
 }
 
+// Same guard ratios.js's own realRows() has always used (isFiscalYear +
+// !synthetic) — a stub/TTM row can carry a clean-looking 4-digit year with a
+// partial-period value, and without this it silently becomes "the latest
+// year," corrupting both the YoY series (a partial period compared to a
+// full one reads as a huge swing) and materializeFormulas' own "which row
+// is latest" pick below.
+function isFiscalYearRow(r) {
+  return !r?.synthetic && /^\d{4}$/.test(String(r?.year ?? '').trim())
+}
+
 function computeGrowthBundle(data, formula, basis) {
   const series = fieldHistory(data, formula.table)
+    .filter(isFiscalYearRow)
     .map(r => ({ year: yearOf(r), value: resolvedValue(r, formula.field, basis) }))
     .filter(p => p.year != null && p.value > 0)
     .sort((a, b) => a.year - b.year)
@@ -841,6 +852,7 @@ function computeGrowthBundle(data, formula, basis) {
 
   const n = series.length - 1
   const fullPeriodCagr = (Math.pow(series[n].value / series[0].value, 1 / n) - 1) * 100
+  const fullPeriodCagrDesc = `Endpoint CAGR, FY${series[0].year} → FY${series[n].year} (${n} year${n === 1 ? '' : 's'})`
 
   const breakYears = new Set((data?.perimeterBreaks || [])
     .filter(b => b.table === formula.table).map(b => b.year))
@@ -857,8 +869,14 @@ function computeGrowthBundle(data, formula, basis) {
     yoy.push({ year: series[i].year, g: (series[i].value / series[i - 1].value - 1) * 100 })
   }
   const medianYoY = median(yoy.map(p => p.g))
+  const medianYoYDesc = yoy.length
+    ? `Median YoY, FY${yoy[0].year} → FY${yoy[yoy.length - 1].year} (${yoy.length} comparable observation${yoy.length === 1 ? '' : 's'}${breakYears.size ? ', excluding confirmed breaks' : ''})`
+    : null
   const recentYoY = yoy.slice(-RECENT_GROWTH_YEARS)
   const recentMedianYoY = recentYoY.length ? median(recentYoY.map(p => p.g)) : null
+  const recentMedianYoYDesc = recentYoY.length
+    ? `Median YoY, FY${recentYoY[0].year} → FY${recentYoY[recentYoY.length - 1].year} (${recentYoY.length} observation${recentYoY.length === 1 ? '' : 's'})`
+    : null
 
   const vals = yoy.map(p => p.g)
   const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null
@@ -875,48 +893,69 @@ function computeGrowthBundle(data, formula, basis) {
     : stdDev < VOLATILITY_BANDS.low ? 'low'
     : stdDev < VOLATILITY_BANDS.medium ? 'medium' : 'high'
 
-  // Post-break handling — see formulas.js's design notes: a break is never
-  // auto-suggested, only confirmed, and once confirmed the MOST RECENT one
-  // is what matters for "is the current regime long enough to trust its own
-  // median" (an older break, superseded by a newer one, no longer gates
-  // anything — the newer break already re-drew the comparable window).
-  const lastBreakYear = breakYears.size ? Math.max(...breakYears) : null
-  let postBreak = null
-  if (lastBreakYear != null) {
-    const postYoY = yoy.filter(p => p.year > lastBreakYear)
-    const preYoY = yoy.filter(p => p.year <= lastBreakYear)
-    postBreak = {
-      count: postYoY.length,
-      median: postYoY.length ? median(postYoY.map(p => p.g)) : null,
-      preMedian: preYoY.length ? median(preYoY.map(p => p.g)) : null,
+  // Every break splits the series into segments — [start..break1],
+  // [break1..break2], ..., [breakN..end]. With ONE break this collapses to
+  // the old pre/post split; with several, there's no longer a single
+  // "the" post-break segment to default to blindly, so every segment is
+  // computed and exposed (see `segments` below), and
+  // data.growthSegmentOverride lets the user pick a SPECIFIC one instead of
+  // always taking the latest — the same "editable, not a one-way suggestion"
+  // principle perimeterBreaks itself follows.
+  const sortedBreaks = [...breakYears].sort((a, b) => a - b)
+  const segments = []
+  if (sortedBreaks.length) {
+    const bounds = [null, ...sortedBreaks, null]
+    for (let i = 0; i < bounds.length - 1; i++) {
+      const lo = bounds[i], hi = bounds[i + 1]
+      const segYoY = yoy.filter(p => (lo == null || p.year > lo) && (hi == null || p.year <= hi))
+      segments.push({
+        startYear: lo ?? series[0].year,
+        endYear: hi ?? series[n].year,
+        count: segYoY.length,
+        median: segYoY.length ? median(segYoY.map(p => p.g)) : null,
+      })
     }
   }
+  const lastBreakYear = sortedBreaks.length ? sortedBreaks[sortedBreaks.length - 1] : null
+  const overrideStart = data?.growthSegmentOverride?.[formula.key]
+  const overriddenSegment = overrideStart != null ? segments.find(s => s.startYear === overrideStart) : null
 
   let selected, method
-  if (lastBreakYear == null) {
+  if (overriddenSegment) {
+    selected = overriddenSegment.median
+    method = overriddenSegment.count
+      ? `Manually selected segment: FY${overriddenSegment.startYear} → FY${overriddenSegment.endYear} median (${overriddenSegment.count} observation${overriddenSegment.count === 1 ? '' : 's'})`
+      : `Manually selected segment: FY${overriddenSegment.startYear} → FY${overriddenSegment.endYear} has no comparable observations yet`
+  } else if (lastBreakYear == null) {
     selected = useRecent ? recentMedianYoY : medianYoY
     method = useRecent
       ? `Median of the last ${recentYoY.length} comparable years (manually preferred over full history)`
       : `Median of ${yoy.length} comparable years`
-  } else if (postBreak.count >= 3) {
-    selected = postBreak.median
-    method = `Post-break median (${postBreak.count} observations since FY${lastBreakYear})`
-  } else if (postBreak.count === 2) {
-    selected = postBreak.median
-    method = `Post-break median — low sample size (2 observations since FY${lastBreakYear})`
-  } else if (postBreak.count === 1) {
-    selected = postBreak.preMedian
-    method = `1 post-break observation — insufficient on its own; using the pre-break median (business changed since FY${lastBreakYear})`
   } else {
-    selected = null
-    method = `No post-break history yet (break confirmed at FY${lastBreakYear}) — insufficient evidence for a forecast`
+    const postBreak = segments[segments.length - 1]
+    const preBreak = segments.length > 1 ? segments[segments.length - 2] : null
+    if (postBreak.count >= 3) {
+      selected = postBreak.median
+      method = `Post-break median (${postBreak.count} observations since FY${lastBreakYear})`
+    } else if (postBreak.count === 2) {
+      selected = postBreak.median
+      method = `Post-break median — low sample size (2 observations since FY${lastBreakYear})`
+    } else if (postBreak.count === 1) {
+      selected = preBreak?.median ?? null
+      method = `1 post-break observation — insufficient on its own; using the pre-break median (business changed since FY${lastBreakYear})`
+    } else {
+      selected = null
+      method = `No post-break history yet (break confirmed at FY${lastBreakYear}) — insufficient evidence for a forecast`
+    }
   }
 
   return {
-    fullPeriodCagr, medianYoY, recentMedianYoY,
-    postBreakMedian: postBreak?.median ?? null, postBreakObservations: postBreak?.count ?? null,
+    fullPeriodCagr, fullPeriodCagrDesc,
+    medianYoY, medianYoYDesc,
+    recentMedianYoY, recentMedianYoYDesc,
     stdDev, iqr, volatilityClass,
     perimeterBreakYears: [...breakYears],
+    segments,
     selected, method,
   }
 }
@@ -951,7 +990,13 @@ export function materializeFormulas(data) {
     // (every method, not just the selected one) riding along as `.methods`
     // so a UI can offer every candidate for inspection, not just the pick.
     if (formula.kind === 'growth') {
-      const latest = base.reduce((a, b) => (yearOf(b) > yearOf(a) ? b : a))
+      // Real fiscal-year rows only (see isFiscalYearRow) — a synthetic/TTM
+      // stub with a later-looking year must never win "latest," or the
+      // whole bundle gets written onto (and read back from) a row that
+      // isn't a real, complete year.
+      const realBase = base.filter(isFiscalYearRow)
+      const latestPool = realBase.length ? realBase : base
+      const latest = latestPool.reduce((a, b) => (yearOf(b) > yearOf(a) ? b : a))
       const reportedBundle = computeGrowthBundle(out, formula, 'reported')
       const normalizedBundle = computeGrowthBundle(out, formula, 'normalized')
       const newHistory = base.map(row => {
