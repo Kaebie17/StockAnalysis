@@ -292,9 +292,21 @@ export const METRICS = {
     needs: 'justified dividend multiple',
   },
 
+  // `assetClass: 'asset' | 'liability' | 'equity'` on balance-sheet fields
+  // below is a real, deliberate classification for candidatesFor
+  // (HistoryTableModal.jsx) to restrict a formula bucket's candidates to —
+  // NOT `expandFrom`, which is a different, coincidental thing: a note about
+  // which broader disclosed line a source (mainly Screener) buries this
+  // figure inside for EXTRACTION purposes (dataGaps.js), not an economic
+  // category. Two fields sharing an expandFrom string just happen to be
+  // presented under the same catch-all heading on one source's page; that's
+  // not evidence they belong in the same bucket. assetClass makes no claim
+  // about where a figure comes from — only what kind of balance-sheet item
+  // it fundamentally IS, which is the actual question a bucket like NWC's
+  // "current operating assets" needs answered.
   // ── Balance ───────────────────────────────────────────────────────────────
   totalEquity: {
-    table: 'balance', label: 'Total Equity', base: true,   // or equityCapital + reserves
+    table: 'balance', label: 'Total Equity', base: true, assetClass: 'equity',   // or equityCapital + reserves
     yahoo: ['stockholdersEquity', 'totalEquityGrossMinorityInterest', 'commonStockEquity'],
     sec: ['StockholdersEquity', 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest'],
     screener: ['totalequity', 'networth', 'shareholdersfunds', 'shareholdersfund', 'totalshareholdersfunds'],
@@ -304,7 +316,7 @@ export const METRICS = {
     needs: 'ROE, ROCE, P/B, D/E',
   },
   equityCapital: {
-    table: 'balance', label: 'Equity Capital', base: true,
+    table: 'balance', label: 'Equity Capital', base: true, assetClass: 'equity',
     yahoo: [], sec: [],
     screener: ['equitycapital', 'sharecapital', 'paidupcapital'],
     expandFrom: null,
@@ -313,7 +325,7 @@ export const METRICS = {
     needs: 'total equity (with reserves)',
   },
   reserves: {
-    table: 'balance', label: 'Reserves', base: true,
+    table: 'balance', label: 'Reserves', base: true, assetClass: 'equity',
     yahoo: [], sec: [],
     screener: ['reserves', 'reservesandsurplus', 'retainedearnings'],
     expandFrom: null,
@@ -322,7 +334,7 @@ export const METRICS = {
     needs: 'total equity (with equity capital)',
   },
   totalDebt: {
-    table: 'balance', label: 'Total Debt', base: true,
+    table: 'balance', label: 'Total Debt', base: true, assetClass: 'liability',
     yahoo: ['totalDebt', 'longTermDebt', 'longTermDebtAndCapitalLeaseObligation'],
     sec: ['LongTermDebtNoncurrent', 'LongTermDebt', 'LongTermDebtAndCapitalLeaseObligations'],
     screener: ['borrowings', 'totaldebt', 'longtermborrowing', 'debt', 'loans'],
@@ -333,7 +345,7 @@ export const METRICS = {
     estimable: true,     // equity x D/E
   },
   totalAssets: {
-    table: 'balance', label: 'Total Assets', base: true,
+    table: 'balance', label: 'Total Assets', base: true, assetClass: 'asset',
     yahoo: ['totalAssets'],
     sec: ['Assets'],
     // Screener labels the balance-sheet total simply "Total" — it appears twice
@@ -346,7 +358,7 @@ export const METRICS = {
     needs: 'ROA',
   },
   fixedAssets: {
-    table: 'balance', label: 'Fixed Assets', base: true,
+    table: 'balance', label: 'Fixed Assets', base: true, assetClass: 'asset',
     yahoo: ['netPPE', 'grossPPE'],
     sec: ['PropertyPlantAndEquipmentNet'],
     // A plain visible row on Screener — no "+" needed.
@@ -357,7 +369,7 @@ export const METRICS = {
     needs: 'CapEx estimate (Δ Fixed Assets + Depreciation)',
   },
   cash: {
-    table: 'balance', label: 'Cash & Equivalents', base: true,
+    table: 'balance', label: 'Cash & Equivalents', base: true, assetClass: 'asset',
     yahoo: ['cashAndCashEquivalents', 'cashCashEquivalentsAndShortTermInvestments',
             'endCashPosition', 'cashAndCashEquivalentsAtCarryingValue'],
     sec: ['CashAndCashEquivalentsAtCarryingValue',
@@ -378,7 +390,7 @@ export const METRICS = {
   // source does supply it, rather than existing only as an ad-hoc field a
   // couple of ingestion functions happened to write.
   currentAssets: {
-    table: 'balance', label: 'Current Assets', base: false,
+    table: 'balance', label: 'Current Assets', base: false, assetClass: 'asset',
     yahoo: ['currentAssets', 'totalCurrentAssets'],
     sec: ['AssetsCurrent'],
     screener: [],
@@ -388,7 +400,7 @@ export const METRICS = {
     needs: 'a rough liquidity check when the granular working-capital breakdown isn\'t available',
   },
   currentLiabilities: {
-    table: 'balance', label: 'Current Liabilities', base: false,
+    table: 'balance', label: 'Current Liabilities', base: false, assetClass: 'liability',
     yahoo: ['currentLiabilities', 'totalCurrentLiabilities'],
     sec: ['LiabilitiesCurrent'],
     screener: [],
@@ -417,7 +429,7 @@ export const METRICS = {
   // Getting that right needs the actual AR note pasted through the
   // restatement tool, not a field tracked here.
   tradeReceivables: {
-    table: 'balance', label: 'Trade Receivables', base: false,
+    table: 'balance', label: 'Trade Receivables', base: false, assetClass: 'asset',
     yahoo: ['receivables', 'accountsReceivable'], sec: ['AccountsReceivableNetCurrent'],
     screener: ['tradereceivables', 'receivables', 'sundrydebtors'],
     expandFrom: 'Other Assets',
@@ -426,7 +438,7 @@ export const METRICS = {
     needs: 'operating net working capital',
   },
   inventories: {
-    table: 'balance', label: 'Inventories', base: false,
+    table: 'balance', label: 'Inventories', base: false, assetClass: 'asset',
     yahoo: ['inventory'], sec: ['InventoryNet'],
     screener: ['inventories', 'inventory', 'stockintrade'],
     expandFrom: 'Other Assets',
@@ -435,7 +447,7 @@ export const METRICS = {
     needs: 'operating net working capital',
   },
   tradePayables: {
-    table: 'balance', label: 'Trade Payables', base: false,
+    table: 'balance', label: 'Trade Payables', base: false, assetClass: 'liability',
     yahoo: ['accountsPayable'], sec: ['AccountsPayableCurrent'],
     screener: ['tradepayables', 'payables', 'sundrycreditors'],
     expandFrom: 'Other Liabilities',
@@ -444,7 +456,7 @@ export const METRICS = {
     needs: 'operating net working capital',
   },
   advanceFromCustomers: {
-    table: 'balance', label: 'Advance from Customers', base: false,
+    table: 'balance', label: 'Advance from Customers', base: false, assetClass: 'liability',
     yahoo: [], sec: ['ContractWithCustomerLiabilityCurrent'],
     // 'deferredrevenue' added after checking a real AR against Screener:
     // Screener's own advance-from-customers figure read as 0 every year for

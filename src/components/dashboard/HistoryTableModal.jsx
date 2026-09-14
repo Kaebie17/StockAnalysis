@@ -922,28 +922,31 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePeri
   // genuinely interchangeable with the bucket's own default field(s) — not
   // just "same table." Two ways that's true:
   //   1. It IS one of the bucket's declared defaults (netDebt/EBIT/etc. —
-  //      a required, non-substitutable formula input has no group at all,
-  //      so this is the ONLY thing that ever matches for it: "the main
+  //      a required, non-substitutable formula input has no assetClass at
+  //      all, so this is the ONLY thing that ever matches for it: "the main
   //      metric... [is] the default value," nothing else belongs there).
-  //   2. It shares metrics.js's own `expandFrom` tag with a default field
-  //      — real, already-declared category siblings (Trade Receivables and
-  //      Inventories both expand from "Other Assets"), not a second,
-  //      separately hand-maintained list. A NEW metrics.js field sharing
-  //      that same expandFrom automatically qualifies the moment it's
-  //      added — no per-bucket list to remember to update.
+  //   2. It shares metrics.js's own `assetClass` ('asset' | 'liability' |
+  //      'equity' — a real, deliberate classification, NOT `expandFrom`,
+  //      which only records which broader disclosed line a source buries a
+  //      figure inside for extraction purposes and says nothing about what
+  //      kind of item it economically IS) with a default field. A current-
+  //      liability bucket can never offer an asset as a candidate just
+  //      because both live on the balance sheet, and a NEW metrics.js field
+  //      tagged with a matching assetClass automatically qualifies the
+  //      moment it's added — no per-bucket list to remember to update.
   // A custom field the user creates is ALWAYS offered regardless of either
   // rule — there's no way to pre-classify a genuinely new line item; that's
   // the user's own call to make, not this filter's.
   const candidatesFor = (formula, bucket) => {
     const table = bucket.table || formula.table
     const defaults = bucket.defaults || []
-    const defaultGroups = new Set(defaults.map(k => METRICS[k]?.expandFrom).filter(Boolean))
+    const defaultClasses = new Set(defaults.map(k => METRICS[k]?.assetClass).filter(Boolean))
     return availableTargets(data).filter(t => {
       if (t.table !== table || t.key === formula.key) return false
       if (defaults.includes(t.key)) return true
       if ((data.customFields || []).some(f => f.key === t.key)) return true
-      const tGroup = METRICS[t.key]?.expandFrom
-      return tGroup != null && defaultGroups.has(tGroup)
+      const tClass = METRICS[t.key]?.assetClass
+      return tClass != null && defaultClasses.has(tClass)
     })
   }
 
