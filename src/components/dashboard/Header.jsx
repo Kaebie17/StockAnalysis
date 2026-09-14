@@ -224,9 +224,10 @@ function IdentityBar() {
       </div>
 
       {/* Row 3: data vintage badge (its own line — it's long) */}
-      <div className="flex flex-wrap">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <DataVintageBadge data={data} state={state}
           onNormalize={f => { setNormFlag(f); setNormOpen(true) }} />
+        <GrowthMethodBadge data={data} />
       </div>
 
       {/* Row 4: stage + basis controls + dividend — wrap as whole units */}
@@ -320,6 +321,55 @@ function DividendLine({ data, ratioResult, cur }) {
       title={`Based on ${basis}. Approx ${cur}${annual.toFixed(0)} a year on ${cur}${INVEST.toLocaleString('en-IN')} invested at the current price (${yieldPct.toFixed(2)}% yield). Past dividends are not a promise of future ones.`}>
       💰 <span className="text-slate-200">{cur}{annual.toFixed(0)}</span>
       <span className="text-slate-500">/yr per {cur}{(INVEST / 1000).toFixed(0)}k</span>
+    </span>
+  )
+}
+
+/**
+ * Every growth METHOD side by side, right where the data's own breadth
+ * (DataVintageBadge, below) is already shown — "how many years do we have"
+ * and "what does that growth actually look like by each measure" belong in
+ * the same glance. Reads the registry's own bundle (formulas.js's 'growth'
+ * kind: full-period CAGR, comparable-YoY median, recent median, and
+ * whichever one materializeFormulas picked as `selected`) rather than
+ * computing anything itself — this is a viewer onto what's already stored,
+ * the same activeValue(row, key, basis) call every other consumer uses.
+ */
+function GrowthMethodBadge({ data }) {
+  const years = (data?.reportedIncomeHistory || [])
+    .filter(r => /^\d{4}$/.test(String(r?.year ?? '').trim()))
+  const latestRow = years[years.length - 1]
+  const basis = data?.basis === 'normalized' ? 'normalized' : 'reported'
+  const resolved = latestRow ? activeValue(latestRow, 'revenueGrowth', basis) : null
+  const methods = resolved?.methods
+  const [choice, setChoice] = useState('selected')
+
+  if (!methods) return null
+
+  const OPTIONS = [
+    { key: 'selected',        label: 'Selected growth',       value: methods.selected },
+    { key: 'fullPeriodCagr',  label: 'Full-period CAGR',       value: methods.fullPeriodCagr },
+    { key: 'medianYoY',       label: 'Median YoY (comparable)', value: methods.medianYoY },
+    { key: 'recentMedianYoY', label: 'Recent median YoY',       value: methods.recentMedianYoY },
+    ...(methods.postBreakMedian != null
+      ? [{ key: 'postBreakMedian', label: 'Post-break median', value: methods.postBreakMedian }] : []),
+  ].filter(o => o.value != null)
+  if (!OPTIONS.length) return null
+
+  const active = OPTIONS.find(o => o.key === choice) || OPTIONS[0]
+  const title = choice === 'selected' ? (methods.method || '') : active.label
+
+  return (
+    <span className="text-xs flex items-center gap-1 min-w-0 max-w-full" title={title}>
+      <span className="flex-shrink-0 text-slate-600">Revenue growth:</span>
+      <select value={active.key} onChange={e => setChoice(e.target.value)}
+        className="bg-transparent border-none text-slate-500 text-[11px] max-w-[9rem] sm:max-w-none truncate focus:outline-none cursor-pointer">
+        {OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+      </select>
+      <span className="font-mono text-slate-400 flex-shrink-0">{active.value.toFixed(1)}%</span>
+      {methods.volatilityClass && (
+        <span className="text-slate-600 flex-shrink-0">· {methods.volatilityClass} volatility</span>
+      )}
     </span>
   )
 }
