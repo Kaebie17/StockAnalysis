@@ -1151,11 +1151,25 @@ function GrowthFormulaRow({ data, formula, fmtNum, togglePerimeterBreak, toggleR
   const output = resolved?.value != null ? { year: latestRow.year, value: resolved.value } : null
   const methods = resolved?.methods || null
 
+  // Red-if-changed tracks the SELECTED value only — that's the one figure
+  // actually materialized/consumed elsewhere (ratios.js, valuation.js, once
+  // connected). The method picker below is a pure "inspect the other
+  // numbers" viewer; switching it never itself counts as a change, the same
+  // way flipping FormulaRow's own basis picker doesn't.
   const currentValue = output?.value ?? null
   const changed = lastSeen?.[basis] === undefined || lastSeen[basis] !== currentValue
   const latestRef = useRef({ basis, value: currentValue })
   latestRef.current = { basis, value: currentValue }
   useEffect(() => () => markSeen(latestRef.current.basis, latestRef.current.value), [markSeen])
+
+  const [methodChoice, setMethodChoice] = useState('selected')
+  const METHOD_OPTIONS = [
+    { key: 'selected',        label: 'Selected',                value: methods?.selected,        desc: methods?.method },
+    { key: 'fullPeriodCagr',  label: 'Full-period CAGR',         value: methods?.fullPeriodCagr,  desc: methods?.fullPeriodCagrDesc },
+    { key: 'medianYoY',       label: 'Median YoY (comparable)',  value: methods?.medianYoY,       desc: methods?.medianYoYDesc },
+    { key: 'recentMedianYoY', label: 'Recent median YoY',        value: methods?.recentMedianYoY, desc: methods?.recentMedianYoYDesc },
+  ].filter(o => o.value != null)
+  const activeMethod = METHOD_OPTIONS.find(o => o.key === methodChoice) || METHOD_OPTIONS[0]
 
   const breakYears = (data?.perimeterBreaks || [])
     .filter(b => b.table === formula.table).map(b => b.year).sort((a, b) => a - b)
@@ -1207,10 +1221,21 @@ function GrowthFormulaRow({ data, formula, fmtNum, togglePerimeterBreak, toggleR
           <option value="reported">Reported</option>
           <option value="normalized">Normalized</option>
         </select>
-        <span className="text-slate-400 truncate min-w-0" title={resolved?.formula || ''}>{resolved?.formula || '—'}</span>
+        {/* Same method set, same shape, as the header's GrowthMethodBadge —
+            switchable in both places, not just one. */}
+        <select value={methodChoice} onChange={e => setMethodChoice(e.target.value)}
+          className="flex-shrink-0 bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[11px] text-slate-300 max-w-[8rem] sm:max-w-none">
+          {METHOD_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+        </select>
+        <span className="text-slate-400 truncate min-w-0" title={activeMethod?.desc || resolved?.formula || ''}>
+          {activeMethod?.desc || resolved?.formula || '—'}
+        </span>
       </span>
-      {output
-        ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')} title={changed ? 'Different from what you last saw here' : undefined}>{output.value.toFixed(1)}% <span className="text-slate-500">(FY{output.year})</span></span>
+      {activeMethod?.value != null
+        ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (methodChoice === 'selected' && changed ? 'text-bear' : 'text-accent')}
+            title={methodChoice === 'selected' && changed ? 'Different from what you last saw here' : undefined}>
+            {activeMethod.value.toFixed(1)}% {output && <span className="text-slate-500">(FY{output.year})</span>}
+          </span>
         : <span className="flex-shrink-0 text-slate-600">—</span>}
     </fieldset>
   )
