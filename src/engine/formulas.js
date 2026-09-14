@@ -273,6 +273,13 @@ const DERIVED_FORMULAS = {
       { key: 'denominator', role: 'denominator', label: 'Total Equity', table: 'balance', sign: 1, defaults: ['totalEquity'] },
     ],
   },
+  // ── 'growth' formulas: a multi-year SUMMARY of one field's whole history,
+  // not a per-row bucket combination — see computeGrowthBundle below for the
+  // actual statistics (full-period CAGR, comparable-YoY median, recent
+  // median, volatility, and the deterministic selected rate). No `buckets`:
+  // there's exactly one input field, named directly.
+  revenueGrowth:   { key: 'revenueGrowth',   kind: 'growth', label: 'Revenue Growth',    table: 'income', field: 'revenue' },
+  netProfitGrowth: { key: 'netProfitGrowth', kind: 'growth', label: 'Net Profit Growth', table: 'income', field: 'netProfit' },
 }
 
 // ── Restatement targets ─────────────────────────────────────────────────
@@ -669,6 +676,123 @@ function computeForRow(data, formulaKey, row, basis) {
   return output
 }
 
+// ── 'growth' formulas ────────────────────────────────────────────────────
+// A multi-year SUMMARY of one field's whole history — full-period CAGR,
+// comparable-YoY median, recent median, volatility, and a deterministic
+// selected rate — not a per-row bucket combination, so it doesn't go
+// through computeForRow/bucketSum at all. See materializeFormulas' own
+// 'growth' branch for where this gets written.
+//
+// Perimeter breaks (data.perimeterBreaks: [{table, year}]) are NEVER
+// inferred from the numbers — a statistically unusual YoY swing is exactly
+// as consistent with a genuine demand cycle as with an acquisition, and
+// only real evidence (an AR snippet, a news search — see arExtract.js's
+// perimeterEvent section) should ever exclude a year from "comparable"
+// growth. A break here is always a fact the user confirmed, never a guess
+// from the shape of the curve.
+const RECENT_GROWTH_YEARS = 3
+// stdDev (percentage points) below `low` = low volatility, below `medium` =
+// medium, else high. Adjustable, not universal — same standing as
+// TERMINAL_GROWTH_BY_MARKET/ERP_BY_MARKET (requiredReturn.js): a disclosed
+// convention to calibrate against real data, not a law of finance.
+const VOLATILITY_BANDS = { low: 8, medium: 20 }
+
+function median(arr) {
+  if (!arr.length) return null
+  const s = [...arr].sort((a, b) => a - b)
+  const m = Math.floor(s.length / 2)
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+}
+
+function computeGrowthBundle(data, formula, basis) {
+  const series = fieldHistory(data, formula.table)
+    .map(r => ({ year: yearOf(r), value: resolvedValue(r, formula.field, basis) }))
+    .filter(p => p.year != null && p.value > 0)
+    .sort((a, b) => a.year - b.year)
+  if (series.length < 2) return null
+
+  const n = series.length - 1
+  const fullPeriodCagr = (Math.pow(series[n].value / series[0].value, 1 / n) - 1) * 100
+
+  const breakYears = new Set((data?.perimeterBreaks || [])
+    .filter(b => b.table === formula.table).map(b => b.year))
+  const useRecent = (data?.recentGrowthOverrides || []).includes(formula.key)
+
+  // Every YoY transition INTO a confirmed break year is excluded — the
+  // business on the two sides of that year isn't the same business, so the
+  // change between them isn't a growth OBSERVATION at all. Nothing else is
+  // ever excluded: a volatile-but-real year is real evidence, not noise —
+  // it's what feeds medianYoY/stdDev/IQR below, not something they filter.
+  const yoy = []
+  for (let i = 1; i < series.length; i++) {
+    if (breakYears.has(series[i].year)) continue
+    yoy.push({ year: series[i].year, g: (series[i].value / series[i - 1].value - 1) * 100 })
+  }
+  const medianYoY = median(yoy.map(p => p.g))
+  const recentYoY = yoy.slice(-RECENT_GROWTH_YEARS)
+  const recentMedianYoY = recentYoY.length ? median(recentYoY.map(p => p.g)) : null
+
+  const vals = yoy.map(p => p.g)
+  const mean = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null
+  const stdDev = vals.length > 1
+    ? Math.sqrt(vals.reduce((a, v) => a + (v - mean) ** 2, 0) / (vals.length - 1)) : null
+  const sortedVals = [...vals].sort((a, b) => a - b)
+  const quantile = p => {
+    const idx = (sortedVals.length - 1) * p
+    const lo = Math.floor(idx), hi = Math.ceil(idx)
+    return sortedVals[lo] + (sortedVals[hi] - sortedVals[lo]) * (idx - lo)
+  }
+  const iqr = sortedVals.length >= 4 ? quantile(0.75) - quantile(0.25) : null
+  const volatilityClass = stdDev == null ? null
+    : stdDev < VOLATILITY_BANDS.low ? 'low'
+    : stdDev < VOLATILITY_BANDS.medium ? 'medium' : 'high'
+
+  // Post-break handling — see formulas.js's design notes: a break is never
+  // auto-suggested, only confirmed, and once confirmed the MOST RECENT one
+  // is what matters for "is the current regime long enough to trust its own
+  // median" (an older break, superseded by a newer one, no longer gates
+  // anything — the newer break already re-drew the comparable window).
+  const lastBreakYear = breakYears.size ? Math.max(...breakYears) : null
+  let postBreak = null
+  if (lastBreakYear != null) {
+    const postYoY = yoy.filter(p => p.year > lastBreakYear)
+    const preYoY = yoy.filter(p => p.year <= lastBreakYear)
+    postBreak = {
+      count: postYoY.length,
+      median: postYoY.length ? median(postYoY.map(p => p.g)) : null,
+      preMedian: preYoY.length ? median(preYoY.map(p => p.g)) : null,
+    }
+  }
+
+  let selected, method
+  if (lastBreakYear == null) {
+    selected = useRecent ? recentMedianYoY : medianYoY
+    method = useRecent
+      ? `Median of the last ${recentYoY.length} comparable years (manually preferred over full history)`
+      : `Median of ${yoy.length} comparable years`
+  } else if (postBreak.count >= 3) {
+    selected = postBreak.median
+    method = `Post-break median (${postBreak.count} observations since FY${lastBreakYear})`
+  } else if (postBreak.count === 2) {
+    selected = postBreak.median
+    method = `Post-break median — low sample size (2 observations since FY${lastBreakYear})`
+  } else if (postBreak.count === 1) {
+    selected = postBreak.preMedian
+    method = `1 post-break observation — insufficient on its own; using the pre-break median (business changed since FY${lastBreakYear})`
+  } else {
+    selected = null
+    method = `No post-break history yet (break confirmed at FY${lastBreakYear}) — insufficient evidence for a forecast`
+  }
+
+  return {
+    fullPeriodCagr, medianYoY, recentMedianYoY,
+    postBreakMedian: postBreak?.median ?? null, postBreakObservations: postBreak?.count ?? null,
+    stdDev, iqr, volatilityClass,
+    perimeterBreakYears: [...breakYears],
+    selected, method,
+  }
+}
+
 /**
  * Writes each derived formula's own output directly onto the row it belongs
  * to — {key} for the reported figure, {key}Normalized alongside it only
@@ -692,6 +816,41 @@ export function materializeFormulas(data) {
     const base = fieldHistory(out, formula.table)
     if (!base.length) continue
     const normKey = `${formula.key}Normalized`
+
+    // 'growth': a summary of the WHOLE series, not a per-row value — written
+    // onto the latest row only (nothing downstream ever wants "growth as of
+    // 2015 mid-history," only the current reading), with the full bundle
+    // (every method, not just the selected one) riding along as `.methods`
+    // so a UI can offer every candidate for inspection, not just the pick.
+    if (formula.kind === 'growth') {
+      const latest = base.reduce((a, b) => (yearOf(b) > yearOf(a) ? b : a))
+      const reportedBundle = computeGrowthBundle(out, formula, 'reported')
+      const normalizedBundle = computeGrowthBundle(out, formula, 'normalized')
+      const newHistory = base.map(row => {
+        if (row !== latest) {
+          if (!(formula.key in row) && !(normKey in row)) return row
+          const { [formula.key]: _a, [normKey]: _b, ...rest } = row
+          return rest
+        }
+        let next = { ...row }
+        if (reportedBundle) {
+          next[formula.key] = { value: reportedBundle.selected, status: 'calculated', formula: reportedBundle.method, methods: reportedBundle }
+        } else if (formula.key in next) {
+          const { [formula.key]: _a, ...rest } = next; next = rest
+        }
+        if (normalizedBundle && normalizedBundle.selected !== reportedBundle?.selected) {
+          next[normKey] = { value: normalizedBundle.selected, adjusted: true, formula: normalizedBundle.method, methods: normalizedBundle }
+        } else if (normKey in next) {
+          const { [normKey]: _d, ...rest } = next; next = rest
+        }
+        return next
+      })
+      out = formula.table === 'income'
+        ? { ...out, reportedIncomeHistory: newHistory }
+        : { ...out, [histKey]: newHistory }
+      continue
+    }
+
     const newHistory = base.map(row => {
       // 'fallback': a real reported value already exists for whichever
       // field counts as "reported" for this formula (formula.key itself,
