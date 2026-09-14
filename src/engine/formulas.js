@@ -338,6 +338,24 @@ const DERIVED_FORMULAS = {
   netProfitGrowth: { key: 'netProfitGrowth', kind: 'growth', label: 'Net Profit Growth', table: 'income', field: 'netProfit' },
 }
 
+// ── Market-input "formulas" ────────────────────────────────────────────
+// Risk-free rate and equity risk premium are NOT per-ticker history — they
+// are live, market-wide inputs (src/api/riskFreeClient.js, erpClient.js),
+// fetched at most monthly and cached across sessions, identical for every
+// ticker in the same market. They don't fit materializeFormulas' per-row
+// model at all — there's no history ROW to write onto, since the value
+// isn't a function of this ticker's own statements. Declared here purely so
+// the Formulas tab has one place listing every formula in the app,
+// including these — the actual value/refresh is read live from the
+// existing clients (see HistoryTableModal.jsx's InputFormulaRow), not
+// computed via computeForRow.
+export const INPUT_FORMULAS = [
+  { key: 'riskFreeRate', label: 'Risk-Free Rate',
+    formula: '10-year government bond yield (live, refreshed monthly)' },
+  { key: 'equityRiskPremium', label: 'Equity Risk Premium',
+    formula: "Damodaran's published total equity risk premium (live, refreshed monthly)" },
+]
+
 // ── Restatement targets ─────────────────────────────────────────────────
 // The fixed set of fields the historical-normalization restatement tool
 // (NormalizeModal's generic paste mode) suggests by keyword — deliberately

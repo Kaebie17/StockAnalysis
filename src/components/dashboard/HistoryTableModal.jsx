@@ -4,7 +4,11 @@ import { useApp } from '../../store/AppContext.jsx'
 import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
 import { computeNormalizedRow, activeValue } from '../../engine/dataQuality.js'
-import { normalizedFieldValue, availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField } from '../../engine/formulas.js'
+import { normalizedFieldValue, availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField, INPUT_FORMULAS } from '../../engine/formulas.js'
+import { marketOf } from '../../engine/requiredReturn.js'
+import { getRiskFreeRate, refreshRiskFreeRate } from '../../api/riskFreeClient.js'
+import { getEquityRiskPremium, refreshEquityRiskPremium } from '../../api/erpClient.js'
+import { getAiKey } from '../../utils/aiKey.js'
 import Modal from '../Modal.jsx'
 
 /**
@@ -935,6 +939,9 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, togglePeri
           Focused on <strong>{fieldLabel(data, focusField)}</strong> — its current assignments are highlighted below.
         </div>
       )}
+      {INPUT_FORMULAS.map(formula => (
+        <InputFormulaRow key={formula.key} data={data} formula={formula} />
+      ))}
       {formulas.map(formula => (
         formula.kind === 'growth' ? (
           <GrowthFormulaRow key={formula.key} data={data} formula={formula}
@@ -1070,6 +1077,55 @@ function FormulaRow({ data, formula, div, fmtNum, focused, assignedFieldsFor, ca
       {output
         ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')} title={changed ? 'Different from what you last saw here' : undefined}>{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
         : <span className="flex-shrink-0 text-slate-600">—</span>}
+    </fieldset>
+  )
+}
+
+// Risk-free rate / ERP aren't per-ticker (see INPUT_FORMULAS, formulas.js)
+// — fetched live from the existing monthly-cached clients (the same ones
+// requiredReturn.js/AppContext already use for CAPM) rather than
+// materialized from data, with the same explicit refresh trigger those
+// clients already expose.
+const INPUT_FETCHERS = {
+  riskFreeRate: { get: getRiskFreeRate, refresh: refreshRiskFreeRate,
+    shape: r => ({ value: r?.ratePct, asOf: r?.asOf, stale: r?.stale, note: r?.note }) },
+  equityRiskPremium: { get: getEquityRiskPremium, refresh: refreshEquityRiskPremium,
+    shape: r => ({ value: r?.erpPct, asOf: r?.asOf, stale: r?.stale, note: r?.note }) },
+}
+
+function InputFormulaRow({ data, formula }) {
+  const market = marketOf(data?.currency)
+  const fetcher = INPUT_FETCHERS[formula.key]
+  const [result, setResult] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    let live = true
+    fetcher.get({ market, userKey: getAiKey() }).then(r => { if (live) setResult(fetcher.shape(r)) })
+    return () => { live = false }
+  }, [market])
+
+  const doRefresh = async () => {
+    setLoading(true)
+    try {
+      const r = await fetcher.refresh({ market, userKey: getAiKey() })
+      setResult(fetcher.shape(r))
+    } finally { setLoading(false) }
+  }
+
+  return (
+    <fieldset className="flex items-center gap-3 rounded-lg border border-navy-700 bg-navy-800/30 px-3 py-2 text-xs">
+      <legend className="px-1 text-[11px] text-slate-400">{formula.label}</legend>
+      <span className="flex-1 min-w-0 text-slate-400 truncate" title={formula.formula}>{formula.formula}</span>
+      {result?.value != null
+        ? <span className="flex-shrink-0 font-mono text-accent" title={result.note || (result.asOf ? `As of ${result.asOf}` : undefined)}>
+            {result.value.toFixed(2)}%{result.stale ? <span className="text-slate-500"> (stale)</span> : null}
+          </span>
+        : <span className="flex-shrink-0 text-slate-600">{result ? '—' : 'loading…'}</span>}
+      <button type="button" onClick={doRefresh} disabled={loading}
+        className="flex-shrink-0 rounded bg-navy-700 px-2 py-0.5 text-[10px] text-slate-300 hover:bg-navy-600 disabled:opacity-50">
+        {loading ? '…' : 'Refresh'}
+      </button>
     </fieldset>
   )
 }
