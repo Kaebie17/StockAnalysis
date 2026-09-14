@@ -62,12 +62,6 @@ export function fieldHistory(data, table) {
 
 export function rowValue(row, field) { return val(row?.[field]) }
 
-function hasData(data, field) {
-  const table = fieldTable(data, field)
-  if (!table) return false
-  return fieldHistory(data, table).some(r => rowValue(r, field) != null)
-}
-
 // Fixed, code-defined shape: buckets and how they combine. This is the part
 // the user meant by "you need to be smart about how the buckets will be
 // created" — not every formula is assets-minus-liabilities, so each one
@@ -646,45 +640,6 @@ export function listFormulas(data) {
   return [...restatement, ...Object.values(DERIVED_FORMULAS)]
 }
 
-/**
- * One-time seeding of the known constituents of a derived formula (NWC's
- * four tracked working-capital fields) into data.fieldAssignments, so the
- * user never has to hand-wire what's already known. Guarded per (field,
- * formula, bucket) triple by data.formulaDefaultsApplied — once a triple's
- * been offered, it's never re-added even if the user deletes it, but a
- * triple whose field has NO data yet (a ticker with no balance sheet pasted
- * yet) is left un-applied so it can still seed later once that data exists.
- * Called from migrateStoredData (normalize.js) — same idempotent-migration
- * chokepoint every other retroactive fix in this app already uses.
- */
-export function seedFormulaDefaults(data) {
-  if (!data) return data
-  const applied = new Set(data.formulaDefaultsApplied || [])
-  const assignments = [...(data.fieldAssignments || [])]
-  let changed = false
-
-  for (const formula of Object.values(DERIVED_FORMULAS)) {
-    // 'growth' has no buckets at all (a whole-series summary, not a
-    // per-row combination); 'weighted' names its inputs directly (see
-    // resolveTermValue) rather than through assignable buckets — neither
-    // has anything for this seeding step to do.
-    for (const bucket of (formula.buckets || [])) {
-      for (const field of (bucket.defaults || [])) {
-        const triple = `${field}:${formula.key}:${bucket.key}`
-        if (applied.has(triple)) continue
-        if (!hasData(data, field)) continue
-        const already = assignments.some(a =>
-          a.field === field && a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key)
-        if (!already) assignments.push({ field, kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 })
-        applied.add(triple)
-        changed = true
-      }
-    }
-  }
-  if (!changed) return data
-  return { ...data, fieldAssignments: assignments, formulaDefaultsApplied: [...applied] }
-}
-
 // A bucket's own members can THEMSELVES be normalized — tradeReceivables,
 // inventories, tradePayables and advanceFromCustomers are all in the
 // curated restatement-target list, so any of them can carry a
@@ -742,14 +697,51 @@ function resolveTermValue(data, formula, spec, row, basis) {
   return spec.oneMinus ? (1 - v) : v
 }
 
+// A bucket's own declared defaults are read LIVE, straight off the row,
+// every single time — the same way any other consumer reads Net Profit or
+// Revenue directly off the statement. They are NEVER required to be
+// "seeded" into data.fieldAssignments first: a formula whose defaults
+// exist on the row simply works, with zero setup, the instant the row has
+// data — there is no separate "have we recorded this assignment yet"
+// state that can fall out of sync with what the registry actually
+// declares. This replaced an earlier design where defaults had to be
+// seeded once into fieldAssignments and remembered via a persisted
+// formulaDefaultsApplied ledger — on a ticker with months of accumulated
+// registry changes (buckets renamed, formulas added/restructured), that
+// ledger could mark a triple "already seeded" while the real entry was
+// gone or never written, silently zeroing a bucket's sum (0, not "—",
+// since an EMPTY contributor list is what actually produces null) with no
+// way to self-heal short of clearing the ledger by hand.
+//
+// data.fieldAssignments now exists ONLY for genuine customization on top
+// of the live defaults:
+//   - a NEW contributor beyond the defaults (a custom row, another tracked
+//     field) — kind:'formula', normal entry, sign as chosen.
+//   - REMOVING one of the defaults — kind:'formula', same field/bucket,
+//     removed:true. This is a real, explicit fact the user recorded
+//     ("don't include this one"), never something a stale ledger can
+//     silently reintroduce or drop.
+//   - OVERRIDING a default's sign — kind:'formula', removed:false (or
+//     omitted) with a different `sign`; present for that field/bucket, so
+//     it replaces the implicit +1 the live default would otherwise use.
 function bucketSum(data, formulaKey, bucket, row, basis) {
   if (!row) return null
-  const contributors = (data?.fieldAssignments || [])
+  const assignments = (data?.fieldAssignments || [])
     .filter(a => a.kind === 'formula' && a.formula === formulaKey && a.bucket === bucket.key)
+  const overrideByField = new Map(assignments.map(a => [a.field, a]))
+
   let sum = null
-  for (const c of contributors) {
-    const v = resolvedValue(row, c.field, basis)
-    if (v != null) sum = (sum ?? 0) + (c.sign ?? 1) * v
+  for (const field of (bucket.defaults || [])) {
+    const override = overrideByField.get(field)
+    if (override?.removed) continue
+    const v = resolvedValue(row, field, basis)
+    if (v != null) sum = (sum ?? 0) + (override?.sign ?? 1) * v
+  }
+  // Contributors beyond the defaults — the genuinely-extra case.
+  for (const a of assignments) {
+    if (a.removed || (bucket.defaults || []).includes(a.field)) continue
+    const v = resolvedValue(row, a.field, basis)
+    if (v != null) sum = (sum ?? 0) + (a.sign ?? 1) * v
   }
   return sum
 }
@@ -1090,40 +1082,18 @@ export function materializeFormulas(data) {
   return out
 }
 
-/**
- * Runs seedFormulaDefaults + materializeFormulas repeatedly until a pass
- * seeds nothing new, instead of the caller guessing a fixed number of
- * rounds. That guess is exactly what broke: a formula whose default is
- * ANOTHER formula's output can only be seeded once that other formula has
- * actually materialized (hasData() reads the real row), so each extra
- * level of formula-depends-on-formula needs one more seed+materialize
- * round than the last. Two rounds covered the shallow chains this
- * registry had for most of this session (Net Debt/EBITDA needing Net
- * Debt + EBITDA, one level deep) — but profitBeforeTax → tax →
- * effectiveTaxRate → FCFF is FOUR levels deep, and two rounds silently
- * left effectiveTaxRate and FCFF permanently unmaterialized (their bucket
- * assignments never got seeded in time), not a data problem, a genuine
- * gap in how many passes computeAll ran. This is the fix: keep going
- * until seeding stops finding anything new, so the number of rounds
- * tracks the registry's actual dependency depth automatically, not a
- * number someone has to remember to bump the next time a formula is
- * added on top of another formula on top of another formula.
- *
- * Capped at maxPasses purely as a runaway guard (a real dependency chain
- * anywhere near this deep would be a design problem worth noticing, not
- * something to loop through silently) — every realistic chain in this
- * registry today resolves in well under 8.
- */
-export function materializeAllFormulas(data, { maxPasses = 8 } = {}) {
-  let out = materializeFormulas(data)
-  for (let i = 0; i < maxPasses; i++) {
-    const seeded = seedFormulaDefaults(out)
-    const seedChanged = seeded !== out
-    out = materializeFormulas(seeded)
-    if (!seedChanged) break
-  }
-  return out
-}
+// materializeAllFormulas / seedFormulaDefaults used to exist here as a
+// multi-pass workaround for buckets that had to be "seeded" into
+// data.fieldAssignments before they had anything to sum — a formula
+// depending on another formula's output needed one extra seed+materialize
+// round per level of depth, and a stale formulaDefaultsApplied ledger
+// could silently block re-seeding forever on a long-lived ticker. Removed
+// entirely: bucketSum now reads a bucket's own declared defaults LIVE off
+// the row (see bucketSum's own comment), so a single materializeFormulas
+// pass already resolves any depth of formula-depends-on-formula chain —
+// each formula's buckets read whatever the PRIOR formulas in this same
+// pass already wrote onto `out`, in registry declaration order. Nothing
+// to seed, nothing to loop.
 
 /** Every assignment currently on this field, across both kinds. */
 export function assignmentsForField(data, field) {

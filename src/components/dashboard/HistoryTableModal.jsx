@@ -68,8 +68,29 @@ function keyCollision(data, slug) {
 // One-line summary of everything a field currently feeds, across both
 // restatement targets and formula buckets — replaces the old single
 // "feeds X" note, which could only ever describe one destination.
+//
+// A bucket's own defaults are live now (bucketSum reads them straight off
+// the row, formulas.js) rather than stored in data.fieldAssignments, so
+// this has to know about them too, or a plain default relationship (Net
+// Profit feeding Net Margin's numerator) would show nothing at all here
+// just because nobody ever had to record it. Only an EXPLICIT
+// fieldAssignments entry (a customization, or a removed:true exclusion)
+// overrides what's shown for a given formula/bucket.
 function assignmentSummary(data, field) {
-  const list = assignmentsForField(data, field)
+  const stored = assignmentsForField(data, field)
+  const explicit = stored.filter(a => !a.removed)
+  const explicitKeys = new Set(explicit.filter(a => a.kind === 'formula').map(a => `${a.formula}:${a.bucket}`))
+  const removedKeys = new Set(stored.filter(a => a.kind === 'formula' && a.removed).map(a => `${a.formula}:${a.bucket}`))
+  const liveDefaults = []
+  for (const formula of listFormulas(data)) {
+    for (const bucket of (formula.buckets || [])) {
+      const key = `${formula.key}:${bucket.key}`
+      if (!(bucket.defaults || []).includes(field)) continue
+      if (removedKeys.has(key) || explicitKeys.has(key)) continue
+      liveDefaults.push({ kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 })
+    }
+  }
+  const list = [...explicit, ...liveDefaults]
   if (!list.length) return null
   return list.map(a => {
     const sign = (a.sign ?? 1) > 0 ? '+' : '−'
@@ -905,8 +926,28 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, setGrowthM
   const fmtNum = v => v == null ? '—' : Math.round(v / div).toLocaleString()
   const focusAssignments = focusField ? assignmentsForField(data, focusField) : []
 
-  const assignedFieldsFor = (formula, bucket) =>
-    (data.fieldAssignments || []).filter(a => a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key)
+  // Mirrors bucketSum's own logic exactly (formulas.js): a bucket's own
+  // declared defaults are shown as assigned LIVE, straight off the
+  // registry, unless an explicit removed:true entry says otherwise — never
+  // because data.fieldAssignments happens to be empty. fieldAssignments is
+  // read here only for the user's own customizations on top of that.
+  const assignedFieldsFor = (formula, bucket) => {
+    const overrides = (data.fieldAssignments || [])
+      .filter(a => a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key)
+    const overrideByField = new Map(overrides.map(o => [o.field, o]))
+    const defaults = bucket.defaults || []
+    const result = []
+    for (const field of defaults) {
+      const o = overrideByField.get(field)
+      if (o?.removed) continue
+      result.push(o || { field, kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 })
+    }
+    for (const o of overrides) {
+      if (o.removed || defaults.includes(o.field)) continue
+      result.push(o)
+    }
+    return result
+  }
 
   // Another formula's output is a perfectly legitimate ingredient here —
   // that's how real formulas actually compose (ROE needs Net Profit AND
@@ -953,11 +994,20 @@ function FormulasTab({ data, div, focusField, setAssignmentsForField, setGrowthM
 
   const toggleMembership = (formula, bucket, field, checked) => {
     const current = assignmentsForField(data, field)
+    const withoutThis = current.filter(a => !(a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key))
+    const isDefault = (bucket.defaults || []).includes(field)
     if (checked) {
-      setAssignmentsForField(field, [...current, { kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 }])
+      // Re-including one of the bucket's own defaults just clears any
+      // earlier removal — defaults are live by default, nothing to add.
+      setAssignmentsForField(field, isDefault ? withoutThis
+        : [...withoutThis, { kind: 'formula', formula: formula.key, bucket: bucket.key, sign: 1 }])
     } else {
-      const remaining = current.filter(a => !(a.kind === 'formula' && a.formula === formula.key && a.bucket === bucket.key))
-      setAssignmentsForField(field, remaining)
+      // Excluding a default is a real, recorded fact (removed:true) — the
+      // ABSENCE of an assignment no longer means excluded, since defaults
+      // are included live regardless of whether anything's recorded.
+      setAssignmentsForField(field, isDefault
+        ? [...withoutThis, { kind: 'formula', formula: formula.key, bucket: bucket.key, removed: true }]
+        : withoutThis)
     }
   }
 

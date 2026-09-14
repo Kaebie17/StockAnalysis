@@ -8,7 +8,7 @@ import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
 import { assessDataQuality, materializeIncomeNormalization, hasAnyNormalization } from '../engine/dataQuality.js'
 import { METRICS } from '../engine/metrics.js'
-import { materializeAllFormulas, recomputeNormalizedTargets } from '../engine/formulas.js'
+import { materializeFormulas, recomputeNormalizedTargets } from '../engine/formulas.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -659,17 +659,16 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   data = recomputeNormalizedTargets(data)
   // Writes every derived/fallback/ratio/weighted/growth formula's own
   // reported/Normalized output directly onto its row — see
-  // materializeAllFormulas — AFTER the line above, since a formula's
-  // inputs (e.g. tradeReceivablesNormalized) must already exist on the row
-  // by the time it combines them. Loops seed+materialize internally until
-  // a pass seeds nothing new, rather than a fixed count here — a formula
-  // whose own default is ANOTHER formula's output (Net Debt ÷ EBITDA; more
-  // recently profitBeforeTax → tax → effectiveTaxRate → FCFF, four levels
-  // deep) can only be seeded once that dependency has actually
-  // materialized, and a fixed "run it twice" guess silently stopped
-  // working the moment a chain got deeper than that. See
-  // materializeAllFormulas's own doc comment (formulas.js).
-  data = materializeAllFormulas(data)
+  // materializeFormulas — AFTER the line above, since a formula's inputs
+  // (e.g. tradeReceivablesNormalized) must already exist on the row by the
+  // time it combines them. A single pass is enough regardless of how deep
+  // a formula-depends-on-formula chain gets (profitBeforeTax -> tax ->
+  // effectiveTaxRate -> FCFF, four levels): each bucket reads its inputs
+  // LIVE off the row (see bucketSum's own comment, formulas.js), so by the
+  // time this loop reaches a formula, every earlier formula in registry
+  // declaration order has already written its value onto the SAME row
+  // this pass is building. Nothing pre-seeded, nothing to re-run.
+  data = materializeFormulas(data)
   // Normalize for everything, not a toggle between two equally-weighted
   // views: every restatement in this app is an explicit, evidence-based,
   // user-confirmed correction (a NormalizeModal entry, a restatement-tool

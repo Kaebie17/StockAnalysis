@@ -9,7 +9,6 @@
  */
 import { computeNormalizedRow } from './dataQuality.js'
 import { METRICS } from './metrics.js'
-import { seedFormulaDefaults } from './formulas.js'
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
@@ -103,7 +102,6 @@ export function migrateStoredData(data) {
   data = dropTTMRows(data)
   data = fixAlwaysPositiveFields(data)
   data = migrateCustomFieldAssignments(data)
-  data = seedFormulaDefaults(data)
   if (!data?.cashflowHistory) return data
   const STALE = /Operating CF\s*[x\u00d7*]\s*0\.7/i
   let scrubbed = 0
