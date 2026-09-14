@@ -561,17 +561,17 @@ function reducer(s, a) {
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
     }
-    // "Use recent growth instead of full history" — the one manual dial
-    // computeGrowthBundle (formulas.js) exposes for "the recent period is
-    // demonstrably more representative" without needing a full perimeter
-    // break to justify it. Off by default; toggled per growth formula.
-    case 'TOGGLE_RECENT_GROWTH_OVERRIDE': {
+    // The ONE real control for which growth method feeds `selected` — set
+    // from the header (GrowthMethodBadge). The Formulas tab only ever
+    // DISPLAYS every method as its own static card; it never sets this.
+    // startYear/'auto' clears back to the automatic rule (median by
+    // default; the break ladder once a break exists).
+    case 'SET_GROWTH_METHOD_OVERRIDE': {
       if (!s.data) return s
-      const existing = s.data.recentGrowthOverrides || []
-      const recentGrowthOverrides = existing.includes(a.formulaKey)
-        ? existing.filter(k => k !== a.formulaKey)
-        : [...existing, a.formulaKey]
-      const data = { ...s.data, recentGrowthOverrides }
+      const existing = { ...(s.data.growthMethodOverride || {}) }
+      if (!a.methodKey || a.methodKey === 'auto') delete existing[a.formulaKey]
+      else existing[a.formulaKey] = a.methodKey
+      const data = { ...s.data, growthMethodOverride: existing }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
                                   { growthWindowYears: s.growthWindowYears, basis: data.basis })
       return { ...s, data, ...computed }
@@ -1179,10 +1179,11 @@ export function AppProvider({ children }) {
     dispatch({ type: 'TOGGLE_PERIMETER_BREAK', table, year })
   }, [])
 
-  // "Prefer recent growth over full history" per growth formula — see
-  // TOGGLE_RECENT_GROWTH_OVERRIDE.
-  const toggleRecentGrowthOverride = useCallback((formulaKey) => {
-    dispatch({ type: 'TOGGLE_RECENT_GROWTH_OVERRIDE', formulaKey })
+  // The one real control for which growth method a formula uses — see
+  // SET_GROWTH_METHOD_OVERRIDE. methodKey: 'fullPeriodCagr' | 'medianYoY' |
+  // 'recentMedianYoY' | 'auto' (clears back to the automatic rule).
+  const setGrowthMethodOverride = useCallback((formulaKey, methodKey) => {
+    dispatch({ type: 'SET_GROWTH_METHOD_OVERRIDE', formulaKey, methodKey })
   }, [])
 
   // Pin one specific segment (by its startYear) as the source for a growth
@@ -1251,7 +1252,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, toggleRecentGrowthOverride, setGrowthSegmentOverride, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, togglePerimeterBreak, setGrowthMethodOverride, setGrowthSegmentOverride, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>

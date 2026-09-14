@@ -98,8 +98,18 @@ const DERIVED_FORMULAS = {
     label: 'Net Working Capital',
     table: 'balance',
     buckets: [
-      { key: 'currentOperatingAssets',      label: 'Current Operating Assets',      sign: 1,  defaults: ['tradeReceivables', 'inventories'] },
-      { key: 'currentOperatingLiabilities', label: 'Current Operating Liabilities', sign: -1, defaults: ['tradePayables', 'advanceFromCustomers'] },
+      // candidateKeys: current assets can never be filled with a liability
+      // (or vice versa) just because both happen to live on the balance
+      // sheet — table-match alone was too loose a filter (it offered Total
+      // Debt as a candidate for "current operating LIABILITIES," which
+      // isn't even a current item, let alone the right kind). A custom
+      // field the user creates is ALWAYS still offered regardless of this
+      // list (see candidatesFor, HistoryTableModal.jsx) — this only bounds
+      // which TRACKED metrics.js/registry fields make sense here.
+      { key: 'currentOperatingAssets',      label: 'Current Operating Assets',      sign: 1,  defaults: ['tradeReceivables', 'inventories'],
+        candidateKeys: ['tradeReceivables', 'inventories'] },
+      { key: 'currentOperatingLiabilities', label: 'Current Operating Liabilities', sign: -1, defaults: ['tradePayables', 'advanceFromCustomers'],
+        candidateKeys: ['tradePayables', 'advanceFromCustomers'] },
     ],
   },
   capitalEmployed: {
@@ -108,8 +118,8 @@ const DERIVED_FORMULAS = {
     label: 'Capital Employed',
     table: 'balance',
     buckets: [
-      { key: 'equity', label: 'Equity', sign: 1, defaults: ['totalEquity'] },
-      { key: 'debt',   label: 'Debt',   sign: 1, defaults: ['totalDebt'] },
+      { key: 'equity', label: 'Equity', sign: 1, defaults: ['totalEquity'], candidateKeys: ['totalEquity'] },
+      { key: 'debt',   label: 'Debt',   sign: 1, defaults: ['totalDebt'],   candidateKeys: ['totalDebt'] },
     ],
   },
   netDebt: {
@@ -118,8 +128,8 @@ const DERIVED_FORMULAS = {
     label: 'Net Debt',
     table: 'balance',
     buckets: [
-      { key: 'debt', label: 'Debt', sign: 1,  defaults: ['totalDebt'] },
-      { key: 'cash', label: 'Cash', sign: -1, defaults: ['cash'] },
+      { key: 'debt', label: 'Debt', sign: 1,  defaults: ['totalDebt'], candidateKeys: ['totalDebt'] },
+      { key: 'cash', label: 'Cash', sign: -1, defaults: ['cash'],      candidateKeys: ['cash'] },
     ],
   },
   grossProfit: {
@@ -843,6 +853,7 @@ function isFiscalYearRow(r) {
 }
 
 function computeGrowthBundle(data, formula, basis) {
+  const fLabel = fieldLabel(data, formula.field)
   const series = fieldHistory(data, formula.table)
     .filter(isFiscalYearRow)
     .map(r => ({ year: yearOf(r), value: resolvedValue(r, formula.field, basis) }))
@@ -852,11 +863,14 @@ function computeGrowthBundle(data, formula, basis) {
 
   const n = series.length - 1
   const fullPeriodCagr = (Math.pow(series[n].value / series[0].value, 1 / n) - 1) * 100
+  // A real equation (field/year names, no raw numbers — same "names only,
+  // the actual figures are one click away" convention every other
+  // formula's equation already follows), not a prose description.
+  const fullPeriodCagrEquation = `(${fLabel} FY${series[n].year} ÷ ${fLabel} FY${series[0].year})^(1/${n}) − 1`
   const fullPeriodCagrDesc = `Endpoint CAGR, FY${series[0].year} → FY${series[n].year} (${n} year${n === 1 ? '' : 's'})`
 
   const breakYears = new Set((data?.perimeterBreaks || [])
     .filter(b => b.table === formula.table).map(b => b.year))
-  const useRecent = (data?.recentGrowthOverrides || []).includes(formula.key)
 
   // Every YoY transition INTO a confirmed break year is excluded — the
   // business on the two sides of that year isn't the same business, so the
@@ -869,11 +883,17 @@ function computeGrowthBundle(data, formula, basis) {
     yoy.push({ year: series[i].year, g: (series[i].value / series[i - 1].value - 1) * 100 })
   }
   const medianYoY = median(yoy.map(p => p.g))
+  const medianYoYEquation = yoy.length
+    ? `Median( ${fLabel} YoY, FY${yoy[0].year} → FY${yoy[yoy.length - 1].year} )`
+    : null
   const medianYoYDesc = yoy.length
     ? `Median YoY, FY${yoy[0].year} → FY${yoy[yoy.length - 1].year} (${yoy.length} comparable observation${yoy.length === 1 ? '' : 's'}${breakYears.size ? ', excluding confirmed breaks' : ''})`
     : null
   const recentYoY = yoy.slice(-RECENT_GROWTH_YEARS)
   const recentMedianYoY = recentYoY.length ? median(recentYoY.map(p => p.g)) : null
+  const recentMedianYoYEquation = recentYoY.length
+    ? `Median( ${fLabel} YoY, last ${recentYoY.length}: FY${recentYoY[0].year} → FY${recentYoY[recentYoY.length - 1].year} )`
+    : null
   const recentMedianYoYDesc = recentYoY.length
     ? `Median YoY, FY${recentYoY[0].year} → FY${recentYoY[recentYoY.length - 1].year} (${recentYoY.length} observation${recentYoY.length === 1 ? '' : 's'})`
     : null
@@ -920,17 +940,32 @@ function computeGrowthBundle(data, formula, basis) {
   const overrideStart = data?.growthSegmentOverride?.[formula.key]
   const overriddenSegment = overrideStart != null ? segments.find(s => s.startYear === overrideStart) : null
 
+  // The ONE real control — set from the header (GrowthMethodBadge), not
+  // inspected-and-forgotten from the Formulas tab, which only ever DISPLAYS
+  // every method as its own static card. `null`/'auto' defers to the
+  // automatic rule below (median by default; the break ladder once a break
+  // exists) — an explicit choice of any base method always wins over that,
+  // break or no break, since it's a more specific instruction than the
+  // general-purpose default.
+  const methodOverride = data?.growthMethodOverride?.[formula.key]
+  const BASE_METHODS = {
+    fullPeriodCagr:  { value: fullPeriodCagr,  label: 'Full-period CAGR' },
+    medianYoY:       { value: medianYoY,       label: 'Median YoY (comparable)' },
+    recentMedianYoY: { value: recentMedianYoY, label: 'Recent median YoY' },
+  }
+
   let selected, method
-  if (overriddenSegment) {
+  if (methodOverride && BASE_METHODS[methodOverride]?.value != null) {
+    selected = BASE_METHODS[methodOverride].value
+    method = `Manually selected: ${BASE_METHODS[methodOverride].label}`
+  } else if (overriddenSegment) {
     selected = overriddenSegment.median
     method = overriddenSegment.count
       ? `Manually selected segment: FY${overriddenSegment.startYear} → FY${overriddenSegment.endYear} median (${overriddenSegment.count} observation${overriddenSegment.count === 1 ? '' : 's'})`
       : `Manually selected segment: FY${overriddenSegment.startYear} → FY${overriddenSegment.endYear} has no comparable observations yet`
   } else if (lastBreakYear == null) {
-    selected = useRecent ? recentMedianYoY : medianYoY
-    method = useRecent
-      ? `Median of the last ${recentYoY.length} comparable years (manually preferred over full history)`
-      : `Median of ${yoy.length} comparable years`
+    selected = medianYoY
+    method = `Median of ${yoy.length} comparable years`
   } else {
     const postBreak = segments[segments.length - 1]
     const preBreak = segments.length > 1 ? segments[segments.length - 2] : null
@@ -950,13 +985,13 @@ function computeGrowthBundle(data, formula, basis) {
   }
 
   return {
-    fullPeriodCagr, fullPeriodCagrDesc,
-    medianYoY, medianYoYDesc,
-    recentMedianYoY, recentMedianYoYDesc,
+    fullPeriodCagr, fullPeriodCagrEquation, fullPeriodCagrDesc,
+    medianYoY, medianYoYEquation, medianYoYDesc,
+    recentMedianYoY, recentMedianYoYEquation, recentMedianYoYDesc,
     stdDev, iqr, volatilityClass,
     perimeterBreakYears: [...breakYears],
     segments,
-    selected, method,
+    selected, method, methodOverride: methodOverride || null,
   }
 }
 

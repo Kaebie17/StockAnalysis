@@ -112,7 +112,7 @@ export default function Header() {
 }
 
 function IdentityBar() {
-    const { state, overrideStage, setBasis, refreshPrice, refreshPriceHistory } = useApp()
+    const { state, overrideStage, setBasis, refreshPrice, refreshPriceHistory, setGrowthMethodOverride } = useApp()
   const { data, ratioResult, stage } = state
   const [normOpen, setNormOpen] = React.useState(false)
   // Which flag (if any) opened the modal — names the year/note in its banner
@@ -227,7 +227,7 @@ function IdentityBar() {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <DataVintageBadge data={data} state={state}
           onNormalize={f => { setNormFlag(f); setNormOpen(true) }} />
-        <GrowthMethodBadge data={data} />
+        <GrowthMethodBadge data={data} setGrowthMethodOverride={setGrowthMethodOverride} />
       </div>
 
       {/* Row 4: stage + basis controls + dividend — wrap as whole units */}
@@ -326,57 +326,41 @@ function DividendLine({ data, ratioResult, cur }) {
 }
 
 /**
- * Every growth METHOD side by side, right where the data's own breadth
- * (DataVintageBadge, below) is already shown — "how many years do we have"
- * and "what does that growth actually look like by each measure" belong in
- * the same glance. Reads the registry's own bundle (formulas.js's 'growth'
- * kind: full-period CAGR, comparable-YoY median, recent median, and
- * whichever one materializeFormulas picked as `selected`) rather than
- * computing anything itself — this is a viewer onto what's already stored,
- * the same activeValue(row, key, basis) call every other consumer uses.
+ * The ONE real control for which growth method this ticker actually uses,
+ * right where the data's own breadth (DataVintageBadge, below) is already
+ * shown. Picking a method here dispatches SET_GROWTH_METHOD_OVERRIDE
+ * (AppContext) — this is the single place that decision gets made; the
+ * Formulas tab (GrowthFormulaRow) only ever DISPLAYS every method as its
+ * own static card for inspection, it never sets anything. No basis picker
+ * here either — computeGrowthBundle (formulas.js) already reads whichever
+ * of Reported/Normalized is cleaner per field internally (the whole point
+ * of normalization is that it's automatic, not a second manual switch on
+ * top of the one the underlying revenue row already has).
  */
-function GrowthMethodBadge({ data }) {
+function GrowthMethodBadge({ data, setGrowthMethodOverride }) {
   const years = (data?.reportedIncomeHistory || [])
     .filter(r => !r?.synthetic && /^\d{4}$/.test(String(r?.year ?? '').trim()))
   const latestRow = years[years.length - 1]
-  // Own independent Reported/Normalized picker, same convention FormulaRow/
-  // GrowthFormulaRow already use (default per THIS formula's own
-  // materialized Normalized output, never the app-wide data.basis toggle,
-  // which flips the moment ANYTHING on the ticker is restated regardless of
-  // whether revenue itself has anything normalized) — every formula in this
-  // app gets its own basis control; this badge doesn't get to be the
-  // exception.
-  const hasOwnNormalization = latestRow?.revenueGrowthNormalized?.value != null
-  const [basis, setBasis] = useState(hasOwnNormalization ? 'normalized' : 'reported')
-  const resolved = latestRow ? activeValue(latestRow, 'revenueGrowth', basis) : null
+  const resolved = latestRow ? activeValue(latestRow, 'revenueGrowth', 'normalized') : null
   const methods = resolved?.methods
-  const [choice, setChoice] = useState('selected')
-
-  if (!methods) return null
+  if (!methods || methods.selected == null) return null
 
   const OPTIONS = [
-    { key: 'selected',        label: 'Selected growth',        value: methods.selected,        desc: methods.method },
-    { key: 'fullPeriodCagr',  label: 'Full-period CAGR',        value: methods.fullPeriodCagr,  desc: methods.fullPeriodCagrDesc },
-    { key: 'medianYoY',       label: 'Median YoY (comparable)', value: methods.medianYoY,       desc: methods.medianYoYDesc },
-    { key: 'recentMedianYoY', label: 'Recent median YoY',       value: methods.recentMedianYoY, desc: methods.recentMedianYoYDesc },
-  ].filter(o => o.value != null)
-  if (!OPTIONS.length) return null
-
-  const active = OPTIONS.find(o => o.key === choice) || OPTIONS[0]
+    { key: 'auto',            label: 'Auto',                     available: true },
+    { key: 'fullPeriodCagr',  label: 'Full-period CAGR',         available: methods.fullPeriodCagr != null },
+    { key: 'medianYoY',       label: 'Median YoY (comparable)',  available: methods.medianYoY != null },
+    { key: 'recentMedianYoY', label: 'Recent median YoY',        available: methods.recentMedianYoY != null },
+  ].filter(o => o.available)
 
   return (
-    <span className="text-xs flex items-center gap-1 min-w-0 max-w-full" title={active.desc || ''}>
+    <span className="text-xs flex items-center gap-1 min-w-0 max-w-full" title={methods.method || ''}>
       <span className="flex-shrink-0 text-slate-600">Revenue growth:</span>
-      <select value={basis} onChange={e => setBasis(e.target.value)}
-        className="bg-transparent border-none text-slate-500 text-[11px] focus:outline-none cursor-pointer">
-        <option value="reported">Reported</option>
-        <option value="normalized">Normalized</option>
-      </select>
-      <select value={active.key} onChange={e => setChoice(e.target.value)}
+      <select value={methods.methodOverride || 'auto'}
+        onChange={e => setGrowthMethodOverride('revenueGrowth', e.target.value)}
         className="bg-transparent border-none text-slate-500 text-[11px] max-w-[9rem] sm:max-w-none truncate focus:outline-none cursor-pointer">
         {OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
       </select>
-      <span className="font-mono text-slate-400 flex-shrink-0">{active.value.toFixed(1)}%</span>
+      <span className="font-mono text-slate-400 flex-shrink-0">{methods.selected.toFixed(1)}%</span>
       {methods.volatilityClass && (
         <span className="text-slate-600 flex-shrink-0">· {methods.volatilityClass} volatility</span>
       )}
