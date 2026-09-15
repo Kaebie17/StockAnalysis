@@ -223,6 +223,27 @@ const STANDARD_FORMULA_ROWS = {
   pe: {
     key: 'pe', label: 'P/E', table: 'income', mode: 'priceRatio',
   },
+  // No stored historical shares-outstanding series exists anywhere in this
+  // app — every other historical multiple (targetMultiple.js's
+  // yearlyObservations, valuation.js's pbBand) already back-solves it the
+  // same way: shares = netProfit ÷ eps, sign-safe (both carry eps's sign,
+  // so the ratio is positive whenever they genuinely agree — see
+  // computeCustomRowValue). table:'income' since that's where netProfit/eps
+  // (and the shares they imply) live; capitalEmployed etc. show cross-table
+  // referencing a term this way is already normal.
+  marketCap: {
+    key: 'marketCap', label: 'Market Cap', table: 'income', mode: 'marketCap',
+  },
+  // Composed from marketCap (above) rather than re-deriving price×shares
+  // itself — an ordinary 'sum' row, EXCEPT marketCap's absence must mean
+  // "don't know," never "treat as zero" the way sum mode's other terms
+  // correctly do for something like otherIncome — so this gets its own
+  // small mode rather than reusing 'sum' and silently shipping "total
+  // debt − cash" mislabeled as Enterprise Value on a year with no price
+  // coverage.
+  enterpriseValue: {
+    key: 'enterpriseValue', label: 'Enterprise Value', table: 'balance', mode: 'enterpriseValue',
+  },
 }
 
 // ── Market-input "formulas" ────────────────────────────────────────────
@@ -569,6 +590,12 @@ export function computedRowEquation(data, field) {
   if (field.mode === 'priceRatio') {
     return 'Price (FY-end close) ÷ EPS'
   }
+  if (field.mode === 'marketCap') {
+    return 'Price (FY-end close) × Shares (Net Profit ÷ EPS)'
+  }
+  if (field.mode === 'enterpriseValue') {
+    return 'Market Cap + Total Debt − Cash'
+  }
   if (field.mode === 'weighted') {
     const terms = termsFor(data, field.key, 'terms')
     if (!terms.length) return '—'
@@ -698,6 +725,37 @@ function computeCustomRowValue(data, field, row, basis) {
     // one anywhere else in this app. Blank here, not a misleading number.
     if (price == null || !(eps > 0)) return null
     return price / eps
+  }
+  if (field.mode === 'marketCap') {
+    const year = yearOf(row)
+    if (year == null) return null
+    const fyEndT = Date.UTC(year, FY_END_MONTH, 0)
+    const price = nearestClosePrice(data, fyEndT)
+    const netProfit = resolvedValue(row, 'netProfit', basis)
+    const eps = resolvedValue(row, 'eps', basis)
+    if (price == null || netProfit == null || !eps) return null
+    // netProfit and eps always carry the SAME sign (eps = netProfit ÷
+    // shares, shares always positive) — so this ratio is only ever a
+    // genuine share count when they actually agree; a mismatch (large
+    // minority interest can make them disagree) means the two figures
+    // aren't describing the same thing and shouldn't be divided at all.
+    const shares = netProfit / eps
+    if (!(shares > 0)) return null
+    return price * shares
+  }
+  if (field.mode === 'enterpriseValue') {
+    const year = yearOf(row)
+    if (year == null) return null
+    const incomeRow = fieldHistory(data, 'income').find(r => yearOf(r) === year)
+    const marketCap = incomeRow ? resolvedValue(incomeRow, 'marketCap', basis) : null
+    const debt = resolvedValue(row, 'totalDebt', basis)
+    const cash = resolvedValue(row, 'cash', basis)
+    // All three required, not summed-with-gaps-skipped (sumTerms' usual
+    // rule) — an absent marketCap means "no price coverage that year," not
+    // "market cap was zero," and silently shipping "debt − cash" mislabeled
+    // as Enterprise Value would be a wrong number, not a partial one.
+    if (marketCap == null || debt == null || cash == null) return null
+    return marketCap + debt - cash
   }
   if (field.mode === 'ratio') {
     const numTerms = termsFor(data, field.key, 'numerator')
