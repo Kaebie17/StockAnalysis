@@ -659,6 +659,34 @@ function nearestClosePrice(data, targetT, toleranceDays = 14) {
   return bestDiff <= toleranceMs ? best : null
 }
 
+// Shared with ratios.js — the CURRENT snapshot's price-based ratios (P/E,
+// P/B, EV/EBITDA, ...) are the exact same formulas as these table rows,
+// just paired with a live quote (ratios.js's data.price, polled every 60s)
+// instead of a fiscal-year-end close (data.priceHistory, a separately-
+// fetched daily series that can lag the live quote by a day mid-session —
+// a real reason the PRICE SOURCE has to stay two different things). No
+// reason the ARITHMETIC should also be written twice: both call these.
+//
+// netProfit and eps always carry the SAME sign (eps = netProfit ÷ shares,
+// shares always positive) — so this ratio is only ever a genuine share
+// count when they actually agree; a mismatch (large minority interest can
+// cause this) means the two figures aren't describing the same thing and
+// shouldn't be divided at all.
+export function sharesFromNetProfitEps(netProfit, eps) {
+  if (netProfit == null || !eps) return null
+  const shares = netProfit / eps
+  return shares > 0 ? shares : null
+}
+
+// All three required, not summed-with-gaps-skipped — an absent marketCap
+// means "no price to compute it from," not "market cap was zero," and
+// silently shipping "debt − cash" mislabeled as Enterprise Value would be
+// a wrong number, not a partial one.
+export function enterpriseValueFrom(marketCap, debt, cash) {
+  if (marketCap == null || debt == null || cash == null) return null
+  return marketCap + debt - cash
+}
+
 // A term's own statement, when it declares one (ROA/ROE/Net Debt÷EBITDA mix
 // a P&L figure with a balance-sheet one) — matched to the primary row's
 // YEAR, since the two tables are separate arrays, not the same row object.
@@ -740,14 +768,8 @@ function computeCustomRowValue(data, field, row, basis) {
     const price = nearestClosePrice(data, fyEndT)
     const netProfit = resolvedValue(row, 'netProfit', basis)
     const eps = resolvedValue(row, 'eps', basis)
-    if (price == null || netProfit == null || !eps) return null
-    // netProfit and eps always carry the SAME sign (eps = netProfit ÷
-    // shares, shares always positive) — so this ratio is only ever a
-    // genuine share count when they actually agree; a mismatch (large
-    // minority interest can make them disagree) means the two figures
-    // aren't describing the same thing and shouldn't be divided at all.
-    const shares = netProfit / eps
-    if (!(shares > 0)) return null
+    const shares = sharesFromNetProfitEps(netProfit, eps)
+    if (price == null || shares == null) return null
     return price * shares
   }
   if (field.mode === 'enterpriseValue') {
@@ -757,12 +779,7 @@ function computeCustomRowValue(data, field, row, basis) {
     const marketCap = incomeRow ? resolvedValue(incomeRow, 'marketCap', basis) : null
     const debt = resolvedValue(row, 'totalDebt', basis)
     const cash = resolvedValue(row, 'cash', basis)
-    // All three required, not summed-with-gaps-skipped (sumTerms' usual
-    // rule) — an absent marketCap means "no price coverage that year," not
-    // "market cap was zero," and silently shipping "debt − cash" mislabeled
-    // as Enterprise Value would be a wrong number, not a partial one.
-    if (marketCap == null || debt == null || cash == null) return null
-    return marketCap + debt - cash
+    return enterpriseValueFrom(marketCap, debt, cash)
   }
   if (field.mode === 'ratio') {
     const numTerms = termsFor(data, field.key, 'numerator')

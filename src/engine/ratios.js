@@ -27,6 +27,7 @@
  */
 import { detectSectorType, SECTOR_TYPES } from './stage.js'
 import { activeValue } from './dataQuality.js'
+import { sharesFromNetProfitEps, enterpriseValueFrom } from './formulas.js'
 
 export function grossProfitOf(row, basis) {
   return activeValue(row, 'grossProfit', basis)?.value ?? null
@@ -204,11 +205,24 @@ export function calcRatios(data, opts = {}) {
   // absent. It never surfaced because `??` short-circuits when shares ARE
   // present, which is the common case, so the crash waited for a ticker whose
   // share count the source didn't supply.
-  const shares    = sharesRaw ?? ((marketCapRaw && price) ? marketCapRaw / price : null)
+  // EPS read here, ahead of shares below, purely so shares' own last-resort
+  // fallback (netProfit ÷ eps) has it available — eps itself still prefers
+  // shares when IT'S the one missing, a few lines down.
+  const epsRaw = val(activeValue(latestI, 'eps', basis))
+
+  // Prefers a genuinely live/reported share count or market cap; falls back
+  // to inferring shares from netProfit ÷ EPS only when neither is
+  // available at all — the exact same last-resort inference the table's
+  // own Market Cap row uses (formulas.js's sharesFromNetProfitEps), shared
+  // rather than reimplemented, since the underlying rule (shares must come
+  // out positive, or the two figures aren't describing the same thing) is
+  // identical either way — only the PRICE differs (today's live quote here,
+  // a fiscal-year-end close there), never the arithmetic.
+  const shares    = sharesRaw
+    ?? ((marketCapRaw && price) ? marketCapRaw / price : null)
+    ?? sharesFromNetProfitEps(netProfit, epsRaw)
   const marketCap = marketCapRaw ?? ((price != null && shares != null) ? price * shares : null)
 
-  // EPS: statement → derive
-  const epsRaw = val(activeValue(latestI, 'eps', basis))
   const eps = epsRaw ?? calc('Net Profit ÷ Shares', netProfit, shares, (n, s) => n / s)
 
   // ── EBITDA ─────────────────────────────────────────────────────────────────
@@ -252,8 +266,7 @@ export function calcRatios(data, opts = {}) {
   const { cagr: npCagr, windowYears: npCagrWindowYears } = windowedCagr(npSeries, opts)
 
   // ── EV ─────────────────────────────────────────────────────────────────────
-  const ev = (marketCap != null && totalDebt != null && cash != null)
-    ? marketCap + totalDebt - cash : null
+  const ev = enterpriseValueFrom(marketCap, totalDebt, cash)
 
   // ── Margins ────────────────────────────────────────────────────────────────
   // Note: Indian P&L has no "Gross Profit" line — Operating Profit IS the first
