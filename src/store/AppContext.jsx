@@ -284,95 +284,6 @@ function reducer(s, a) {
       return { ...s, data, valuation, marketExpectation }
     }
     case 'RESET':          return { ...initial }
-    case 'APPLY_NORMALIZATION': {
-      if (!s.data) return s
-      // a.rows: full reconstructed rows from NormalizeModal (already
-      // validated, ok:true) — one entry per year the user manually
-      // normalized. No separate table any more: write netProfitNormalized /
-      // epsNormalized directly onto the matching year's row in
-      // reportedIncomeHistory, as an override sibling field. Only netProfit
-      // and eps are ever lifted out of a.rows — every other field
-      // reconstructRow's identity chain touched (PBT, tax, ...) was only ever
-      // scratch work toward those two, never separately consumed by anything
-      // downstream. A year not present in a.rows is completely untouched.
-      //
-      // a.overwrite ('replace' behavior when true) matters for Table mode,
-      // which can paste several years at once — same Gap fill/Replace choice
-      // as every other bulk paste surface in the app, defaulted to true here
-      // since Excerpt mode (a single, deliberate one-year correction) has no
-      // ambiguity to gap-fill against and should always just set the value.
-      const overwrite = a.overwrite ?? true
-      const overridesByYear = Object.fromEntries((a.rows || []).map(r => [String(r.year), r]))
-      const reportedBase = s.data.reportedIncomeHistory || s.data.incomeHistory || []
-      const reportedIncomeHistory = reportedBase.map(row => {
-        const o = overridesByYear[String(row.year)]
-        if (!o) return row
-        const out = { ...row }
-        if (o.netProfit != null && (overwrite || out.netProfitNormalized?.value == null)) out.netProfitNormalized = o.netProfit
-        if (o.eps != null && (overwrite || out.epsNormalized?.value == null)) out.epsNormalized = o.eps
-        return out
-      })
-      const data = { ...s.data, reportedIncomeHistory }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
-      return { ...s, data, ...computed }
-    }
-    // The general historical-normalization restatement tool — NormalizeModal's
-    // "paste any statement" mode. Superseded design: every pasted row the
-    // user maps to a target used to sum invisibly into an opaque
-    // {target}RestatementsTotal, discarding the individual labels — the same
-    // treatment Screener itself never gives a real disclosed waterfall
-    // (Exceptional Items AT, Profit for EPS/PE all survive as their OWN
-    // rows, never collapsed into Net Profit). Every mapped row now becomes
-    // its own persisted custom field instead — see ADD_CUSTOM_FIELDS_BATCH —
-    // so there's nothing left for this action to do; a target's Normalized
-    // figure is derived live from whichever custom rows currently target it
-    // (formulas.js's normalizedFieldValue), not from a stored
-    // total. Nothing dispatches this any more.
-    //
-    // Creating several named rows in one paste, plus their values (which can
-    // span more than one statement — a restatement paste can mix P&L and
-    // balance-sheet rows), needs a single batched dispatch rather than N
-    // separate ADD_CUSTOM_FIELD + EDIT_HISTORY_CELLS round trips, each of
-    // which would otherwise re-run computeAll on its own.
-    // a.fields: [{ key, label, table }] — one per mapped row.
-    // a.assignments: [{ field, kind: 'restatement', target, sign }] — that
-    // row's mapping, unsigned magnitude in a.edits (sign lives on the
-    // assignment, applied only when the target's Normalized figure is
-    // derived).
-    // a.edits:  [{ key, year, value }] — that row's own values, unsigned.
-    case 'ADD_CUSTOM_FIELDS_BATCH': {
-      if (!s.data) return s
-      const customFields = [...(s.data.customFields || []), ...(a.fields || [])]
-      const fieldAssignments = (a.assignments || []).length
-        ? [...(s.data.fieldAssignments || []), ...a.assignments]
-        : s.data.fieldAssignments
-      let data = { ...s.data, customFields, fieldAssignments }
-      const tableByKey = Object.fromEntries((a.fields || []).map(f => [f.key, f.table]))
-      const editsByTable = {}
-      for (const e of (a.edits || [])) {
-        const table = tableByKey[e.key]
-        if (!table || e.value == null) continue
-        ;(editsByTable[table] ??= []).push(e)
-      }
-      for (const [table, edits] of Object.entries(editsByTable)) {
-        const histKey = table === 'income' ? 'reportedIncomeHistory' : `${table}History`
-        const base = table === 'income' ? (data.reportedIncomeHistory || data.incomeHistory || []) : (data[histKey] || [])
-        const byYear = Object.fromEntries(base.map(r => [String(r.year), { ...r }]))
-        for (const e of edits) {
-          const y = String(e.year)
-          if (!byYear[y]) byYear[y] = { year: y }
-          byYear[y] = { ...byYear[y], [e.key]: { value: e.value, status: 'pasted', formula: null } }
-        }
-        const newHistory = Object.values(byYear).sort((x, y) => x.year.localeCompare(y.year))
-        data = table === 'income'
-          ? { ...data, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
-          : { ...data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
-      }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
-      return { ...s, data, ...computed }
-    }
     // Combine several custom rows into one — either a brand-new row
     // (a.mode 'new', a.newField carries its {key,label,table,target,sign})
     // or one of the merged rows itself (a.mode 'existing', a.destKey names
@@ -1131,14 +1042,6 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_BASIS', basis })
   }, [])
 
-  // overwrite: true (default) always sets the value — right for Excerpt
-  // mode's single, deliberate correction. Table mode passes its own Gap
-  // fill/Replace choice explicitly, same pattern as every other bulk-paste
-  // surface.
-  const applyNormalization = useCallback((rows, overwrite = true) => {
-    dispatch({ type: 'APPLY_NORMALIZATION', rows, overwrite })
-  }, [])
-
   // The editable data table's direct-cell commit — see EDIT_HISTORY_CELLS.
   // edits: [{ year, field, value }], value null clears the cell.
   const editHistoryCells = useCallback((tableType, edits) => {
@@ -1154,13 +1057,6 @@ export function AppProvider({ children }) {
 
   const removeCustomField = useCallback((key) => {
     dispatch({ type: 'REMOVE_CUSTOM_FIELD', key })
-  }, [])
-
-  // One or more named rows created in a single go, each with its own values
-  // — NormalizeModal's restatement paste, which can map several distinct
-  // line items to targets at once. See ADD_CUSTOM_FIELDS_BATCH.
-  const addCustomFieldsBatch = useCallback((fields, edits, assignments) => {
-    dispatch({ type: 'ADD_CUSTOM_FIELDS_BATCH', fields, edits, assignments })
   }, [])
 
   // Replace a field's entire assignment list in one go — what does this row
@@ -1241,7 +1137,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, applyNormalization, editHistoryCells, addCustomField, removeCustomField, addCustomFieldsBatch, mergeCustomFields, setAssignmentsForField, setGrowthMethodOverride, setGrowthMethodWindow, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, setGrowthMethodOverride, setGrowthMethodWindow, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>

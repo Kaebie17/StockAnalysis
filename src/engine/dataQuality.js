@@ -104,19 +104,22 @@ function exceptionalOf(row) {
  * fields — nothing stored, nothing merged from a second table. There is
  * exactly one income table (reportedIncomeHistory); a row that needs a
  * normalized netProfit/eps either says so itself (netProfitNormalized /
- * epsNormalized — a MANUAL correction from NormalizeModal, for something not
- * derivable from anything Screener discloses, e.g. an AR footnote) or carries
- * enough of the exceptional-items group for this function to derive it on the
- * spot, every time it's asked, from the row's own current values. Either way
- * there is nothing to go stale, and nothing that needs merging field-by-field
- * or row-by-row with anything else.
+ * epsNormalized — a MANUAL correction typed directly into the data table's
+ * own Normalized row, for something not derivable from anything Screener
+ * discloses, e.g. an AR footnote) or carries enough of the exceptional-items
+ * group for this function to derive it on the spot, every time it's asked,
+ * from the row's own current values. Either way there is nothing to go
+ * stale, and nothing that needs merging field-by-field or row-by-row with
+ * anything else.
  *
  * Returns null when there's genuinely nothing to normalize for this row.
  */
 export function computeNormalizedRow(row) {
-  // Present and NOT flagged `auto` = a genuine manual entry (NormalizeModal
-  // — or older stored data that predates the `auto` flag below, which
-  // never had it either) — always wins outright, never second-guessed.
+  // Present and NOT flagged `auto` = a genuine manual entry (typed directly
+  // into the data table's Normalized row — see HistoryTableModal.jsx/
+  // EDIT_HISTORY_CELLS's `normalized` flag — or older stored data that
+  // predates the `auto` flag below, which never had it either) — always
+  // wins outright, never second-guessed.
   // Present AND flagged `auto` is THIS function's own prior materialization
   // (see materializeIncomeNormalization) — must be recomputed fresh every
   // time rather than trusted as-is, or a correction to the underlying
@@ -279,8 +282,9 @@ export function activeValue(row, key, basis) {
  * recomputeNormalizedTargets (formulas.js) already applies to
  * the other ten fields: a Normalized figure belongs in the table itself,
  * not only computable on demand by whichever function happens to ask for
- * it. A manual NormalizeModal entry is left exactly as it is (this function
- * never overwrites one); an auto-derivable year (exceptional items
+ * it. A manual entry (typed into the data table's Normalized row) is left
+ * exactly as it is (this function never overwrites one); an auto-derivable
+ * year (exceptional items
  * disclosed, no manual override) gets computeNormalizedRow's result written
  * in, tagged `auto` so a later pass knows to recompute it fresh rather than
  * trust it as a human's own confirmation — see the `auto` check in

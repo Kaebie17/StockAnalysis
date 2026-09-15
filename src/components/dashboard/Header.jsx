@@ -8,7 +8,6 @@ import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
 import SyncControls from '../../sync/SyncControls.jsx'
-import NormalizeModal from './NormalizeModal.jsx'
 import HistoryTableModal from './HistoryTableModal.jsx'
 
 const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
@@ -114,11 +113,18 @@ export default function Header() {
 function IdentityBar() {
     const { state, overrideStage, setBasis, refreshPrice, refreshPriceHistory, setGrowthMethodOverride } = useApp()
   const { data, ratioResult, stage } = state
-  const [normOpen, setNormOpen] = React.useState(false)
-  // Which flag (if any) opened the modal — names the year/note in its banner
-  // and defaults it to table mode. null = the plain "⚖ Normalize" button.
-  const [normFlag, setNormFlag] = React.useState(null)
   const [tableOpen, setTableOpen] = React.useState(false)
+  // Which row a data-quality flag's "normalize this year →" link should
+  // land the data table open on — the flag names the concerned field
+  // (pnl/balance/cashflow-spike) or, lacking one (a margin-outlier or a
+  // plain user flag isn't about one line item specifically), defaults to
+  // Net Profit, the headline figure most such corrections concern. Direct
+  // navigation to the concerned row, not a separate normalize flow.
+  const [tableFocus, setTableFocus] = React.useState(null)
+  const flagToFocus = f => ({
+    table: f?.kind === 'balance-spike' ? 'balance' : f?.kind === 'cashflow-spike' ? 'cashflow' : 'income',
+    field: f?.field || 'netProfit',
+  })
   const basis = data?.basis || 'reported'
   // No separate normalized table any more — whether the toggle shows at all
   // depends on whether ANYTHING has something to normalize: netProfit/eps
@@ -226,7 +232,7 @@ function IdentityBar() {
       {/* Row 3: data vintage badge (its own line — it's long) */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <DataVintageBadge data={data} state={state}
-          onNormalize={f => { setNormFlag(f); setNormOpen(true) }} />
+          onNormalize={f => { setTableFocus(flagToFocus(f)); setTableOpen(true) }} />
         <GrowthMethodBadge data={data} setGrowthMethodOverride={setGrowthMethodOverride} />
       </div>
 
@@ -248,11 +254,7 @@ function IdentityBar() {
           <option value="TRANSITION">🔄 Transition</option>
           <option value="ESTABLISHED">🏛️ Established</option>
         </select>
-        <button onClick={() => { setNormFlag(null); setNormOpen(true) }} title="Normalize a one-off"
-          className="text-xs px-2 py-0.5 rounded border border-navy-700 text-slate-400 hover:text-accent hover:border-accent/50 transition-colors whitespace-nowrap">
-          ⚖ Normalize
-        </button>
-        <button onClick={() => setTableOpen(true)} title="View and edit the stored history, cell by cell"
+        <button onClick={() => { setTableFocus(null); setTableOpen(true) }} title="View and edit the stored history, cell by cell"
           className="text-xs px-2 py-0.5 rounded border border-navy-700 text-slate-400 hover:text-accent hover:border-accent/50 transition-colors whitespace-nowrap">
           📋 Data table
         </button>
@@ -269,8 +271,7 @@ function IdentityBar() {
         <DividendLine data={data} ratioResult={ratioResult} cur={cur} />
       </div>
 
-      <NormalizeModal open={normOpen} onClose={() => setNormOpen(false)} flag={normFlag} />
-      <HistoryTableModal open={tableOpen} onClose={() => setTableOpen(false)} />
+      <HistoryTableModal open={tableOpen} onClose={() => setTableOpen(false)} initialFocus={tableFocus} />
     </div>
   )
 }

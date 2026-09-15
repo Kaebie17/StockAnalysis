@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
-import { computeNormalizedRow, activeValue } from '../../engine/dataQuality.js'
+import { parseExcerpt, proposalToEdit } from '../../engine/parseExcerpt.js'
+import { activeValue } from '../../engine/dataQuality.js'
 import { availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField, INPUT_FORMULAS, computedRowEquation, formulaTerms } from '../../engine/formulas.js'
 import { marketOf } from '../../engine/requiredReturn.js'
 import { getRiskFreeRate, refreshRiskFreeRate } from '../../api/riskFreeClient.js'
@@ -84,7 +85,7 @@ function assignmentSummary(data, field) {
   }).join('; ')
 }
 
-export default function HistoryTableModal({ open, onClose }) {
+export default function HistoryTableModal({ open, onClose, initialFocus }) {
   const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setGrowthMethodWindow } = useApp()
   const data = state?.data
   const currency = data?.currency
@@ -114,9 +115,22 @@ export default function HistoryTableModal({ open, onClose }) {
   // changed" check, not a durable per-value audit trail.
   const [lastSeenOutputs, setLastSeenOutputs] = useState({})
 
+  // initialFocus (optional): { table, field } — a caller outside this
+  // modal (a data-quality flag's "normalize this year →" link) pointing
+  // straight at the concerned row, on the concerned statement, instead of
+  // opening a separate normalize flow. Same focusField state the Formulas
+  // tab's own nav buttons already set — reused here to also highlight the
+  // matching row (and its Normalized sibling) in the ordinary grid.
+  // Deliberately depends on `open` alone, not `initialFocus` — the caller
+  // passes a fresh object literal every render, and re-running this on
+  // every such render (rather than only the closed→open transition) would
+  // keep yanking the user back to the focused field even after they'd
+  // navigated elsewhere inside the modal.
   useEffect(() => {
     if (!open) return
-    setTable('income'); setPending({}); setEditingKey(null); setAddingRow(false); setMerging(false); setFocusField(null)
+    setTable(initialFocus?.table ?? 'income'); setPending({}); setEditingKey(null); setAddingRow(false); setMerging(false)
+    setFocusField(initialFocus?.field ?? null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   const goToFormulas = (field) => { setFocusField(field); setTable('formulas') }
@@ -253,27 +267,13 @@ export default function HistoryTableModal({ open, onClose }) {
       yoyRow('netProfit', 'Net Profit YoY', 'netProfit'),
     ].forEach(r => r && computedRows.push(r))
 
-    // Net Profit / EPS Normalized — computeNormalizedRow covers both the
-    // manual override (NormalizeModal) and the live auto-derivation from
-    // disclosed exceptional items; shown whenever either produces something
-    // for at least one year, same "only render if it has content" rule as
-    // the rest of this table.
-    const npNorm = years.map(y => {
-      const row = history.find(r => String(r.year) === y)
-      const n = row ? computeNormalizedRow(row) : null
-      return n ? val(n.netProfit) : null
-    })
-    if (npNorm.some(v => v != null)) {
-      computedRows.push({ label: 'Net Profit (Normalized)', cells: npNorm, fmt: v => v == null ? null : Math.round(v / div).toLocaleString(), anchor: 'netProfit' })
-    }
-    const epsNorm = years.map(y => {
-      const row = history.find(r => String(r.year) === y)
-      const n = row ? computeNormalizedRow(row) : null
-      return n ? val(n.eps) : null
-    })
-    if (epsNorm.some(v => v != null)) {
-      computedRows.push({ label: 'EPS (Normalized)', cells: epsNorm, fmt: v => v == null ? null : v.toFixed(2), anchor: 'eps' })
-    }
+    // Net Profit/EPS Normalized no longer get a separate read-only display
+    // here — materializeIncomeNormalization (dataQuality.js, called from
+    // computeAll) already writes netProfitNormalized/epsNormalized onto
+    // the row itself (auto-derived from disclosed exceptional items, or a
+    // manual entry), so they render through the SAME editable Normalized
+    // row every other tracked field gets below, reading that exact field —
+    // this used to be a second, redundant display of the identical number.
   }
   // Every shown row's Normalized sibling now renders as its own EDITABLE
   // row right beneath it (see the EditableRow calls with NORM_SUFFIX,
@@ -372,10 +372,13 @@ export default function HistoryTableModal({ open, onClose }) {
                     commitCell={commitCell} cellKey={cellKey}
                     assignmentNote={assignmentSummary(data, field)}
                     onNavigate={() => goToFormulas(field)}
+                    focused={focusField === field}
                   />
                   <EditableRow label={`${METRICS[field]?.label || field} (Normalized)`} field={`${field}${NORM_SUFFIX}`} years={years}
                     cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
                     commitCell={commitCell} cellKey={cellKey} muted
+                    focused={focusField === field}
+                    div={div} reportedValueFor={y => committedFor(y, field)}
                   />
                   {(computedRowsByAnchor[field] || []).map(renderComputedRow)}
                 </React.Fragment>
@@ -390,10 +393,13 @@ export default function HistoryTableModal({ open, onClose }) {
                     }}
                     assignmentNote={assignmentSummary(data, f.key)}
                     onNavigate={() => goToFormulas(f.key)}
+                    focused={focusField === f.key}
                   />
                   <EditableRow label={`${f.label} (Normalized)`} field={`${f.key}${NORM_SUFFIX}`} years={years}
                     cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
                     commitCell={commitCell} cellKey={cellKey} muted
+                    focused={focusField === f.key}
+                    div={div} reportedValueFor={y => committedFor(y, f.key)}
                   />
                   {(computedRowsByAnchor[f.key] || []).map(renderComputedRow)}
                 </React.Fragment>
@@ -458,7 +464,7 @@ export default function HistoryTableModal({ open, onClose }) {
   )
 }
 
-function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, assignmentNote, onNavigate, muted }) {
+function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, assignmentNote, onNavigate, muted, focused, div, reportedValueFor }) {
   const [showPaste, setShowPaste] = useState(false)
   const [pasteText, setPasteText] = useState('')
   const [pasteWarning, setPasteWarning] = useState('')
@@ -470,11 +476,30 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
   // values); reuses parseRestatementRows as-is. Stages into the same
   // pending state a single cell edit would — still gated behind Save
   // changes, so a bad paste costs nothing until confirmed.
+  //
+  // A pasted TABLE isn't the only thing that lands here — AR/report PROSE
+  // ("net profit for FY2022 grew to ₹450 Cr after excluding a one-off gain
+  // of ₹50 Cr") never parses as one, but is exactly what a Normalized row
+  // wants filled from. Falls back to parseExcerpt (formerly NormalizeModal-
+  // only) for that case — WHICH field is already known here (this row), so
+  // only the year/mode/value need extracting, not which P&L line.
   const fillFromPaste = () => {
     const parsed = parseRestatementRows(pasteText)
     const row = parsed.rows?.[0]
     if (!row) {
-      setPasteWarning(parsed.warnings?.[0] || 'Could not find a year header and a row of values in that paste.')
+      const proposal = parseExcerpt(pasteText)
+      if (proposal.year && proposal.mode != null && years.includes(proposal.year)) {
+        const reported = reportedValueFor ? reportedValueFor(proposal.year) : null
+        const edit = proposalToEdit(proposal, reported)
+        if (edit?.newValue != null) {
+          const display = SKIP_SCALE.has(field) ? edit.newValue : edit.newValue / (div || 1)
+          commitCell(proposal.year, field, String(Math.round(display * 100) / 100))
+          setPasteText('')
+          setPasteWarning(`Staged FY${proposal.year} from the excerpt (${proposal.mode}${proposal.mode === 'percent' ? ` ${proposal.percent}%` : ''}) — review the figure, then click Save changes to commit.`)
+          return
+        }
+      }
+      setPasteWarning(parsed.warnings?.[0] || (proposal.note && proposal.year ? proposal.note : 'Could not find a year header and a row of values, or a readable excerpt, in that paste.'))
       return
     }
     let matched = 0
@@ -497,8 +522,8 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
 
   return (
     <>
-    <tr className="border-b border-navy-800/50">
-      <td className={'py-1 sticky left-0 bg-navy-900 pr-2 min-w-[11rem] ' + (muted ? 'text-slate-500 italic' : 'text-slate-300')}>
+    <tr className={'border-b border-navy-800/50' + (focused ? ' bg-accent/10' : '')}>
+      <td className={'py-1 sticky left-0 pr-2 min-w-[11rem] ' + (focused ? 'bg-accent/10' : 'bg-navy-900') + ' ' + (muted ? 'text-slate-500 italic' : 'text-slate-300')}>
         {label}
         <button onClick={() => { setShowPaste(s => !s); setPasteWarning('') }}
           title="Bulk-fill this row from a paste" className="ml-1 text-slate-600 hover:text-accent">📋</button>
