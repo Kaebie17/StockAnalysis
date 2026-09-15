@@ -140,7 +140,11 @@ export function computeNormalizedRow(row) {
   }
 
   const np = val(row?.netProfit)
-  if (!(np > 0)) return null
+  // NOT `!(np > 0)` — a reported loss caused BY the exceptional item being
+  // removed here is exactly the case worth normalizing (Profit for PE
+  // positive while reported net profit/EPS is negative), not one to skip.
+  // Only bail when there's genuinely no netProfit figure to work from.
+  if (np == null) return null
 
   const directClean = val(row?.profitExclExceptional)
   const exc = exceptionalOf(row)
@@ -173,7 +177,11 @@ export function computeNormalizedRow(row) {
   const reportedEpsBasis = val(row?.profitForEPS) ?? (np - minorityShare)
   const directPE = val(row?.profitForPE)
   let epsBasisAdjusted, epsDerived
-  if (directPE != null && directPE > 0) {
+  // A directly disclosed "Profit for PE" is trusted as-is, negative or not —
+  // same reasoning as netProfit basis above: distrusting a genuinely
+  // disclosed clean figure just because it's negative would fall back to a
+  // WORSE, derived-by-subtraction number for no reason.
+  if (directPE != null) {
     epsBasisAdjusted = directPE
     epsDerived = false
   } else {
@@ -181,7 +189,15 @@ export function computeNormalizedRow(row) {
     epsDerived = true
   }
   const reportedEps = val(row?.eps)
-  const adjustedEps = (reportedEps > 0 && reportedEpsBasis > 0 && epsBasisAdjusted > 0)
+  // Proportional scaling (reportedEps × adjustedBasis/reportedBasis) is
+  // sign-agnostic algebra — it holds exactly whether reportedEps/its basis
+  // are positive or negative (verify: basis′/basis already carries whatever
+  // sign flip is needed). The only real precondition is a nonzero
+  // denominator to divide by, not positivity — requiring `>0` here silently
+  // exempted every loss year from normalization, which is precisely the
+  // case (a one-off charge turning a profit into a reported loss) this
+  // whole function exists to reveal.
+  const adjustedEps = (reportedEps != null && reportedEpsBasis != null && reportedEpsBasis !== 0)
     ? reportedEps * (epsBasisAdjusted / reportedEpsBasis) : null
 
   return {
@@ -200,7 +216,7 @@ export function computeNormalizedRow(row) {
       derivedByOrdering: npDerived || epsDerived,
       minorityAdjusted: minorityShare !== 0 || val(row?.profitForEPS) != null,
       impactPct: round(((np - npAdjusted) / np) * 100, 1),
-      epsImpactPct: adjustedEps != null && reportedEps > 0
+      epsImpactPct: adjustedEps != null && reportedEps !== 0
         ? round(((reportedEps - adjustedEps) / reportedEps) * 100, 1) : null,
       note: `${excAfterTax > 0 ? 'A gain of' : 'A charge of'} ${Math.abs(round(excAfterTax, 0))} was reported separately and has been removed`,
       resolved: true,
