@@ -23,6 +23,7 @@
 
 const round = (v, d = 1) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 import { peerBand } from './peerBands.js'
+import { activeValue } from './dataQuality.js'
 
 const DAY = 86400000
 
@@ -48,7 +49,7 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   // `null` (a realistic shape for unset state in this app) would bypass them.
   priceHistory = priceHistory || []
   incomeHistory = incomeHistory || []
-  const { peerBand = null, currentEps = null, monthsWindow = 6 } = opts
+  const { peerBand = null, currentEps = null, monthsWindow = 6, basis } = opts
   if (!band?.median || !(band.median > 0)) {
     return { detected: false, reason: 'No historical multiple band to compare against' }
   }
@@ -59,7 +60,7 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   // trailing and forward is roughly the growth rate — so a growing company would
   // read as permanently "re-rated upward" and the detector would fire on
   // arithmetic rather than on anything the market did.
-  const trailingEps = currentEps ?? latestEps(incomeHistory)
+  const trailingEps = currentEps ?? latestEps(incomeHistory, basis)
   if (!(trailingEps > 0)) return { detected: false, reason: 'No EPS to measure the current multiple' }
   const g = opts.growth
   if (g == null || !isFinite(g)) {
@@ -213,10 +214,10 @@ export function peerBandFrom(peers = []) {
   return peerBand(withFallback, 'pe')
 }
 
-function latestEps(incomeHistory = []) {
+function latestEps(incomeHistory = [], basis) {
   const val = t => (t && typeof t === 'object' ? t.value : t)
   for (let i = incomeHistory.length - 1; i >= 0; i--) {
-    const e = val(incomeHistory[i]?.eps)
+    const e = val(activeValue(incomeHistory[i], 'eps', basis))
     if (e > 0) return e
   }
   return null

@@ -23,6 +23,7 @@
 
 import { capmCostOfEquity, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { TIER } from './methodologyTier.js'
+import { activeValue } from './dataQuality.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -212,6 +213,7 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     cashflowHistory: opts.cashflowHistory || [],
     dividendYield: R.dividendYield?.value ?? null,
     pe: R.pe?.value ?? null,
+    basis: opts.basis,
   })
   const rr = requiredReturn({ riskFreeRate, beta, equityRiskPremium, market, betaMeta })
   const sg = sustainableGrowth({ roe, payoutPct })
@@ -404,7 +406,7 @@ function firstOf(forms) {
 export function averagePayoutPct(history = [], opts = {}) {
   const rates = []
   for (const row of history || []) {
-    const np = val(row?.netProfit)
+    const np = val(activeValue(row, 'netProfit', opts.basis))
     const div = val(row?.dividendPaid) ?? val(row?.dividend) ?? val(row?.dividendsPaid)
     if (np > 0 && div >= 0) {
       const pct = (Math.abs(div) / np) * 100
@@ -412,7 +414,7 @@ export function averagePayoutPct(history = [], opts = {}) {
     }
     // Per-share route — often present where absolutes aren't.
     const dps = val(row?.dps) ?? val(row?.dividendPerShare)
-    const eps = val(row?.eps)
+    const eps = val(activeValue(row, 'eps', opts.basis))
     if (rates.length === 0 && dps >= 0 && eps > 0) {
       const pct = (dps / eps) * 100
       if (pct >= 0 && pct <= 100) rates.push(pct)
@@ -425,7 +427,7 @@ export function averagePayoutPct(history = [], opts = {}) {
       const div = Math.abs(val(row?.dividendsPaid) ?? val(row?.dividendPaid) ?? 0)
       const y = String(row?.year ?? '')
       const inc = (history || []).find(r => String(r?.year ?? '') === y)
-      const np = val(inc?.netProfit)
+      const np = val(activeValue(inc, 'netProfit', opts.basis))
       if (div > 0 && np > 0) {
         const pct = (div / np) * 100
         if (pct >= 0 && pct <= 100) rates.push(pct)

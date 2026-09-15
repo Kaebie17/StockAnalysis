@@ -16,7 +16,6 @@ import { forwardPeBand } from '../../engine/estimate.js'
 import { yearlyObservations } from '../../engine/targetMultiple.js'
 import { benchmarkReturn } from '../../engine/snapshotRebuild.js'
 import { aggregateLots, holdingMath, summaryLevel } from '../../engine/positionAggregate.js'
-import { activeValue } from '../../engine/dataQuality.js'
 
 const sym = c => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[c]) || '₹'
 const money = (v, c) => (v == null ? '—' : sym(c) + Math.abs(Math.round(v)).toLocaleString('en-IN'))
@@ -291,19 +290,11 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
     if (!analysis?.ratioResult) return {}
     const rr = price != null && price !== analysis.ratioResult.price
       ? { ...analysis.ratioResult, price } : analysis.ratioResult
-    // assessFromQuarterly (guidance-tracking) still takes a plain
-    // incomeHistory with no idea normalization exists, so it still needs a
-    // pre-corrected copy handed to it here. buildEstimate/forwardPeBand/
-    // yearlyObservations do NOT any more — they resolve the reported/
-    // normalized toggle internally now (estimate.js/targetMultiple.js), so
-    // they're called below with the ticker's raw stored history plus
-    // `basis`/`normBasis`, not a copy this component pre-corrected itself.
-    const activeIncomeHistory = (analysis.data?.reportedIncomeHistory || []).map(row => ({
-      ...row,
-      netProfit: activeValue(row, 'netProfit', analysis.data?.basis),
-      eps: activeValue(row, 'eps', analysis.data?.basis),
-      revenue: activeValue(row, 'revenue', analysis.data?.basis),
-    }))
+    // buildEstimate/forwardPeBand/yearlyObservations/assessFromQuarterly all
+    // resolve the reported/normalized toggle internally now (estimate.js,
+    // targetMultiple.js, quarterlyBridge.js), so every one of them below is
+    // called with the ticker's raw stored history plus `basis`/`normBasis`,
+    // not a copy this component pre-corrects itself.
     const rawIncomeHistory = analysis.data?.reportedIncomeHistory || []
     const rawBalanceHistory = analysis.data?.balanceHistory || []
     const est = buildEstimate(rr, {
@@ -317,7 +308,8 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
     const ga = assessFromQuarterly(isLive ? state.quarterlyData : null, {
       guidance: isLive ? state.guidance : null,
       modelGrowth: est?.growth ?? null,
-      incomeHistory: activeIncomeHistory,
+      incomeHistory: rawIncomeHistory,
+      basis: analysis.data?.basis,
     })
     // Leading conditions, from data already fetched — volume, the multiple's
     // position in its own band, the earnings-vs-multiple gap, sector divergence.

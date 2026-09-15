@@ -15,6 +15,7 @@
  */
 import { assessGuidance, seasonalityFrom, resolveIfComplete } from './guidanceTracking.js'
 import { percentileSpread } from './spread.js'
+import { activeValue } from './dataQuality.js'
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
@@ -63,7 +64,7 @@ export function assessFromQuarterly(quarterlyData, opts = {}) {
   } else {
     const hist = opts.incomeHistory || []
     const last = hist[hist.length - 1]
-    priorFyRevenue = val(last?.revenue) ?? null
+    priorFyRevenue = val(activeValue(last, 'revenue', opts.basis)) ?? null
   }
   if (!(priorFyRevenue > 0)) return null
 
