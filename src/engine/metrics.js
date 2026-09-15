@@ -98,50 +98,6 @@ export const METRICS = {
     csv: ['ebitda', 'EBITDA'],
     needs: 'EV/EBITDA, interest coverage',
   },
-  // Never itself reported/scraped/pasted from any source — always the
-  // 'ebit' formula's own output (formulas.js: Operating Profit, else
-  // EBITDA − Depreciation), materialized here so it shows as an ordinary
-  // row in the P&L tab the same way Gross Profit/EBITDA/Tax do, instead of
-  // only being visible inside the Formulas tab.
-  ebit: {
-    table: 'income', label: 'EBIT', base: false,
-    yahoo: [], sec: [], screener: [], expandFrom: null, ar: [], csv: [],
-    needs: 'ROCE',
-  },
-  depreciation: {
-    table: 'income', label: 'Depreciation', base: true,
-    yahoo: ['reconciledDepreciation', 'depreciationAndAmortizationInIncomeStatement',
-            'depreciationAmortizationDepletionIncomeStatement', 'depreciationIncomeStatement'],
-    sec: ['DepreciationDepletionAndAmortization', 'DepreciationAmortizationAndAccretionNet', 'Depreciation'],
-    screener: ['depreciation', 'depreciationandamortisation', 'da'],
-    expandFrom: null,
-    ar: [/depreciation and amorti[sz]ation/i, /\bdepreciation\b/i],
-    csv: ['depreciation', 'da'],
-    needs: 'EBITDA, ROCE',
-  },
-  interest: {
-    table: 'income', label: 'Interest', base: true,
-    yahoo: ['interestExpense', 'interestExpenseNonOperating', 'netNonOperatingInterestIncomeExpense'],
-    // InterestIncomeExpenseNet deliberately absent: on a bank it is net interest
-    // INCOME, and using it as interest expense inverts interest coverage.
-    sec: ['InterestExpense', 'InterestExpenseDebt', 'InterestExpenseNonoperating',
-          'InterestExpenseBorrowings', 'InterestAndDebtExpense'],
-    screener: ['interest', 'interestexpense', 'financecosts', 'financecost'],
-    expandFrom: null,
-    ar: [/finance costs?/i, /interest expense/i],
-    csv: ['interest', 'financeCost'],
-    needs: 'interest coverage',
-  },
-  netProfit: {
-    table: 'income', label: 'Net Profit', base: true,
-    yahoo: ['netIncome', 'netIncomeCommonStockholders'],
-    sec: ['NetIncomeLoss', 'ProfitLoss', 'NetIncomeLossAvailableToCommonStockholdersBasic'],
-    screener: ['netprofit', 'profitaftertax', 'pat', 'netincome', 'netearnings'],
-    expandFrom: null,
-    ar: [/profit (?:for the (?:year|period)|after tax)/i, /net profit/i],
-    csv: ['netProfit', 'netIncome', 'pat'],
-    needs: 'net margin, ROE, ROA, EPS, P/E',
-  },
   // otherIncome and the two exceptional-items lines exist to feed the
   // per-year normalization derivation (dataQuality.js's normaliseIncome) —
   // NOT flagged as missing base data (base: false) when absent, because
@@ -156,6 +112,53 @@ export const METRICS = {
     ar: [/other income/i],
     csv: ['otherIncome'],
     needs: 'exceptional-items normalization',
+  },
+  exceptionalItems: {
+    table: 'income', label: 'Exceptional Items', base: false,
+    yahoo: [], sec: [],
+    screener: ['exceptionalitems', 'exceptionalitem'],
+    // Pre-tax figure, revealed by expanding OTHER INCOME (not Profit before
+    // tax — corrected per confirmed Screener layout). exceptionalItemsAT and
+    // profitExclExceptional (below) are preferred over deriving from this
+    // when present, since both sidestep this app's own tax-rate estimate.
+    expandFrom: 'Other Income',
+    ar: [/exceptional items?/i, /extraordinary items?/i],
+    csv: ['exceptionalItems'],
+    needs: 'per-year normalization (pre-tax; see exceptionalItemsAT)',
+  },
+  interest: {
+    table: 'income', label: 'Interest', base: true,
+    yahoo: ['interestExpense', 'interestExpenseNonOperating', 'netNonOperatingInterestIncomeExpense'],
+    // InterestIncomeExpenseNet deliberately absent: on a bank it is net interest
+    // INCOME, and using it as interest expense inverts interest coverage.
+    sec: ['InterestExpense', 'InterestExpenseDebt', 'InterestExpenseNonoperating',
+          'InterestExpenseBorrowings', 'InterestAndDebtExpense'],
+    screener: ['interest', 'interestexpense', 'financecosts', 'financecost'],
+    expandFrom: null,
+    ar: [/finance costs?/i, /interest expense/i],
+    csv: ['interest', 'financeCost'],
+    needs: 'interest coverage',
+  },
+  depreciation: {
+    table: 'income', label: 'Depreciation', base: true,
+    yahoo: ['reconciledDepreciation', 'depreciationAndAmortizationInIncomeStatement',
+            'depreciationAmortizationDepletionIncomeStatement', 'depreciationIncomeStatement'],
+    sec: ['DepreciationDepletionAndAmortization', 'DepreciationAmortizationAndAccretionNet', 'Depreciation'],
+    screener: ['depreciation', 'depreciationandamortisation', 'da'],
+    expandFrom: null,
+    ar: [/depreciation and amorti[sz]ation/i, /\bdepreciation\b/i],
+    csv: ['depreciation', 'da'],
+    needs: 'EBITDA, ROCE',
+  },
+  // Never itself reported/scraped/pasted from any source — always the
+  // 'ebit' formula's own output (formulas.js: Operating Profit, else
+  // EBITDA − Depreciation), materialized here so it shows as an ordinary
+  // row in the P&L tab the same way Gross Profit/EBITDA/Tax do, instead of
+  // only being visible inside the Formulas tab.
+  ebit: {
+    table: 'income', label: 'EBIT', base: false,
+    yahoo: [], sec: [], screener: [], expandFrom: null, ar: [], csv: [],
+    needs: 'ROCE',
   },
   // Not itself part of the normalization math, but without it dataQuality.js's
   // effective-tax-rate estimate (used to convert a PRE-tax exceptional figure
@@ -188,18 +191,15 @@ export const METRICS = {
     csv: ['tax', 'taxExpense'],
     needs: 'net profit reconciliation, normalized tax rate',
   },
-  exceptionalItems: {
-    table: 'income', label: 'Exceptional Items', base: false,
-    yahoo: [], sec: [],
-    screener: ['exceptionalitems', 'exceptionalitem'],
-    // Pre-tax figure, revealed by expanding OTHER INCOME (not Profit before
-    // tax — corrected per confirmed Screener layout). exceptionalItemsAT and
-    // profitExclExceptional (below) are preferred over deriving from this
-    // when present, since both sidestep this app's own tax-rate estimate.
-    expandFrom: 'Other Income',
-    ar: [/exceptional items?/i, /extraordinary items?/i],
-    csv: ['exceptionalItems'],
-    needs: 'per-year normalization (pre-tax; see exceptionalItemsAT)',
+  netProfit: {
+    table: 'income', label: 'Net Profit', base: true,
+    yahoo: ['netIncome', 'netIncomeCommonStockholders'],
+    sec: ['NetIncomeLoss', 'ProfitLoss', 'NetIncomeLossAvailableToCommonStockholdersBasic'],
+    screener: ['netprofit', 'profitaftertax', 'pat', 'netincome', 'netearnings'],
+    expandFrom: null,
+    ar: [/profit (?:for the (?:year|period)|after tax)/i, /net profit/i],
+    csv: ['netProfit', 'netIncome', 'pat'],
+    needs: 'net margin, ROE, ROA, EPS, P/E',
   },
   // The rest of this group is revealed by expanding NET PROFIT, not Other
   // Income — Screener's full waterfall from consolidated profit down to
