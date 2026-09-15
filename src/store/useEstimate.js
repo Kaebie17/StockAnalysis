@@ -278,8 +278,13 @@ export function useEstimate(state, opts = {}) {
     marginOverride:   overrides.margin   ?? null,
     multipleOverride: overrides.multiple ?? null,
     priceHistory:   state.data?.priceHistory   || [],
-    incomeHistory:  activeIncomeHistory,
-    balanceHistory: activeBalanceHistory,
+    // Raw, not activeIncomeHistory/activeBalanceHistory — buildEstimate now
+    // resolves the reported/normalized toggle itself (see estimate.js's
+    // resolveHistoryBasis), so it needs `basis` and the untouched table,
+    // not a pre-corrected copy built by this caller.
+    incomeHistory:  state.data?.reportedIncomeHistory || [],
+    balanceHistory: state.data?.balanceHistory || [],
+    basis: state.data?.basis,
     peerBand,
     // 0-1, how much peerBand pulls the own-history fitted multiple — a
     // per-ticker judgment call the user sets via PeerWeightSlider, not

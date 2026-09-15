@@ -291,30 +291,28 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
     if (!analysis?.ratioResult) return {}
     const rr = price != null && price !== analysis.ratioResult.price
       ? { ...analysis.ratioResult, price } : analysis.ratioResult
-    // estimate.js/targetMultiple.js's functions take incomeHistory as a
-    // plain parameter and don't know about normalization — resolved once
-    // here from reportedIncomeHistory, same as useEstimate.js's own
-    // activeIncomeHistory.
+    // assessFromQuarterly (guidance-tracking) still takes a plain
+    // incomeHistory with no idea normalization exists, so it still needs a
+    // pre-corrected copy handed to it here. buildEstimate/forwardPeBand/
+    // yearlyObservations do NOT any more — they resolve the reported/
+    // normalized toggle internally now (estimate.js/targetMultiple.js), so
+    // they're called below with the ticker's raw stored history plus
+    // `basis`/`normBasis`, not a copy this component pre-corrected itself.
     const activeIncomeHistory = (analysis.data?.reportedIncomeHistory || []).map(row => ({
       ...row,
       netProfit: activeValue(row, 'netProfit', analysis.data?.basis),
       eps: activeValue(row, 'eps', analysis.data?.basis),
       revenue: activeValue(row, 'revenue', analysis.data?.basis),
     }))
-    // Same reasoning, for the balance side: targetMultiple.js's
-    // yearlyObservations and estimate.js's pbBand both read totalEquity
-    // directly off a balance row, so a raw balanceHistory left it
-    // unaffected by a restatement even after the income side was fixed.
-    const activeBalanceHistory = (analysis.data?.balanceHistory || []).map(row => ({
-      ...row,
-      totalEquity: activeValue(row, 'totalEquity', analysis.data?.basis),
-    }))
+    const rawIncomeHistory = analysis.data?.reportedIncomeHistory || []
+    const rawBalanceHistory = analysis.data?.balanceHistory || []
     const est = buildEstimate(rr, {
       guidedGrowth: (isLive && state.assumptions?.nearTermGrowth != null
         && isFinite(state.assumptions.nearTermGrowth)) ? state.assumptions.nearTermGrowth : null,
       priceHistory:   analysis.data?.priceHistory   || [],
-      incomeHistory:  activeIncomeHistory,
-      balanceHistory: activeBalanceHistory,
+      incomeHistory:  rawIncomeHistory,
+      balanceHistory: rawBalanceHistory,
+      basis: analysis.data?.basis,
     })
     const ga = assessFromQuarterly(isLive ? state.quarterlyData : null, {
       guidance: isLive ? state.guidance : null,
@@ -323,12 +321,12 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
     })
     // Leading conditions, from data already fetched — volume, the multiple's
     // position in its own band, the earnings-vs-multiple gap, sector divergence.
-    const bandRaw = forwardPeBand(analysis.data?.priceHistory || [], activeIncomeHistory)
+    const bandRaw = forwardPeBand(analysis.data?.priceHistory || [], rawIncomeHistory, { normBasis: analysis.data?.basis })
     const band = bandRaw?.insufficient ? null : bandRaw
     const obs = yearlyObservations({
       priceHistory: analysis.data?.priceHistory || [],
-      incomeHistory: activeIncomeHistory,
-      balanceHistory: activeBalanceHistory, basis: 'pe' })
+      incomeHistory: rawIncomeHistory,
+      balanceHistory: rawBalanceHistory, basis: 'pe', normBasis: analysis.data?.basis })
     const epsTrend = obs.length >= 2
       ? (obs[obs.length - 1].eps > obs[obs.length - 2].eps ? 'improving' : 'deteriorating') : null
     const setups = detectSetups({

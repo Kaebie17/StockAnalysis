@@ -20,6 +20,7 @@
 
 import { percentileSpread } from './spread.js'
 import { TIER } from './methodologyTier.js'
+import { activeValue } from './dataQuality.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -101,8 +102,12 @@ function tCritical(df) {
  * spike doesn't define the year, and pairs it with that year's reported figures
  * — which is what the market could see while paying that price.
  */
+// normBasis: the reported/normalized toggle (not `basis` below, which picks
+// P/E vs P/B) — resolved here, internally, so this function is safe to call
+// directly with a ticker's raw stored history rather than requiring every
+// caller to pre-correct it for restatements first.
 export function yearlyObservations({ priceHistory = [], incomeHistory = [], balanceHistory = [],
-                                     basis = 'pe', fyEndMonth = 3 } = {}) {
+                                     basis = 'pe', fyEndMonth = 3, normBasis = 'reported' } = {}) {
   const closes = (priceHistory || [])
     .filter(p => p?.date && p.close > 0)
     .map(p => ({ t: Date.parse(p.date), close: p.close }))
@@ -124,11 +129,11 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
     const y = yearOf(row)
     if (y == null) continue
 
-    const eps = val(row.eps)
-    const revenue = val(row.revenue)
-    const netProfit = val(row.netProfit)
+    const eps = val(activeValue(row, 'eps', normBasis))
+    const revenue = val(activeValue(row, 'revenue', normBasis))
+    const netProfit = val(activeValue(row, 'netProfit', normBasis))
     const bRow = (balanceHistory || []).find(b => yearOf(b) === y)
-    const equity = val(bRow?.totalEquity)
+    const equity = val(activeValue(bRow, 'totalEquity', normBasis))
     const shares = (netProfit > 0 && eps > 0) ? netProfit / eps : null
     const bps = (equity > 0 && shares > 0) ? equity / shares : null
 

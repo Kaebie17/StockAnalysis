@@ -24,9 +24,33 @@
 import { targetMultiple } from './targetMultiple.js'
 import { justifiedMultiples, preferredForm, averagePayoutPct } from './justifiedMultiple.js'
 import { percentileSpread, filterRelativeOutliers } from './spread.js'
+import { activeValue } from './dataQuality.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
+
+// Every function below this point reads a plain .netProfit/.eps/.revenue/
+// .totalEquity off whatever incomeHistory/balanceHistory it's handed — none
+// of them know the reported/normalized toggle exists. Resolving it here,
+// once, at buildEstimate's own entry (the one real entry point everything
+// else in this file — the sector builders, targetMultiple, resolveMarginBasis,
+// resolveDilution — is reached through), means that guarantee lives in the
+// function itself rather than depending on every caller remembering to
+// pre-resolve it independently before calling in (which is what useEstimate.js
+// and PositionsPanel.jsx each used to do, identically, by hand).
+function resolveHistoryBasis(incomeHistory, balanceHistory, basis) {
+  const income = (incomeHistory || []).map(row => ({
+    ...row,
+    netProfit: activeValue(row, 'netProfit', basis),
+    eps: activeValue(row, 'eps', basis),
+    revenue: activeValue(row, 'revenue', basis),
+  }))
+  const balance = (balanceHistory || []).map(row => ({
+    ...row,
+    totalEquity: activeValue(row, 'totalEquity', basis),
+  }))
+  return { income, balance }
+}
 
 // Sanity bounds on an OBSERVED daily ratio, not on what a company may trade at.
 //
@@ -130,7 +154,7 @@ const yearOf = row => {
  * multiplying two different definitions of earnings together.
  */
 export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) {
-  const { fyEndMonth = 3 } = opts
+  const { fyEndMonth = 3, normBasis = 'reported' } = opts
 
   const closes = (priceHistory || [])
     .filter(p => p?.date && p.close > 0)
@@ -149,7 +173,7 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   // silently vanishing with nothing on screen saying a year was skipped.
   let excludedLossYears = 0
   for (const row of incomeHistory || []) {
-    const y = yearOf(row), e = val(row?.eps)
+    const y = yearOf(row), e = val(activeValue(row, 'eps', normBasis))
     if (y == null) continue
     if (e != null && e <= 0) { excludedLossYears++; continue }
     if (e > 0) epsByYear.set(y, e)
@@ -1238,9 +1262,16 @@ export function buildEstimate(ratioResult, opts = {}) {
     guidedGrowth = null, guidedMargin = null, guidanceFiscalYear = null,
     guidanceExpired = false, growthOverride = null, marginOverride = null,
     multipleOverride = null,
-    priceHistory = [], incomeHistory = [], balanceHistory = [],
-    peerBand = null, peerWeight = 0, years = 1,
+    priceHistory = [], incomeHistory: rawIncomeHistory = [], balanceHistory: rawBalanceHistory = [],
+    peerBand = null, peerWeight = 0, years = 1, basis: normBasis = 'reported',
   } = opts
+  // Resolved once, here — see resolveHistoryBasis's own comment. Everything
+  // below (the sector builders, resolveGrowthBasis, resolveMarginBasis,
+  // resolveDilution, targetMultiple) reads THESE, not opts.incomeHistory/
+  // balanceHistory directly, so the reported/normalized toggle is honored
+  // no matter which method this ticker ends up using.
+  const { income: incomeHistory, balance: balanceHistory } = resolveHistoryBasis(rawIncomeHistory, rawBalanceHistory, normBasis)
+  const resolvedOpts = { ...opts, incomeHistory, balanceHistory }
 
   // Lenders take the book-and-ROE path. The margin chain below describes a
   // manufacturer's P&L and produces a badly low number for a bank, whose
@@ -1258,17 +1289,17 @@ export function buildEstimate(ratioResult, opts = {}) {
   const st = opts.sectorType
 
   if (st === 'bank' || st === 'nbfc' || st === 'insurance' || st === 'financial') {
-    const lender = buildLenderEstimate(ratioResult, opts)
+    const lender = buildLenderEstimate(ratioResult, resolvedOpts)
     if (lender) return lender
   }
 
   if (st === 'cyclical') {
-    const cyc = buildCyclicalEstimate(ratioResult, opts)
+    const cyc = buildCyclicalEstimate(ratioResult, resolvedOpts)
     if (cyc) return cyc
   }
 
   if (st === 'capital-intensive' || st === 'yield') {
-    const ev = buildEvEbitdaEstimate(ratioResult, opts)
+    const ev = buildEvEbitdaEstimate(ratioResult, resolvedOpts)
     if (ev) return ev
   }
 
@@ -1285,7 +1316,7 @@ export function buildEstimate(ratioResult, opts = {}) {
   // No positive earnings — every method above needs them, so sales is what's
   // left. Previously this returned nothing at all.
   if (!(ratioResult?.eps > 0)) {
-    const sales = buildEvSalesEstimate(ratioResult, opts)
+    const sales = buildEvSalesEstimate(ratioResult, resolvedOpts)
     if (sales) return methodCaveat
       ? { ...sales, degraded: [...sales.degraded, methodCaveat] } : sales
   }
@@ -1308,7 +1339,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     // incomeHistory to compute over, and passing a subset meant the window was
     // silently ignored — the estimate looked identical whichever one was chosen.
     : resolveGrowthBasis(ratioResult, {
-        ...opts, guidedGrowth, guidanceFiscalYear, guidanceExpired })
+        ...resolvedOpts, guidedGrowth, guidanceFiscalYear, guidanceExpired })
   if (growthBasis.growth == null) {
     return blank('No guidance and no usable growth history — nothing to project from.', { price })
   }
