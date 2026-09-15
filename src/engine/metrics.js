@@ -174,18 +174,23 @@ export const METRICS = {
     csv: ['profitBeforeTax', 'pbt'],
     needs: 'accurate after-tax normalization of a pre-tax exceptional item',
   },
-  // Screener's own P&L row is "Tax %" (a percent of profitBeforeTax, per
-  // pctOf below — same handling as cogs's "Material Cost %"), not an
-  // absolute figure. Wasn't tracked as its own field before — a plain "Tax %"
-  // paste went unmatched — even though NormalizeModal's manual-correction
-  // tool already had a 'tax' line to set (reconstructRow). Added now mainly
-  // as a normalization target (the historical-normalization restatement
-  // tool needs it), which also happens to close that pre-existing gap.
+  // Screener's own P&L row is usually "Tax %", a percent of profitBeforeTax —
+  // UNLIKE cogs's "Material Cost %" (which has no better source: Indian P&Ls
+  // never disclose gross profit directly), tax has an exact alternative
+  // already sitting right here: profitBeforeTax − netProfit, both independent,
+  // directly-reported figures, no percentage involved. Deliberately NO pctOf:
+  // Screener's displayed "Tax %" is itself rounded (usually to 1dp), so
+  // converting it back to an absolute figure (base × pct/100) would reintroduce
+  // that rounding error into `tax` — and worse, make it stick forever (a
+  // pasted value is never recomputed once present), permanently overriding the
+  // exact residual STANDARD_FORMULA_ROWS.tax would otherwise compute. A "Tax %"
+  // paste is discarded at ingestion instead (pasteParser.js's generic guard
+  // against a bare percentage landing in a field with no pctOf) — a genuine
+  // absolute "Tax" line (no %) is still captured normally.
   tax: {
     table: 'income', label: 'Tax', base: false,
     yahoo: ['taxProvision'], sec: ['IncomeTaxExpenseBenefit'],
     screener: ['tax', 'taxpercent'],
-    pctOf: 'profitBeforeTax',
     expandFrom: null,
     ar: [/\btax\b/i, /provision for tax/i],
     csv: ['tax', 'taxExpense'],

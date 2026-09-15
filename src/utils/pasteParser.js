@@ -340,11 +340,19 @@ export function parsePastedTable(text, tableType, opts = {}) {
   // Converting % -> absolute is unit handling, which IS the source's job. Working
   // out gross profit from it is not — that lives in ratios.js, once, for every
   // source. It used to live here AND in api/sec.js.
+  //
+  // A field with no `pctOf` has no base to convert against — if it still got a
+  // %-flagged row (nothing here declares that combination, but a future METRICS
+  // entry could), the raw percentage number gets DISCARDED, not stored as-is.
+  // Leaving it would silently drop a bare percentage (e.g. 24.5) into a field
+  // every other consumer reads as an absolute Crore figure — the exact "number
+  // where a percent belongs" bug this whole pass exists to prevent, just from
+  // the other direction.
   for (const [key, m] of Object.entries(METRICS)) {
-    if (!m.pctOf) continue
     for (let i = 0; i < fieldsByYear.length; i++) {
       const f = fieldsByYear[i]
-      if (f[key] == null || !pctFlagsByYear[i][key]) continue     // absolute — leave it
+      if (f[key] == null || !pctFlagsByYear[i][key]) continue     // absolute (or blank) — leave it
+      if (!m.pctOf) { f[key] = null; continue }
       const base = f[m.pctOf]
       f[key] = base != null ? base * (f[key] / 100) : null
     }
