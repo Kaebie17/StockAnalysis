@@ -692,7 +692,11 @@ function computeCustomRowValue(data, field, row, basis) {
     const fyEndT = Date.UTC(year, FY_END_MONTH, 0)
     const price = nearestClosePrice(data, fyEndT)
     const eps = resolvedValue(row, 'eps', basis)
-    if (price == null || !eps) return null
+    // Not `!eps` (only catches 0/null) — a negative P/E is arithmetically
+    // real but economically meaningless (it doesn't mean "cheap," it means
+    // loss-making), same reason valuation.js/peg.js already refuse to use
+    // one anywhere else in this app. Blank here, not a misleading number.
+    if (price == null || !(eps > 0)) return null
     return price / eps
   }
   if (field.mode === 'ratio') {
