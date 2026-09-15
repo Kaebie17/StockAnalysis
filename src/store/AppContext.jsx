@@ -32,8 +32,8 @@ const yearOf = row => {
 
 // A peer the user has explicitly reviewed and confirmed as a real
 // comparable for THIS ticker specifically — stored on data.confirmedPeers
-// (per-ticker, mirrors growthWindowYears' storage), never on the peer
-// ticker's own record. Opt-IN, not opt-out: the candidate pool now
+// (per-ticker), never on the peer ticker's own record. Opt-IN, not
+// opt-out: the candidate pool now
 // includes NSE's own sectoral index constituents (peersClient.js's
 // fetchPeerCandidates), which can run 20-30 names deep and mixes genuinely
 // different businesses inside one index (e.g. Nifty Energy has pure-play
@@ -50,10 +50,6 @@ const activePeers = (allPeers, confirmedPeers) => {
   return (allPeers || []).filter(p => confirmed.has(p.symbol))
 }
 
-// The persisted CAGR window for a ticker (stored as a 'growth-window' revision by
-// useEstimate). Read here so the store computes with it from the first render —
-// otherwise the slider shows the pinned window while the CAGR uses the default.
-
 const initial = {
   status: 'idle', progress: null, error: null, ticker: '', query: '',
   data: null, ratioResult: null,
@@ -63,12 +59,10 @@ const initial = {
   assumptions: {}, meAssumptions: {}, scoreWeights: {},
   // Qualitative / governance inputs (Block 5)
   holdingsData: null, arData: null, quarterlyData: null,
-  growthWindowYears: null,   // user's chosen CAGR window; null = full-history default
   // This app's own regression beta (src/engine/beta.js) — see the
   // SET_LIVE_BETA case and its effect below. Session-scoped like the WACC/
-  // margin overrides in `assumptions` already are, not persisted per ticker
-  // like growthWindowYears — a "how many years should the regression use"
-  // preference, not curated per-company data.
+  // margin overrides in `assumptions` already are — a "how many years
+  // should the regression use" preference, not curated per-company data.
   betaWindowYears: 5,
   computedBeta: null,   // { beta, n, years, r2, label } | { beta: null, insufficientReason } | null (not yet resolved)
 }
@@ -207,7 +201,7 @@ function reducer(s, a) {
       const data = a.tableType === 'income'
         ? { ...s.data, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
         : { ...s.data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { basis: data.basis })
       return { ...s, data, ...computed }
     }
     case 'PRICE_UPDATE': {
@@ -223,7 +217,7 @@ function reducer(s, a) {
       // refresh) to recompute on REPORTED figures even while a user viewing
       // Normalized basis stayed on that toggle. Every other call site here
       // uses data.basis correctly; this one didn't.
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { growthWindowYears: s.growthWindowYears, basis: data.basis })
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData, { basis: data.basis })
       return { ...s, data, ...computed }
     }
     case 'PRICE_HISTORY_UPDATE': {
@@ -237,22 +231,13 @@ function reducer(s, a) {
       if (!s.data || !Array.isArray(a.priceHistory)) return s
       const data = { ...s.data, priceHistory: a.priceHistory }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+                                  { basis: data.basis })
       return { ...s, data, ...computed }
-    }
-    case 'SET_GROWTH_WINDOW': {
-      if (!s.data) return { ...s, growthWindowYears: a.years }
-      const data = { ...s.data, growthWindowYears: a.years }   // persist on data (cached per ticker)
-      const next = { ...s, growthWindowYears: a.years, data }
-      // Same s.basis typo as PRICE_UPDATE had — basis lives on data.basis.
-      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: a.years, basis: data.basis })
-      return { ...next, ...computed }
     }
     // How much App Estimate's peer cross-check (targetMultiple.js) pulls the
     // fitted own-history multiple toward the peer band — a per-ticker
-    // judgment call (persisted on data, same storage as growthWindowYears
-    // above), not something valuation.js/marketExpectation.js read at all.
+    // judgment call (persisted on data), not something valuation.js/
+    // marketExpectation.js read at all.
     // No computeAll/runValuation pass needed: useEstimate.js's buildEstimate
     // call reads state.data.peerWeight directly on its own next render, the
     // same way it already reacts to state.data.confirmedPeers changing.
@@ -261,9 +246,9 @@ function reducer(s, a) {
       return { ...s, data: { ...s.data, peerWeight: a.weight } }
     }
     // A peer explicitly confirmed as a real comparable for THIS ticker —
-    // persisted on data (same per-ticker storage as growthWindowYears
-    // above), never touches the confirmed ticker's OWN cached record. Only
-    // affects the peer-median tiers in valuation.js/marketExpectation.js
+    // persisted on data, never touches the confirmed ticker's OWN cached
+    // record. Only affects the peer-median tiers in valuation.js/
+    // marketExpectation.js
     // (via activePeers, applied fresh here) — everything else about this
     // stock is unrelated, so a light recompute (like SET_LIVE_BETA above)
     // is enough; no need for computeAll's full ratios/stage pass.
@@ -341,14 +326,14 @@ function reducer(s, a) {
         ? { ...s.data, reportedIncomeHistory: newHistory, customFields, fieldAssignments }
         : { ...s.data, [histKey]: newHistory, customFields, fieldAssignments }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+                                  { basis: data.basis })
       return { ...s, data, ...computed }
     }
     case 'SET_BASIS': {
       if (!s.data) return s
       const data = { ...s.data, basis: a.basis }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: a.basis })
+                                  { basis: a.basis })
       return { ...s, data, ...computed }
     }
     // The editable data-table's own commit path — a direct, single-cell (or
@@ -403,7 +388,7 @@ function reducer(s, a) {
         ? { ...s.data, reportedIncomeHistory: newHistory, source: 'merged', deepSource: 'screener' }
         : { ...s.data, [histKey]: newHistory, source: 'merged', deepSource: 'screener' }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+                                  { basis: data.basis })
       return { ...s, data, ...computed }
     }
     // A genuinely custom line item (not in metrics.js) added from the data
@@ -411,7 +396,7 @@ function reducer(s, a) {
     // rows as any tracked field (byYear[key]), keyed by this synthetic key;
     // only the definition (label, which statement, optional normalization
     // mapping) needs its own storage, kept on `data` the same way
-    // confirmedPeers/growthWindowYears already are (per-ticker, persisted).
+    // confirmedPeers already is (per-ticker, persisted).
     // a.field: { key, label, table } — a plain reference row, no mapping.
     // a.assignments (optional): [{ kind, target|formula, bucket, sign }] —
     // filled in with field:a.field.key and appended, so a row can be wired
@@ -448,7 +433,7 @@ function reducer(s, a) {
         cashflowHistory: strip(s.data.cashflowHistory),
       }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+                                  { basis: data.basis })
       return { ...s, data, ...computed }
     }
     // Replaces every assignment for ONE field with a.assignments in a single
@@ -462,7 +447,7 @@ function reducer(s, a) {
       const mine = (a.assignments || []).map(x => ({ ...x, field: a.field }))
       const data = { ...s.data, fieldAssignments: [...rest, ...mine] }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+                                  { basis: data.basis })
       return { ...s, data, ...computed }
     }
     // The ONE real control for which growth method feeds `selected` — set
@@ -476,7 +461,7 @@ function reducer(s, a) {
       else existing[a.formulaKey] = a.methodKey
       const data = { ...s.data, growthMethodOverride: existing }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+                                  { basis: data.basis })
       return { ...s, data, ...computed }
     }
     // Per-method window — the two controls (start year, end year) each
@@ -500,7 +485,7 @@ function reducer(s, a) {
       else delete existing[a.formulaKey]
       const data = { ...s.data, growthMethodWindow: existing }
       const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
-                                  { growthWindowYears: s.growthWindowYears, basis: data.basis })
+                                  { basis: data.basis })
       return { ...s, data, ...computed }
     }
     default:              return s
@@ -611,7 +596,7 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // The growth window reaches ratios, so every consumer — stage classification,
   // fair value, market expectation, the AI verdict and the dashboard card — uses
   // the same figure the user chose.
-  const ratioResult = computeCurrentSnapshot(data, { growthWindowYears: opts.growthWindowYears })
+  const ratioResult = computeCurrentSnapshot(data)
   const sectorType  = detectSectorType(data)
   const stage       = detectStage(data, ratioResult)
   // Every caller of computeAll() routes through here — including
@@ -684,7 +669,7 @@ export function AppProvider({ children }) {
   // pasted-history merge — not just the initial fetch — survives a reload.
   useEffect(() => {
     if (state.status !== 'success' || !state.ticker || !state.data) return
-    const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data.basis }) }
+    const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { basis: state.data.basis }) }
     try { setCached(state.ticker, forStorage(payload)) } catch {}
     // Sync merged financials (they hold pasted Screener history the user built).
     // Pure Yahoo data is re-fetchable, so it isn't synced. Shape must match what
@@ -706,9 +691,8 @@ export function AppProvider({ children }) {
     let cancelled = false
     getCached(state.ticker).then(cached => {
       if (cancelled || !cached) return
-      const pinnedWindow = cached.data?.growthWindowYears ?? null
-      const computed = computeAll(cached.data, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { growthWindowYears: pinnedWindow, basis: cached.data?.basis })
-      dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, growthWindowYears: pinnedWindow } })
+      const computed = computeAll(cached.data, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { basis: cached.data?.basis })
+      dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed } })
     }).catch(() => {})
     return () => { cancelled = true }
   }, [lastPulledAt])   // eslint-disable-line react-hooks/exhaustive-deps
@@ -740,7 +724,7 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     if (state.status === 'success' && state.data?.price != null && state.ticker) {
-      const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { growthWindowYears: state.growthWindowYears, basis: state.data.basis }) }
+      const payload = { data: state.data, ...computeAll(state.data, {}, {}, {}, state.arData, { basis: state.data.basis }) }
       setCached(state.ticker, forStorage(payload)).catch(() => {})
     }
   }, [state.data?.price])
@@ -748,8 +732,6 @@ export function AppProvider({ children }) {
   const load = useCallback(async (rawTicker) => {
     if (!rawTicker?.trim()) return
     const ticker = rawTicker.trim().toUpperCase()
-    // Restored from cached data below (data.growthWindowYears); no separate lookup.
-    let pinnedWindow = null 
     dispatch({ type: 'FETCH_START', ticker, query: rawTicker.trim() })
 
     try {
@@ -764,9 +746,8 @@ export function AppProvider({ children }) {
         return
       }
       if (cached) {
-        pinnedWindow = cached.data?.growthWindowYears ?? null
-        const computed = computeAll(cached.data, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { growthWindowYears: pinnedWindow, basis: cached.data?.basis })
-        dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed, growthWindowYears: pinnedWindow } })
+        const computed = computeAll(cached.data, state.assumptions, state.meAssumptions, state.scoreWeights, state.arData, { basis: cached.data?.basis })
+        dispatch({ type: 'FETCH_SUCCESS', payload: { ...cached, ...computed } })
         // Empty priceHistory here means either a genuinely fresh record or
         // db.js's own staleness sweep cleared it (see sweepStalePriceHistory
         // — it's the one thing safe to drop from an unvisited ticker's
@@ -799,8 +780,8 @@ export function AppProvider({ children }) {
       // because it had the sources backwards; Screener now replaces Yahoo outright.
       const data = normalize(source, raw)
 
-      const computed = computeAll(data, {}, {}, {}, state.arData, { growthWindowYears: pinnedWindow })
-      const payload  = { data, ...computed, growthWindowYears: pinnedWindow }
+      const computed = computeAll(data, {}, {}, {}, state.arData)
+      const payload  = { data, ...computed }
       await setCached(ticker, forStorage(payload))
       dispatch({ type: 'FETCH_SUCCESS', payload })
 
@@ -1009,16 +990,6 @@ export function AppProvider({ children }) {
     dispatch({ type: 'RESET' })
   }, [])
 
-  /**
-   * Set the CAGR window and recompute everything that reads it.
-   *
-   * Persisted as a revision by useEstimate so it survives reload; this is the
-   * in-memory half that makes the change visible immediately.
-   */
-  const setGrowthWindowYears = useCallback((years) => {
-    dispatch({ type: 'SET_GROWTH_WINDOW', years: years ?? null })
-  }, [])
-
   const setPeerWeight = useCallback((weight) => {
     dispatch({ type: 'SET_PEER_WEIGHT', weight: Math.max(0, Math.min(1, weight ?? 0)) })
   }, [])
@@ -1137,7 +1108,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setGrowthWindowYears, setBetaWindowYears, setBasis, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, setGrowthMethodOverride, setGrowthMethodWindow, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setBetaWindowYears, setBasis, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, setGrowthMethodOverride, setGrowthMethodWindow, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>

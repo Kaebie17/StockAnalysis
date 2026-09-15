@@ -33,7 +33,7 @@
  */
 import { detectSectorType, SECTOR_TYPES } from './stage.js'
 import { activeValue } from './dataQuality.js'
-import { sharesFromNetProfitEps, enterpriseValueFrom } from './formulas.js'
+import { sharesFromNetProfitEps, enterpriseValueFrom, tableGrowthRate } from './formulas.js'
 
 export function grossProfitOf(row, basis) {
   return activeValue(row, 'grossProfit', basis)?.value ?? null
@@ -46,7 +46,7 @@ export function grossProfitOf(row, basis) {
 // any other normalizable field: activeValue(row, 'nwc', basis)?.value —
 // no wrapper function needed here any more.
 
-export function computeCurrentSnapshot(data, opts = {}) {
+export function computeCurrentSnapshot(data) {
   const { price, marketCap: marketCapRaw, shares: sharesRaw,
           reportedIncomeHistory: incomeHistory,
           balanceHistory, cashflowHistory, meta, basis } = data
@@ -251,25 +251,18 @@ export function computeCurrentSnapshot(data, opts = {}) {
     : opProfit     != null ? 'Operating Profit (Depreciation unavailable)'
     : null
 
-  // ── Revenue CAGR (single, window-driven) ─────────────────────────────────────
-  // ONE growth figure, read by every consumer. Window defaults to 5y, fully
-  // settable; supports an optional start-year to exclude a structural break.
-  const revSeries = incomeReal
-    .map(r => ({ year: yearOf(r), value: val(r.revenue) }))
-    .filter(p => p.year != null && p.value > 0)
-    .sort((a, b) => a.year - b.year)
-  const { cagr: revCagr, windowYears: revCagrWindowYears } = windowedCagr(revSeries, opts)
-
-  // Net-profit CAGR, same window. The "historical earnings CAGR" figure shown
-  // in the market-expectation comparison used to actually be npGrowthYoY — a
-  // single year's YoY change — labeled "CAGR" even though it wasn't one and
-  // never respected the growth-window slider. This is the real multi-year,
-  // window-respecting figure.
-  const npSeries = incomeReal
-    .map(r => ({ year: yearOf(r), value: val(activeValue(r, 'netProfit', basis)) }))
-    .filter(p => p.year != null && p.value > 0)
-    .sort((a, b) => a.year - b.year)
-  const { cagr: npCagr, windowYears: npCagrWindowYears } = windowedCagr(npSeries, opts)
+  // ── Growth ─────────────────────────────────────────────────────────────────
+  // ONE growth system now, not two: reads the table's own revenueGrowth/
+  // netProfitGrowth (materializeFormulas, run earlier in the same
+  // computeAll pass) instead of independently recomputing a second,
+  // separately-windowed CAGR. Reported basis is always the plain
+  // full-period CAGR; normalized basis follows whichever method is
+  // actually selected (the header's GrowthMethodBadge override, or the
+  // medianYoY default) — see tableGrowthRate's own doc comment.
+  const revGrowth = tableGrowthRate(data, 'revenueGrowth', basis)
+  const revCagr = revGrowth.value, revCagrWindowYears = revGrowth.windowYears
+  const npGrowth = tableGrowthRate(data, 'netProfitGrowth', basis)
+  const npCagr = npGrowth.value, npCagrWindowYears = npGrowth.windowYears
 
   // ── EV ─────────────────────────────────────────────────────────────────────
   const ev = enterpriseValueFrom(marketCap, totalDebt, cash)
@@ -443,30 +436,6 @@ export function computeCurrentSnapshot(data, opts = {}) {
 }
 
 // ─── Pure math helpers ────────────────────────────────────────────────────────
-
-// Windowed CAGR over a (year, value) series, respecting the same user-chosen
-// window (opts.growthWindowYears) / structural-break start-year
-// (opts.growthWindowFromYear) revCagr already used — factored out so a second
-// series (net profit) doesn't duplicate the window logic and risk it drifting
-// out of sync with revCagr's.
-function windowedCagr(series, opts) {
-  if (series.length < 2) return { cagr: null, windowYears: null }
-  const nYrs = series.length - 1
-  const requested = opts?.growthWindowYears > 0 ? opts.growthWindowYears : nYrs
-  let win
-  if (opts?.growthWindowFromYear != null) {
-    const idx = series.findIndex(p => p.year >= opts.growthWindowFromYear)
-    win = idx >= 0 ? Math.max(1, (series.length - 1) - idx) : Math.min(requested, nYrs)
-  } else {
-    win = Math.min(requested, nYrs)
-  }
-  const start = series[series.length - 1 - win].value
-  const end   = series[series.length - 1].value
-  // Net profit (unlike revenue) can cross zero — a CAGR through a loss year is
-  // meaningless, so this declines rather than compounding through one.
-  if (!(start > 0) || !(end > 0)) return { cagr: null, windowYears: null }
-  return { cagr: (Math.pow(end / start, 1 / win) - 1) * 100, windowYears: win }
-}
 
 function div(a, b)    { return a != null && b != null && b !== 0 ? a / b : null }
 function pct(a, b)    { const d = div(a, b); return d != null ? d * 100 : null }

@@ -1062,6 +1062,63 @@ export function materializeFormulas(data) {
   return out
 }
 
+// Method key -> its three field names in a computeGrowthBundle bundle
+// (formula.key/formula.keyStartYear/formula.keyEndYear) — used below to
+// look up whichever method is actually in play without three separate
+// if-chains.
+const GROWTH_METHOD_FIELDS = {
+  fullPeriodCagr:  ['fullPeriodCagr',  'fullPeriodCagrStartYear',  'fullPeriodCagrEndYear'],
+  medianYoY:       ['medianYoY',       'medianYoYStartYear',       'medianYoYEndYear'],
+  recentMedianYoY: ['recentMedianYoY', 'recentMedianYoYStartYear', 'recentMedianYoYEndYear'],
+}
+
+/**
+ * The table's own growth reading for one DERIVED_FORMULAS growth entry
+ * ('revenueGrowth' or 'netProfitGrowth'), toggle-conscious — the single
+ * growth figure every consumer (DCF, App Target, Market Expectation, the
+ * Quality Score, stage classification, ...) should read, replacing each of
+ * them separately recomputing their own windowed CAGR.
+ *
+ * Reported basis: always the plain full-period CAGR (first year to latest,
+ * no method-selection cleverness) — "as reported" means the literal
+ * compounding between the two ends of the data, nothing smarter.
+ * Normalized basis: whichever method is actually selected for this ticker
+ * (the header's GrowthMethodBadge override, or the medianYoY default when
+ * nothing's been picked) — the SAME selection already governing what the
+ * Formulas tab and header show, not a second, independent "best fit" of
+ * its own. Falls back to the reported bundle's own selection when nothing
+ * was actually normalized that year (no normalized sibling exists).
+ *
+ * materializeFormulas must already have run (computeAll's own order) —
+ * this reads what it wrote, it doesn't recompute anything itself.
+ */
+export function tableGrowthRate(data, formulaKey, basis) {
+  const formula = DERIVED_FORMULAS[formulaKey]
+  if (!formula) return { value: null, windowYears: null }
+  const base = fieldHistory(data, formula.table)
+  if (!base.length) return { value: null, windowYears: null }
+  const realBase = base.filter(isFiscalYearRow)
+  const latestPool = realBase.length ? realBase : base
+  const latest = latestPool.reduce((a, b) => (yearOf(b) > yearOf(a) ? b : a))
+
+  const empty = { value: null, windowYears: null }
+  const fromBundle = (bundle, methodKey) => {
+    const fields = GROWTH_METHOD_FIELDS[methodKey]
+    if (!bundle || !fields) return empty
+    const [vKey, sKey, eKey] = fields
+    const value = bundle[vKey] ?? null
+    const start = bundle[sKey], end = bundle[eKey]
+    return { value, windowYears: (start != null && end != null) ? end - start : null }
+  }
+
+  if (basis === 'normalized') {
+    const normRow = latest[`${formula.key}Normalized`] ?? latest[formula.key]
+    const bundle = normRow?.methods
+    return fromBundle(bundle, bundle?.methodOverride || 'medianYoY')
+  }
+  return fromBundle(latest[formula.key]?.methods, 'fullPeriodCagr')
+}
+
 /**
  * Materializes every `computed: true` custom field's value onto its own
  * row, from whatever definition it currently has (a STANDARD_FORMULA_ROWS
