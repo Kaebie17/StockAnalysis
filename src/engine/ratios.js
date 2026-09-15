@@ -140,7 +140,7 @@ export function calcRatios(data, opts = {}) {
   // understate DCF fair value, which is a wrong valuation, not a cautious one.
   const cash          = val(activeValue(latestB, 'cash', basis)) ?? null
   const cashEstimated = false
-  const opCF        = val(latestCF.operatingCF)
+  const opCF        = val(activeValue(latestCF, 'operatingCF', basis))
 
   // CapEx, in order of how much we actually know:
   //   1. reported
@@ -173,7 +173,7 @@ export function calcRatios(data, opts = {}) {
 
   // FCF = Operating CF − CapEx, at whatever rung the CapEx came from. The rung is
   // carried through, because the three are NOT equally trustworthy.
-  let fcf = val(latestCF.freeCashFlow)
+  let fcf = val(activeValue(latestCF, 'freeCashFlow', basis))
   let fcfBasis = fcf != null ? 'reported' : null
   if (fcf == null && opCF != null && capex != null) {
     fcf = opCF - capex
@@ -406,7 +406,7 @@ export function calcRatios(data, opts = {}) {
       fcfConversion:   tagFcf(fcfConversion,   'calculated', 'FCF ÷ Net Profit × 100'),
       // EPS / Book
       eps:             tag(eps,             epsRaw != null ? 'source' : 'calculated', epsRaw ? null : 'Net Profit ÷ Shares Outstanding'),
-      dividendPayout: tag(val(latestI.dividendPayout), 'source', 'Dividend payout % (from source)'),
+      dividendPayout: tag(val(activeValue(latestI, 'dividendPayout', basis)), 'source', 'Dividend payout % (from source)'),
       bookPerShare:    tag(bookPerShare,     'calculated', 'Total Equity ÷ Shares Outstanding'),
       // Meta (from v7 quote, for reference only)
       divYield:        tag(meta?.divYield,   'source-reference', 'From Yahoo v7 quote'),
