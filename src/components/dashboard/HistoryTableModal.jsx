@@ -125,7 +125,14 @@ export default function HistoryTableModal({ open, onClose }) {
 
   const history = data[histKeyFor(table)] || (table === 'income' ? data.incomeHistory : []) || []
   const years = [...new Set(history.map(r => String(r?.year)).filter(Boolean))].sort()
-  const customFields = (data.customFields || []).filter(f => f.table === table)
+  // A handful of computed rows (Gross Profit, PBT, Tax, EBITDA, EBIT, Free
+  // Cash Flow) share a key with a real metrics.js field — Screener sometimes
+  // reports them directly, so materializeCustomRows only fills them in when
+  // absent (see its own doc comment). Excluded here so they render as ONE
+  // row (the tracked one, via shownTrackedKeys below) instead of twice —
+  // the Formulas tab still shows their equation regardless, since it reads
+  // straight off data.customFields, not this filtered view.
+  const customFields = (data.customFields || []).filter(f => f.table === table && !METRICS[f.key])
   // Every valid restatement target for this ticker (Part C) — the curated
   // ten plus any other field with data, plus every custom row, across all
   // three statements. Filtered to the current tab where each use needs it.
@@ -150,6 +157,14 @@ export default function HistoryTableModal({ open, onClose }) {
 
   const cellKey = (year, field) => `${year}|${field}`
 
+  // A 'ratio'-mode computed row (every margin, ROA/ROCE/ROE, D/E, ICR, Net
+  // Debt/EBITDA, Effective Tax Rate) is a percentage or a multiple, not a
+  // Crore/Million-scaled amount — dividing it by `div` the way every money
+  // row on this grid is displayed would round it straight to 0. Looked up
+  // off the ticker's FULL customFields (not the table's locally deduped
+  // list above), since mode is metadata that exists regardless of whether
+  // this key also happens to be a tracked field.
+  const isRatioField = field => (data.customFields || []).find(f => f.key === field)?.mode === 'ratio'
   const displayOf = (field, raw) => {
     if (raw == null) return ''
     // Screener shows every line whole (Cr, no paise) — a few fields (COGS
@@ -159,14 +174,16 @@ export default function HistoryTableModal({ open, onClose }) {
     // shows whole crores for every scaled field, same convention as the
     // source. The full precision is unaffected in storage/ratio math; this
     // only rounds what's DISPLAYED here.
-    return SKIP_SCALE.has(field) ? String(raw) : String(Math.round(raw / div))
+    if (SKIP_SCALE.has(field)) return String(raw)
+    if (isRatioField(field)) return String(Math.round(raw * 100) / 100)
+    return String(Math.round(raw / div))
   }
   const parseInput = (field, text) => {
     const t = text.trim()
     if (t === '') return null
     const n = Number(t)
     if (!isFinite(n)) return undefined   // invalid — caller should ignore
-    return SKIP_SCALE.has(field) ? n : n * div
+    return (SKIP_SCALE.has(field) || isRatioField(field)) ? n : n * div
   }
 
   const committedFor = (year, field) => {
@@ -965,6 +982,14 @@ function FormulaRow({ data, formula, fmtNum, focused, lastSeen, markSeen }) {
   useEffect(() => () => markSeen(latestRef.current.basis, latestRef.current.value), [markSeen])
 
   const equation = computedRowEquation(data, formula)
+  // 'ratio' mode (every margin, ROA/ROCE/ROE, D/E, ICR, Net Debt/EBITDA,
+  // Effective Tax Rate) is a percentage or a multiple, not a Crore/Million
+  // amount — `fmtNum` (Math.round(v / div)) is only correct for 'sum'/
+  // 'weighted' formulas (NWC, PBT, EBITDA, FCFF, ...); applying it here
+  // would round any real ratio value straight down to 0.
+  const formatOutput = v => formula.mode === 'ratio'
+    ? v.toFixed(2) + (formula.scale === 100 ? '%' : '')
+    : fmtNum(v)
 
   return (
     <fieldset className={'flex items-center gap-3 rounded-lg border px-3 py-2 text-xs min-w-0 ' + (focused ? 'border-accent/60 bg-navy-800/60' : 'border-navy-700 bg-navy-800/30')}>
@@ -978,7 +1003,7 @@ function FormulaRow({ data, formula, fmtNum, focused, lastSeen, markSeen }) {
         <span className="text-slate-400 font-mono truncate min-w-0" title={equation}>{equation}</span>
       </span>
       {output
-        ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')} title={changed ? 'Different from what you last saw here' : undefined}>{fmtNum(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
+        ? <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-accent')} title={changed ? 'Different from what you last saw here' : undefined}>{formatOutput(output.value)} <span className="text-slate-500">(FY{output.year})</span></span>
         : <span className="flex-shrink-0 text-slate-600">—</span>}
     </fieldset>
   )
