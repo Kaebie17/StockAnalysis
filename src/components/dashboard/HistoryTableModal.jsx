@@ -183,7 +183,7 @@ export default function HistoryTableModal({ open, onClose, initialFocus }) {
   // off the ticker's FULL customFields (not the table's locally deduped
   // list above), since mode is metadata that exists regardless of whether
   // this key also happens to be a tracked field.
-  const isRatioField = field => ['ratio', 'priceRatio'].includes((data.customFields || []).find(f => f.key === baseField(field))?.mode)
+  const isRatioField = field => ['ratio', 'priceRatio', 'closePrice'].includes((data.customFields || []).find(f => f.key === baseField(field))?.mode)
   const displayOf = (field, raw) => {
     if (raw == null) return ''
     // Screener shows every line whole (Cr, no paise) — a few fields (COGS
@@ -1007,12 +1007,12 @@ function FormulaRow({ data, formula, fmtNum, focused, lastSeen, markSeen }) {
 
   const equation = computedRowEquation(data, formula)
   // 'ratio' mode (every margin, ROA/ROCE/ROE, D/E, ICR, Net Debt/EBITDA,
-  // Effective Tax Rate) and 'priceRatio' (P/E) are a percentage or a
-  // multiple, not a Crore/Million amount — `fmtNum` (Math.round(v / div))
-  // is only correct for 'sum'/'weighted' formulas (NWC, PBT, EBITDA, FCFF,
-  // ...); applying it here would round any real ratio value straight down
-  // to 0.
-  const formatOutput = v => (formula.mode === 'ratio' || formula.mode === 'priceRatio')
+  // Effective Tax Rate), 'priceRatio' (P/E), and 'closePrice' (Price) are a
+  // percentage, a multiple, or a per-share currency figure, not a
+  // Crore/Million amount — `fmtNum` (Math.round(v / div)) is only correct
+  // for 'sum'/'weighted' formulas (NWC, PBT, EBITDA, FCFF, ...); applying
+  // it here would round any of these straight down to 0.
+  const formatOutput = v => ['ratio', 'priceRatio', 'closePrice'].includes(formula.mode)
     ? v.toFixed(2) + (formula.scale === 100 ? '%' : '')
     : fmtNum(v)
 

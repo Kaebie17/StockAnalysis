@@ -215,11 +215,19 @@ const STANDARD_FORMULA_ROWS = {
   },
   // No terms — nothing here is an assignable statement field to add/remove,
   // same reason growth/CAGR and the AI-fetched inputs stay outside the
-  // term-editing model entirely. mode:'priceRatio' (computeCustomRowValue)
-  // pairs this row's own year with the closing price nearest that fiscal
-  // year's end (data.priceHistory, a separate date-keyed series, not
-  // another statement field), divided by that year's EPS — reported or
-  // normalized, whichever basis is active.
+  // The closing price nearest this row's own fiscal year end
+  // (data.priceHistory, a separate date-keyed series, not another
+  // statement field) — its own row, not a private lookup pe/marketCap each
+  // ran independently, since both need the exact same number and there's
+  // no reason to compute it twice, silently, with nothing to look at or
+  // correct if the match picked a date you don't agree with. No
+  // reported/normalized distinction — a market price isn't a restatable
+  // accounting figure.
+  price: {
+    key: 'price', label: 'Price (FY-end)', table: 'income', mode: 'closePrice',
+  },
+  // Divided by that year's EPS — reported or normalized, whichever basis
+  // is active.
   pe: {
     key: 'pe', label: 'P/E', table: 'income', mode: 'priceRatio',
   },
@@ -594,11 +602,14 @@ export function computedRowEquation(data, field) {
     const scaleText = field.scale && field.scale !== 1 ? ` × ${field.scale}` : ''
     return `(${termsText(num)}) ÷ (${termsText(den)})${scaleText}`
   }
+  if (field.mode === 'closePrice') {
+    return 'Closing price nearest this fiscal year’s end'
+  }
   if (field.mode === 'priceRatio') {
-    return 'Price (FY-end close) ÷ EPS'
+    return 'Price ÷ EPS'
   }
   if (field.mode === 'marketCap') {
-    return 'Price (FY-end close) × Shares (Net Profit ÷ EPS)'
+    return 'Price × Shares (Net Profit ÷ EPS)'
   }
   if (field.mode === 'enterpriseValue') {
     return 'Market Cap + Total Debt − Cash'
@@ -748,11 +759,18 @@ function sumTerms(data, rowTable, terms, row, basis) {
 // STANDARD_FORMULA_ROWS for the three modes' shapes.
 function computeCustomRowValue(data, field, row, basis) {
   if (!row) return null
-  if (field.mode === 'priceRatio') {
+  if (field.mode === 'closePrice') {
     const year = yearOf(row)
     if (year == null) return null
-    const fyEndT = Date.UTC(year, FY_END_MONTH, 0)
-    const price = nearestClosePrice(data, fyEndT)
+    return nearestClosePrice(data, Date.UTC(year, FY_END_MONTH, 0))
+  }
+  if (field.mode === 'priceRatio') {
+    // Reads the sibling 'price' row rather than looking up its own — same
+    // number pe and marketCap have always used (both called
+    // nearestClosePrice with the identical target date), just from one
+    // place now instead of two independent lookups, and visible/correctable
+    // as its own row instead of buried inside this one.
+    const price = resolvedValue(row, 'price', basis)
     const eps = resolvedValue(row, 'eps', basis)
     // Not `!eps` (only catches 0/null) — a negative P/E is arithmetically
     // real but economically meaningless (it doesn't mean "cheap," it means
@@ -762,10 +780,7 @@ function computeCustomRowValue(data, field, row, basis) {
     return price / eps
   }
   if (field.mode === 'marketCap') {
-    const year = yearOf(row)
-    if (year == null) return null
-    const fyEndT = Date.UTC(year, FY_END_MONTH, 0)
-    const price = nearestClosePrice(data, fyEndT)
+    const price = resolvedValue(row, 'price', basis)
     const netProfit = resolvedValue(row, 'netProfit', basis)
     const eps = resolvedValue(row, 'eps', basis)
     const shares = sharesFromNetProfitEps(netProfit, eps)
