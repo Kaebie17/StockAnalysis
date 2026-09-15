@@ -1063,24 +1063,44 @@ export function materializeCustomRows(data) {
       const histKey = field.table === 'income' ? 'reportedIncomeHistory' : `${field.table}History`
       const normKey = `${field.key}Normalized`
 
+      // A field whose key is ALSO a restatement TARGET (grossProfit, PBT,
+      // tax, EBITDA, EBIT, freeCashFlow can each be one — see
+      // availableTargets) has a second, independent way to get a Normalized
+      // sibling: a user directly restating the whole figure, via
+      // recomputeNormalizedTargets (runs before this, every computeAll
+      // pass). That one wins outright — it's an explicit, evidence-based
+      // correction to the field itself; this function's own normalized
+      // computation (deriving it from the field's OWN TERMS' normalized
+      // values) knows nothing about that direct restatement and must not
+      // recompute over it.
+      const isRestatementTarget = (out.fieldAssignments || [])
+        .some(a => a.kind === 'restatement' && a.target === field.key)
+
       const newHistory = base.map(row => {
         const existing = row[field.key]
         if (existing != null && existing.status !== 'calculated') return row
 
         const reported = computeCustomRowValue(out, field, row, 'reported')
         if (reported == null) {
+          // recomputeNormalizedTargets itself declines to write normKey for
+          // any row whose target has no value (see its own `reported?.value
+          // == null` guard) — so if THIS formula can't produce a value
+          // either, normKey can't legitimately exist here regardless of
+          // isRestatementTarget; stripping both is always correct.
           if (!(field.key in row) && !(normKey in row)) return row
           changedThisPass = true
           const { [field.key]: _a, [normKey]: _b, ...rest } = row
           return rest
         }
         let next = { ...row, [field.key]: { value: reported, status: 'calculated', formula: null } }
-        const normalized = computeCustomRowValue(out, field, row, 'normalized')
-        if (normalized != null && normalized !== reported) {
-          next[normKey] = { value: normalized, adjusted: true, formula: null }
-        } else if (normKey in next) {
-          const { [normKey]: _drop, ...rest } = next
-          next = rest
+        if (!isRestatementTarget) {
+          const normalized = computeCustomRowValue(out, field, row, 'normalized')
+          if (normalized != null && normalized !== reported) {
+            next[normKey] = { value: normalized, adjusted: true, formula: null }
+          } else if (normKey in next) {
+            const { [normKey]: _drop, ...rest } = next
+            next = rest
+          }
         }
         if (existing?.value !== reported) changedThisPass = true
         return next
