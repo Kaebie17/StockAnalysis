@@ -213,6 +213,16 @@ const STANDARD_FORMULA_ROWS = {
       { field: 'nwc', sign: 1, table: 'balance', lag: 1 },
     ],
   },
+  // No terms — nothing here is an assignable statement field to add/remove,
+  // same reason growth/CAGR and the AI-fetched inputs stay outside the
+  // term-editing model entirely. mode:'priceRatio' (computeCustomRowValue)
+  // pairs this row's own year with the closing price nearest that fiscal
+  // year's end (data.priceHistory, a separate date-keyed series, not
+  // another statement field), divided by that year's EPS — reported or
+  // normalized, whichever basis is active.
+  pe: {
+    key: 'pe', label: 'P/E', table: 'income', mode: 'priceRatio',
+  },
 }
 
 // ── Market-input "formulas" ────────────────────────────────────────────
@@ -556,6 +566,9 @@ export function computedRowEquation(data, field) {
     const scaleText = field.scale && field.scale !== 1 ? ` × ${field.scale}` : ''
     return `(${termsText(num)}) ÷ (${termsText(den)})${scaleText}`
   }
+  if (field.mode === 'priceRatio') {
+    return 'Price (FY-end close) ÷ EPS'
+  }
   if (field.mode === 'weighted') {
     const terms = termsFor(data, field.key, 'terms')
     if (!terms.length) return '—'
@@ -585,6 +598,31 @@ function resolvedValue(row, field, basis) {
 function yearOf(row) {
   const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
   return m ? Number(m[0]) : null
+}
+
+// Fiscal year end assumed March (Indian convention) — same hardcoded
+// default every other fiscal-year-to-price-date mapping in this codebase
+// already uses (estimate.js's forwardPeBand, targetMultiple.js's
+// yearlyObservations); never actually configured per-ticker anywhere.
+const FY_END_MONTH = 3
+
+// The closing price nearest a given date, from data.priceHistory (a
+// separate, date-keyed daily series — NOT another statement field, so this
+// doesn't go through rowForTerm/activeValue like every other term does).
+// Capped at 14 calendar days: a trading holiday run around a fiscal
+// year-end is realistic, a match three months away is not a year-end price
+// at all — returns null rather than silently pairing the wrong date.
+function nearestClosePrice(data, targetT, toleranceDays = 14) {
+  const toleranceMs = toleranceDays * 86400000
+  let best = null, bestDiff = Infinity
+  for (const p of (data?.priceHistory || [])) {
+    if (!p?.date || !(p.close > 0)) continue
+    const t = Date.parse(p.date)
+    if (!isFinite(t)) continue
+    const diff = Math.abs(t - targetT)
+    if (diff < bestDiff) { bestDiff = diff; best = p.close }
+  }
+  return bestDiff <= toleranceMs ? best : null
 }
 
 // A term's own statement, when it declares one (ROA/ROE/Net Debt÷EBITDA mix
@@ -648,6 +686,15 @@ function sumTerms(data, rowTable, terms, row, basis) {
 // STANDARD_FORMULA_ROWS for the three modes' shapes.
 function computeCustomRowValue(data, field, row, basis) {
   if (!row) return null
+  if (field.mode === 'priceRatio') {
+    const year = yearOf(row)
+    if (year == null) return null
+    const fyEndT = Date.UTC(year, FY_END_MONTH, 0)
+    const price = nearestClosePrice(data, fyEndT)
+    const eps = resolvedValue(row, 'eps', basis)
+    if (price == null || !eps) return null
+    return price / eps
+  }
   if (field.mode === 'ratio') {
     const numTerms = termsFor(data, field.key, 'numerator')
     const denTerms = termsFor(data, field.key, 'denominator')
