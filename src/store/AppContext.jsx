@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react'
 import { fetchTicker } from '../api/orchestrator.js'
 import { normalize, applyDocFacts, migrateStoredData, migrateNormalizedTable } from '../engine/normalize.js'
-import { calcRatios } from '../engine/ratios.js'
+import { computeCurrentSnapshot } from '../engine/currentSnapshot.js'
 import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
 import { assessDataQuality, materializeIncomeNormalization, hasAnyNormalization } from '../engine/dataQuality.js'
@@ -611,7 +611,7 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // The growth window reaches ratios, so every consumer — stage classification,
   // fair value, market expectation, the AI verdict and the dashboard card — uses
   // the same figure the user chose.
-  const ratioResult = calcRatios(data, { growthWindowYears: opts.growthWindowYears })
+  const ratioResult = computeCurrentSnapshot(data, { growthWindowYears: opts.growthWindowYears })
   const sectorType  = detectSectorType(data)
   const stage       = detectStage(data, ratioResult)
   // Every caller of computeAll() routes through here — including

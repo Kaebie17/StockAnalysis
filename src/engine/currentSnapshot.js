@@ -1,19 +1,25 @@
 
 
 /**
- * src/engine/ratios.js
+ * src/engine/currentSnapshot.js (formerly ratios.js)
  *
- * ALL ratios computed from raw normalized data.
- * No ratio is ever taken from a source — sources provide only raw numbers.
+ * The CURRENT snapshot only — one reading of this ticker, right now, not a
+ * historical series. Most of what it returns is read straight off the data
+ * table's own latest row (activeValue, basis-aware, no recomputation) —
+ * this file mainly exists to combine that with the one thing the table
+ * genuinely can't hold: today's live price (data.price, polled every 60s),
+ * for the handful of ratios that need it (P/E, P/B, EV/EBITDA, EV/Sales,
+ * Market Cap, EV — the table's own versions of these use each fiscal
+ * year's own closing price instead, a different and equally valid number
+ * for a different question: what this traded at historically, vs. what it's
+ * worth right now).
  *
  * Each output ratio carries resolution metadata:
  *   { value, status, formula }
  *   status: 'calculated' | 'unavailable'
  *
- * Derivation hierarchy for each ratio:
- *   1. Calculate from historical statement data
- *   2. Mark unavailable — never silently return null, never substitute a
- *      weaker snapshot figure for a genuine gap
+ * Never substitutes a weaker figure for a genuine gap — a ratio with a
+ * missing input is marked unavailable, not silently approximated.
  */
 
 /**
@@ -21,9 +27,9 @@
  * source directly gives it (Yahoo/SEC filers); Revenue − COGS, both
  * basis-resolved, when it isn't (every Indian/Screener ticker — see
  * metrics.js, "Indian P&L has no gross-profit line, ever"). One
- * definition, used by calcRatios (latest year) and moatQuality (the full
- * series) — read the same way any other normalizable field is, not
- * recomputed inline here.
+ * definition, used by computeCurrentSnapshot (latest year) and
+ * moatQuality (the full series) — read the same way any other
+ * normalizable field is, not recomputed inline here.
  */
 import { detectSectorType, SECTOR_TYPES } from './stage.js'
 import { activeValue } from './dataQuality.js'
@@ -40,7 +46,7 @@ export function grossProfitOf(row, basis) {
 // any other normalizable field: activeValue(row, 'nwc', basis)?.value —
 // no wrapper function needed here any more.
 
-export function calcRatios(data, opts = {}) {
+export function computeCurrentSnapshot(data, opts = {}) {
   const { price, marketCap: marketCapRaw, shares: sharesRaw,
           reportedIncomeHistory: incomeHistory,
           balanceHistory, cashflowHistory, meta, basis } = data
