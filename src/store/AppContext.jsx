@@ -461,16 +461,27 @@ function reducer(s, a) {
         if (!e?.year) continue
         const y = String(e.year)
         if (!byYear[y]) byYear[y] = { year: y }
+        // e.normalized: this edit targets {field}Normalized, not {field}
+        // itself — HistoryTableModal's Normalized row uses the same commit
+        // path as the reported one, just a different key and a `manual`
+        // flag instead of `status:'pasted'` (Normalized fields were never
+        // status-tagged the reported way). See formulas.js's
+        // recomputeNormalizedTargets/materializeCustomRows: a manual entry
+        // here is the HIGHEST precedence value for that cell, permanently —
+        // never recomputed over, never swept away as a stale orphan.
+        const key = e.normalized ? `${e.field}Normalized` : e.field
         if (e.value == null) {
-          const { [e.field]: _drop, ...rest } = byYear[y]
+          const { [key]: _drop, ...rest } = byYear[y]
           byYear[y] = rest
+        } else if (e.normalized) {
+          byYear[y] = { ...byYear[y], [key]: { value: e.value, adjusted: true, manual: true, formula: null } }
         } else {
           // alwaysPositive (capex) — a spend magnitude, not a signed
           // quantity; see metrics.js. Someone typing in the exact figure
           // they see on a cash-flow statement (which shows it negative,
           // an outflow) would otherwise silently store the wrong sign.
           const value = METRICS[e.field]?.alwaysPositive ? Math.abs(e.value) : e.value
-          byYear[y] = { ...byYear[y], [e.field]: { value, status: 'pasted', formula: null } }
+          byYear[y] = { ...byYear[y], [key]: { value, status: 'pasted', formula: null } }
         }
       }
       const newHistory = Object.values(byYear).sort((x, y) => x.year.localeCompare(y.year))

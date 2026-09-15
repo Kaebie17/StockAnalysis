@@ -3,7 +3,7 @@ import { useApp } from '../../store/AppContext.jsx'
 import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
 import { computeNormalizedRow, activeValue } from '../../engine/dataQuality.js'
-import { normalizedFieldValue, availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField, INPUT_FORMULAS, computedRowEquation, formulaTerms } from '../../engine/formulas.js'
+import { availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField, INPUT_FORMULAS, computedRowEquation, formulaTerms } from '../../engine/formulas.js'
 import { marketOf } from '../../engine/requiredReturn.js'
 import { getRiskFreeRate, refreshRiskFreeRate } from '../../api/riskFreeClient.js'
 import { getEquityRiskPremium, refreshEquityRiskPremium } from '../../api/erpClient.js'
@@ -133,10 +133,6 @@ export default function HistoryTableModal({ open, onClose }) {
   // the Formulas tab still shows their equation regardless, since it reads
   // straight off data.customFields, not this filtered view.
   const customFields = (data.customFields || []).filter(f => f.table === table && !METRICS[f.key])
-  // Every valid restatement target for this ticker (Part C) — the curated
-  // ten plus any other field with data, plus every custom row, across all
-  // three statements. Filtered to the current tab where each use needs it.
-  const allTargets = availableTargets(data)
 
   const trackedKeys = Object.keys(METRICS).filter(k => METRICS[k].table === table)
   const signatureKeys = TABLE_SHAPE[table]?.signature || []
@@ -157,6 +153,15 @@ export default function HistoryTableModal({ open, onClose }) {
 
   const cellKey = (year, field) => `${year}|${field}`
 
+  // A row's Normalized cell is edited through this SAME grid, not a
+  // separate mechanism — addressed with a virtual field name carrying this
+  // suffix so pending-state/dirty-tracking/cellKey all work unmodified;
+  // every place that needs the REAL underlying key (display formatting,
+  // committed-value lookup, the actual save) strips it via baseField.
+  const NORM_SUFFIX = '::normalized'
+  const isNormField = f => f.endsWith(NORM_SUFFIX)
+  const baseField = f => isNormField(f) ? f.slice(0, -NORM_SUFFIX.length) : f
+
   // A 'ratio'-mode computed row (every margin, ROA/ROCE/ROE, D/E, ICR, Net
   // Debt/EBITDA, Effective Tax Rate) is a percentage or a multiple, not a
   // Crore/Million-scaled amount — dividing it by `div` the way every money
@@ -164,7 +169,7 @@ export default function HistoryTableModal({ open, onClose }) {
   // off the ticker's FULL customFields (not the table's locally deduped
   // list above), since mode is metadata that exists regardless of whether
   // this key also happens to be a tracked field.
-  const isRatioField = field => ['ratio', 'priceRatio'].includes((data.customFields || []).find(f => f.key === field)?.mode)
+  const isRatioField = field => ['ratio', 'priceRatio'].includes((data.customFields || []).find(f => f.key === baseField(field))?.mode)
   const displayOf = (field, raw) => {
     if (raw == null) return ''
     // Screener shows every line whole (Cr, no paise) — a few fields (COGS
@@ -174,7 +179,7 @@ export default function HistoryTableModal({ open, onClose }) {
     // shows whole crores for every scaled field, same convention as the
     // source. The full precision is unaffected in storage/ratio math; this
     // only rounds what's DISPLAYED here.
-    if (SKIP_SCALE.has(field)) return String(raw)
+    if (SKIP_SCALE.has(baseField(field))) return String(raw)
     if (isRatioField(field)) return String(Math.round(raw * 100) / 100)
     return String(Math.round(raw / div))
   }
@@ -183,12 +188,13 @@ export default function HistoryTableModal({ open, onClose }) {
     if (t === '') return null
     const n = Number(t)
     if (!isFinite(n)) return undefined   // invalid — caller should ignore
-    return (SKIP_SCALE.has(field) || isRatioField(field)) ? n : n * div
+    return (SKIP_SCALE.has(baseField(field)) || isRatioField(field)) ? n : n * div
   }
 
   const committedFor = (year, field) => {
     const row = history.find(r => String(r?.year) === year)
-    return val(row?.[field])
+    const key = isNormField(field) ? `${baseField(field)}Normalized` : field
+    return val(row?.[key])
   }
 
   const cellText = (year, field) => {
@@ -217,7 +223,7 @@ export default function HistoryTableModal({ open, onClose }) {
       const [year, field] = k.split('|')
       const parsed = parseInput(field, text)
       if (parsed === undefined) continue   // invalid typed value — skip, don't save garbage
-      edits.push({ year, field, value: parsed })
+      edits.push({ year, field: baseField(field), value: parsed, normalized: isNormField(field) })
     }
     if (edits.length) editHistoryCells(table, edits)
     setPending({}); setEditingKey(null)
@@ -269,27 +275,12 @@ export default function HistoryTableModal({ open, onClose }) {
       computedRows.push({ label: 'EPS (Normalized)', cells: epsNorm, fmt: v => v == null ? null : v.toFixed(2), anchor: 'eps' })
     }
   }
-  // Restatement-tool Normalized siblings — a real, stored row
-  // (recomputeNormalizedTargets, called from computeAll) for any target on
-  // THIS statement that currently has at least one custom row feeding it —
-  // not just the curated ten, since Part C let the restatement tool target
-  // any field with data (or a custom row), and hiding one here would defeat
-  // this table's whole point of showing what's actually stored. Anchored
-  // to the target's own key, so it renders directly under that field's row
-  // rather than in an undifferentiated block at the bottom.
-  const targetsForTable = allTargets.filter(t => t.table === table)
-  for (const meta of targetsForTable) {
-    const key = meta.key
-    const cells = years.map(y => {
-      const row = history.find(r => String(r.year) === y)
-      const n = row ? normalizedFieldValue(row, key) : null
-      return n?.value ?? null
-    })
-    const hasContribution = years.some(y => val(history.find(r => String(r.year) === y)?.[`${key}Normalized`]) != null)
-    if (hasContribution) {
-      computedRows.push({ label: `${meta.label} (Normalized)`, cells, fmt: v => v == null ? null : (SKIP_SCALE.has(key) ? v.toFixed(2) : Math.round(v / div).toLocaleString()), anchor: key })
-    }
-  }
+  // Every shown row's Normalized sibling now renders as its own EDITABLE
+  // row right beneath it (see the EditableRow calls with NORM_SUFFIX,
+  // below) — always present, not conditional on already having a
+  // contribution, since the whole point is a place to type one in. That
+  // supersedes the old read-only, contribution-gated audit row this block
+  // used to build.
   // NWC/PBT/EBITDA/every margin/ROE/FCFF/etc. used to be pushed here as a
   // separate "computed" row layer, anchored under whichever raw field they
   // read most naturally as an extension of — they're `computed: true`
@@ -382,6 +373,10 @@ export default function HistoryTableModal({ open, onClose }) {
                     assignmentNote={assignmentSummary(data, field)}
                     onNavigate={() => goToFormulas(field)}
                   />
+                  <EditableRow label={`${METRICS[field]?.label || field} (Normalized)`} field={`${field}${NORM_SUFFIX}`} years={years}
+                    cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
+                    commitCell={commitCell} cellKey={cellKey} muted
+                  />
                   {(computedRowsByAnchor[field] || []).map(renderComputedRow)}
                 </React.Fragment>
               ))}
@@ -395,6 +390,10 @@ export default function HistoryTableModal({ open, onClose }) {
                     }}
                     assignmentNote={assignmentSummary(data, f.key)}
                     onNavigate={() => goToFormulas(f.key)}
+                  />
+                  <EditableRow label={`${f.label} (Normalized)`} field={`${f.key}${NORM_SUFFIX}`} years={years}
+                    cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
+                    commitCell={commitCell} cellKey={cellKey} muted
                   />
                   {(computedRowsByAnchor[f.key] || []).map(renderComputedRow)}
                 </React.Fragment>
@@ -459,7 +458,7 @@ export default function HistoryTableModal({ open, onClose }) {
   )
 }
 
-function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, assignmentNote, onNavigate }) {
+function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, assignmentNote, onNavigate, muted }) {
   const [showPaste, setShowPaste] = useState(false)
   const [pasteText, setPasteText] = useState('')
   const [pasteWarning, setPasteWarning] = useState('')
@@ -499,7 +498,7 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
   return (
     <>
     <tr className="border-b border-navy-800/50">
-      <td className="py-1 text-slate-300 sticky left-0 bg-navy-900 pr-2 min-w-[11rem]">
+      <td className={'py-1 sticky left-0 bg-navy-900 pr-2 min-w-[11rem] ' + (muted ? 'text-slate-500 italic' : 'text-slate-300')}>
         {label}
         <button onClick={() => { setShowPaste(s => !s); setPasteWarning('') }}
           title="Bulk-fill this row from a paste" className="ml-1 text-slate-600 hover:text-accent">📋</button>

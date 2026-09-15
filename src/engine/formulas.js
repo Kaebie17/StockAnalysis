@@ -504,6 +504,14 @@ export function recomputeNormalizedTargets(data) {
     const formula = contributors.map(c => `${(c.sign ?? 1) > 0 ? '+' : '−'} ${labelOf(c.field)}`).join(' ')
 
     const newHistory = base.map(row => {
+      // Highest precedence, always: a genuinely typed-in Normalized figure
+      // (HistoryTableModal's own Normalized row, EDIT_HISTORY_CELLS with
+      // normalized:true) is a real, hand-entered value exactly like a
+      // pasted reported one — never recomputed over, never swept away as a
+      // stale orphan just because it currently has no restatement
+      // contributors behind it.
+      const normKey = `${target}Normalized`
+      if (row?.[normKey]?.manual) return row
       const reported = row?.[target]
       if (reported?.value == null) return row
       // A year no contributor has anything for gets no Normalized row at
@@ -522,7 +530,6 @@ export function recomputeNormalizedTargets(data) {
       // Normalized figure an EARLIER recompute pass had already written —
       // this always rewrites from the CURRENT contributors, so nothing
       // stale survives a year going from touched to untouched.
-      const normKey = `${target}Normalized`
       if (!touched) {
         if (!(normKey in row)) return row
         const { [normKey]: _drop, ...rest } = row
@@ -1077,11 +1084,22 @@ export function materializeCustomRows(data) {
         .some(a => a.kind === 'restatement' && a.target === field.key)
 
       const newHistory = base.map(row => {
+        // Highest precedence, always: a genuinely typed-in Normalized figure
+        // (HistoryTableModal's own Normalized row) is real, hand-entered
+        // data — never recomputed over, never stripped, regardless of what
+        // happens to the reported side or whether this field is also a
+        // restatement target.
+        const isManualNormalized = row[normKey]?.manual === true
+
         const existing = row[field.key]
         if (existing != null && existing.status !== 'calculated') return row
 
         const reported = computeCustomRowValue(out, field, row, 'reported')
         if (reported == null) {
+          if (isManualNormalized) {
+            if (field.key in row) { changedThisPass = true; const { [field.key]: _a, ...rest } = row; return rest }
+            return row
+          }
           // recomputeNormalizedTargets itself declines to write normKey for
           // any row whose target has no value (see its own `reported?.value
           // == null` guard) — so if THIS formula can't produce a value
@@ -1093,7 +1111,7 @@ export function materializeCustomRows(data) {
           return rest
         }
         let next = { ...row, [field.key]: { value: reported, status: 'calculated', formula: null } }
-        if (!isRestatementTarget) {
+        if (!isRestatementTarget && !isManualNormalized) {
           const normalized = computeCustomRowValue(out, field, row, 'normalized')
           if (normalized != null && normalized !== reported) {
             next[normKey] = { value: normalized, adjusted: true, formula: null }
