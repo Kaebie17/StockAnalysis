@@ -498,7 +498,21 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
   // snapshotRebuild.js's historical "as of" reconstruction, whose truncated
   // income slice may not carry every materialized field).
   const incRowL = latestRealRow(incomeHistory)
-  const roe = activeValue(incRowL, 'roe', basis)?.value ?? ratioResult?.ratios?.roe?.value
+  // ROE ladder: median of the last 3 years a real equity base supports (same
+  // guided→median-of-N-years→latest principle tableRatioBasis gives every
+  // other driver), not just whatever the latest year happened to report — a
+  // single depressed or inflated year otherwise sets the whole compounding
+  // rate. Negative/zero-equity years are excluded from the ladder the same
+  // way pbBand excludes them from its own P/B band: ROE isn't a meaningful
+  // ratio there, it's a sign-flipped or divide-by-near-zero artefact.
+  const roeData = { reportedIncomeHistory: incomeHistory, balanceHistory, basis }
+  const roeBasis = tableRatioBasis(roeData, 'roe', basis, {
+    filterYear: p => {
+      const bRow = (balanceHistory || []).find(b => yearOf(b) === p.year)
+      return val(bRow?.totalEquity) > 0
+    },
+  })
+  const roe = roeBasis.value ?? activeValue(incRowL, 'roe', basis)?.value ?? ratioResult?.ratios?.roe?.value
   const payout = activeValue(incRowL, 'dividendPayout', basis)?.value ?? ratioResult?.ratios?.dividendPayout?.value
   if (!(bps > 0)) return null
 
@@ -600,13 +614,13 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
     growth, growthPct: round(growth * 100, 1),
     growthSource: growthOverride != null ? 'revision' : 'roe-retention',
     growthLabel: growthOverride != null ? (opts.overrideLabel || 'an applied revision')
-      : `${round(roe, 1)}% ROE × ${round(retention * 100, 0)}% retained`,
+      : `${round(roe, 1)}% ROE (${roeBasis.value != null ? roeBasis.source : 'latest'}) × ${round(retention * 100, 0)}% retained`,
     marginPct: null, marginLabel: 'not applicable to a lender', marginSource: 'n/a',
     dilutionPct: 0, dilutionLabel: 'book already net of issuance',
     multiples, multipleBasis, multipleLabel,
     target, upside, degraded,
     epsPath: 'book × (ROE × retention) × P/B',
-    basisSummary: `Book compounding at ${round(growth * 100, 1)}% (${round(roe, 1)}% ROE × ${round(retention * 100, 0)}% retained) · Multiple: ${multipleLabel}`,
+    basisSummary: `Book compounding at ${round(growth * 100, 1)}% (${round(roe, 1)}% ROE, ${roeBasis.value != null ? roeBasis.source : 'latest'} × ${round(retention * 100, 0)}% retained) · Multiple: ${multipleLabel}`,
   }
 }
 
@@ -749,31 +763,44 @@ export function averagePayout(history = []) {
  */
 export function buildCyclicalEstimate(ratioResult, opts = {}) {
   const { incomeHistory = [], priceHistory = [], balanceHistory = [], years = 1,
-          multipleOverride = null, growthOverride = null, peerBand = null } = opts
+          multipleOverride = null, growthOverride = null, peerBand = null, basis } = opts
   const price = ratioResult?.price
   // revenue/eps/netProfit read off the SAME resolved incomeHistory the
-  // mid-cycle margin below already uses, rather than a separately-sourced
-  // ratioResult scalar that could in principle disagree with it. Falls back
-  // to ratioResult when the table can't resolve one (see buildLenderEstimate's
-  // note on snapshotRebuild.js's historical reconstruction).
+  // mid-cycle decomposition below already uses, rather than a separately-
+  // sourced ratioResult scalar that could in principle disagree with it.
+  // Falls back to ratioResult when the table can't resolve one (see
+  // buildLenderEstimate's note on snapshotRebuild.js's historical
+  // reconstruction).
   const latestInc = latestRealRow(incomeHistory)
   const revenue = val(latestInc?.revenue) ?? ratioResult?.revenue
   const eps = val(latestInc?.eps) ?? ratioResult?.eps
   const netProfit = val(latestInc?.netProfit) ?? ratioResult?.netProfit
   if (!(revenue > 0) || !(eps > 0) || !(netProfit > 0)) return null
 
-  // Mid-cycle margin: the median across every year available, which spans more
-  // of a cycle than any average of the last two or three.
-  const margins = []
-  for (const row of incomeHistory) {
-    const rev = val(row?.revenue), np = val(row?.netProfit)
-    if (rev > 0 && np != null) margins.push(np / rev)
-  }
-  if (margins.length < 4) return null          // too short to contain a cycle
-  const sorted = [...margins].sort((a, b) => a - b)
-  const midCycleMargin = sorted[Math.floor(sorted.length / 2)]
+  // Mid-cycle earnings, decomposed the SAME six-node way the standard chain's
+  // waterfall is (Revenue → EBITDA → EBIT → PBT → NetProfit) — not a single
+  // undifferentiated net-margin number. The difference here is the BASIS each
+  // driver is read from: the standard waterfall's tableRatioBasis defaults to
+  // a 3-year window because a normal business's last 3 years are a reasonable
+  // read on where it's headed, but a commodity business's last 3 years are
+  // just as likely to be all-peak or all-trough — exactly the distortion the
+  // old flat net-margin median existed to correct. Passing the full history
+  // length as the window makes tableRatioBasis take the median across
+  // whatever's available instead, the same "spans more of a cycle than a
+  // short average" principle the old margin-only version used, now applied to
+  // every driver instead of just the bottom line.
+  const cyclicalData = { reportedIncomeHistory: incomeHistory, balanceHistory, basis }
+  const throughCycleYears = incomeHistory.length
+  const ebitdaMarginBasis = tableRatioBasis(cyclicalData, 'ebitdaMargin', basis, { years: throughCycleYears })
+  if (ebitdaMarginBasis.yearsUsed < 4) return null          // too short to contain a cycle
+  const daBasis = tableRatioBasis(cyclicalData, 'daToRevenue', basis, { years: throughCycleYears })
+  const interestBasis = tableRatioBasis(cyclicalData, 'netInterestToRevenue', basis, { years: throughCycleYears })
+  const otherIncomeBasis = otherIncomeForecastBasis(cyclicalData, basis)
+  const taxBasis = tableRatioBasis(cyclicalData, 'effectiveTaxRate', basis, {
+    years: throughCycleYears,
+    filterYear: p => (activeValue(p.row, 'profitBeforeTax', basis)?.value ?? -1) > 0,
+  })
   const currentMargin = netProfit / revenue
-  if (!(midCycleMargin > 0)) return null
 
   const shares = netProfit / eps
 
@@ -787,7 +814,18 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
   if (growthInfo?.growth == null) return null      // no history → no estimate
   const growth = growthInfo.growth
   const projRevenue = revenue * Math.pow(1 + growth, years)
-  const normalisedProfit = projRevenue * midCycleMargin
+
+  const mcEbitda = projRevenue * (ebitdaMarginBasis.value / 100)
+  const mcDa = daBasis.value != null ? projRevenue * (daBasis.value / 100) : 0
+  const mcEbit = mcEbitda - mcDa
+  const mcInterest = interestBasis.value != null ? projRevenue * (interestBasis.value / 100) : 0
+  const mcOtherIncome = projRevenue * (otherIncomeBasis.value ?? 0)
+  const mcPbt = mcEbit - mcInterest + mcOtherIncome
+  const mcTaxRate = taxBasis.value != null ? Math.max(0, Math.min(1, taxBasis.value / 100)) : 0
+  const mcTax = mcPbt > 0 ? mcPbt * mcTaxRate : 0
+  const normalisedProfit = mcPbt - mcTax
+  const midCycleMargin = normalisedProfit / projRevenue          // net-margin equivalent, for disclosure
+  if (!(normalisedProfit > 0)) return null
   const normalisedEps = normalisedProfit / shares
 
   // The multiple is applied to NORMALISED earnings, so it must be a
@@ -850,25 +888,33 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
     createdAt: Date.now(), horizonYears: years,
     priceAtEstimate: round(price),
     eps: round(eps), forwardEps: round(normalisedEps),
-    epsPath: 'revenue × mid-cycle margin ÷ shares',
+    epsPath: 'revenue → EBITDA → EBIT → PBT → net profit ÷ shares, every driver through-cycle',
     marginPct: round(midCycleMargin * 100, 1),
-    marginLabel: `mid-cycle margin (median of ${margins.length} years)`,
+    marginLabel: `mid-cycle net margin (implied by through-cycle EBITDA margin ${round(ebitdaMarginBasis.value, 1)}%, ${ebitdaMarginBasis.yearsUsed}yr median)`,
     marginSource: 'normalised',
     currentMarginPct: round(currentMargin * 100, 1),
     cyclePosition,
     growth, growthPct: round(growth * 100, 1),
     growthSource: growthOverride != null ? 'revision' : 'cagr',
-    growthLabel: `${growthInfo.label} — margin normalised separately`,
+    growthLabel: `${growthInfo.label} — margins normalised separately`,
     dilutionPct: 0, dilutionLabel: 'not modelled for a cyclical',
     multiples, multipleBasis, multipleLabel,
     target, upside,
+    drivers: {
+      ebitdaMarginPct: round(ebitdaMarginBasis.value, 1), ebitdaMarginSource: ebitdaMarginBasis.source,
+      daToRevenuePct: daBasis.value != null ? round(daBasis.value, 1) : null,
+      netInterestToRevenuePct: interestBasis.value != null ? round(interestBasis.value, 1) : null,
+      otherIncomeToRevenuePct: otherIncomeBasis.value ? round(otherIncomeBasis.value * 100, 2) : 0,
+      otherIncomeSource: otherIncomeBasis.source,
+      taxRatePct: round(mcTaxRate * 100, 1), taxRateSource: taxBasis.source,
+    },
     degraded: [
       ...(growthInfo.unusual
         ? [`Growth rate (${round(growth * 100, 0)}%) is well outside a typical range — likely a recovery from a collapsed base or a one-off`]
         : []),
       ...(thinDispersion ? ['Spread width from a thinner-than-usual sample of trading days'] : []),
     ],
-    basisSummary: `Mid-cycle margin ${round(midCycleMargin * 100, 1)}% (currently ${round(currentMargin * 100, 1)}%, ${cyclePosition}) · ${multipleLabel}`,
+    basisSummary: `Mid-cycle net margin ${round(midCycleMargin * 100, 1)}% (currently ${round(currentMargin * 100, 1)}%, ${cyclePosition}) · ${multipleLabel}`,
   }
 }
 
@@ -1070,9 +1116,32 @@ export function buildEvSalesEstimate(ratioResult, opts = {}) {
   // Same correction as EV/EBITDA — but a loss-making company BURNS cash rather
   // than repaying debt, so net debt grows over the year instead of shrinking.
   // Freezing it would flatter exactly the companies least able to afford it.
-  const npForBurn = val(latestInc?.netProfit) ?? netProfitOf(ratioResult)
-  const burn = npForBurn < 0 ? Math.abs(npForBurn) * years : 0
-  const forwardNetDebt = netDebt + burn
+  //
+  // Preferred: NetDebt_t = NetDebt_0 - FCFF_t, using the SAME driver-based
+  // waterfall (buildWaterfallForecast) the standard/EV-EBITDA chains use —
+  // cash-flow-based, not a proxy off the net-profit LOSS, which conflates the
+  // accounting loss with the cash actually burned (D&A doesn't burn cash;
+  // capex and working-capital changes burn cash the P&L loss doesn't show at
+  // all). buildWaterfallForecast's share-count derivation (netProfit/EPS)
+  // can't resolve for a loss-maker, but its EBITDA/EBIT/PBT/FCFF math doesn't
+  // need shares — it degrades dilutedShares/eps to null rather than aborting,
+  // so its fcff is still usable here even though this company has no EPS.
+  // Falls back to the net-profit burn rate where the waterfall can't run at
+  // all (no EBITDA-margin history) — flagged, not silent.
+  const wf = buildWaterfallForecast(
+    { reportedIncomeHistory: incomeHistory, balanceHistory, basis },
+    { incomeHistory: opts.incomeHistory }
+  )
+  let forwardNetDebt, netDebtSource
+  if (wf?.fcff != null && isFinite(wf.fcff)) {
+    forwardNetDebt = netDebt - wf.fcff * years
+    netDebtSource = 'cash-flow'
+  } else {
+    const npForBurn = val(latestInc?.netProfit) ?? netProfitOf(ratioResult)
+    const burn = npForBurn < 0 ? Math.abs(npForBurn) * years : 0
+    forwardNetDebt = netDebt + burn
+    netDebtSource = 'loss-burn'
+  }
   const toEquity = m => ((forwardRevenue * m) - forwardNetDebt) / shares
 
   // Same fallback chain as the other models: this stock's own measured
@@ -1118,8 +1187,10 @@ export function buildEvSalesEstimate(ratioResult, opts = {}) {
       'No profit — valued on sales, which ignores whether they convert to cash',
       ...(growthInfo.unusual ? [`Growth rate (${round(growth * 100, 0)}%) is well outside a typical range — likely a recovery from a collapsed base or a one-off`] : []),
       ...(thinSpread ? ['Spread width from a thinner-than-usual sample of trading days'] : []),
+      ...(netDebtSource === 'loss-burn' ? ['Net debt projected from the current-year loss run-rate — forecast free cash flow wasn\'t derivable (no EBITDA-margin history)'] : []),
     ],
-    basisSummary: `Revenue ${round(forwardRevenue)} × ${round(multiple, 2)}× sales, less net debt`,
+    basisSummary: `Revenue ${round(forwardRevenue)} × ${round(multiple, 2)}× sales, less net debt `
+      + `(${netDebtSource === 'cash-flow' ? 'evolved from forecast FCFF' : 'current loss run-rate'})`,
   }
 }
 
@@ -1362,9 +1433,13 @@ export function buildWaterfallForecast(data, opts = {}) {
   const latestNp  = val(activeValue(latestInc, 'netProfit', basis))
   const latestEps = val(activeValue(latestInc, 'eps', basis))
   const sharesNow = (latestNp > 0 && latestEps > 0) ? latestNp / latestEps : null
-  if (!(sharesNow > 0)) return null
-  const shares1 = sharesNow * (1 + dilution.rate)
-  const eps1 = netProfit1 / shares1
+  // A loss-making company (netProfit and EPS both <= 0) has no derivable
+  // share count here, but EBITDA/EBIT/PBT/FCFF below don't depend on one —
+  // degrading only dilutedShares/eps to null (instead of aborting the whole
+  // forecast) lets a company-total consumer (buildEvSalesEstimate's net-debt
+  // evolution) use the rest of the waterfall where a per-share consumer can't.
+  const shares1 = sharesNow > 0 ? sharesNow * (1 + dilution.rate) : null
+  const eps1 = shares1 > 0 ? netProfit1 / shares1 : null
 
   // FCFF bridge — NWC forecast as a LEVEL first (revenue × ratio), then
   // differenced against the latest actual balance-sheet NWC. Forecasting
