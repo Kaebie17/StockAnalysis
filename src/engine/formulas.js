@@ -1275,3 +1275,46 @@ export function seedStandardFormulaRows(data) {
 export function assignmentsForField(data, field) {
   return (data?.fieldAssignments || []).filter(a => a.field === field)
 }
+
+/**
+ * Every FORMULA (not restatement) currently reading this field as one of
+ * its terms — the reverse of formulaTerms(), structured for something that
+ * needs to locate and MOVE a specific term (the row-tag/drag-to-reassign
+ * feature), not just display a string. STANDARD_FORMULA_ROWS and a user's
+ * own custom formulas are the same storage once seeded (both are
+ * data.fieldAssignments entries with kind:'formula') — this walks that one
+ * array, nothing formula-origin-specific to special-case.
+ */
+export function consumersOf(data, field) {
+  const formulasByKey = Object.fromEntries(
+    (data?.customFields || []).filter(f => f.computed).map(f => [f.key, f])
+  )
+  const describe = (a, role) => {
+    const formula = formulasByKey[a.formula]
+    return {
+      role,   // 'term' — this field IS the term's value; 'weight' — this field only weights another term's value
+      formula: a.formula,
+      formulaLabel: formula?.label ?? a.formula,
+      formulaTable: formula?.table ?? null,
+      bucket: a.bucket,
+      sign: a.sign ?? 1,
+      table: a.table,
+      lag: a.lag,
+      weightField: a.weightField,
+      weightOneMinus: a.weightOneMinus,
+    }
+  }
+  const asTerm = (data?.fieldAssignments || [])
+    .filter(a => a.kind === 'formula' && a.field === field)
+    .map(a => describe(a, 'term'))
+  // A field can ALSO be referenced only as a term's WEIGHT (fcff's ebit
+  // term weights by effectiveTaxRate, not the reverse) — that's a
+  // different property (weightField, not field) on the SAME assignment
+  // entry, so a plain field-match misses it entirely. Without this, a row
+  // used only as a weight would show zero consumers despite genuinely
+  // feeding a formula.
+  const asWeight = (data?.fieldAssignments || [])
+    .filter(a => a.kind === 'formula' && a.weightField === field)
+    .map(a => describe(a, 'weight'))
+  return [...asTerm, ...asWeight]
+}

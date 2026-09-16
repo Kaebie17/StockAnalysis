@@ -4,7 +4,7 @@ import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
 import { parseExcerpt, proposalToEdit } from '../../engine/parseExcerpt.js'
 import { activeValue } from '../../engine/dataQuality.js'
-import { availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField, INPUT_FORMULAS, computedRowEquation, formulaTerms } from '../../engine/formulas.js'
+import { availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField, consumersOf, INPUT_FORMULAS, computedRowEquation, formulaTerms } from '../../engine/formulas.js'
 import { marketOf } from '../../engine/requiredReturn.js'
 import { getRiskFreeRate, refreshRiskFreeRate } from '../../api/riskFreeClient.js'
 import { getEquityRiskPremium, refreshEquityRiskPremium } from '../../api/erpClient.js'
@@ -86,7 +86,7 @@ function assignmentSummary(data, field) {
 }
 
 export default function HistoryTableModal({ open, onClose, initialFocus }) {
-  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setGrowthMethodWindow } = useApp()
+  const { state, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setGrowthMethodWindow, moveFieldAssignment } = useApp()
   const data = state?.data
   const currency = data?.currency
   const div  = currency === 'INR' ? 1e7 : 1e6
@@ -115,6 +115,33 @@ export default function HistoryTableModal({ open, onClose, initialFocus }) {
   // changed" check, not a durable per-value audit trail.
   const [lastSeenOutputs, setLastSeenOutputs] = useState({})
 
+  // Row-tag drag-and-drop (rewire which row a formula term reads from) —
+  // a toast + one-click Undo rather than a before-the-fact confirmation:
+  // the mechanism can't tell a deliberate rewire from a fat-fingered one
+  // (both are equally "valid" drops), so the safety net is a cheap-to-use
+  // revert after the fact, not friction on every drop. { message, undo }.
+  const [dropToast, setDropToast] = useState(null)
+  useEffect(() => {
+    if (!dropToast) return
+    const t = setTimeout(() => setDropToast(null), 8000)
+    return () => clearTimeout(t)
+  }, [dropToast])
+
+  // Hover-over-a-tab-header-mid-drag auto-switch — the standard drag-into-
+  // folder pattern, since a plain mouse drag can't otherwise cross a tab
+  // boundary. Skipped while there are unsaved cell edits on the current
+  // tab, rather than firing the tab-switch confirm() dialog mid-drag
+  // (a blocking native dialog during an active HTML5 drag session behaves
+  // unreliably across browsers) — the drag simply can't switch tabs until
+  // those are saved or discarded.
+  const tabHoverTimer = useRef(null)
+  const clearTabHover = () => { if (tabHoverTimer.current) { clearTimeout(tabHoverTimer.current); tabHoverTimer.current = null } }
+  const onTabDragEnter = (key) => {
+    if (key === table || key === 'formulas' || pendingCount > 0) return
+    clearTabHover()
+    tabHoverTimer.current = setTimeout(() => { setTable(key); tabHoverTimer.current = null }, 600)
+  }
+
   // initialFocus (optional): { table, field } — a caller outside this
   // modal (a data-quality flag's "normalize this year →" link) pointing
   // straight at the concerned row, on the concerned statement, instead of
@@ -136,6 +163,27 @@ export default function HistoryTableModal({ open, onClose, initialFocus }) {
   const goToFormulas = (field) => { setFocusField(field); setTable('formulas') }
 
   if (!open || !data) return null
+
+  // Row-tag drag-and-drop: dropping a formula's term-tag onto `toField`
+  // rewires that ONE term to read from toField instead — see
+  // MOVE_FIELD_ASSIGNMENT's own comment for why this is one dispatch, not a
+  // remove-then-add pair. toTable is always the CURRENT tab, since that's
+  // where the drop physically landed (cross-tab drops switch tabs first —
+  // see onTabDragEnter — so by the time a drop fires, `table` already IS
+  // the target's table).
+  const runMove = (fromField, toField, formula, bucket, toTable, role) => {
+    moveFieldAssignment(fromField, toField, formula, bucket, toTable, role)
+  }
+  const handleDropAssignment = (payload, toField, toLabel) => {
+    if (!payload || payload.fromField === toField) return
+    const fromLabel = fieldLabel(data, payload.fromField)
+    const roleNote = payload.role === 'weight' ? ' (weight)' : ''
+    runMove(payload.fromField, toField, payload.formula, payload.bucket, table, payload.role)
+    setDropToast({
+      message: `${payload.formulaLabel}'s ${fromLabel} term${roleNote} now reads ${toLabel}`,
+      undo: () => runMove(toField, payload.fromField, payload.formula, payload.bucket, payload.fromTable, payload.role),
+    })
+  }
 
   const history = data[histKeyFor(table)] || (table === 'income' ? data.incomeHistory : []) || []
   const years = [...new Set(history.map(r => String(r?.year)).filter(Boolean))].sort()
@@ -341,11 +389,26 @@ export default function HistoryTableModal({ open, onClose, initialFocus }) {
         {TABLES.map(t => (
           <button key={t.key}
             onClick={() => { if (pendingCount > 0 && !window.confirm('Switching statements discards unsaved edits on this one. Continue?')) return; setTable(t.key); setPending({}); setEditingKey(null); if (t.key !== 'formulas') setFocusField(null) }}
+            onDragEnter={() => onTabDragEnter(t.key)}
+            onDragOver={e => e.preventDefault()}
+            onDragLeave={clearTabHover}
+            onDrop={clearTabHover}
             className={'flex-1 py-1.5 rounded-lg text-xs border ' + (table === t.key ? 'border-accent bg-navy-800 text-white' : 'border-navy-700 text-slate-400')}>
             {t.icon} {t.label}
           </button>
         ))}
       </div>
+
+      {dropToast && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-accent/40 bg-navy-800 px-3 py-2 text-xs text-slate-200">
+          <span>{dropToast.message}</span>
+          <button
+            onClick={() => { dropToast.undo(); setDropToast(null) }}
+            className="shrink-0 text-accent hover:text-accent-light font-medium">
+            Undo
+          </button>
+        </div>
+      )}
 
       {table === 'formulas' ? (
         <FormulasTab data={data} div={div} focusField={focusField}
@@ -373,6 +436,8 @@ export default function HistoryTableModal({ open, onClose, initialFocus }) {
                     assignmentNote={assignmentSummary(data, field)}
                     onNavigate={() => goToFormulas(field)}
                     focused={focusField === field}
+                    consumers={consumersOf(data, field)} table={table}
+                    onDropAssignment={payload => handleDropAssignment(payload, field, METRICS[field]?.label || field)}
                   />
                   <EditableRow label={`${METRICS[field]?.label || field} (Normalized)`} field={`${field}${NORM_SUFFIX}`} years={years}
                     cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
@@ -394,6 +459,8 @@ export default function HistoryTableModal({ open, onClose, initialFocus }) {
                     assignmentNote={assignmentSummary(data, f.key)}
                     onNavigate={() => goToFormulas(f.key)}
                     focused={focusField === f.key}
+                    consumers={consumersOf(data, f.key)} table={table}
+                    onDropAssignment={payload => handleDropAssignment(payload, f.key, f.label)}
                   />
                   <EditableRow label={`${f.label} (Normalized)`} field={`${f.key}${NORM_SUFFIX}`} years={years}
                     cellText={cellText} isDirty={isDirty} editingKey={editingKey} setEditingKey={setEditingKey}
@@ -464,10 +531,19 @@ export default function HistoryTableModal({ open, onClose, initialFocus }) {
   )
 }
 
-function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, assignmentNote, onNavigate, muted, focused, div, reportedValueFor }) {
+function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEditingKey, commitCell, cellKey, onRemove, assignmentNote, onNavigate, muted, focused, div, reportedValueFor, consumers, table, onDropAssignment }) {
   const [showPaste, setShowPaste] = useState(false)
   const [pasteText, setPasteText] = useState('')
   const [pasteWarning, setPasteWarning] = useState('')
+  // Which formulas read THIS row, expanded inline — collapsed by default so
+  // a table with dozens of rows doesn't turn into a wall of chips nobody
+  // asked to see. Each chip is a drag SOURCE (rewire that one term to read
+  // a different row); every row's own <tr>, tagged or not, is a drop
+  // TARGET — any row can become a term's new source, not just ones that
+  // already have consumers.
+  const [showConsumers, setShowConsumers] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const hasConsumers = consumers && consumers.length > 0
 
   // Bulk-correct THIS row across every year in one go — e.g. a tracked
   // field that already has data but needs redoing wholesale (mixed-sign
@@ -522,8 +598,18 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
 
   return (
     <>
-    <tr className={'border-b border-navy-800/50' + (focused ? ' bg-accent/10' : '')}>
-      <td className={'py-1 sticky left-0 pr-2 min-w-[11rem] ' + (focused ? 'bg-accent/10' : 'bg-navy-900') + ' ' + (muted ? 'text-slate-500 italic' : 'text-slate-300')}>
+    <tr
+      className={'border-b border-navy-800/50' + (focused ? ' bg-accent/10' : '') + (dragOver ? ' bg-accent/20' : '')}
+      onDragOver={onDropAssignment ? e => { e.preventDefault(); setDragOver(true) } : undefined}
+      onDragLeave={onDropAssignment ? () => setDragOver(false) : undefined}
+      onDrop={onDropAssignment ? e => {
+        e.preventDefault(); setDragOver(false)
+        let payload = null
+        try { payload = JSON.parse(e.dataTransfer.getData('application/json')) } catch { /* not one of our chips */ }
+        if (payload) onDropAssignment(payload)
+      } : undefined}
+    >
+      <td className={'py-1 sticky left-0 pr-2 min-w-[11rem] ' + (focused ? 'bg-accent/10' : dragOver ? 'bg-accent/20' : 'bg-navy-900') + ' ' + (muted ? 'text-slate-500 italic' : 'text-slate-300')}>
         {label}
         <button onClick={() => { setShowPaste(s => !s); setPasteWarning('') }}
           title="Bulk-fill this row from a paste" className="ml-1 text-slate-600 hover:text-accent">📋</button>
@@ -534,6 +620,13 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
         )}
         {onRemove && (
           <button onClick={onRemove} title="Remove this row" className="ml-1 text-slate-600 hover:text-bear">✕</button>
+        )}
+        {hasConsumers && (
+          <button onClick={() => setShowConsumers(s => !s)}
+            title="Which formulas read this row — drag one onto another row to reassign it"
+            className="ml-1 text-[10px] align-middle rounded-full border border-navy-600 px-1.5 py-0.5 text-slate-400 hover:border-accent hover:text-accent">
+            🏷️ {consumers.length}
+          </button>
         )}
       </td>
       {years.map(y => {
@@ -568,6 +661,33 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
         )
       })}
     </tr>
+    {showConsumers && hasConsumers && (
+      <tr className="border-b border-navy-800/50">
+        <td colSpan={years.length + 1} className="py-1.5">
+          <div className="flex flex-wrap items-center gap-1.5 pl-1">
+            <span className="text-[10px] text-slate-500">Used by — drag onto another row to reassign:</span>
+            {consumers.map((c, i) => (
+              <span
+                key={i}
+                draggable
+                onDragStart={e => {
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData('application/json', JSON.stringify({
+                    fromField: field, formula: c.formula, formulaLabel: c.formulaLabel,
+                    bucket: c.bucket, fromTable: table, role: c.role,
+                  }))
+                }}
+                title={c.role === 'weight'
+                  ? `Drag to reassign — currently the weight on ${c.formulaLabel}'s term`
+                  : `Drag to reassign — currently ${(c.sign ?? 1) < 0 ? 'subtracted from' : 'added to'} ${c.formulaLabel}${c.bucket && c.bucket !== 'terms' ? ` (${c.bucket})` : ''}`}
+                className="cursor-grab active:cursor-grabbing text-[11px] rounded-full border border-navy-600 bg-navy-800 px-2 py-0.5 text-slate-300 hover:border-accent hover:text-accent">
+                {c.formulaLabel}{c.role === 'weight' ? ' (weight)' : c.bucket && c.bucket !== 'terms' ? ` (${c.bucket})` : ''}
+              </span>
+            ))}
+          </div>
+        </td>
+      </tr>
+    )}
     {showPaste && (
       <tr className="border-b border-navy-800/50">
         <td colSpan={years.length + 1} className="py-2">

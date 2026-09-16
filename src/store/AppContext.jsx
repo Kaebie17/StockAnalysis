@@ -450,6 +450,51 @@ function reducer(s, a) {
                                   { basis: data.basis })
       return { ...s, data, ...computed }
     }
+    // Relocates ONE term — the row-tag drag-and-drop feature (HistoryTableModal):
+    // dragging "FCFF's capex term" onto a different row rewires that term to
+    // read from the new row instead, everything else about it (formula,
+    // bucket, sign, lag, weightField) unchanged. A single dispatch rather than
+    // a remove-then-add pair, so there's no intermediate state where the term
+    // is briefly missing or briefly duplicated, and Undo is just this same
+    // action with fromField/toField swapped. table is only set on the moved
+    // entry when the new row's table differs from the formula's own home
+    // table (matching how every other cross-table term is already recorded —
+    // see formulas.js's rowForTerm) — omitted otherwise, so a same-table move
+    // doesn't grow a redundant override.
+    //
+    // a.role: 'term' (default) moves the assignment's own `field` — the
+    // ordinary case. 'weight' moves `weightField` instead (fcff's ebit term
+    // weights by effectiveTaxRate, a different property on the SAME
+    // assignment) — matched by weightField, not field, and since a weight is
+    // always read off the same row as its term (see formulas.js's 'weighted'
+    // mode — resolvedValue(row, term.weightField, basis), no table/lag
+    // override support), it never gets a table override either.
+    case 'MOVE_FIELD_ASSIGNMENT': {
+      if (!s.data) return s
+      const isWeight = a.role === 'weight'
+      const idx = (s.data.fieldAssignments || []).findIndex(x =>
+        (isWeight ? x.weightField === a.fromField : x.field === a.fromField)
+        && x.kind === 'formula' && x.formula === a.formula && x.bucket === a.bucket)
+      if (idx < 0) return s
+      const old = s.data.fieldAssignments[idx]
+      let moved
+      if (isWeight) {
+        moved = { ...old, weightField: a.toField }
+      } else {
+        const formulaRow = (s.data.customFields || []).find(f => f.key === a.formula)
+        const needsTableOverride = a.toTable && formulaRow?.table && a.toTable !== formulaRow.table
+        moved = { ...old, field: a.toField, table: needsTableOverride ? a.toTable : undefined }
+      }
+      const fieldAssignments = [
+        ...s.data.fieldAssignments.slice(0, idx),
+        ...s.data.fieldAssignments.slice(idx + 1),
+        moved,
+      ]
+      const data = { ...s.data, fieldAssignments }
+      const computed = computeAll(data, s.assumptions, s.meAssumptions, s.scoreWeights, s.arData,
+                                  { basis: data.basis })
+      return { ...s, data, ...computed }
+    }
     // The ONE real control for which growth method feeds `selected` — set
     // from the header (GrowthMethodBadge). The Formulas tab only ever
     // DISPLAYS every method as its own static card; it never sets this.
@@ -1033,6 +1078,13 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_ASSIGNMENTS_FOR_FIELD', field, assignments })
   }, [])
 
+  // Rewire one formula term to read from a different row — the row-tag
+  // drag-and-drop feature. See MOVE_FIELD_ASSIGNMENT. role: 'term' (default)
+  // or 'weight'.
+  const moveFieldAssignment = useCallback((fromField, toField, formula, bucket, toTable, role) => {
+    dispatch({ type: 'MOVE_FIELD_ASSIGNMENT', fromField, toField, formula, bucket, toTable, role })
+  }, [])
+
   // The one real control for which growth method a formula uses — see
   // SET_GROWTH_METHOD_OVERRIDE. methodKey: 'fullPeriodCagr' | 'medianYoY' |
   // 'recentMedianYoY' | 'auto' (clears back to the automatic rule).
@@ -1105,7 +1157,7 @@ export function AppProvider({ children }) {
 
   return (
     <AppContext.Provider value={{
-      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setBetaWindowYears, setBasis, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, setGrowthMethodOverride, setGrowthMethodWindow, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
+      state, load, recalc, overrideStage, reset, resetTicker, clearAllData, applyPastedTable, setQualInputs, dismissGap, setBetaWindowYears, setBasis, editHistoryCells, addCustomField, removeCustomField, mergeCustomFields, setAssignmentsForField, moveFieldAssignment, setGrowthMethodOverride, setGrowthMethodWindow, refreshPrice, refreshPriceHistory, refreshPeers, togglePeerConfirmation, setPeerWeight
     }}>
       {children}
     </AppContext.Provider>
