@@ -250,68 +250,186 @@ export function targetMultiple(opts = {}) {
   // two independent single-variable fits (additively) rather than a true
   // joint multi-variable regression. Not more sophisticated than the point
   // estimate it surrounds, just consistent with it.
+  //
+  // Kept additive rather than rebuilt as a joint (multi-variable) regression
+  // — a real, considered decision, not a shortcut. A joint fit would make
+  // the ROE/growth interaction and a genuine 2-D domain check meaningful,
+  // but needs real degrees of freedom to do it safely: 3 fitted parameters
+  // (intercept + 2 slopes) on the 4-6 paired years this app typically has
+  // for an NSE ticker leaves as few as 1-3 residual degrees of freedom,
+  // before even accounting for ROE/growth's usual real-world correlation
+  // making that worse. A model that would rarely clear its own honesty
+  // gates isn't a safer model, just a more complicated path to the same
+  // fallback. The correlation/overlap safeguard below addresses the
+  // specific risk a joint model would have fixed (double-counting one
+  // underlying effect across both independent fits) without needing the
+  // sample size a joint fit would require.
   let marginsSquaredSum = 0
+
+  // How much a fitted adjustment is trusted, by how many paired years
+  // support it — descriptive labels, not a statistical guarantee. Purely
+  // for the derivation log; doesn't gate anything on its own (LOO_DEVIATION
+  // /correlation-overlap below do that).
+  const confidenceTier = n => n <= 5 ? 'fragile' : n <= 7 ? 'moderate' : 'stronger'
+
+  // Governance thresholds — calibration choices, not derived statistical
+  // constants (same standing as MIN_R2/MIN_OBSERVATIONS above). Documented
+  // as such rather than presented as settled methodology.
+  const LOO_DEVIATION_BAND = 0.40        // max allowed swing (as a fraction of the anchor) across leave-one-out refits
+  const CORRELATION_OVERLAP_THRESHOLD = 0.70   // |r| at/above this = ROE and growth are treated as plausibly capturing the same effect
+  const SMALL_SAMPLE_CAP_FRACTION = 0.15 // fragile-tier (≤5 years) adjustments are capped to this fraction of the anchor
+
+  const pearsonR = (xs, ys) => {
+    const n = xs.length
+    if (n < 2) return null
+    const mx = xs.reduce((s, x) => s + x, 0) / n, my = ys.reduce((s, y) => s + y, 0) / n
+    let sxy = 0, sxx = 0, syy = 0
+    for (let i = 0; i < n; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; syy += (ys[i] - my) ** 2 }
+    if (sxx === 0 || syy === 0) return null
+    return sxy / Math.sqrt(sxx * syy)
+  }
 
   // ── Fitted adjustments ────────────────────────────────────────────────────
   // Each asks the same question of this company's own record: when this
   // fundamental was higher, did the market pay more, and how much more? A slope
-  // that the data doesn't support is not used at all.
-  const applyFit = (key, forward, label, unit = '%') => {
+  // that the data doesn't support is not used at all. Returns a candidate
+  // rather than mutating `adjusted` directly — the correlation/overlap check
+  // below needs to see BOTH candidates before either one is actually applied.
+  const evaluateFit = (key, forward, label, unit = '%') => {
+    const fail = (reason) => ({ applicable: false, key, label, steps: reason ? [reason] : [] })
     const pts = obs.filter(o => o[key] != null).map(o => ({ x: o[key], y: o.multiple }))
     // Both of these used to bail with no explanation at all — indistinguishable
     // from "never tried" once rendered, when they're actually two different,
     // real reasons: no forward figure to compare against, or not enough paired
     // years of this fundamental to trust a slope from.
-    if (forward == null) {
-      steps.push(`${label}: no forward figure to compare against — no adjustment`)
-      return
-    }
+    if (forward == null) return fail(`${label}: no forward figure to compare against — no adjustment`)
     if (pts.length < MIN_OBSERVATIONS) {
-      steps.push(`${label}: only ${pts.length} year${pts.length === 1 ? '' : 's'} with usable data (need ${MIN_OBSERVATIONS}+) — no adjustment`)
-      return
+      return fail(`${label}: only ${pts.length} year${pts.length === 1 ? '' : 's'} with usable data (need ${MIN_OBSERVATIONS}+) — no adjustment`)
     }
     const fit = fitLine(pts)
     if (!fit || fit.r2 < MIN_R2) {
-      steps.push(`${label}: no reliable relationship in this stock's history (R²${fit ? ' ' + round(fit.r2) : ' —'}) — no adjustment`)
-      return
+      return fail(`${label}: no reliable relationship in this stock's history (R²${fit ? ' ' + round(fit.r2) : ' —'}) — no adjustment`)
     }
-    // Extrapolation guard. A slope fitted over a narrow range of observed values
-    // says nothing about what happens far outside that range: a growth series
-    // that only ever sat between 19% and 21% produced a steep slope, and feeding
-    // it a 5% forward value multiplied that slope by a 15-point gap into a +41×
-    // adjustment. The fit is only trusted across the span it was measured over.
+    // Interpolation only — no clamp-and-continue. A slope fitted over a
+    // narrow range of observed values says nothing about what happens
+    // outside it (a growth series that only ever sat between 19% and 21%
+    // produced a steep slope; feeding it a 5% forward value multiplied that
+    // slope by a 15-point gap into a +41× adjustment). Rather than
+    // substituting a nearby in-range value and computing an adjustment from
+    // THAT instead, the forward assumption is trusted as given and the fit
+    // simply declines to speak outside where it has evidence — the flag
+    // belongs on the assumption being far from this stock's own history,
+    // not hidden inside a quietly-substituted output.
     const xs = pts.map(p => p.x)
     const spanLo = Math.min(...xs), spanHi = Math.max(...xs)
-    const span = spanHi - spanLo
-    const clamped = Math.max(spanLo - span * 0.5, Math.min(spanHi + span * 0.5, forward))
-    if (clamped !== forward) {
-      steps.push(`${label}: ${round(forward, 1)}${unit} is far outside the ${round(spanLo, 1)}–${round(spanHi, 1)}${unit} this stock has actually shown — capped at ${round(clamped, 1)}${unit} rather than extrapolated`)
+    if (forward < spanLo || forward > spanHi) {
+      return fail(`${label}: ${round(forward, 1)}${unit} is outside the ${round(spanLo, 1)}–${round(spanHi, 1)}${unit} this stock has actually shown — the fitted relationship has no support there, so no adjustment is applied`)
     }
 
-    const gap = clamped - fit.meanX
+    const gap = forward - fit.meanX
     const delta = fit.slope * gap
+    if (!isFinite(delta) || Math.abs(delta) < 0.01) return fail(null)   // negligible, not a failure — nothing to disclose
 
-    if (!isFinite(delta) || Math.abs(delta) < 0.01) return
-    adjusted += delta
-    fits.push({ key, slope: fit.slope, r2: fit.r2, gap, delta })
-    steps.push(
-      `${label}: ${round(forward, 1)}${unit} expected vs ${round(fit.meanX, 1)}${unit} average → ` +
-      `${delta >= 0 ? '+' : ''}${round(delta)}× (fitted, R² ${round(fit.r2)})`)
+    // Leave-one-out stability — is this a real pattern, or one year's leverage
+    // dressed up as one? Refit with each observation removed in turn and see
+    // whether the predicted multiple (same anchor, that sub-fit's own slope
+    // and mean) holds direction and stays close to the full-sample prediction.
+    // A refit that becomes invalid (too few points once one is removed) fails
+    // the whole check — a missing LOO result is not evidence of stability.
+    const fullPredicted = anchor + delta
+    const signOff = Math.sign(fullPredicted - anchor)
+    const looPredicted = []
+    for (let i = 0; i < pts.length; i++) {
+      const subFit = fitLine(pts.slice(0, i).concat(pts.slice(i + 1)))
+      if (!subFit) return fail(`${label}: one or more leave-one-out refits were invalid (too few points once a year is removed) — no adjustment`)
+      looPredicted.push(anchor + subFit.slope * (forward - subFit.meanX))
+    }
+    if (looPredicted.some(p => Math.sign(p - anchor) !== 0 && Math.sign(p - anchor) !== signOff)) {
+      return fail(`${label}: the direction of the adjustment reverses when any single year is left out — not a reliable relationship, no adjustment`)
+    }
+    const maxDeviation = looPredicted.length
+      ? Math.max(...looPredicted.map(p => Math.abs(p - anchor) / anchor))
+      : 0
+    if (maxDeviation > LOO_DEVIATION_BAND) {
+      return fail(`${label}: leave-one-out testing shows this adjustment isn't stable (removing a single year swings the predicted multiple by ${round(maxDeviation * 100, 0)}%, over the ${round(LOO_DEVIATION_BAND * 100, 0)}% threshold) — no adjustment`)
+    }
 
+    const tier = confidenceTier(pts.length)
+    let finalDelta = delta
+    let cappedNote = ''
+    if (tier === 'fragile') {
+      const cap = Math.abs(anchor) * SMALL_SAMPLE_CAP_FRACTION
+      if (Math.abs(finalDelta) > cap) {
+        cappedNote = ` — capped at ±${round(cap, 1)}× (only ${pts.length} paired years, fragile evidence)`
+        finalDelta = Math.sign(finalDelta) * cap
+      }
+    }
+    const tierNote = tier === 'fragile' ? ' (fragile — only 4-5 paired years)'
+      : tier === 'moderate' ? ' (moderate support)' : ''
+
+    return {
+      applicable: true, key, label, fit, delta: finalDelta, r2: fit.r2, n: pts.length, tier, maxDeviation, gap, forward,
+      step: `${label}: ${round(forward, 1)}${unit} expected vs ${round(fit.meanX, 1)}${unit} average → ` +
+        `${finalDelta >= 0 ? '+' : ''}${round(finalDelta)}× (fitted, R² ${round(fit.r2)})${tierNote}${cappedNote}`,
+    }
+  }
+
+  const roeResult = evaluateFit('roe', forwardRoe, 'Returns')
+  const growthResult = evaluateFit('growth', forwardGrowth, 'Growth')
+  for (const r of [roeResult, growthResult]) steps.push(...(r.steps || []))
+
+  // ── Overlap safeguard ───────────────────────────────────────────────────
+  // Two independent single-variable fits can each look individually valid
+  // while both capturing the SAME underlying effect twice — a genuinely
+  // high-growth, high-ROE company gets +3× from the ROE fit and +4× from
+  // the growth fit added together as +7×, when its actual historical P/E
+  // relationship may never have supported a combined +7× move at all. This
+  // doesn't PROVE double-counting (correlation is between the predictors,
+  // not between "how much of the P/E effect overlaps") — it's a plausible-
+  // overlap warning, treated as one: only acts when BOTH fits independently
+  // passed every gate above, since a single applicable fit has nothing to
+  // overlap with.
+  let applied = [roeResult, growthResult].filter(r => r.applicable)
+  if (roeResult.applicable && growthResult.applicable) {
+    const paired = obs.filter(o => o.roe != null && o.growth != null)
+    const r = pearsonR(paired.map(o => o.roe), paired.map(o => o.growth))
+    if (r != null && Math.abs(r) >= CORRELATION_OVERLAP_THRESHOLD) {
+      // Prefer whichever fit's leave-one-out predictions cluster tighter
+      // (lower maxDeviation = more stable) — not whichever has the higher
+      // R², which with a handful of observations can differ by chance. Only
+      // switches on a clear gap (10 points of LOO deviation); too close to
+      // call is treated as neither one clearly dominating.
+      const gapPts = Math.abs(roeResult.maxDeviation - growthResult.maxDeviation) * 100
+      if (gapPts >= 10) {
+        const winner = roeResult.maxDeviation < growthResult.maxDeviation ? roeResult : growthResult
+        const loser = winner === roeResult ? growthResult : roeResult
+        applied = [winner]
+        steps.push(`ROE/growth correlation: ${round(r, 2)} — high overlap detected; both regressions may capture the same effect. ` +
+          `${winner.label} retained (more stable under leave-one-out testing), ${loser.label} suppressed.`)
+      } else {
+        applied = []
+        steps.push(`ROE/growth correlation: ${round(r, 2)} — high overlap detected, and neither regression is clearly more stable than the other — using the historical median instead of arbitrarily combining or choosing between them.`)
+      }
+    } else if (r != null) {
+      steps.push(`ROE/growth correlation: ${round(r, 2)} — no strong overlap detected; both regression adjustments applied.`)
+    }
+  }
+
+  for (const result of applied) {
+    adjusted += result.delta
+    fits.push({ key: result.key, slope: result.fit.slope, r2: result.r2, gap: result.gap, delta: result.delta })
+    steps.push(result.step)
     // Real prediction-interval margin for THIS factor at the value actually
     // used — the standard formula for a new observation's interval (not a
     // mean-response interval: we're predicting one new multiple, not
     // estimating the average one), using the same fit already vetted above.
-    if (fit.residualSE != null && fit.sxx > 0) {
-      const df = fit.n - 2
-      const predSE = fit.residualSE * Math.sqrt(1 + 1 / fit.n + ((clamped - fit.meanX) ** 2) / fit.sxx)
+    if (result.fit.residualSE != null && result.fit.sxx > 0) {
+      const df = result.fit.n - 2
+      const predSE = result.fit.residualSE * Math.sqrt(1 + 1 / result.fit.n + ((result.forward - result.fit.meanX) ** 2) / result.fit.sxx)
       const margin = tCritical(df) * predSE
       if (isFinite(margin)) marginsSquaredSum += margin * margin
     }
   }
-
-  applyFit('roe', forwardRoe, 'Returns')
-  applyFit('growth', forwardGrowth, 'Growth')
 
   if (fits.length === 0) {
     steps.push('No fitted adjustment — using the plain historical median.')
