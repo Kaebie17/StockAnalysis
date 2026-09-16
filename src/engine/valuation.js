@@ -95,11 +95,24 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const results = {}
 
   // ── DCF ──────────────────────────────────────────────────────────────────────
-  // FCF only. The old fallback was operatingCF x 0.7 — a made-up 30%-of-OCF
-  // capex assumption feeding a fair value. ratios.js now derives real FCF from
-  // real capex (opCF - capex); if that isn't available, the DCF doesn't run.
-  // A skipped model is honest. A model built on an invented capex figure is not.
-  const cfBaseDcf = (r.fcf != null && r.fcf > 0 && !r.fcfMaintenanceOnly) ? r.fcf : null
+  // FCFF (Free Cash Flow to Firm) — EBIT × (1 − effective tax rate) +
+  // depreciation − capex − change in working capital, formulas.js's own
+  // table row. WACC is a firm-level discount rate (it blends the cost of
+  // both debt and equity); pairing it with FCFF — a cash flow that belongs
+  // to debt and equity holders jointly, before either is paid — is the
+  // textbook-correct match. The previous version discounted plain FCF
+  // (Operating CF − CapEx, already net of interest paid) at WACC and then
+  // subtracted debt again on top of that, a mismatch: a cash flow already
+  // partway to "equity's share" was being treated as if it were the whole
+  // enterprise's. FCFF has no partial/estimated form the way the old FCF
+  // ladder did (see formulas.js's 'weighted' mode: every term must resolve
+  // — EBIT, effective tax rate, depreciation, capex, working-capital change
+  // — or the row simply doesn't compute) — so a skipped DCF here means the
+  // company's statements genuinely don't carry everything FCFF needs, not
+  // a silently degraded estimate.
+  const latestIncDcf = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
+  const fcffValue = activeValue(latestIncDcf, 'fcff', data?.basis)?.value
+  const cfBaseDcf = fcffValue > 0 ? fcffValue : null
   if (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf) {
     const perShare = dcfPerShare(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntG, ntY)
     if (perShare != null) {
@@ -107,7 +120,6 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
       // manual override is gone), so these caveats — computed from that
       // same measured CAGR — always describe what's actually being used.
       const caveats = [
-        r.fcfEstimated && 'FCF estimated (CapEx ≈ Depreciation) — no CapEx reported',
         r.cashEstimated && 'Cash not reported — assumed nil, fair value understated',
         r.debtEstimated && 'Debt estimated from Equity × D/E',
         waccBetaFlag,
@@ -118,13 +130,13 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
       ].filter(Boolean)
       results.dcf = {
         value: perShare,
-        note: caveats.length ? caveats.join('; ') : 'FCF-based',
+        note: caveats.length ? caveats.join('; ') : 'FCFF-based',
         estimated: caveats.length > 0,
         // DERIVED — after this session's fixes (WACC clamp removed, beta
         // used as-reported, terminal growth anchored to RBI/Fed targets),
-        // every component in this chain is either REPORTED (FCF, cash,
-        // debt) or DERIVED (CAPM WACC, anchored terminal growth) — no
-        // ASSUMED component remains.
+        // every component in this chain is either REPORTED (FCFF's own
+        // inputs, cash, debt) or DERIVED (CAPM WACC, anchored terminal
+        // growth) — no ASSUMED component remains.
         tier: TIER.DERIVED,
       }
     }
@@ -379,7 +391,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     : 'FAIRLY_VALUED'
 
   // ── Reverse DCF ───────────────────────────────────────────────────────────────
-  const impliedGrowth = reverseDcfGrowth(r, { wacc, termGrowth, projYears })
+  const impliedGrowth = reverseDcfGrowth(r, data, { wacc, termGrowth, projYears })
 
     return {
     models: results,
@@ -749,8 +761,11 @@ function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYea
  * multiple convention) — runValuation()'s own impliedGrowth is just a call
  * to this, same output as before.
  */
-export function reverseDcfGrowth(r, { wacc, termGrowth, projYears = 10 } = {}) {
-  const cfForRev = (r.fcf > 0 && !r.fcfMaintenanceOnly) ? r.fcf : null   // same rule as the forward DCF
+export function reverseDcfGrowth(r, data, { wacc, termGrowth, projYears = 10 } = {}) {
+  // Same FCFF rule as the forward DCF above.
+  const latestIncRev = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
+  const fcffRevValue = activeValue(latestIncRev, 'fcff', data?.basis)?.value
+  const cfForRev = fcffRevValue > 0 ? fcffRevValue : null
   // wacc discounts every cash flow in the solve below — a null wacc silently
   // coerces to 0 in arithmetic (no discounting at all), which would return a
   // confidently wrong implied growth rather than none. Requires a real WACC.

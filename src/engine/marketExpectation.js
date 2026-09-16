@@ -315,7 +315,8 @@ function buildSanityTable(baseValue, marketCap, terminalMult, discountRate, hori
 function getConclusion(impliedG, historicalGrowth, stage, metricType) {
   if (impliedG == null) return null
 
-  const metric = metricType === 'sales' ? 'sales' : metricType === 'earnings' ? 'earnings' : 'FCF'
+  const metric = metricType === 'sales' ? 'sales' : metricType === 'earnings' ? 'earnings'
+    : metricType === 'FCFF' ? 'FCFF' : 'FCF'
   const historical = historicalGrowth != null ? historicalGrowth.toFixed(1) : null
 
   const category = impliedG > 35 ? 'extreme'
@@ -549,25 +550,31 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   // value), so it needs a real WACC, not the pure cost of equity — this used
   // to pass discountRate (Ke) here, the same units mismatch fixed on the
   // Sales/FCF variants above.
-  if (fcf > 0 && price > 0 && marketCap && r?.shares && r?.totalDebt != null) {
+  // Reverse DCF shares reverseDcfGrowth() with the Valuation tab's forward
+  // DCF, which now reads FCFF (Free Cash Flow to Firm) off the table rather
+  // than plain FCF — see valuation.js's own note on why FCFF is the correct
+  // pairing for a WACC-discounted DCF. Gated and labeled on that same FCFF
+  // figure so what's shown matches what the math actually uses.
+  const fcffValue = activeValue(incRow, 'fcff', basis)?.value
+  if (fcffValue > 0 && price > 0 && marketCap && r?.shares && r?.totalDebt != null) {
     // Its own override key (not shared with the other variants' terminal-
     // multiple overrides, which are a different convention) — editable via
     // the same onAssumptionChange mechanism the panel already uses.
     const market = opts.market ?? 'IN'
     const reverseDcfTermGrowth = overrides.reverseDcfTermGrowth ?? (TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN)
-    const impliedG = reverseDcfGrowth(r, { wacc: enterpriseDiscountRate, termGrowth: reverseDcfTermGrowth, projYears: horizon })
+    const impliedG = reverseDcfGrowth(r, data, { wacc: enterpriseDiscountRate, termGrowth: reverseDcfTermGrowth, projYears: horizon })
     variants.reverseDcf = {
       applicable: impliedG != null,
       label: 'Reverse DCF',
       note: 'Uses the full DCF fade-to-terminal-growth mechanics (perpetuity-growth convention) — unlike the exit-multiple convention the other three variants use, and using this panel\'s own WACC, not the Valuation tab\'s DCF WACC.',
-      base: fcf,
-      baseLabel: r?.fcfEstimated ? 'Free Cash Flow (estimated)' : 'Free Cash Flow',
+      base: fcffValue,
+      baseLabel: 'Free Cash Flow to Firm',
       impliedGrowth: impliedG,
       // The exit-multiple sanity table (buildSanityTable/impliedMarketCap)
       // doesn't translate to a perpetuity-growth DCF — skipped rather than
       // force-fitted onto a convention it wasn't built for.
       sanityTable: null,
-      conclusion: impliedG != null ? getConclusion(impliedG, historicalRevGrowth, stage, 'FCF') : null,
+      conclusion: impliedG != null ? getConclusion(impliedG, historicalRevGrowth, stage, 'FCFF') : null,
       assumptions: {
         // termGrowth, not terminalMultiple — this variant has no terminal
         // multiple at all (perpetuity-growth convention, not exit-multiple).
