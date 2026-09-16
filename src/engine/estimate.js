@@ -25,6 +25,7 @@ import { targetMultiple } from './targetMultiple.js'
 import { justifiedMultiples, preferredForm, averagePayoutPct } from './justifiedMultiple.js'
 import { percentileSpread, filterRelativeOutliers } from './spread.js'
 import { activeValue } from './dataQuality.js'
+import { tableGrowthRate, latestRealRow } from './formulas.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -372,11 +373,16 @@ export function pbBand(priceHistory = [], balanceHistory = [], incomeHistory = [
  */
 export function buildLenderEstimate(ratioResult, opts = {}) {
   const { priceHistory = [], incomeHistory = [], balanceHistory = [], years = 1,
-          multipleOverride = null, growthOverride = null } = opts
+          multipleOverride = null, growthOverride = null, basis } = opts
   const price = ratioResult?.price
   const bps = ratioResult?.ratios?.bookPerShare?.value ?? ratioResult?.bookPerShare
-  const roe = ratioResult?.ratios?.roe?.value
-  const payout = ratioResult?.ratios?.dividendPayout?.value
+  // roe/payout are table-native — read off the latest real row directly,
+  // falling back to ratioResult only when the table can't resolve one (e.g.
+  // snapshotRebuild.js's historical "as of" reconstruction, whose truncated
+  // income slice may not carry every materialized field).
+  const incRowL = latestRealRow(incomeHistory)
+  const roe = activeValue(incRowL, 'roe', basis)?.value ?? ratioResult?.ratios?.roe?.value
+  const payout = activeValue(incRowL, 'dividendPayout', basis)?.value ?? ratioResult?.ratios?.dividendPayout?.value
   if (!(bps > 0)) return null
 
   // Retention from the payout actually reported. Where the latest year is
@@ -628,9 +634,15 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
   const { incomeHistory = [], priceHistory = [], balanceHistory = [], years = 1,
           multipleOverride = null, growthOverride = null, peerBand = null } = opts
   const price = ratioResult?.price
-  const revenue = ratioResult?.revenue
-  const eps = ratioResult?.eps
-  const netProfit = ratioResult?.netProfit
+  // revenue/eps/netProfit read off the SAME resolved incomeHistory the
+  // mid-cycle margin below already uses, rather than a separately-sourced
+  // ratioResult scalar that could in principle disagree with it. Falls back
+  // to ratioResult when the table can't resolve one (see buildLenderEstimate's
+  // note on snapshotRebuild.js's historical reconstruction).
+  const latestInc = latestRealRow(incomeHistory)
+  const revenue = val(latestInc?.revenue) ?? ratioResult?.revenue
+  const eps = val(latestInc?.eps) ?? ratioResult?.eps
+  const netProfit = val(latestInc?.netProfit) ?? ratioResult?.netProfit
   if (!(revenue > 0) || !(eps > 0) || !(netProfit > 0)) return null
 
   // Mid-cycle margin: the median across every year available, which spans more
@@ -753,13 +765,22 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
  * matching numerator because the debt funding those assets is part of the price.
  */
 export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
-  const { years = 1, multipleOverride = null, growthOverride = null, peerBand = null } = opts
+  const { years = 1, multipleOverride = null, growthOverride = null, peerBand = null, basis,
+          incomeHistory = [], balanceHistory = [] } = opts
   const price = ratioResult?.price
-  const ebitda = ratioResult?.ebitda ?? ratioResult?.ratios?.ebitda?.value
+  // ebitda/eps/netProfit/totalDebt/cash are all table-native — read off the
+  // latest real row directly, falling back to ratioResult when the table
+  // can't resolve one (see buildLenderEstimate's note above).
+  const latestInc = latestRealRow(incomeHistory)
+  const latestBal = latestRealRow(balanceHistory)
+  const ebitda = activeValue(latestInc, 'ebitda', basis)?.value
+    ?? ratioResult?.ebitda ?? ratioResult?.ratios?.ebitda?.value
   const ev = ratioResult?.ev ?? ratioResult?.ratios?.ev?.value
-  const netDebt = (ratioResult?.totalDebt ?? 0) - (ratioResult?.cash ?? 0)
-  const eps = ratioResult?.eps
-  const netProfit = ratioResult?.netProfit
+  const totalDebt = activeValue(latestBal, 'totalDebt', basis)?.value ?? ratioResult?.totalDebt ?? 0
+  const cash = activeValue(latestBal, 'cash', basis)?.value ?? ratioResult?.cash ?? 0
+  const netDebt = totalDebt - cash
+  const eps = val(latestInc?.eps) ?? ratioResult?.eps
+  const netProfit = val(latestInc?.netProfit) ?? ratioResult?.netProfit
   const shares = (netProfit > 0 && eps > 0) ? netProfit / eps : ratioResult?.shares
   if (!(ebitda > 0) || !(shares > 0) || !(price > 0)) return null
 
@@ -879,11 +900,19 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
  * weak, but a number with a stated basis beats no number at all.
  */
 export function buildEvSalesEstimate(ratioResult, opts = {}) {
-  const { years = 1, peerBand = null, multipleOverride = null, growthOverride = null } = opts
+  const { years = 1, peerBand = null, multipleOverride = null, growthOverride = null,
+          basis, incomeHistory = [], balanceHistory = [] } = opts
   const price = ratioResult?.price
-  const revenue = ratioResult?.revenue
+  // revenue/totalDebt/cash are table-native, read off the latest real row
+  // directly, falling back to ratioResult when the table can't resolve one
+  // (see buildLenderEstimate's note above).
+  const latestInc = latestRealRow(incomeHistory)
+  const latestBal = latestRealRow(balanceHistory)
+  const revenue = val(latestInc?.revenue) ?? ratioResult?.revenue
   const ev = ratioResult?.ev ?? ratioResult?.ratios?.ev?.value
-  const netDebt = (ratioResult?.totalDebt ?? 0) - (ratioResult?.cash ?? 0)
+  const totalDebt = activeValue(latestBal, 'totalDebt', basis)?.value ?? ratioResult?.totalDebt ?? 0
+  const cash = activeValue(latestBal, 'cash', basis)?.value ?? ratioResult?.cash ?? 0
+  const netDebt = totalDebt - cash
   const marketCap = ratioResult?.marketCap
   const shares = marketCap > 0 && price > 0 ? marketCap / price : ratioResult?.shares
   if (!(revenue > 0) || !(shares > 0) || !(price > 0)) return null
@@ -903,7 +932,8 @@ export function buildEvSalesEstimate(ratioResult, opts = {}) {
   // Same correction as EV/EBITDA — but a loss-making company BURNS cash rather
   // than repaying debt, so net debt grows over the year instead of shrinking.
   // Freezing it would flatter exactly the companies least able to afford it.
-  const burn = netProfitOf(ratioResult) < 0 ? Math.abs(netProfitOf(ratioResult)) * years : 0
+  const npForBurn = val(latestInc?.netProfit) ?? netProfitOf(ratioResult)
+  const burn = npForBurn < 0 ? Math.abs(npForBurn) * years : 0
   const forwardNetDebt = netDebt + burn
   const toEquity = m => ((forwardRevenue * m) - forwardNetDebt) / shares
 
@@ -970,7 +1000,7 @@ const netProfitOf = rr => (rr?.netProfit ?? 0)
  */
 export function resolveGrowthBasis(ratioResult, opts = {}) {
   const { guidedGrowth = null, guidanceFiscalYear = null, guidanceExpired = false,
-          overrideLabel = null } = opts
+          overrideLabel = null, incomeHistory = [], basis } = opts
   const r = ratioResult?.ratios || {}
   const all = []
 
@@ -980,11 +1010,21 @@ export function resolveGrowthBasis(ratioResult, opts = {}) {
     all.push({ growth: guidedGrowth, source: 'guidance', rung: 'best',
                label: overrideLabel || `guidance${guidanceFiscalYear ? ` (${guidanceFiscalYear})` : ''}` })
   }
-  // 2. The single dynamic CAGR — identical to every other consumer.
-  if (r.revCagr?.value != null && isFinite(r.revCagr.value)) {
-    all.push({ growth: r.revCagr.value / 100, source: 'cagr', rung: 'fallback',
-               label: r.revCagrWindowYears?.value
-                ? `${r.revCagrWindowYears.value}-yr revenue CAGR (your window)`
+  // 2. The single dynamic CAGR — identical to every other consumer (via the
+  // shared tableGrowthRate reader: full-period CAGR for reported, selected
+  // method for normalized). Falls back to ratioResult's own revCagr when the
+  // table lookup can't resolve one — the one caller this matters for is
+  // snapshotRebuild.js's historical "as of" reconstruction, whose truncated
+  // income slice has no materialized growth field of its own (that field
+  // lives only on TODAY's latest row) and instead hand-reconstructs revCagr
+  // onto its synthetic ratioResult for exactly that reason.
+  const tableGrowth = tableGrowthRate({ incomeHistory, basis }, 'revenueGrowth', basis)
+  const revCagrValue = tableGrowth.value ?? r.revCagr?.value ?? null
+  const revCagrWindowYears = tableGrowth.windowYears ?? r.revCagrWindowYears?.value ?? null
+  if (revCagrValue != null && isFinite(revCagrValue)) {
+    all.push({ growth: revCagrValue / 100, source: 'cagr', rung: 'fallback',
+               label: revCagrWindowYears
+                ? `${revCagrWindowYears}-yr revenue CAGR (your window)`
                   : 'revenue CAGR (your window)' })
   }
 
@@ -1091,10 +1131,15 @@ export function resolveDilution(incomeHistory = []) {
  * means raising equity or leverage — but it should be SAID rather than absorbed
  * silently into a price target.
  */
-export function financeabilityNote(ratioResult, growth) {
-  const roe = ratioResult?.ratios?.roe?.value
+export function financeabilityNote(ratioResult, growth, opts = {}) {
+  const { incomeHistory = [], basis } = opts
+  const incRowF = latestRealRow(incomeHistory)
+  // roe/payout are table-native — read off the latest real row directly,
+  // falling back to ratioResult when the table can't resolve one (see
+  // buildLenderEstimate's note above).
+  const roe = activeValue(incRowF, 'roe', basis)?.value ?? ratioResult?.ratios?.roe?.value
   if (roe == null || growth == null) return null
-  const payout = ratioResult?.ratios?.dividendPayout?.value
+  const payout = activeValue(incRowF, 'dividendPayout', basis)?.value ?? ratioResult?.ratios?.dividendPayout?.value
   const retention = (payout != null && payout >= 0 && payout <= 100) ? 1 - payout / 100 : 1
   const sustainable = (roe / 100) * retention
   if (!(sustainable > 0)) return null
@@ -1174,13 +1219,23 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
   const R = ratioResult?.ratios || {}
   const g = jm.growth.g
 
+  // eps/ebitda/revenue are table-native — read off the latest real row
+  // directly (opts.incomeHistory/basis, same as everywhere else in this
+  // file), falling back to ratioResult when the table can't resolve one.
+  // No balanceHistory reaches this function's callers, so netDebt/totalDebt/
+  // cash/bookPerShare below stay on ratioResult.
+  const latestIncJ = latestRealRow(opts.incomeHistory || [])
+  const epsT = activeValue(latestIncJ, 'eps', opts.basis)?.value ?? ratioResult?.eps
+  const ebitdaT = activeValue(latestIncJ, 'ebitda', opts.basis)?.value ?? ratioResult?.ebitda ?? R.ebitda?.value
+  const revenueT = activeValue(latestIncJ, 'revenue', opts.basis)?.value ?? ratioResult?.revenue
+
   // The quantity the multiple attaches to, projected one year.
   let base, baseLabel
   switch (form) {
-    case 'pe':       base = ratioResult?.eps; baseLabel = 'EPS'; break
+    case 'pe':       base = epsT; baseLabel = 'EPS'; break
     case 'pb':       base = R.bookPerShare?.value; baseLabel = 'book per share'; break
-    case 'evEbitda': base = ratioResult?.ebitda ?? R.ebitda?.value; baseLabel = 'EBITDA'; break
-    case 'evSales':  base = ratioResult?.revenue; baseLabel = 'revenue'; break
+    case 'evEbitda': base = ebitdaT; baseLabel = 'EBITDA'; break
+    case 'evSales':  base = revenueT; baseLabel = 'revenue'; break
     default: base = null
   }
   if (!(base > 0)) {
@@ -1700,7 +1755,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     ownPeerBlend,                      // { pct, peerMedian } when the observed band was blended toward peers, else null
     target, upside,
 
-    financeability: financeabilityNote(ratioResult, g),
+    financeability: financeabilityNote(ratioResult, g, { incomeHistory: resolvedOpts.incomeHistory, basis: normBasis }),
     degraded,                     // [] when everything is on its best basis
     basisSummary: `Growth: ${growthBasis.label} · Margin: ${marginBasis.label} · Multiple: ${multipleLabel}`,
   }

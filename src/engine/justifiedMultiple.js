@@ -24,6 +24,7 @@
 import { capmCostOfEquity, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
+import { latestRealRow } from './formulas.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -207,9 +208,15 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   // is split by market instead of shared.
   const { riskFreeRate, equityRiskPremium, beta, betaMeta = null, incomeHistory = [], market = 'IN' } = opts
   const R = ratioResult?.ratios || {}
+  // roe/dividendPayout/ebitda/revenue are table-native — read off the latest
+  // real row directly, falling back to ratioResult when the table can't
+  // resolve one (e.g. a caller supplying a hand-built ratioResult without a
+  // live materialized table, same reasoning as estimate.js's builders).
+  const latestIncJm = latestRealRow(incomeHistory)
 
-  const roe = R.roe?.value
-  const payoutPct = R.dividendPayout?.value ?? averagePayoutPct(incomeHistory, {
+  const roe = activeValue(latestIncJm, 'roe', opts.basis)?.value ?? R.roe?.value
+  const payoutPct = activeValue(latestIncJm, 'dividendPayout', opts.basis)?.value ?? R.dividendPayout?.value
+    ?? averagePayoutPct(incomeHistory, {
     cashflowHistory: opts.cashflowHistory || [],
     dividendYield: R.dividendYield?.value ?? null,
     pe: R.pe?.value ?? null,
@@ -279,8 +286,8 @@ export function justifiedMultiples(ratioResult, opts = {}) {
 
   // EV/EBITDA — for businesses whose depreciation makes net profit
   // uninformative. Same present-value logic on the cash the assets throw off.
-  const ebitda = ratioResult?.ebitda ?? R.ebitda?.value
-  const revenue = ratioResult?.revenue
+  const ebitda = activeValue(latestIncJm, 'ebitda', opts.basis)?.value ?? ratioResult?.ebitda ?? R.ebitda?.value
+  const revenue = activeValue(latestIncJm, 'revenue', opts.basis)?.value ?? ratioResult?.revenue
   if (ebitda > 0 && revenue > 0) {
     // Share of EBITDA reaching investors after tax and reinvestment. Prefer
     // this company's own MEASURED FCF/EBITDA conversion (real capex and real
@@ -294,7 +301,9 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     // sanity floor only against nonsense (a retention outside [0,1] would
     // otherwise produce a negative or >100% conversion), not a plausibility
     // judgment about what's "too high" or "too low" for this business.
-    const measuredConversion = (ratioResult?.fcf > 0) ? ratioResult.fcf / ebitda : null
+    const latestCfJm = latestRealRow(opts.cashflowHistory || [])
+    const fcfT = activeValue(latestCfJm, 'freeCashFlow', opts.basis)?.value ?? ratioResult?.fcf
+    const measuredConversion = (fcfT > 0) ? fcfT / ebitda : null
     const conversion = measuredConversion != null
       ? measuredConversion
       : Math.max(0, Math.min(1, retention > 0 ? 1 - retention * 0.5 : 0.5))
