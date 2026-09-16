@@ -26,6 +26,7 @@
  */
 
 import { activeValue } from './dataQuality.js'
+import { latestRealRow } from './formulas.js'
 import { latest, hasContent } from './reconcileDocs.js'
 
 // ── tunable thresholds (surface in ScoringStudio later) ───────────────────────
@@ -91,8 +92,14 @@ export function assessMoatQuality(data, ratioResult, opts = {}) {
   // rewired to the new key: not worth carrying for the one metric it covered.
   const gmDerived = false, gmEstimated = false
 
-  const de  = ratioResult?.ratios?.de?.value ?? null
-  const icr = ratioResult?.ratios?.icr?.value ?? null
+  // de/icr are table-native (formulas.js's STANDARD_FORMULA_ROWS) — read off
+  // the latest real row directly. fcfConversion isn't itself a materialized
+  // row (it's fcf÷netProfit computed ad hoc in currentSnapshot.js), so it
+  // stays sourced from ratioResult.
+  const latestBal = latestRealRow((data?.balanceHistory || []).filter(x => !x.synthetic))
+  const latestInc = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
+  const de  = activeValue(latestBal, 'de', data?.basis)?.value ?? null
+  const icr = activeValue(latestInc, 'icr', data?.basis)?.value ?? null
   const fcfConv = ratioResult?.ratios?.fcfConversion?.value ?? null
 
   if (!series.roce.length) flags.push('roce_series_unavailable')
