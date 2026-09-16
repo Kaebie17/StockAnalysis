@@ -1,55 +1,79 @@
 /**
- * src/engine/quality.js — reads scalar values from ratioResult
+ * src/engine/quality.js — reads table-native fields directly off the
+ * latest real row (margins/returns/leverage are all formulas.js
+ * STANDARD_FORMULA_ROWS entries; growth via tableGrowthRate, the one
+ * toggle-conscious reader every consumer shares). fcfConversion is the one
+ * exception still sourced from ratioResult, since it isn't itself a
+ * materialized table row (it's fcf÷netProfit computed ad hoc in
+ * currentSnapshot.js).
  */
 import { activeValue } from './dataQuality.js'
+import { latestRealRow, tableGrowthRate } from './formulas.js'
 
 export function scoreQuality(data, ratioResult, weights = {}) {
-  const r = ratioResult
-  const ratios = r?.ratios || {}
-  const cagrWin = ratios.revCagrWindowYears?.value
+  const incRow = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
+  const balRow = latestRealRow((data?.balanceHistory || []).filter(x => !x.synthetic))
+  const basis = data?.basis
+  const at = (row, key) => activeValue(row, key, basis)
+
+  const revGrowth = tableGrowthRate(data, 'revenueGrowth', basis)
+  const revCagrTagged = {
+    value: revGrowth.value ?? null,
+    status: revGrowth.value != null ? 'calculated' : 'unavailable',
+    formula: revGrowth.windowYears ? `Revenue CAGR over the last ${revGrowth.windowYears} years` : 'Revenue CAGR',
+  }
+  const cagrWin = revGrowth.windowYears
   const growthLabel = cagrWin ? `Revenue Growth (${cagrWin}yr CAGR)` : 'Revenue Growth (CAGR)'
+
+  const ebitdaMargin = at(incRow, 'ebitdaMargin') ?? at(incRow, 'operatingMargin')
+  const netMargin = at(incRow, 'netMargin')
+  const de = at(balRow, 'de')
+  const roe = at(incRow, 'roe')
+  const roce = at(incRow, 'roce')
+  const icr = at(incRow, 'icr')
+  const fcfConversion = ratioResult?.ratios?.fcfConversion
+
   const predictors = [
     { key: 'revenueGrowth', label: growthLabel,
-      value: ratios.revCagr?.value, threshold: 10,
-      pass: ratios.revCagr?.value != null ? ratios.revCagr.value >= 10 : null,
-      weight: weights.revenueGrowth ?? 1.5, tagged: ratios.revCagr },
+      value: revCagrTagged.value, threshold: 10,
+      pass: revCagrTagged.value != null ? revCagrTagged.value >= 10 : null,
+      weight: weights.revenueGrowth ?? 1.5, tagged: revCagrTagged },
 
     { key: 'ebitdaMargin', label: 'EBITDA / Operating Margin',
-      value: ratios.ebitdaMargin?.value ?? ratios.operatingMargin?.value,
+      value: ebitdaMargin?.value,
       threshold: 12,
-      pass: (ratios.ebitdaMargin?.value ?? ratios.operatingMargin?.value) != null
-        ? (ratios.ebitdaMargin?.value ?? ratios.operatingMargin?.value) >= 12 : null,
-      weight: weights.ebitdaMargin ?? 1, tagged: ratios.ebitdaMargin ?? ratios.operatingMargin },
+      pass: ebitdaMargin?.value != null ? ebitdaMargin.value >= 12 : null,
+      weight: weights.ebitdaMargin ?? 1, tagged: ebitdaMargin },
 
     { key: 'netMargin', label: 'Net Profit Margin',
-      value: ratios.netMargin?.value, threshold: 8,
-      pass: ratios.netMargin?.value != null ? ratios.netMargin.value >= 8 : null,
-      weight: weights.netMargin ?? 1, tagged: ratios.netMargin },
+      value: netMargin?.value, threshold: 8,
+      pass: netMargin?.value != null ? netMargin.value >= 8 : null,
+      weight: weights.netMargin ?? 1, tagged: netMargin },
 
     { key: 'fcfConversion', label: 'FCF Conversion (FCF/Net Profit)',
-      value: ratios.fcfConversion?.value, threshold: 60,
-      pass: ratios.fcfConversion?.value != null ? ratios.fcfConversion.value >= 60 : null,
-      weight: weights.fcfConversion ?? 1.5, tagged: ratios.fcfConversion },
+      value: fcfConversion?.value, threshold: 60,
+      pass: fcfConversion?.value != null ? fcfConversion.value >= 60 : null,
+      weight: weights.fcfConversion ?? 1.5, tagged: fcfConversion },
 
     { key: 'de', label: 'Debt / Equity (lower is better)',
-      value: ratios.de?.value, threshold: 1,
-      pass: ratios.de?.value != null ? ratios.de.value < 1.0 : null,
-      weight: weights.de ?? 1, tagged: ratios.de },
+      value: de?.value, threshold: 1,
+      pass: de?.value != null ? de.value < 1.0 : null,
+      weight: weights.de ?? 1, tagged: de },
 
     { key: 'roe', label: 'Return on Equity',
-      value: ratios.roe?.value, threshold: 12,
-      pass: ratios.roe?.value != null ? ratios.roe.value >= 12 : null,
-      weight: weights.roe ?? 1.5, tagged: ratios.roe },
+      value: roe?.value, threshold: 12,
+      pass: roe?.value != null ? roe.value >= 12 : null,
+      weight: weights.roe ?? 1.5, tagged: roe },
 
     { key: 'roce', label: 'Return on Capital Employed',
-      value: ratios.roce?.value, threshold: 12,
-      pass: ratios.roce?.value != null ? ratios.roce.value >= 12 : null,
-      weight: weights.roce ?? 1, tagged: ratios.roce },
+      value: roce?.value, threshold: 12,
+      pass: roce?.value != null ? roce.value >= 12 : null,
+      weight: weights.roce ?? 1, tagged: roce },
 
     { key: 'icr', label: 'Interest Coverage (EBITDA/Interest)',
-      value: ratios.icr?.value, threshold: 3,
-      pass: ratios.icr?.value != null ? ratios.icr.value >= 3 : null,
-      weight: weights.icr ?? 1, tagged: ratios.icr },
+      value: icr?.value, threshold: 3,
+      pass: icr?.value != null ? icr.value >= 3 : null,
+      weight: weights.icr ?? 1, tagged: icr },
 
     { key: 'consistency', label: 'Earnings Consistency (profitable 3+/5yr)',
       value: null, threshold: null,
