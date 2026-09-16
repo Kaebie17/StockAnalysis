@@ -370,13 +370,14 @@ const NEAR_ZERO_FRACTION = 0.15
 
 /**
  * Raw measurement only — every number below is directly calculated from
- * reported EPS history, none of it is a threshold or a verdict. Split out
- * from assessPeSuitability (which used to compute AND classify in one
- * function) so a threshold can change without touching how any of these are
- * measured, and so a future caller can read the diagnostics without also
- * getting an opinion attached.
+ * reported EPS history (and, for the peMedian/peMAD/peDispersion group,
+ * price history), none of it is a threshold or a verdict. Split out from
+ * assessPeSuitability (which used to compute AND classify in one function)
+ * so a threshold can change without touching how any of these are measured,
+ * and so a future caller can read the diagnostics without also getting an
+ * opinion attached.
  */
-export function measurePeDiagnostics(incomeHistory = [], basis = 'reported') {
+export function measurePeDiagnostics(incomeHistory = [], basis = 'reported', priceHistory = []) {
   const rows = (incomeHistory || [])
     .map(r => ({ year: yearOf(r), eps: val(activeValue(r, 'eps', basis)) }))
     .filter(r => r.year != null && r.eps != null)
@@ -437,10 +438,50 @@ export function measurePeDiagnostics(incomeHistory = [], basis = 'reported') {
   }
   const cycleFrequency = totalYears > 0 ? cycleCount / totalYears : 0
 
+  // Historical P/E dispersion — a different reliability question than every
+  // diagnostic above, which is entirely about the EARNINGS (coverage,
+  // near-zero years, growth volatility, drawdowns). A company can have
+  // perfectly steady, always-profitable EPS and still carry an unreliable
+  // P/E anchor if the MARKET has re-rated it wildly over the same span (a
+  // growth story re-rated toward a value multiple, or the reverse) — none
+  // of the earnings-side diagnostics would ever see that, because the
+  // earnings themselves were fine throughout.
+  //
+  // Same year-to-price pairing convention multipleSpread already uses
+  // (price during fiscal year y ÷ year y's own reported EPS, April-March,
+  // loss years excluded since P/E is undefined there) — exposed here as a
+  // raw measurement only, no threshold attached, same as everything else
+  // in this function. Inherits the same look-ahead-timing question already
+  // flagged for multipleSpread/pbBand (a mid-year price divided by a
+  // full-year EPS not yet reported at that point) — this diagnostic doesn't
+  // attempt to independently fix that, just reuses the existing convention.
+  const closes = (priceHistory || [])
+    .filter(p => p?.date && p.close > 0)
+    .map(p => ({ t: Date.parse(p.date), close: p.close }))
+    .filter(p => isFinite(p.t))
+  const peRatios = []
+  for (const r of rows) {
+    if (!(r.eps > 0)) continue
+    const start = Date.UTC(r.year - 1, 3, 1), end = Date.UTC(r.year, 3, 0)
+    for (const c of closes) {
+      if (c.t < start || c.t > end) continue
+      peRatios.push(c.close / r.eps)
+    }
+  }
+  let peMedian = null, peMAD = null, peDispersion = null
+  if (peRatios.length >= 4) {
+    const sortedPe = [...peRatios].sort((a, b) => a - b)
+    peMedian = sortedPe[Math.floor(sortedPe.length / 2)]
+    const peDevs = peRatios.map(p => Math.abs(p - peMedian)).sort((a, b) => a - b)
+    peMAD = peDevs[Math.floor(peDevs.length / 2)]
+    peDispersion = peMedian > 0 ? peMAD / peMedian : null
+  }
+
   return {
     totalYears, profitableYears: profitable.length, profitCoverage,
     nearZeroYears: nearZeroCount, nearZeroFrequency,
     epsGrowthMAD, maxDrawdown, cycleCount, cycleFrequency,
+    peMedian, peMAD, peDispersion, peSamples: peRatios.length,
   }
 }
 
@@ -1760,7 +1801,7 @@ export function buildEstimate(ratioResult, opts = {}) {
   // name isn't on the keyword list. See assessPeSuitability's own doc
   // comment for why this is measured from the data rather than inferred
   // from the sector string.
-  const peDiagnostics = measurePeDiagnostics(resolvedOpts.incomeHistory, normBasis)
+  const peDiagnostics = measurePeDiagnostics(resolvedOpts.incomeHistory, normBasis, resolvedOpts.priceHistory)
   const peSuitability = assessPeSuitability(peDiagnostics)
 
   // Only genuine recurring-cycle evidence sends a company to the
