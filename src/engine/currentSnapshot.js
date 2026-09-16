@@ -363,9 +363,7 @@ export function computeCurrentSnapshot(data) {
   const fcfConversion = pct(fcf, netProfit)
 
   // ── Growth ─────────────────────────────────────────────────────────────────
-  const prevRev    = val(activeValue(prevI, 'revenue', basis))
   const prevNP     = val(activeValue(prevI, 'netProfit', basis))
-  const revGrowthYoY = pct(revenue - (prevRev || 0), prevRev)
   const npGrowthYoY  = pct(netProfit - (prevNP || 0), prevNP)
 
   return {
@@ -411,7 +409,6 @@ export function computeCurrentSnapshot(data) {
       npCagr:             tag(npCagr, 'calculated',
         npCagrWindowYears ? `Net Profit CAGR over the last ${npCagrWindowYears} years` : 'Net Profit CAGR'),
       npCagrWindowYears:  tag(npCagrWindowYears, 'calculated', 'Years in the net-profit-CAGR window'),
-      revGrowthYoY:    tag(revGrowthYoY,    'calculated', 'Revenue YoY growth'),
       npGrowthYoY:     tag(npGrowthYoY,     'calculated', 'Net Profit YoY growth'),
       // FCF
       fcfYield:        tagFcf(fcfYield,        'calculated', 'FCF ÷ Market Cap × 100'),

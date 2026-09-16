@@ -244,7 +244,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
 
   // ── PEG (growth-stage only; gated by stage.js applicable list) ──────────────
   if (isApplicable('peg', modelMeta) && r.eps > 0) {
-    const peg = computePeg(r, {
+    const peg = computePeg(r, data, {
       forwardGrowthPct: assumptions.forwardGrowthPct ?? null,
       mode: assumptions.pegMode || 'blend',
     })

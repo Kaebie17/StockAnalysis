@@ -11,16 +11,21 @@
  *
  * DESIGN NOTES
  * ------------
- * • All ratio inputs on `r.ratios.*` are already in PERCENT (e.g. 15 = 15%), so
- *   growth here is handled in percent and only converted where needed.
+ * • All ratio inputs are in PERCENT (e.g. 15 = 15%), so growth here is
+ *   handled in percent and only converted where needed.
  * • Growth input is a blend of trailing earnings growth and (optional) forward
  *   analyst growth, with a mode toggle. We prefer EARNINGS growth (PEG is a P/E
- *   construct); revenue growth is a last-resort proxy.
+ *   construct); revenue growth is a last-resort proxy. Both trailing candidates
+ *   go through tableGrowthRate — the same toggle-conscious multi-year CAGR
+ *   reader every other consumer uses (full-period CAGR for reported, the
+ *   selected method for normalized), not a one-year YoY figure.
  * • Degenerate growth (≤ MIN_GROWTH or negative) makes PEG meaningless — we
  *   return applicable:false with peg:null rather than a garbage number.
  * • This module NEVER reads price targets or moves stage/fair-value on its own;
  *   the caller decides whether to include `fairValue` in the range.
  */
+import { activeValue } from './dataQuality.js'
+import { latestRealRow, tableGrowthRate } from './formulas.js'
 
 const MIN_GROWTH = 1        // percent; below this PEG is not meaningful
 // Lynch's rule is that a fair P/E roughly equals the growth rate. It was clamped
@@ -36,7 +41,10 @@ const MAX_MEANINGFUL_GROWTH = 60   // percent; beyond this the growth figure is 
 const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x))
 
 /**
- * @param {object} r  ratioResult (has r.eps, r.ratios.pe/npGrowthYoY/revCagr…)
+ * @param {object} r  ratioResult (has r.price, r.ratios.pe — the live-price
+ *   inputs with no table-native home)
+ * @param {object} data  the ticker's own data table (revenue/netProfit/eps
+ *   history) — trailing growth and eps are read from here
  * @param {object} opts
  *   @param {number|null} opts.forwardGrowthPct  analyst forward growth in PERCENT (optional)
  *   @param {'blend'|'forward'|'trailing'} opts.mode  growth selection (default 'blend')
@@ -47,17 +55,18 @@ const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x))
  *   fairPE: number|null, fairValue: number|null, note: string
  * }}
  */
-export function computePeg(r, opts = {}) {
+export function computePeg(r, data, opts = {}) {
   const { forwardGrowthPct = null, mode = 'blend', growthOverridePct = null } = opts
 
-  const eps = r?.eps
+  const basis = data?.basis
+  const incRow = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
+  const eps = activeValue(incRow, 'eps', basis)?.value
   const pe = r?.ratios?.pe?.value ?? (r?.price && eps ? r.price / eps : null)
 
   // Growth candidates (percent). Prefer earnings growth over revenue growth.
   const trailing =
-    r?.ratios?.npGrowthYoY?.value ??
-    r?.ratios?.epsGrowthYoY?.value ??
-    r?.ratios?.revCagr?.value ??
+    tableGrowthRate(data, 'netProfitGrowth', basis).value ??
+    tableGrowthRate(data, 'revenueGrowth', basis).value ??
     null
   const forward = forwardGrowthPct
 
