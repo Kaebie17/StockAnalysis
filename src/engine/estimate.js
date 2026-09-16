@@ -25,7 +25,7 @@ import { targetMultiple } from './targetMultiple.js'
 import { justifiedMultiples, preferredForm, averagePayoutPct } from './justifiedMultiple.js'
 import { percentileSpread, filterRelativeOutliers } from './spread.js'
 import { activeValue } from './dataQuality.js'
-import { tableGrowthRate, latestRealRow } from './formulas.js'
+import { tableGrowthRate, tableRatioBasis, otherIncomeForecastBasis, latestRealRow } from './formulas.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -903,17 +903,38 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
 
   const currentEvEbitda = ev > 0 ? ev / ebitda : null
 
-  // EBITDA growth measured from reported EBITDA where the history carries it,
-  // falling back to revenue growth — for a capital-intensive business with a
-  // stable cost base the two track closely, and that substitution is stated
-  // rather than silent. No default: without either, there is no estimate.
-  const growthInfo = growthOverride != null
-    ? { growth: growthOverride, label: (opts.overrideLabel || 'an applied revision') }
-    : (seriesCagr(opts.incomeHistory, 'ebitda', 'EBITDA CAGR')
-       ?? revenueCagr(opts.incomeHistory, { label: 'revenue CAGR (EBITDA history unavailable)' }))
-  if (growthInfo?.growth == null) return null
+  // Preferred: EBITDA as an OUTPUT of the shared driver-based waterfall
+  // (buildWaterfallForecast) — the same forecast the P/E estimate uses, so
+  // this doesn't independently re-derive EBITDA growth from its own
+  // separate CAGR. Single year ahead only (years === 1); falls back to the
+  // older EBITDA-CAGR-then-revenue-CAGR approach otherwise, or when the
+  // waterfall declines (no margin history at all).
+  let forwardEbitda = null, growthInfo = null
+  if (growthOverride == null && years === 1) {
+    const waterfall = buildWaterfallForecast(
+      { reportedIncomeHistory: incomeHistory, balanceHistory, basis },
+      { incomeHistory: opts.incomeHistory }
+    )
+    if (waterfall?.ebitda > 0) {
+      forwardEbitda = waterfall.ebitda
+      growthInfo = { growth: waterfall.drivers.growthPct / 100, unusual: false,
+        label: `waterfall (${waterfall.drivers.ebitdaMarginPct}% EBITDA margin, ${waterfall.drivers.ebitdaMarginSource})` }
+    }
+  }
+  if (forwardEbitda == null) {
+    // EBITDA growth measured from reported EBITDA where the history carries
+    // it, falling back to revenue growth — for a capital-intensive business
+    // with a stable cost base the two track closely, and that substitution
+    // is stated rather than silent. No default: without either, there is
+    // no estimate.
+    growthInfo = growthOverride != null
+      ? { growth: growthOverride, label: (opts.overrideLabel || 'an applied revision') }
+      : (seriesCagr(opts.incomeHistory, 'ebitda', 'EBITDA CAGR')
+         ?? revenueCagr(opts.incomeHistory, { label: 'revenue CAGR (EBITDA history unavailable)' }))
+    if (growthInfo?.growth == null) return null
+    forwardEbitda = ebitda * Math.pow(1 + growthInfo.growth, years)
+  }
   const growth = growthInfo.growth
-  const forwardEbitda = ebitda * Math.pow(1 + growth, years)
 
   let multiple, multipleBasis, multipleLabel
   if (multipleOverride > 0) {
@@ -1270,6 +1291,116 @@ export function resolveDilution(incomeHistory = []) {
 }
 
 /**
+ * The canonical earnings forecast — Revenue → EBITDA → EBIT → PBT →
+ * NetProfit → EPS, one year (t+1) ahead — replacing the "revenue × net
+ * margin" shortcut with a driver-based waterfall. Only the DRIVERS are
+ * forecast (growth, EBITDA margin, D&A/revenue, net-interest/revenue,
+ * other income, tax rate, diluted shares, capex/revenue, NWC/revenue);
+ * every other line (EBITDA, EBIT, PBT, tax, net profit, EPS, FCFF) is a
+ * calculated OUTPUT of those drivers, never independently assumed — so a
+ * margin change is always traceable to which driver actually moved.
+ *
+ * data: {reportedIncomeHistory, balanceHistory, cashflowHistory, basis} —
+ * the same shape every other table-native reader in this app takes.
+ * opts.guided (optional): {growth, ebitdaMargin, daToRevenue,
+ * netInterestToRevenue, taxRate, capexToRevenue, nwcToRevenue} — an
+ * explicit override for any one driver (guidance, a user revision), same
+ * "guided" rung every other ladder in this file already has. Diluted
+ * shares reuse the existing buyback-aware resolveDilution() rather than
+ * holding shares flat — that mechanism already measures and caps a real
+ * trend from this company's own history; there's no reason to regress to a
+ * frozen count just because it's now feeding a fuller earnings model.
+ *
+ * Returns null when there's no margin history to build from at all (same
+ * "decline rather than fabricate" rule as every other estimate function
+ * here) — the caller falls back to whatever it did before this existed.
+ */
+export function buildWaterfallForecast(data, opts = {}) {
+  const basis = data?.basis
+  const guided = opts.guided || {}
+  const incomeHistory = (data?.reportedIncomeHistory || data?.incomeHistory || []).filter(x => !x?.synthetic)
+  const latestInc = latestRealRow(incomeHistory)
+  const revenue0 = val(activeValue(latestInc, 'revenue', basis))
+  if (!(revenue0 > 0)) return null
+
+  const growthInfo = tableGrowthRate(data, 'revenueGrowth', basis)
+  const g = guided.growth ?? (growthInfo.value != null ? growthInfo.value / 100 : null)
+  if (g == null) return null
+
+  const ebitdaMarginBasis   = tableRatioBasis(data, 'ebitdaMargin', basis, { guided: guided.ebitdaMargin })
+  if (ebitdaMarginBasis.value == null) return null   // no margin history — nothing to build a waterfall from
+
+  const daBasis             = tableRatioBasis(data, 'daToRevenue', basis, { guided: guided.daToRevenue })
+  const interestBasis       = tableRatioBasis(data, 'netInterestToRevenue', basis, { guided: guided.netInterestToRevenue })
+  const otherIncomeBasis    = otherIncomeForecastBasis(data, basis)
+  // Tax rate only from years the concept is even meaningful in — a
+  // negative-PBT year's tax/PBT isn't a real rate, it's a sign-flipped
+  // artefact of dividing by a negative number.
+  const taxBasis = tableRatioBasis(data, 'effectiveTaxRate', basis, {
+    guided: guided.taxRate,
+    filterYear: p => (activeValue(p.row, 'profitBeforeTax', basis)?.value ?? -1) > 0,
+  })
+  const capexBasis          = tableRatioBasis(data, 'capexToRevenue', basis, { guided: guided.capexToRevenue })
+  const nwcBasis            = tableRatioBasis(data, 'nwcToRevenue', basis, { guided: guided.nwcToRevenue })
+
+  const revenue1 = revenue0 * (1 + g)
+  const ebitda1  = revenue1 * (ebitdaMarginBasis.value / 100)
+  const da1      = daBasis.value != null ? revenue1 * (daBasis.value / 100) : 0
+  const ebit1    = ebitda1 - da1
+  const netInterest1 = interestBasis.value != null ? revenue1 * (interestBasis.value / 100) : 0
+  const otherIncome1 = revenue1 * (otherIncomeBasis.value ?? 0)
+  const pbt1 = ebit1 - netInterest1 + otherIncome1
+
+  // Negative PBT: tax is set to zero in this simplified model rather than
+  // modelling a tax benefit — a deliberate, disclosed simplification, not
+  // an oversight.
+  let taxRate = taxBasis.value != null ? Math.max(0, Math.min(1, taxBasis.value / 100)) : 0
+  const tax1 = pbt1 > 0 ? pbt1 * taxRate : 0
+  const netProfit1 = pbt1 - tax1
+
+  const dilution = resolveDilution(opts.incomeHistory || incomeHistory)
+  const latestNp  = val(activeValue(latestInc, 'netProfit', basis))
+  const latestEps = val(activeValue(latestInc, 'eps', basis))
+  const sharesNow = (latestNp > 0 && latestEps > 0) ? latestNp / latestEps : null
+  if (!(sharesNow > 0)) return null
+  const shares1 = sharesNow * (1 + dilution.rate)
+  const eps1 = netProfit1 / shares1
+
+  // FCFF bridge — NWC forecast as a LEVEL first (revenue × ratio), then
+  // differenced against the latest actual balance-sheet NWC. Forecasting
+  // ΔNWC directly as revenue × ratio would treat the whole forecast NWC
+  // level as if it were the year's change — a real error, not a style
+  // choice, since it has no relationship to how much working capital
+  // actually needs funding that year.
+  const latestBal = latestRealRow((data?.balanceHistory || []).filter(x => !x?.synthetic))
+  const nwc0 = val(activeValue(latestBal, 'nwc', basis)) ?? 0
+  const capex1 = capexBasis.value != null ? revenue1 * (capexBasis.value / 100) : 0
+  const nwc1   = nwcBasis.value != null ? revenue1 * (nwcBasis.value / 100) : nwc0
+  const deltaNwc1 = nwc1 - nwc0
+  const fcff1 = ebit1 * (1 - taxRate) + da1 - capex1 - deltaNwc1
+
+  return {
+    revenue: revenue1, ebitda: ebitda1, da: da1, ebit: ebit1,
+    netInterest: netInterest1, otherIncome: otherIncome1, pbt: pbt1,
+    taxRate, tax: tax1, netProfit: netProfit1,
+    dilutedShares: shares1, eps: eps1,
+    capex: capex1, nwc: nwc1, deltaNwc: deltaNwc1, fcff: fcff1,
+    drivers: {
+      growthPct: round(g * 100, 1),
+      ebitdaMarginPct: round(ebitdaMarginBasis.value, 1), ebitdaMarginSource: ebitdaMarginBasis.source,
+      daToRevenuePct: daBasis.value != null ? round(daBasis.value, 1) : null,
+      netInterestToRevenuePct: interestBasis.value != null ? round(interestBasis.value, 1) : null,
+      otherIncomeToRevenuePct: otherIncomeBasis.value ? round(otherIncomeBasis.value * 100, 2) : 0,
+      otherIncomeSource: otherIncomeBasis.source,
+      taxRatePct: round(taxRate * 100, 1), taxRateSource: taxBasis.source,
+      dilutionPct: round(dilution.rate * 100, 1), dilutionLabel: dilution.label,
+      capexToRevenuePct: capexBasis.value != null ? round(capexBasis.value, 1) : null,
+      nwcToRevenuePct: nwcBasis.value != null ? round(nwcBasis.value, 1) : null,
+    },
+  }
+}
+
+/**
  * Sanity check, lenders especially: growth needs capital. A business can only
  * self-fund g ≈ ROE × retention. Guiding well above that isn't impossible — it
  * means raising equity or leverage — but it should be SAID rather than absorbed
@@ -1571,15 +1702,39 @@ export function buildEstimate(ratioResult, opts = {}) {
   const dilution = resolveDilution(incomeHistory)
 
   // ── forward EPS ───────────────────────────────────────────────────────────
-  // Preferred: revenue → margin → profit → per-share, which exposes the margin
-  // as an input you can see and argue with. If revenue or margin isn't
-  // available, fall back to compounding EPS directly — the old margins-frozen
-  // behaviour — and flag it rather than passing it off as equivalent.
+  // Preferred: the full driver-based waterfall (Revenue → EBITDA → EBIT →
+  // PBT → NetProfit → EPS, buildWaterfallForecast) — only DRIVERS are
+  // forecast, every other line is a calculated output, so a margin move is
+  // traceable to what actually changed (operating profitability, D&A,
+  // interest, tax) instead of one undifferentiated net-margin number
+  // absorbing all of it. Single year ahead only for now (years === 1) —
+  // the multi-year convergence path is a separate, deliberately deferred
+  // piece; for any other horizon this falls through to the older paths
+  // below unchanged.
+  //
+  // Falls back to plain revenue × margin ÷ shares when the waterfall
+  // declines (e.g. no EBITDA-margin history at all), then to compounding
+  // EPS directly (the old margins-frozen behaviour) as the last resort —
+  // each rung flagged, never silently swapped for a weaker one.
   const g   = growthBasis.growth
   const dil = Math.pow(1 + dilution.rate, years)
   let forwardEps = null, epsPath, projRevenue = null, projProfit = null
+  let waterfall = null
 
-  if (revenue > 0 && marginBasis.margin != null) {
+  if (years === 1) {
+    waterfall = buildWaterfallForecast(
+      { reportedIncomeHistory: incomeHistory, balanceHistory, basis: normBasis },
+      { guided: opts.guidedWaterfall, incomeHistory: opts.incomeHistory }
+    )
+    if (waterfall && waterfall.eps > 0) {
+      forwardEps = waterfall.eps
+      projRevenue = waterfall.revenue
+      projProfit = waterfall.netProfit
+      epsPath = 'waterfall: revenue → EBITDA → EBIT → PBT → net profit ÷ shares'
+    }
+  }
+
+  if (forwardEps == null && revenue > 0 && marginBasis.margin != null) {
     const sharesNow = (netProfit > 0 && eps > 0) ? netProfit / eps : (ratioResult?.shares || null)
     if (sharesNow > 0) {
       projRevenue = revenue * Math.pow(1 + g, years)
@@ -1919,7 +2074,13 @@ export function buildEstimate(ratioResult, opts = {}) {
 
     financeability: financeabilityNote(ratioResult, g, { incomeHistory: resolvedOpts.incomeHistory, basis: normBasis }),
     degraded,                     // [] when everything is on its best basis
-    basisSummary: `Growth: ${growthBasis.label} · Margin: ${marginBasis.label} · Multiple: ${multipleLabel}`,
+    // Full driver breakdown when the waterfall actually ran — auditable,
+    // not a black box: which EBITDA margin/D&A/interest/tax rate produced
+    // this EPS, not just the final number.
+    waterfallDrivers: waterfall?.drivers ?? null,
+    basisSummary: waterfall
+      ? `Growth: ${growthBasis.label} · EBITDA margin: ${round(waterfall.drivers.ebitdaMarginPct, 1)}% (${waterfall.drivers.ebitdaMarginSource}) · Multiple: ${multipleLabel}`
+      : `Growth: ${growthBasis.label} · Margin: ${marginBasis.label} · Multiple: ${multipleLabel}`,
   }
 }
 

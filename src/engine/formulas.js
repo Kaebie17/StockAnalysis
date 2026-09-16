@@ -171,6 +171,38 @@ const STANDARD_FORMULA_ROWS = {
     key: 'grossMarginPct', label: 'Gross Margin', table: 'income', mode: 'ratio', scale: 100,
     numerator: [{ field: 'grossProfit', sign: 1 }], denominator: [{ field: 'revenue', sign: 1 }],
   },
+  // Driver ratios for the earnings waterfall (buildWaterfallForecast,
+  // estimate.js) — each is a per-year ratio, exactly like the margins
+  // above; the waterfall's own forward-basis ladder (tableRatioBasis) picks
+  // which historical year(s) to project from, this row just supplies the
+  // per-year figures to pick from.
+  daToRevenue: {
+    key: 'daToRevenue', label: 'D&A / Revenue', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'depreciation', sign: 1 }], denominator: [{ field: 'revenue', sign: 1 }],
+  },
+  // interestIncome is not a tracked metrics.js field — sumTerms silently
+  // contributes 0 for a term that doesn't resolve (see sumTerms: a term
+  // that returns null is skipped, not treated as invalidating the whole
+  // sum), so this correctly degrades to gross interest expense alone until
+  // a ticker has an "Interest Income" row (addable the same way as any
+  // other custom row) to subtract.
+  netInterestToRevenue: {
+    key: 'netInterestToRevenue', label: 'Net Interest / Revenue', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'interest', sign: 1 }, { field: 'interestIncome', sign: -1 }],
+    denominator: [{ field: 'revenue', sign: 1 }],
+  },
+  otherIncomeToRevenue: {
+    key: 'otherIncomeToRevenue', label: 'Other Income / Revenue', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'otherIncome', sign: 1 }], denominator: [{ field: 'revenue', sign: 1 }],
+  },
+  capexToRevenue: {
+    key: 'capexToRevenue', label: 'Capex / Revenue', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'capex', sign: 1, table: 'cashflow' }], denominator: [{ field: 'revenue', sign: 1 }],
+  },
+  nwcToRevenue: {
+    key: 'nwcToRevenue', label: 'NWC / Revenue', table: 'income', mode: 'ratio', scale: 100,
+    numerator: [{ field: 'nwc', sign: 1, table: 'balance' }], denominator: [{ field: 'revenue', sign: 1 }],
+  },
   roa: {
     key: 'roa', label: 'Return on Assets', table: 'income', mode: 'ratio', scale: 100,
     numerator: [{ field: 'netProfit', sign: 1 }],
@@ -1127,6 +1159,118 @@ export function tableGrowthRate(data, formulaKey, basis) {
     return fromBundle(bundle, bundle?.methodOverride || 'medianYoY')
   }
   return fromBundle(latest[formula.key]?.methods, 'fullPeriodCagr')
+}
+
+/**
+ * The forward-basis ladder for any per-year RATIO row (EBITDA margin,
+ * D&A/Revenue, net-interest/Revenue, Capex/Revenue, NWC/Revenue, tax rate,
+ * ...) — the shared mechanism every earnings-waterfall driver (and, going
+ * forward, anything else that used to run its own local "3-year average"
+ * function) reads from, instead of each consuming file recomputing its own
+ * version of the same ladder. Mirrors tableGrowthRate's role for growth,
+ * generalized to any ratio-mode formula.
+ *
+ * Ladder: guided (opts.guided, if the caller has one) → median of the last
+ * `opts.years` (default 3) valid years → latest single valid year. "Valid"
+ * means the year passed opts.filterYear (default: none) — the tax-rate
+ * caller uses this to exclude negative-PBT years, for instance, without
+ * this function needing to know anything about tax specifically.
+ *
+ * Every value is read via activeValue on the row actually stored on the
+ * table — no separate normalization happens here. A field with nothing
+ * normalized for a given year just reads its reported figure, the same as
+ * activeValue already does everywhere else; this function never invents a
+ * normalized figure of its own.
+ */
+export function tableRatioBasis(data, formulaKey, basis, opts = {}) {
+  const { guided = null, years = 3, filterYear = null } = opts
+  const empty = { value: null, source: 'none', yearsUsed: 0 }
+  if (guided != null && isFinite(guided)) return { value: guided, source: 'guidance', yearsUsed: 0 }
+
+  const formula = STANDARD_FORMULA_ROWS[formulaKey]
+  if (!formula) return empty
+  const base = fieldHistory(data, formula.table).filter(isFiscalYearRow)
+  if (!base.length) return empty
+
+  const series = base
+    .map(row => ({ year: yearOf(row), value: activeValue(row, formulaKey, basis)?.value, row }))
+    .filter(p => p.year != null && p.value != null && isFinite(p.value))
+    .filter(p => filterYear ? filterYear(p) : true)
+    .sort((a, b) => a.year - b.year)
+  if (!series.length) return empty
+
+  const recent = series.slice(-years)
+  if (recent.length >= Math.min(years, 2)) {
+    const sorted = [...recent.map(p => p.value)].sort((a, b) => a - b)
+    const median = sorted[Math.floor(sorted.length / 2)]
+    return { value: median, source: `${recent.length}yr-median`, yearsUsed: recent.length }
+  }
+  const last = series[series.length - 1]
+  return { value: last.value, source: 'latest', yearsUsed: 1 }
+}
+
+/**
+ * Other income's forward basis — deliberately NOT the plain ratio ladder
+ * above, because a one-off gain (an asset sale, a fair-value swing, a
+ * settlement) sitting in "Other Income" would otherwise get averaged in as
+ * if it recurs. Materiality-then-persistence, not volatility alone: checks
+ * whether other income is even large enough (relative to EBIT) to matter
+ * before asking whether it's stable; a small-but-erratic figure that never
+ * moves the answer isn't worth forecasting either way.
+ *
+ * No separate "is this normalized" check needed — the per-year figures
+ * already come through activeValue on whatever basis is active, so a year
+ * the user has restated (an identified exceptional item) already reads as
+ * whatever the normalized figure says, same as everywhere else in this app.
+ *
+ * Returns the forward OTHER-INCOME-TO-REVENUE ratio (a fraction, e.g. 0.02
+ * = 2% of revenue) — 0 when other income is immaterial, or material but not
+ * persistent enough to trust.
+ */
+export function otherIncomeForecastBasis(data, basis) {
+  const base = fieldHistory(data, 'income').filter(isFiscalYearRow)
+  const series = base
+    .map(row => ({
+      year: yearOf(row),
+      oi: activeValue(row, 'otherIncome', basis)?.value,
+      revenue: activeValue(row, 'revenue', basis)?.value,
+      ebit: activeValue(row, 'ebit', basis)?.value,
+    }))
+    .filter(p => p.year != null && p.oi != null && p.revenue > 0)
+    .sort((a, b) => a.year - b.year)
+  if (!series.length) return { value: 0, source: 'no-data' }
+
+  const materiality = series
+    .filter(p => p.ebit != null && p.ebit !== 0)
+    .map(p => Math.abs(p.oi) / Math.abs(p.ebit))
+  if (materiality.length) {
+    const sortedM = [...materiality].sort((a, b) => a - b)
+    const medianMateriality = sortedM[Math.floor(sortedM.length / 2)]
+    // Case A — consistently immaterial relative to EBIT: not worth
+    // forecasting either way, and a small ratio computed from a small
+    // denominator is exactly where noise would otherwise get amplified.
+    if (medianMateriality < 0.10) return { value: 0, source: 'immaterial' }
+  }
+
+  const ratios = series.map(p => p.oi / p.revenue)
+  const sortedRatios = [...ratios].sort((a, b) => a - b)
+  const medianRatio = sortedRatios[Math.floor(sortedRatios.length / 2)]
+  const mean = ratios.reduce((s, x) => s + x, 0) / ratios.length
+  const variance = ratios.reduce((s, x) => s + (x - mean) ** 2, 0) / ratios.length
+  const cv = mean !== 0 ? Math.sqrt(variance) / Math.abs(mean) : Infinity
+
+  const totalAbs = series.reduce((s, p) => s + Math.abs(p.oi), 0)
+  const maxShare = totalAbs > 0 ? Math.max(...series.map(p => Math.abs(p.oi))) / totalAbs : 1
+  const signConsistent = new Set(ratios.map(r => Math.sign(r))).size <= 1
+
+  // Case D — persistent, sign-consistent, not dominated by one year, not
+  // wildly volatile: trusted as a genuine recurring component.
+  const persistent = series.length >= 3 && signConsistent && cv <= 0.75 && maxShare <= 0.5
+  if (persistent) return { value: medianRatio, source: `${series.length}yr-median`, cv, maxShare }
+
+  // Case C — material but volatile or one-year-dominated: excluded, not
+  // averaged in as if it recurs.
+  return { value: 0, source: 'excluded_volatile_or_irregular', cv, maxShare }
 }
 
 /**
