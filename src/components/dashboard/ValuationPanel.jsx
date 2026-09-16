@@ -354,6 +354,8 @@ function EstimateExplainer({ state }) {
                     <Step n="3" title="Split across the shares">
                       {est.dilutionPct > 0.1
                         ? <>Share count is growing {est.dilutionPct}% a year, so profit is split more ways: </>
+                        : est.dilutionPct < -0.1
+                        ? <>Share count is shrinking {Math.abs(est.dilutionPct)}% a year (buybacks), so profit is split fewer ways: </>
                         : <>Share count is steady, so that's </>}
                       <span className="text-slate-300">{cur}{n(est.forwardEps)}</span> per share.
                     </Step>

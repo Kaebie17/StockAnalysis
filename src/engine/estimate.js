@@ -1076,11 +1076,24 @@ export function resolveMarginBasis(incomeHistory = [], opts = {}) {
            label: 'last reported margin' }
 }
 
+// How far the measured rate is trusted, in either direction, before it's
+// capped and disclosed — scaled by how many "ordinary" (non-one-off) years
+// actually support it. Shares are inferred here as profit ÷ EPS, not read
+// off a real reported share-count line, so there's no way to tell a genuine
+// buyback/issuance apart from a stock split, a basic/diluted-count switch,
+// or a one-off restatement except by how CONSISTENT the trend is across
+// years — a thin trend gets a tight cap, a longer consistent one a looser
+// one, rather than one flat number applied regardless of how much history
+// actually backs it.
+const DILUTION_CAP_BY_YEARS = { 2: 0.05, 4: 0.07, 6: 0.10 }
+const capForYears = (n) => n >= 6 ? DILUTION_CAP_BY_YEARS[6] : n >= 4 ? DILUTION_CAP_BY_YEARS[4] : DILUTION_CAP_BY_YEARS[2]
+
 /**
- * Dilution ladder: observed share-count growth → flat.
- * EPS is profit ÷ shares, and share counts drift up (ESOPs, QIPs). A frozen
- * count overstates EPS for anyone funding growth with equity — lenders
- * especially, since growing the book needs capital.
+ * Dilution ladder: observed share-count trend → flat.
+ * EPS is profit ÷ shares, and share counts drift — up from ESOPs/QIPs
+ * (dilution, overstating EPS for anyone who ignores it), or down from a
+ * sustained buyback (the reverse: EPS accretion a frozen count would miss).
+ * Both directions are measured the same way; only the label differs.
  */
 export function resolveDilution(incomeHistory = []) {
   // Derived as profit ÷ EPS rather than read off a share-count field: normalize
@@ -1113,15 +1126,29 @@ export function resolveDilution(incomeHistory = []) {
   const excluded = steps.length - ordinary.length
 
   const used = ordinary.length > 0 ? ordinary : steps
-  const rate = Math.max(0, used.reduce((t, x) => t + x, 0) / used.length)
+  // No floor at 0: a sustained buyback program is a genuine negative trend,
+  // not noise to be erased — flattening it to "no dilution" would credit a
+  // frozen share count to a company that's actually shrinking one, understating
+  // the EPS accretion buybacks produce. What guards against a THIN or noisy
+  // trend being taken at face value is the cap below, not a one-sided floor.
+  const rawRate = used.reduce((t, x) => t + x, 0) / used.length
+  const cap = capForYears(used.length)
+  const rate = Math.max(-cap, Math.min(cap, rawRate))
+  const wasCapped = rate !== rawRate
+
+  const excludedNote = excluded > 0 ? ` (${excluded} one-off issuance${excluded > 1 ? 's' : ''} excluded)` : ''
+  const cappedNote = wasCapped
+    ? ` — ${round(rawRate * 100, 1)}%/yr measured, capped at ${round(cap * 100, 1)}%/yr (limited history to confirm a sustained ${rawRate > 0 ? 'issuance' : 'buyback'} program)`
+    : ''
 
   return {
     rate, source: 'observed', rung: 'good',
-    excludedYears: excluded,
-    label: rate > 0.001
-      ? `${round(rate * 100, 1)}%/yr dilution` +
-        (excluded > 0 ? ` (${excluded} one-off issuance${excluded > 1 ? 's' : ''} excluded)` : '')
-      : 'no material dilution',
+    excludedYears: excluded, capped: wasCapped, rawRate: round(rawRate * 100, 1),
+    label: Math.abs(rate) > 0.001
+      ? rate > 0
+        ? `${round(rate * 100, 1)}%/yr dilution${excludedNote}${cappedNote}`
+        : `${round(Math.abs(rate) * 100, 1)}%/yr buyback (EPS-accretive)${excludedNote}${cappedNote}`
+      : 'no material change in share count',
   }
 }
 

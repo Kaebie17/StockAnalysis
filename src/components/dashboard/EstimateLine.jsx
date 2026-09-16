@@ -126,7 +126,7 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
               Other bases: {est.growthAlternatives.map(a => `${a.pct}% ${a.label}`).join(' · ')}
             </span>
           )}
-          {est.dilutionPct > 0.1 && (
+          {Math.abs(est.dilutionPct) > 0.1 && (
             <BasisRow label="Dilution" value={est.dilutionLabel} pct={null} />
           )}
           {Object.keys(overrides || {}).length > 0 && (
