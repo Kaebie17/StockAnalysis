@@ -1,5 +1,6 @@
 
 import { activeValue } from './dataQuality.js'
+import { latestRealRow, tableGrowthRate } from './formulas.js'
 
 /**
  * src/engine/stage.js
@@ -108,16 +109,18 @@ export function detectSectorType(data) {
   return SECTOR_TYPES.STANDARD
 }
 
-export function detectStage(data, ratioResult) {
+export function detectStage(data) {
   const inc = data?.reportedIncomeHistory || []
-  const rev = ratioResult?.revenue
+  const latest = latestRealRow(inc)
+  const rev = activeValue(latest, 'revenue', data?.basis)?.value
 
   if (!rev || rev <= 0) return 'PRE_REVENUE'
 
-  // Use the recent 5-yr CAGR (stable), not the full-span one.
-  const cagr = ratioResult?.ratios?.revCagr?.value
-  const netMargin = ratioResult?.ratios?.netMargin?.value
-  const roe = ratioResult?.ratios?.roe?.value
+  // Table's own growth reading — full-period CAGR (reported) or the
+  // selected method (normalized), same figure every other consumer reads.
+  const cagr = tableGrowthRate(data, 'revenueGrowth', data?.basis).value
+  const netMargin = activeValue(latest, 'netMargin', data?.basis)?.value
+  const roe = activeValue(latest, 'roe', data?.basis)?.value
 
   // Is the company CONSISTENTLY profitable? A thin margin alone must NOT be read
   // as "not yet profitable" — a low-margin business (e.g. EMS/retail) can be very

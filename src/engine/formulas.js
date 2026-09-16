@@ -1019,6 +1019,24 @@ function computeGrowthBundle(data, formula, basis) {
  * (every method, not just the selected one) riding along as `.methods` so
  * a UI can offer every candidate for inspection, not just the pick.
  */
+/**
+ * The latest REAL fiscal-year row in an already-fetched history array (see
+ * isFiscalYearRow) — a synthetic/TTM stub with a later-looking year must
+ * never win "latest." Falls back to the raw base when nothing qualifies as
+ * a real year (e.g. a ticker with only a TTM stub so far). Returns null for
+ * an empty base.
+ *
+ * The one shared "what's the current row" reader — every consumer of a
+ * table-native field (revenue, margins, ROE, growth, ...) should find its
+ * row this way rather than re-deriving its own latest-row logic.
+ */
+export function latestRealRow(base) {
+  if (!base || !base.length) return null
+  const realBase = base.filter(isFiscalYearRow)
+  const latestPool = realBase.length ? realBase : base
+  return latestPool.reduce((a, b) => (yearOf(b) > yearOf(a) ? b : a))
+}
+
 export function materializeFormulas(data) {
   let out = data
   for (const formula of Object.values(DERIVED_FORMULAS)) {
@@ -1027,13 +1045,7 @@ export function materializeFormulas(data) {
     if (!base.length) continue
     const normKey = `${formula.key}Normalized`
 
-    // Real fiscal-year rows only (see isFiscalYearRow) — a synthetic/TTM
-    // stub with a later-looking year must never win "latest," or the
-    // whole bundle gets written onto (and read back from) a row that
-    // isn't a real, complete year.
-    const realBase = base.filter(isFiscalYearRow)
-    const latestPool = realBase.length ? realBase : base
-    const latest = latestPool.reduce((a, b) => (yearOf(b) > yearOf(a) ? b : a))
+    const latest = latestRealRow(base)
     const reportedBundle = computeGrowthBundle(out, formula, 'reported')
     const normalizedBundle = computeGrowthBundle(out, formula, 'normalized')
     const newHistory = base.map(row => {
@@ -1097,9 +1109,7 @@ export function tableGrowthRate(data, formulaKey, basis) {
   if (!formula) return { value: null, windowYears: null }
   const base = fieldHistory(data, formula.table)
   if (!base.length) return { value: null, windowYears: null }
-  const realBase = base.filter(isFiscalYearRow)
-  const latestPool = realBase.length ? realBase : base
-  const latest = latestPool.reduce((a, b) => (yearOf(b) > yearOf(a) ? b : a))
+  const latest = latestRealRow(base)
 
   const empty = { value: null, windowYears: null }
   const fromBundle = (bundle, methodKey) => {

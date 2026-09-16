@@ -593,12 +593,9 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   if (data.basis == null && hasAnyNormalization(data)) {
     data = { ...data, basis: 'normalized' }
   }
-  // The growth window reaches ratios, so every consumer — stage classification,
-  // fair value, market expectation, the AI verdict and the dashboard card — uses
-  // the same figure the user chose.
   const ratioResult = computeCurrentSnapshot(data)
   const sectorType  = detectSectorType(data)
-  const stage       = detectStage(data, ratioResult)
+  const stage       = detectStage(data)
   // Every caller of computeAll() routes through here — including
   // PRICE_UPDATE, which fires every 60s from the live-price poller. Without
   // filtering here too, a confirmed peer (SET_CONFIRMED_PEERS) would get
