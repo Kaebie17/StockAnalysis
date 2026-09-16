@@ -344,6 +344,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
         marketExpectation: analysis.marketExpectation,
         guidance: isLive ? state.guidance : null, guidanceAssessment: ga,
         priceHistory: analysis.data?.priceHistory || [],
+        incomeHistory: rawIncomeHistory, basis: analysis.data?.basis,
         portfolioValue: totalValue, portfolioCost: totalCost, plan: exitPlan,
       }),
       { estimate: est,

@@ -19,6 +19,9 @@
  * for.
  */
 
+import { activeValue } from './dataQuality.js'
+import { latestRealRow } from './formulas.js'
+
 const round = (v, d = 1) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 
 /** Bands the user can tune later; these are starting points, not truths. */
@@ -233,8 +236,12 @@ export function evaluateTriggers(pos, ctx = {}) {
   // the low end is below cost by definition. It restated where the price sat
   // relative to the range, which the range already shows.
 
-  // Margin erosion against the company's own history.
-  const marginNow = ctx.ratioResult?.ratios?.netMargin?.value
+  // Margin erosion against the company's own history. netMargin is
+  // table-native — read off the latest real row directly, falling back to
+  // ratioResult when the table can't resolve one (a backfilled/historical
+  // position may not carry ctx.incomeHistory).
+  const marginNow = activeValue(latestRealRow(ctx.incomeHistory || []), 'netMargin', ctx.basis)?.value
+    ?? ctx.ratioResult?.ratios?.netMargin?.value
   const marginAvg = ctx.estimate?.marginPct
   if (marginNow != null && marginAvg != null) {
     const drop = marginAvg - marginNow
