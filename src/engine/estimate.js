@@ -1736,7 +1736,7 @@ export function buildJustifiedEstimate(ratioResult, opts = {}) {
     formLabels: Object.fromEntries(Object.entries(jm.forms).map(([k, f]) => [k, f.label])),
     growth: g, growthPct: jm.growth.gPct,
     growthSource: 'roe-retention',
-    growthLabel: `${round(jm.growth.roe, 1)}% ROE × ${round(jm.growth.retention * 100, 0)}% retained`,
+    growthLabel: `${round(jm.growth.roe, 1)}% ROE (${jm.growth.roeSource}) × ${round(jm.growth.retention * 100, 0)}% retained`,
     requiredReturnPct: round(rr.r * 100, 1),
     requiredReturnLabel: rr.label,
     twoStage: jm.twoStage,
@@ -1953,12 +1953,24 @@ export function buildEstimate(ratioResult, opts = {}) {
   // priced its returns and growth. This is what analysts do — the flat median
   // below gives a company earning materially better returns than its history
   // exactly its history's multiple, which is the step that was missing.
+  // ROE ladder: median of the last 3 equity-supported years, same mechanism
+  // buildLenderEstimate/justifiedMultiples use — a single depressed or
+  // inflated year otherwise sets this regression's forward-ROE assumption
+  // outright. Falls back to the raw latest-year figure only when the ladder
+  // can't compute one.
+  const forwardRoeData = { reportedIncomeHistory: incomeHistory, balanceHistory, basis: normBasis }
+  const forwardRoeBasis = tableRatioBasis(forwardRoeData, 'roe', normBasis, {
+    filterYear: p => {
+      const bRow = (balanceHistory || []).find(b => yearOf(b) === p.year)
+      return val(bRow?.totalEquity) > 0
+    },
+  })
   const fitted = targetMultiple({
     basis: 'pe', priceHistory, incomeHistory, balanceHistory,
-    // Today's ROE, used as the forward expectation. Defensible over a one-year
-    // horizon — ROE is far stickier than earnings — but it IS an assumption of
-    // no change, and it belongs in the working rather than buried here.
-    forwardRoe: ratioResult?.ratios?.roe?.value ?? null,
+    // Forward expectation. Defensible over a one-year horizon — ROE is far
+    // stickier than earnings — but it IS an assumption of no change, and it
+    // belongs in the working rather than buried here.
+    forwardRoe: forwardRoeBasis.value ?? ratioResult?.ratios?.roe?.value ?? null,
     forwardGrowth: growthBasis.growth != null ? growthBasis.growth * 100 : null,
     peerBand,
     peerWeight,

@@ -24,10 +24,14 @@
 import { capmCostOfEquity, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
-import { latestRealRow } from './formulas.js'
+import { latestRealRow, tableRatioBasis } from './formulas.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
+const yearOf = row => {
+  const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
+  return m ? Number(m[0]) : null
+}
 
 // Terminal growth cannot exceed the economy forever — a company growing faster
 // than nominal GDP in perpetuity eventually becomes the economy. Shared with
@@ -206,7 +210,8 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   // own 'IN' default inside capmCostOfEquity. Harmless while ERP_BY_MARKET's
   // IN/US values were identical, but a real bug once terminal growth (below)
   // is split by market instead of shared.
-  const { riskFreeRate, equityRiskPremium, beta, betaMeta = null, incomeHistory = [], market = 'IN' } = opts
+  const { riskFreeRate, equityRiskPremium, beta, betaMeta = null, incomeHistory = [],
+          balanceHistory = [], market = 'IN' } = opts
   const R = ratioResult?.ratios || {}
   // roe/dividendPayout/ebitda/revenue are table-native — read off the latest
   // real row directly, falling back to ratioResult when the table can't
@@ -214,7 +219,19 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   // live materialized table, same reasoning as estimate.js's builders).
   const latestIncJm = latestRealRow(incomeHistory)
 
-  const roe = activeValue(latestIncJm, 'roe', opts.basis)?.value ?? R.roe?.value
+  // ROE ladder: median of the last 3 equity-supported years, same mechanism
+  // buildLenderEstimate uses (see its own comment) — a single depressed or
+  // inflated year otherwise sets this entire justified-multiple calculation,
+  // the same fragility the lender fix addressed. Negative/zero-equity years
+  // are excluded the same way pbBand excludes them from its own P/B band.
+  const roeLadderData = { reportedIncomeHistory: incomeHistory, balanceHistory, basis: opts.basis }
+  const roeBasis = tableRatioBasis(roeLadderData, 'roe', opts.basis, {
+    filterYear: p => {
+      const bRow = (balanceHistory || []).find(b => yearOf(b) === p.year)
+      return val(bRow?.totalEquity) > 0
+    },
+  })
+  const roe = roeBasis.value ?? activeValue(latestIncJm, 'roe', opts.basis)?.value ?? R.roe?.value
   const payoutPct = activeValue(latestIncJm, 'dividendPayout', opts.basis)?.value ?? R.dividendPayout?.value
     ?? averagePayoutPct(incomeHistory, {
     cashflowHistory: opts.cashflowHistory || [],
@@ -358,7 +375,7 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     available: Object.keys(forms).length > 0,
     forms, missing,
     requiredReturn: rr,
-    growth: { g, gPct: round(g * 100, 1), retention, roe, payoutPct },
+    growth: { g, gPct: round(g * 100, 1), retention, roe, roeSource: roeBasis.value != null ? roeBasis.source : 'latest', payoutPct },
     twoStage,
     stageOneYears: twoStage ? STAGE_1_YEARS : null,
     terminalGrowthPct: twoStage ? round(terminalG * 100, 1) : null,

@@ -242,6 +242,7 @@ export function useEstimate(state, opts = {}) {
     beta: state.assumptions?.beta ?? state.data?.meta?.beta ?? state.technicals?.beta ?? null,
     betaMeta: state.computedBeta ?? null,
     incomeHistory: rawIncomeHistory,
+    balanceHistory: rawBalanceHistory,
     cashflowHistory: state.data?.cashflowHistory || [],
     basis,
   }) : null
