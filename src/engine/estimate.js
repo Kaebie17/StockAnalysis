@@ -1440,6 +1440,19 @@ export function buildWaterfallForecast(data, opts = {}) {
   // evolution) use the rest of the waterfall where a per-share consumer can't.
   const shares1 = sharesNow > 0 ? sharesNow * (1 + dilution.rate) : null
   const eps1 = shares1 > 0 ? netProfit1 / shares1 : null
+  // Explicit, not inferred from eps/dilutedShares being null: a caller that
+  // only checks `.eps > 0` (the standard chain, EV/EBITDA) already treats
+  // null correctly as "can't use this for per-share", but a caller reading
+  // `.fcff`/`.ebitda` directly (EV/Sales's net-debt evolution) has no other
+  // way to tell "operating/cash-flow outputs are real, only shares failed"
+  // apart from "the whole forecast failed" (which instead returns null
+  // above, before any of this runs) — same "never silently degrade" rule
+  // the rest of this file's `degraded` arrays exist to enforce, applied to
+  // this function's own partial-success case.
+  const forecastStatus = shares1 > 0 ? 'full' : 'partial'
+  const degraded = shares1 > 0 ? [] : [
+    'Share count unavailable (netProfit/EPS both <= 0, typically a loss-making company) — dilutedShares/eps are null; operating and cash-flow outputs (EBITDA, EBIT, PBT, FCFF) are unaffected',
+  ]
 
   // FCFF bridge — NWC forecast as a LEVEL first (revenue × ratio), then
   // differenced against the latest actual balance-sheet NWC. Forecasting
@@ -1460,6 +1473,7 @@ export function buildWaterfallForecast(data, opts = {}) {
     taxRate, tax: tax1, netProfit: netProfit1,
     dilutedShares: shares1, eps: eps1,
     capex: capex1, nwc: nwc1, deltaNwc: deltaNwc1, fcff: fcff1,
+    forecastStatus, degraded,
     drivers: {
       growthPct: round(g * 100, 1),
       ebitdaMarginPct: round(ebitdaMarginBasis.value, 1), ebitdaMarginSource: ebitdaMarginBasis.source,
