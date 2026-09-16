@@ -18,6 +18,7 @@ import { peerBand } from './peerBands.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
 import { latestRealRow, tableGrowthRate } from './formulas.js'
+import { buildWaterfallForecast } from './estimate.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // Every call site guards on state.data being truthy, not state.ratioResult
@@ -113,9 +114,18 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const latestIncDcf = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
   const fcffValue = activeValue(latestIncDcf, 'fcff', data?.basis)?.value
   const cfBaseDcf = fcffValue > 0 ? fcffValue : null
-  if (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf) {
-    const perShare = dcfPerShare(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntG, ntY)
-    if (perShare != null) {
+  if (isApplicable('dcf', modelMeta) && r.shares) {
+    // Preferred: the multi-year waterfall DCF — each projection year's FCFF
+    // comes from re-running the earnings waterfall's own output (constant
+    // historically-normalized margins/ratios, growth fading from year 1's
+    // measured rate to terminal by year 5), not one starting FCFF figure
+    // compounded by a single flat rate. Falls back to the older single-FCFF
+    // DCF when there's no margin history to build a waterfall from at all —
+    // same graceful decline as everywhere else, not a silently weaker number.
+    const waterfallEV = waterfallDcfEV(data, wacc, termGrowth, projYears, ntG, ntY)
+    const ev = waterfallEV ?? (cfBaseDcf ? dcfEV(cfBaseDcf, growthRate, wacc, termGrowth, projYears, ntG, ntY) : null)
+    const perShare = ev != null ? (ev + r.cash - r.totalDebt) / r.shares : null
+    if (perShare != null && perShare > 0) {
       // growthRate is always the measured default now (see above — the
       // manual override is gone), so these caveats — computed from that
       // same measured CAGR — always describe what's actually being used.
@@ -130,7 +140,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
       ].filter(Boolean)
       results.dcf = {
         value: perShare,
-        note: caveats.length ? caveats.join('; ') : 'FCFF-based',
+        note: caveats.length ? caveats.join('; ') : (waterfallEV != null ? 'FCFF-based (waterfall)' : 'FCFF-based'),
         estimated: caveats.length > 0,
         // DERIVED — after this session's fixes (WACC clamp removed, beta
         // used as-reported, terminal growth anchored to RBI/Fed targets),
@@ -652,6 +662,80 @@ function estimateGrowth(data) {
   const aboveSustainable = sustainable != null && g > sustainable
 
   return { growth: g, unusual, sustainable, aboveSustainable }
+}
+
+/**
+ * The multi-year DCF, built by re-running the earnings waterfall's own
+ * OUTPUT for every projection year, instead of compounding one starting
+ * FCFF figure by a single growth rate. The driver PERCENTAGES (EBITDA
+ * margin, D&A/revenue, net-interest/revenue, other income, tax rate,
+ * capex/revenue, NWC/revenue) come from the waterfall's own historical
+ * normalization ONCE and are held constant across every year — only
+ * revenue growth changes year to year, fading linearly from year 1's
+ * measured rate toward mature/terminal growth by year 5, then flat — same
+ * "forecast the driver, not the derived output" discipline the one-year
+ * waterfall already uses.
+ *
+ * Returns null when there's no margin history to build a waterfall from at
+ * all — the caller falls back to the older single-FCFF-compounded-by-one-
+ * rate DCF unchanged, exactly as if this function didn't exist.
+ */
+function waterfallDcfEV(data, wacc, tg, yrs, ntGrowth = null, ntYears = 0, matureFadeYears = 5) {
+  const w0 = buildWaterfallForecast(data, {})
+  if (!w0) return null
+
+  const basis = data?.basis
+  const latestInc = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
+  const revenue0 = activeValue(latestInc, 'revenue', basis)?.value
+  const latestBal = latestRealRow((data?.balanceHistory || []).filter(x => !x.synthetic))
+  const nwc0 = activeValue(latestBal, 'nwc', basis)?.value ?? 0
+  if (!(revenue0 > 0)) return null
+
+  const d = w0.drivers
+  const ebitdaMargin = d.ebitdaMarginPct / 100
+  const daRatio      = d.daToRevenuePct != null ? d.daToRevenuePct / 100 : 0
+  const interestRatio = d.netInterestToRevenuePct != null ? d.netInterestToRevenuePct / 100 : 0
+  const otherIncomeRatio = (d.otherIncomeToRevenuePct || 0) / 100
+  const taxRate = d.taxRatePct / 100
+  const capexRatio = d.capexToRevenuePct != null ? d.capexToRevenuePct / 100 : 0
+  const nwcRatio = d.nwcToRevenuePct != null ? d.nwcToRevenuePct / 100 : null
+  // Year 1's own measured growth — the same figure the one-year waterfall
+  // used, unless an explicit near-term (guidance) rate overrides it.
+  const g1 = ntYears > 0 ? ntGrowth : (w0.drivers.growthPct / 100)
+
+  let revenue = revenue0, nwc = nwc0
+  let pv = 0, lastFcff = null
+  for (let t = 1; t <= yrs; t++) {
+    let gt
+    if (ntYears > 0 && t <= ntYears) {
+      gt = ntGrowth
+    } else {
+      const fadeStart = ntYears > 0 ? ntGrowth : g1
+      const step = ntYears > 0 ? (t - ntYears) : (t - 1)
+      const totalFadeYears = Math.max(1, Math.min(matureFadeYears, yrs) - ntYears)
+      gt = totalFadeYears > 1
+        ? fadeStart - (fadeStart - tg) * Math.min(1, step / (totalFadeYears - 1))
+        : tg
+    }
+    revenue = revenue * (1 + gt)
+    const ebitda = revenue * ebitdaMargin
+    const da = revenue * daRatio
+    const ebit = ebitda - da
+    const netInterest = revenue * interestRatio
+    const otherIncome = revenue * otherIncomeRatio
+    const pbt = ebit - netInterest + otherIncome
+    const tax = pbt > 0 ? pbt * taxRate : 0
+    const capex = revenue * capexRatio
+    const nwcNow = nwcRatio != null ? revenue * nwcRatio : nwc
+    const deltaNwc = nwcNow - nwc
+    nwc = nwcNow
+    const fcff = ebit * (1 - taxRate) + da - capex - deltaNwc
+    lastFcff = fcff
+    pv += fcff / Math.pow(1 + wacc, t)
+  }
+  if (lastFcff == null) return null
+  const terminalValue = (lastFcff * (1 + tg)) / (wacc - tg) / Math.pow(1 + wacc, yrs)
+  return pv + terminalValue
 }
 
 // Enterprise PV → equity value per share, with a growth fade toward terminal.
