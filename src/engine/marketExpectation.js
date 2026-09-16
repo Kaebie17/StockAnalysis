@@ -24,6 +24,8 @@ import { sectorPe, sectorEvSales, sectorEvFcf, financialPe, financialSales } fro
 import { peerBand } from './peerBands.js'
 import { reverseDcfGrowth, computeWacc } from './valuation.js'
 import { TIER } from './methodologyTier.js'
+import { activeValue } from './dataQuality.js'
+import { latestRealRow, tableGrowthRate } from './formulas.js'
 
 // ─── Default assumptions by stage + sector ───────────────────────────────────
 
@@ -369,22 +371,34 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
   // getDefaultAssumptions.
   const enterpriseDiscountRate = overrides.discountRate ?? overrides.enterpriseDiscountRate ?? defaults.enterpriseDiscountRate
 
+  // revenue/netProfit/fcf/netDebt are all table-native — read directly off
+  // the latest real row rather than through the currentSnapshot bundle.
+  // price/marketCap have no table-native home (live-price-dependent), stay
+  // sourced from ratioResult.
+  const incRow = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
+  const balRow = latestRealRow((data?.balanceHistory || []).filter(x => !x.synthetic))
+  const cfRow  = latestRealRow((data?.cashflowHistory || []).filter(x => !x.synthetic))
+  const basis = data?.basis
+
   const price     = r?.price
   const marketCap = r?.marketCap
-  const revenue   = r?.revenue
-  const netProfit = r?.netProfit
-  const fcf       = r?.fcf > 0 ? r.fcf : null
+  const revenue   = activeValue(incRow, 'revenue', basis)?.value
+  const netProfit = activeValue(incRow, 'netProfit', basis)?.value
+  const fcfRaw    = activeValue(cfRow, 'freeCashFlow', basis)?.value
+  const fcf       = fcfRaw > 0 ? fcfRaw : null
   const opCF      = null   // was `r.opCF * 0.7` — an invented capex assumption
                            // dressed up as a fair-value input. FCF or nothing.
+  const operatingCF = activeValue(cfRow, 'operatingCF', basis)?.value
 
-  const historicalRevGrowth = r?.ratios?.revCagr?.value
+  const historicalRevGrowth = tableGrowthRate(data, 'revenueGrowth', basis).value
   // EV target for the EV/Sales variant (equity market cap ignores net debt, which
   // overstates sales-implied growth for levered firms). Earnings uses P/E → equity.
-  const evTarget = (marketCap != null && r?.netDebt != null) ? marketCap + r.netDebt : null
+  const netDebt = activeValue(balRow, 'netDebt', basis)?.value
+  const evTarget = (marketCap != null && netDebt != null) ? marketCap + netDebt : null
   // npCagr, not npGrowthYoY — getConclusion() below labels this "Historical
   // earnings CAGR", but npGrowthYoY is one year's change, not a multi-year
   // compound rate, and never moved when the growth-window slider did.
-  const historicalNPGrowth  = r?.ratios?.npCagr?.value
+  const historicalNPGrowth  = tableGrowthRate(data, 'netProfitGrowth', basis).value
 
 const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
 
@@ -512,7 +526,7 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   } else {
     variants.fcf = {
       applicable: false,
-      reason: (fcf != null && fcf <= 0) || (r?.opCF != null && r.opCF <= 0)
+      reason: (fcf != null && fcf <= 0) || (operatingCF != null && operatingCF <= 0)
         ? (isFinancial
             ? 'Operating CF is negative — this is structurally normal for banks/insurers (loan disbursements count as operating outflow) and does not indicate financial distress. Use Earnings-based instead.'
             : 'FCF and Operating CF are negative — FCF-based method not applicable')
