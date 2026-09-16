@@ -359,27 +359,6 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     peg:    results.peg    ? { value: results.peg.value,    note: results.peg.note,    tier: results.peg.tier }    : null,
   }
 
-  // ── Sensitivity (DCF is the growth/WACC-sensitive model) ─────────────────────
-  // Both axes need REAL base values — a sensitivity grid built by sweeping
-  // around a fabricated 8%/flat-WACC centre is a grid of guesses, not a
-  // range around this company's own numbers.
-  //
-  // A Bear/Base/Bull scenario toggle used to sit alongside this, shifting
-  // growth, WACC and terminal growth by fixed presets. Removed: the WACC and
-  // terminal-growth shifts never had a real per-company basis (flat,
-  // undefended constants — the code's own comment called them "a disclosed,
-  // undented convention," the same standing as the Justified Multiples range
-  // already removed this session), and on a low-beta stock they could push
-  // WACC right next to the terminal-growth floor, where the Gordon-growth
-  // denominator goes toward zero and "Bull" exploded to an absolute fair
-  // value many multiples of the real price (RELIANCE surfaced this live).
-  // The sensitivity grid below doesn't have this problem: it never asserts
-  // any one cell is "the bear case," it just shows the same formula's real
-  // output across a range of inputs the user can see are inputs.
-  const sensitivity = (isApplicable('dcf', modelMeta) && r.shares && cfBaseDcf && growthRate != null && wacc != null)
-    ? dcfSensitivity(cfBaseDcf, growthRate, wacc, termGrowth, projYears, r.cash, r.totalDebt, r.shares, ntY, data?.reportedIncomeHistory, data?.basis)
-    : null
-
   // Signal from the primary model's value vs CMP. Deadband scaled to how much
   // the valid extrinsic models actually disagree for THIS stock (rangeHigh vs
   // rangeLow) rather than a flat percentage assumed to fit every company
@@ -415,7 +394,6 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     intrinsicValue,
     secondaryChecks,
     impliedGrowth,
-    sensitivity,
     assumptions: { wacc, termGrowth, projYears, growthRate, sectorPe, sectorEvEb, sectorPs },
     defaults: { wacc: waccDefault, termGrowth: TERMINAL_GROWTH_BY_MARKET[market] ?? TERMINAL_GROWTH_BY_MARKET.IN, projYears: 10, growthRate: growthResult.growth, sectorPe: sectorPeDefault, sectorEvEb: sectorEvEbDefault, sectorPs: sectorPsDefault }
   }
@@ -751,90 +729,6 @@ function dcfPerShare(cfBase, g, wacc, tg, yrs, cash, debt, shares, ntGrowth = nu
   const ev = dcfEV(cfBase, g, wacc, tg, yrs, ntGrowth, ntYears)
   const ps = (ev + cash - debt) / shares
   return ps > 0 ? ps : null
-}
-
-// This stock's own YoY revenue growth volatility — sizing the sensitivity
-// grid's growth axis from something real instead of an identical flat
-// constant for every company. Originally a 15th-85th percentile half-width
-// (the same measurement growthScenarioSpread() used to provide for the
-// removed Bear/Bull scenario feature) — replaced with a median absolute
-// deviation (MAD, scaled by the standard 1.4826 consistency constant to be
-// comparable to a standard deviation) after a real, checked case: a
-// percentile spread in a small sample (a company's income history is
-// rarely more than ~15 years) is set almost entirely by 1-2 sorted extreme
-// values, and RELIANCE's axis swung from -24% to +44% off what was very
-// likely one or two outlier years (a demerger, a COVID-year swing)
-// dominating an ~11-point percentile pick. MAD doesn't exclude or flag
-// anything — every real year, however unusual, still contributes to the
-// median and to the median of deviations from it — it just can't be
-// unilaterally set by one or two of them the way a sorted-percentile edge
-// can. No filtering: this deliberately never drops a real growth year, a
-// -34% decline year is exactly as valid an input as any other.
-// Returns null when there's too little revenue history to measure — the
-// caller falls back to a stated convention in that case, same pattern as
-// priceDispersion/multipleSpread's own fallback chains elsewhere.
-function measuredGrowthHalfWidth(incomeHistory, basis) {
-  const yearOf = row => {
-    const m = String(row?.year ?? '').match(/(?:19|20)\d{2}/)
-    return m ? Number(m[0]) : null
-  }
-  const series = (incomeHistory || [])
-    .filter(row => !row?.synthetic)
-    .map(row => ({ year: yearOf(row), value: activeValue(row, 'revenue', basis)?.value }))
-    .filter(p => p.year != null && p.value > 0)
-    .sort((a, b) => a.year - b.year)
-  const yoy = []
-  for (let i = 1; i < series.length; i++) yoy.push(series[i].value / series[i - 1].value - 1)
-  // Same floor percentileSpread's own minSamples used — below this, a
-  // dispersion measure of any kind (robust or not) is more noise than
-  // signal.
-  if (yoy.length < 4) return null
-  const sorted = [...yoy].sort((a, b) => a - b)
-  const median = sorted[Math.floor(sorted.length / 2)]
-  const absDevs = yoy.map(v => Math.abs(v - median)).sort((a, b) => a - b)
-  const mad = absDevs[Math.floor(absDevs.length / 2)]
-  const half = mad * 1.4826
-  return (half > 0 && isFinite(half)) ? half : null
-}
-
-// DCF fair value across a growth × WACC grid (the two inputs a DCF is sensitive
-// to). When a near-term (guidance) window is set, the growth axis sweeps that
-// near-term rate so the centre cell matches the applied DCF.
-function dcfSensitivity(cfBase, gBase, wBase, tg, yrs, cash, debt, shares, ntYears = 0, incomeHistory = null, basis = null) {
-  if (!(cfBase > 0) || !(shares > 0)) return null
-  // No floor/ceiling on the growth axis: gBase is already sanity-bounded by
-  // estimateGrowth() upstream, and flooring the sweep at 0% used to collapse
-  // every column to an identical value for any company with base growth
-  // below about -4% — destroying the sensitivity table for exactly the
-  // declining/turnaround companies where seeing the range matters most.
-  //
-  // Growth axis width: this stock's own measured YoY revenue volatility
-  // (median absolute deviation — see measuredGrowthHalfWidth) where there's
-  // enough history to measure one; falls back to a flat ±4% (the previous
-  // behavior, now a named, disclosed convention rather than an unlabelled
-  // default) only when there isn't.
-  const measuredHalf = measuredGrowthHalfWidth(incomeHistory, basis)
-  const growthHalf = measuredHalf ?? 0.04
-  const growthAxisMeasured = measuredHalf != null
-  const growthAxis = [-1, -0.5, 0, 0.5, 1].map(f => gBase + f * growthHalf)
-  // WACC axis keeps only the structural floor (wacc must exceed terminal
-  // growth or the terminal-value term is undefined); no separate ceiling.
-  // Beta is now this app's own regression (src/engine/beta.js), which DOES
-  // carry residual/standard-error data (fitLine's residualSE) a genuine
-  // interval could in principle be built from, the way targetMultiple.js's
-  // prediction interval already is — that hasn't been done here yet (this
-  // axis was written when beta was still a bare reported figure with
-  // nothing to propagate). Left as a fixed, disclosed convention
-  // (±50-100bps steps, a common professional practice for showing DCF
-  // sensitivity) for now rather than manufacturing it silently; a real
-  // beta-derived WACC interval is a legitimate follow-up, not something
-  // this axis should quietly claim to already be.
-  const waccAxis = [-0.02, -0.01, 0, 0.01, 0.02].map(d => Math.max(wBase + d, tg + 0.01))
-  const grid = growthAxis.map(g =>
-    waccAxis.map(w => ntYears > 0
-      ? dcfPerShare(cfBase, g, w, tg, yrs, cash, debt, shares, g, ntYears)
-      : dcfPerShare(cfBase, g, w, tg, yrs, cash, debt, shares)))
-  return { growthAxis, waccAxis, grid, growthAxisMeasured }
 }
 
 /**

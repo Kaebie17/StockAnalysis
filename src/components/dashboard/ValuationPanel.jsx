@@ -1,7 +1,6 @@
 import React, { useState, useRef } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import { fmtPct, fmtPctPlain } from '../../utils/format.js'
-import DCFScenarioPanel from './DCFScenarioPanel.jsx'
 import { useEstimate, overrideSourceLabel } from '../../store/useEstimate.js'
 import FactInputModal from './FactInputModal.jsx'
 import { useNewsFacts, keyOf, leverOf } from '../../store/useNewsFacts.js'
@@ -169,9 +168,6 @@ export default function ValuationPanel({ open, onClose }) {
           </div>
         ))}
       </div>
-
-      {/* DCF scenarios — moved OUT of the table (was invalid inside tbody) */}
-      <DCFScenarioPanel />
 
       {/* Consensus row — Fair Value means ONE thing: peer/sector relative
           valuation (P/E, P/B, EV/EBITDA, P/S). DCF and Graham are genuinely
