@@ -17,6 +17,7 @@ import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvS
 import { peerBand } from './peerBands.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
+import { latestRealRow, tableGrowthRate } from './formulas.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // Every call site guards on state.data being truthy, not state.ratioResult
@@ -54,7 +55,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // to a usable default rather than going blank.
   const market = assumptions.market ?? 'IN'
   // WACC default is computed per company (CAPM), not a flat rate — see computeWacc.
-  const waccResult = computeWacc(r, {
+  const waccResult = computeWacc(r, data, {
     liveRiskFree: assumptions.liveRiskFree ?? null, erp: assumptions.liveErp ?? null, market,
     beta: assumptions.beta ?? null, betaMeta: assumptions.betaMeta ?? null,
   })
@@ -62,7 +63,7 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const waccBetaFlag = waccResult.betaFlag
   // Computed once, reused for the default below — was previously called
   // twice with identical inputs.
-  const growthResult = estimateGrowth(r)
+  const growthResult = estimateGrowth(data)
 
   // WACC, Terminal Growth and FCF Growth are no longer accepted as manual
   // overrides — see ValuationPanel.jsx's slider removal. Each is either a
@@ -174,7 +175,10 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   const actualPb = r.ratios?.pb?.value
   const pbDistorted = detectBookValueDistortion(data, actualPb)
   const isFinancialSector = ['insurance', 'bank', 'nbfc'].includes(sectorType)
-  const roe = r.ratios?.roe?.value
+  const roe = activeValue(
+    latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic)),
+    'roe', data?.basis
+  )?.value
   // No fabricated 12%-ROE stand-in: a target multiple built on a number
   // nobody measured isn't "conservative," it's a guess wearing this
   // company's row. Financials use a sector-median multiple (not circular,
@@ -269,7 +273,10 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // among those with valid inputs (see byWeightDesc below) — with the others
   // shown as a range for context. A reliability gate drops models whose
   // inputs are meaningless for this stock.
-  const netMargin = r?.ratios?.netMargin?.value
+  const netMargin = activeValue(
+    latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic)),
+    'netMargin', data?.basis
+  )?.value
   const inputValid = (m) => {
     if ((m === 'pe' || m === 'graham' || m === 'peg') && !(netMargin > 0)) return false
     // Financial-sector P/B uses a fixed sector-median multiple, not an
@@ -473,7 +480,7 @@ const TAX_RATE_BY_MARKET = { IN: 0.2517, US: 0.21 }
 // with a guess. The one thing that CAN make this number worth a second
 // look — an unusual beta reading — is surfaced via betaFlag (see
 // requiredReturn.js) without altering the computed value.
-export function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null, taxRate = null, beta = null, betaMeta = null } = {}) {
+export function computeWacc(r, data, { liveRiskFree = null, market = 'IN', erp = null, taxRate = null, beta = null, betaMeta = null } = {}) {
   const riskFree = liveRiskFree ?? DEFAULT_RISK_FREE_BY_MARKET[market] ?? DEFAULT_RISK_FREE_BY_MARKET.IN
   const tax = taxRate ?? TAX_RATE_BY_MARKET[market] ?? TAX_RATE_BY_MARKET.IN
   // `beta` here is this app's own regression (AppContext's SET_LIVE_BETA,
@@ -482,8 +489,15 @@ export function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null,
   // for lack of overlapping history. See requiredReturn.js.
   const resolvedBeta = (beta != null && beta > 0) ? beta
     : (r?.ratios?.beta?.value != null && r.ratios.beta.value > 0) ? r.ratios.beta.value : 1.0
+  // E (market cap) has no table-native home — it's live-price-dependent,
+  // stays sourced from the snapshot. D/interest are both table-native
+  // (formulas.js/reported income), read directly off the latest real row.
   const E = r?.marketCap > 0 ? r.marketCap : null
-  const D = r?.totalDebt > 0 ? r.totalDebt : 0
+  const incRow = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
+  const balRow = latestRealRow((data?.balanceHistory || []).filter(x => !x.synthetic))
+  const totalDebt = activeValue(balRow, 'totalDebt', data?.basis)?.value
+  const interest = activeValue(incRow, 'interest', data?.basis)?.value
+  const D = totalDebt > 0 ? totalDebt : 0
   const capm = capmCostOfEquity({ riskFreeRate: riskFree, beta: resolvedBeta, erp, market, betaMeta })
   const ke = capm.r
   const betaFlag = capm.betaFlag
@@ -496,8 +510,8 @@ export function computeWacc(r, { liveRiskFree = null, market = 'IN', erp = null,
   // distressed or subsidised debt legitimately sits outside any flat band.
   let kd = 0
   if (D > 0) {
-    if (!(r?.interest > 0)) return { wacc: null, betaFlag }      // real debt, no way to measure its cost
-    kd = r.interest / D
+    if (!(interest > 0)) return { wacc: null, betaFlag }      // real debt, no way to measure its cost
+    kd = interest / D
   }
   const V = E + D
   const wacc = (E / V) * ke + (D / V) * kd * (1 - tax)
@@ -579,12 +593,14 @@ export function expectationInsight(valuation, marketExpectation, ratioResult = n
   return { implied, basis, yourView, viewLabel, gap, text, bases }
 }
 
-function estimateGrowth(r) {
-  // The single dynamic windowed CAGR — same figure every consumer uses, so the
-  // user's window now reaches the DCF. No revCagr means no growth rate, not a
-  // flat 8% dressed up as one. Callers (DCF, reverse-DCF) decline rather
-  // than substitute when this comes back null.
-  const cagr = r.ratios?.revCagr?.value
+function estimateGrowth(data) {
+  const incRow = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
+  // The table's own toggle-conscious growth reading — full-period CAGR
+  // (reported) or the selected method (normalized), same figure every
+  // consumer uses. No revCagr means no growth rate, not a flat 8% dressed
+  // up as one. Callers (DCF, reverse-DCF) decline rather than substitute
+  // when this comes back null.
+  const cagr = tableGrowthRate(data, 'revenueGrowth', data?.basis).value
   if (cagr == null) return { growth: null, unusual: false, sustainable: null, aboveSustainable: false }
   const g = cagr / 100
 
@@ -616,8 +632,8 @@ function estimateGrowth(r) {
   // When ROE isn't positive (missing data, or a currently loss-making
   // company) there's no earnings-funded capacity to compare against, so no
   // comparison is made — never a fabricated substitute for "we don't know."
-  const roe = r.ratios?.roe?.value
-  const payoutPct = r.ratios?.dividendPayout?.value
+  const roe = activeValue(incRow, 'roe', data?.basis)?.value
+  const payoutPct = activeValue(incRow, 'dividendPayout', data?.basis)?.value
   const retention = (payoutPct != null && payoutPct >= 0 && payoutPct <= 100)
     ? 1 - payoutPct / 100 : 1
   const sustainable = (roe > 0) ? (roe / 100) * retention : null

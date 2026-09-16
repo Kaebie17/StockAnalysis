@@ -63,8 +63,9 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   // there's meaningful debt). Reuses valuation.js's own computeWacc() rather
   // than writing a second, independently-maintained WACC formula here.
   // opts.ratioResult is the FULL ratioResult (not just .ratios) — computeWacc
-  // needs marketCap/totalDebt/interest/cash, which live at that top level.
-  const waccResult = computeWacc(opts.ratioResult, {
+  // needs marketCap off it (live-price-dependent, no table-native home);
+  // totalDebt/interest it now reads straight off `data`'s own table.
+  const waccResult = computeWacc(opts.ratioResult, data, {
     liveRiskFree: riskFree, market, erp: opts.liveErp ?? null, beta: opts.beta, betaMeta: opts.betaMeta ?? null,
   })
   // Falls back to the pure cost of equity when a real WACC can't be computed
