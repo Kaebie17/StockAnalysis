@@ -361,6 +361,123 @@ export function pbBand(priceHistory = [], balanceHistory = [], incomeHistory = [
 }
 
 /**
+ * Whether this company's own earnings history makes P/E a meaningful
+ * valuation anchor at all — a different, earlier question than whether a
+ * REGRESSION on top of that anchor is reliable (targetMultiple.js's own
+ * gates already handle that, once there's an anchor worth adjusting). A
+ * company can clear every regression gate cleanly while the underlying P/E
+ * anchor itself is conditional on "whichever years it happened to be
+ * profitable" — frequent losses, earnings that sit near zero, or earnings
+ * that repeatedly collapse and recover through a cycle all mean a single
+ * historical P/E median describes a slice of the business's story, not
+ * the whole of it.
+ *
+ * Deliberately NOT keyed off detectSectorType's 'cyclical' keyword flag —
+ * that only catches sectors the keyword list happens to name (commodities,
+ * steel, ...). A company that's earnings-volatile for its own reasons (a
+ * one-off write-down, a demand shock, an industry the list doesn't cover)
+ * passes straight through a sector-name check. This measures the actual
+ * reported EPS history instead, so it catches both.
+ *
+ * Thresholds below are disclosed calibration choices — same standing as
+ * targetMultiple.js's MIN_R2/LOO_DEVIATION_BAND — not derived statistical
+ * constants.
+ */
+export function assessPeSuitability(incomeHistory = [], basis = 'reported') {
+  const rows = (incomeHistory || [])
+    .map(r => ({ year: yearOf(r), eps: val(activeValue(r, 'eps', basis)) }))
+    .filter(r => r.year != null && r.eps != null)
+    .sort((a, b) => a.year - b.year)
+
+  const totalYears = rows.length
+  // Too little history to say anything separate from what the regression's
+  // own MIN_OBSERVATIONS gate will already decline on — no verdict to add.
+  if (totalYears < 4) {
+    return { suitability: 'suitable', reasons: [], totalYears, profitableYears: rows.filter(r => r.eps > 0).length }
+  }
+
+  const profitable = rows.filter(r => r.eps > 0)
+  const profitCoverage = profitable.length / totalYears
+
+  // "Near zero" relative to the company's OWN normal scale — a flat rupee
+  // threshold means nothing across the wildly different EPS scales this
+  // app sees; a fraction of the company's own median positive EPS does.
+  const sortedPositive = [...profitable.map(r => r.eps)].sort((a, b) => a - b)
+  const medianPositiveEps = sortedPositive.length ? sortedPositive[Math.floor(sortedPositive.length / 2)] : null
+  const NEAR_ZERO_FRACTION = 0.15
+  const nearZeroCount = medianPositiveEps > 0
+    ? rows.filter(r => Math.abs(r.eps) < medianPositiveEps * NEAR_ZERO_FRACTION).length : 0
+  const nearZeroFrequency = nearZeroCount / totalYears
+
+  // Growth volatility — YoY EPS growth, profitable-to-profitable years only
+  // (a percentage change from or to a loss isn't a real growth rate). MAD
+  // (median absolute deviation), not standard deviation: robust to one
+  // freak year rather than dominated by it — same reasoning resolveDilution
+  // already uses its own median/outlier filter for.
+  const growthSteps = []
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i - 1].eps > 0 && rows[i].eps > 0) growthSteps.push(rows[i].eps / rows[i - 1].eps - 1)
+  }
+  let epsGrowthMAD = null
+  if (growthSteps.length >= 2) {
+    const sorted = [...growthSteps].sort((a, b) => a - b)
+    const median = sorted[Math.floor(sorted.length / 2)]
+    const absDevs = growthSteps.map(g => Math.abs(g - median)).sort((a, b) => a - b)
+    epsGrowthMAD = absDevs[Math.floor(absDevs.length / 2)]
+  }
+
+  // Drawdown from the running peak, and how often a real collapse (≥20%)
+  // was later recovered — the repeated-cycle signature plain noise doesn't
+  // have. Loss years don't participate here at all (profitCoverage above
+  // already captures them) — a loss following a positive peak has no
+  // bounded percentage-from-peak (a peak of 8 followed by a loss of -1 is a
+  // "112% drawdown," unbounded and worse the smaller the peak was), which
+  // would flag any single occasional loss year as a severe collapse. This
+  // tracks how far EARNINGS POWER has fallen among the years it was
+  // actually still positive — a company with two scattered loss years and
+  // otherwise steady growth correctly reads as having little drawdown, not
+  // an extreme one.
+  const DRAWDOWN_THRESHOLD = 0.20
+  let peak = null, maxDrawdown = 0, inDrawdown = false, cycleCount = 0
+  for (const r of rows) {
+    if (r.eps <= 0) continue
+    if (peak == null || r.eps > peak) {
+      if (inDrawdown && peak > 0 && r.eps >= peak * (1 - DRAWDOWN_THRESHOLD)) { cycleCount++; inDrawdown = false }
+      peak = r.eps
+      continue
+    }
+    if (peak > 0) {
+      const drawdown = r.eps / peak - 1
+      if (drawdown < maxDrawdown) maxDrawdown = drawdown
+      if (drawdown <= -DRAWDOWN_THRESHOLD) inDrawdown = true
+    }
+  }
+  const cycleFrequency = totalYears > 0 ? cycleCount / totalYears : 0
+
+  const reasons = []
+  let suitability = 'suitable'
+  if (profitCoverage < 0.5) {
+    suitability = 'unsuitable'
+    reasons.push(`Only ${profitable.length} of ${totalYears} years were profitable — too little P/E history to anchor a valuation on.`)
+  } else if (cycleCount >= 1 && maxDrawdown <= -0.40) {
+    suitability = 'unsuitable'
+    reasons.push(`Earnings have repeatedly collapsed (as much as ${round(Math.abs(maxDrawdown) * 100, 0)}%) and recovered — a single historical P/E doesn't describe a business that moves through cycles this sharply.`)
+  } else if (profitCoverage < 0.7 || nearZeroFrequency >= 0.3 || (cycleCount > 0 && maxDrawdown <= -0.25)) {
+    suitability = 'questionable'
+    if (profitCoverage < 0.7) reasons.push(`Only ${profitable.length} of ${totalYears} years were profitable.`)
+    if (nearZeroFrequency >= 0.3) reasons.push(`EPS sat near zero (under ${round(NEAR_ZERO_FRACTION * 100, 0)}% of its own typical level) in ${nearZeroCount} of ${totalYears} years.`)
+    if (cycleCount > 0 && maxDrawdown <= -0.25) reasons.push(`Earnings have drawn down as much as ${round(Math.abs(maxDrawdown) * 100, 0)}% from a prior peak before recovering.`)
+  }
+
+  return {
+    suitability, reasons, totalYears, profitableYears: profitable.length,
+    profitCoverage: round(profitCoverage * 100, 0), nearZeroFrequency: round(nearZeroFrequency * 100, 0),
+    epsGrowthMAD: epsGrowthMAD != null ? round(epsGrowthMAD * 100, 0) : null,
+    maxDrawdown: round(maxDrawdown * 100, 0), cycleFrequency: round(cycleFrequency, 2),
+  }
+}
+
+/**
  * Lender estimate: grow book value by retained earnings, apply the P/B the
  * market has actually paid.
  *
@@ -1375,9 +1492,22 @@ export function buildEstimate(ratioResult, opts = {}) {
     if (lender) return lender
   }
 
-  if (st === 'cyclical') {
+  // Data-driven, independent of the sector-keyword 'cyclical' flag below —
+  // catches a company whose OWN earnings history makes P/E unreliable
+  // (frequent losses, repeated deep collapse-and-recovery) even when its
+  // sector/industry name isn't on the keyword list. See assessPeSuitability's
+  // own doc comment for why this is measured from the data rather than
+  // inferred from the sector string.
+  const peSuitability = assessPeSuitability(resolvedOpts.incomeHistory, normBasis)
+
+  if (st === 'cyclical' || peSuitability.suitability === 'unsuitable') {
     const cyc = buildCyclicalEstimate(ratioResult, resolvedOpts)
-    if (cyc) return cyc
+    if (cyc) {
+      return st === 'cyclical' ? cyc : {
+        ...cyc,
+        degraded: [...cyc.degraded, ...peSuitability.reasons.map(r => `P/E-based methods skipped: ${r}`)],
+      }
+    }
   }
 
   if (st === 'capital-intensive' || st === 'yield') {
@@ -1393,6 +1523,11 @@ export function buildEstimate(ratioResult, opts = {}) {
     ? 'Real estate is normally valued on the net asset value of the land bank; this is an earnings-based approximation.'
     : (st === 'holding')
     ? 'A holding company is normally valued as the sum of its stakes less a discount; this is an earnings-based approximation.'
+    // 'Questionable' doesn't block the standard P/E chain the way 'unsuitable'
+    // blocks it above — it proceeds, but flagged, same treatment as realty/
+    // holding's stated mismatch rather than a silent reduced-confidence number.
+    : (peSuitability.suitability === 'questionable')
+    ? `P/E-based valuation is on weaker footing for this stock: ${peSuitability.reasons.join(' ')}`
     : null
 
   // No positive earnings — every method above needs them, so sales is what's
