@@ -122,7 +122,15 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
   // back as far as the statements do" instead of both looking like the same
   // plain shortfall.
   const priceGapYears = []
-  if (closes.length === 0) return Object.assign([], { priceGapYears })
+  // Same disclosure convention estimate.js's forwardPeBand/pbBand already
+  // use for the identical situation — P/E is undefined for a loss year (or
+  // P/B for negative book value), so it's excluded from the median/fit, but
+  // silently dropping it (as this used to) leaves the anchor looking like a
+  // company's full valuation history when it's really "the years it
+  // happened to be profitable" — a real distinction, not a technicality,
+  // for a company with a genuinely mixed record.
+  let excludedLossYears = 0
+  if (closes.length === 0) return Object.assign([], { priceGapYears, excludedLossYears })
 
   const out = []
   for (const row of incomeHistory || []) {
@@ -138,7 +146,7 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
     const bps = (equity > 0 && shares > 0) ? equity / shares : null
 
     const denom = basis === 'pb' ? bps : eps
-    if (!(denom > 0)) continue
+    if (!(denom > 0)) { if (denom != null) excludedLossYears++; continue }
 
     const start = Date.UTC(y - 1, fyEndMonth, 1)
     const end = Date.UTC(y, fyEndMonth, 0)
@@ -175,7 +183,7 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
       out[i].growth = ((cur[base] / prev[base]) - 1) * 100
     }
   }
-  return Object.assign(out, { priceGapYears })
+  return Object.assign(out, { priceGapYears, excludedLossYears })
 }
 
 /**
@@ -206,12 +214,15 @@ export function targetMultiple(opts = {}) {
       ? ` (${obs.priceGapYears.length} more year${obs.priceGapYears.length === 1 ? '' : 's'} of financial data — ` +
         `${obs.priceGapYears.join(', ')} — exist but have no overlapping price history)`
       : ''
+    const lossNote = obs.excludedLossYears > 0
+      ? ` (${obs.excludedLossYears} loss year${obs.excludedLossYears === 1 ? '' : 's'} also excluded — P/E undefined for negative earnings)`
+      : ''
     // DERIVED — real peer data plus a percentile formula, same standing as
     // the primary anchor below, not a weaker fallback in provenance terms.
     return peerBand?.median > 0
       ? { multiple: peerBand.median, low: peerBand.low, high: peerBand.high,
           basis, source: 'peers', observations: obs.length, tier: TIER.DERIVED,
-          steps: [`Only ${obs.length} year${obs.length === 1 ? '' : 's'} of multiple history${gapNote} — ` +
+          steps: [`Only ${obs.length} year${obs.length === 1 ? '' : 's'} of multiple history${gapNote}${lossNote} — ` +
                   `too few to describe a range, so peers are used instead.`] }
       : null
   }
@@ -225,7 +236,10 @@ export function targetMultiple(opts = {}) {
   const ps = percentileSpread(obs.map(o => o.multiple), { lowP: 0.15, highP: 0.85 })
   const anchor = ps.median
 
-  const steps = [`Anchor: ${round(anchor)}× — this stock's median over ${obs.length} year${obs.length > 1 ? 's' : ''}`]
+  const lossYearNote = obs.excludedLossYears > 0
+    ? ` (${obs.excludedLossYears} loss year${obs.excludedLossYears === 1 ? '' : 's'} also on record, excluded — ${basis === 'pb' ? 'P/B undefined for negative book value' : 'P/E undefined for negative earnings'})`
+    : ''
+  const steps = [`Anchor: ${round(anchor)}× — this stock's median over ${obs.length} profitable year${obs.length > 1 ? 's' : ''}${lossYearNote}`]
   // A thin year (fewer than 30 trading days — a listing year, a data gap) is
   // still a real median, just a noisier one, so it's included, not dropped —
   // but disclosed, since a thin year counting toward the 3-year minimum above
