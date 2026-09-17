@@ -155,7 +155,7 @@ const yearOf = row => {
  * multiplying two different definitions of earnings together.
  */
 export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) {
-  const { fyEndMonth = 3, normBasis = 'reported' } = opts
+  const { fyEndMonth = 3, normBasis = 'reported', balanceHistory = null, conditionalFilter = null } = opts
 
   const closes = (priceHistory || [])
     .filter(p => p?.date && p.close > 0)
@@ -165,6 +165,7 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   if (closes.length === 0) return null
 
   const epsByYear = new Map()
+  const netProfitByYear = new Map()
   // A loss year isn't excluded because it's an outlier to be filtered out —
   // P/E is mathematically undefined for negative earnings, dividing by a
   // negative number doesn't produce "a low multiple," it's a different,
@@ -177,10 +178,29 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
     const y = yearOf(row), e = val(activeValue(row, 'eps', normBasis))
     if (y == null) continue
     if (e != null && e <= 0) { excludedLossYears++; continue }
-    if (e > 0) epsByYear.set(y, e)
+    if (e > 0) {
+      epsByYear.set(y, e)
+      const np = val(activeValue(row, 'netProfit', normBasis))
+      if (np != null) netProfitByYear.set(y, np)
+    }
+  }
+  // Equity by year, only needed for the conditional-regime filter's ROE
+  // dimension — cheap to collect regardless of whether conditionalFilter is
+  // actually requested by the caller.
+  const equityByYear = new Map()
+  for (const bRow of balanceHistory || []) {
+    const y = yearOf(bRow)
+    const eq = val(activeValue(bRow, 'totalEquity', normBasis))
+    if (y != null && eq > 0) equityByYear.set(y, eq)
   }
 
   const ratios = []
+  // Per-year buckets — the daily ratios AND that year's own forward growth/
+  // ROE, kept separate from the pooled `ratios` array above so the
+  // conditional-regime filter below (when requested) can pool only the
+  // ratios from years it actually judges comparable, rather than the whole
+  // history at once.
+  const yearBuckets = new Map()
   let pairedYears = 0
   // Consecutive-pair count — a year only has a forward EPS to price against if
   // y+1 is ALSO on record, which is the precondition for pairing at all,
@@ -203,13 +223,28 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
     consecutivePairs++
     const end   = Date.UTC(y, fyEndMonth, 0)
     const start = Date.UTC(y - 1, fyEndMonth, 1)
-    let any = false
+    const bucket = []
     for (const c of closes) {
       if (c.t < start || c.t > end) continue
       const pe = c.close / nextEps
-      if (pe > 0) { ratios.push(pe); any = true }
+      if (pe > 0) { ratios.push(pe); bucket.push(pe) }
     }
-    if (any) pairedYears++
+    if (bucket.length) {
+      pairedYears++
+      // The fundamentals a market pricing THIS pair would actually be
+      // betting on: the growth that turns year y's EPS into year y+1's
+      // (the forward growth this observation implicitly prices), and ROE
+      // contemporaneous with the EPS being priced (year y+1). Null when the
+      // inputs to compute either aren't available — a year missing these
+      // still contributes its ratios to the unconditioned band above, it
+      // just can't be judged comparable-or-not by the filter below.
+      const epsY = epsByYear.get(y)
+      const growth = epsY > 0 ? (nextEps / epsY - 1) : null
+      const npNext = netProfitByYear.get(y + 1)
+      const eqNext = equityByYear.get(y + 1)
+      const roe = (npNext != null && eqNext > 0) ? (npNext / eqNext) * 100 : null
+      yearBuckets.set(y, { ratios: bucket, growth, roe })
+    }
   }
 
   // Diagnose WHY a band can't be built — three distinct causes, three
@@ -267,18 +302,90 @@ export function forwardPeBand(priceHistory = [], incomeHistory = [], opts = {}) 
   }
   // Percentiles, not min/max: one panic day or one melt-up shouldn't define the
   // band the whole projection hangs off.
-  return { low: round(ps.low, 1), median: round(ps.median, 1), high: round(ps.high, 1),
-           samples: ps.count,
-           // How many years the band actually spans, so a three-year window and
-           // a nine-year one can be told apart downstream.
-           spanYears: pairedYears,
-           // Real data, computed regardless — but a band from fewer than 100
-           // pooled daily observations is disclosed as thinner than ideal
-           // rather than hidden.
-           thin: ps.thin,
-           // Years where P/E is undefined (negative earnings) — declined,
-           // not silently dropped. See the comment on epsByYear above.
-           excludedLossYears }
+  const result = {
+    low: round(ps.low, 1), median: round(ps.median, 1), high: round(ps.high, 1),
+    samples: ps.count,
+    // How many years the band actually spans, so a three-year window and
+    // a nine-year one can be told apart downstream.
+    spanYears: pairedYears,
+    // Real data, computed regardless — but a band from fewer than 100
+    // pooled daily observations is disclosed as thinner than ideal
+    // rather than hidden.
+    thin: ps.thin,
+    // Years where P/E is undefined (negative earnings) — declined,
+    // not silently dropped. See the comment on epsByYear above.
+    excludedLossYears,
+  }
+
+  // Conditional-regime filter (opt-in via conditionalFilter) — the band
+  // above answers "what has this stock traded at, ever"; this answers "what
+  // has it traded at in years whose growth/ROE resembles the year being
+  // forecast." A historical high traded off a near-zero earnings base, or a
+  // crisis-year collapse-and-recovery, describes a regime the forecast year
+  // may not be in at all — pooling it into an unconditioned percentile band
+  // and calling that band the FORWARD range is exactly the distortion this
+  // exists to correct. Kept as a strictly additive field: existing callers
+  // that don't pass conditionalFilter see no change to what's returned above.
+  if (conditionalFilter && conditionalFilter.forecastGrowth != null && conditionalFilter.forecastRoe != null) {
+    const buckets = [...yearBuckets.entries()]
+    const growthVals = buckets.map(([, b]) => b.growth).filter(g => g != null)
+    const roeVals = buckets.map(([, b]) => b.roe).filter(r => r != null)
+    const madOf = arr => {
+      if (arr.length < 2) return null
+      const sorted = [...arr].sort((a, b) => a - b)
+      const median = sorted[Math.floor(sorted.length / 2)]
+      const devs = arr.map(x => Math.abs(x - median)).sort((a, b) => a - b)
+      return devs[Math.floor(devs.length / 2)]
+    }
+    // Floors, not derived constants — a company whose growth or ROE has
+    // barely varied across its own history would otherwise divide by a
+    // near-zero MAD and make the filter pathological (any tiny deviation
+    // reading as "incomparable"). 1 percentage point on each axis is a
+    // disclosed governance floor, same standing as COMPARABLE_REGIME_DISTANCE
+    // below, not a statistically fitted number.
+    const gScale = Math.max(madOf(growthVals) ?? 0, 0.01)
+    const rScale = Math.max(madOf(roeVals) ?? 0, 1.0)
+    // Governance convention, not a discovered statistical threshold — one
+    // robust standardized unit of joint growth/ROE distance counts as
+    // "comparable." A year missing one dimension is judged on the other
+    // alone rather than excluded outright (a company with unmeasurable ROE
+    // some years shouldn't lose those years from the filter entirely).
+    const COMPARABLE_REGIME_DISTANCE = 1.0
+    const considered = []
+    const comparable = []
+    for (const [y, b] of buckets) {
+      if (b.growth == null && b.roe == null) continue
+      considered.push(y)
+      const gTerm = b.growth != null ? (b.growth - conditionalFilter.forecastGrowth) / gScale : 0
+      const rTerm = b.roe != null ? (b.roe - conditionalFilter.forecastRoe) / rScale : 0
+      const d = Math.sqrt(gTerm * gTerm + rTerm * rTerm)
+      if (d <= COMPARABLE_REGIME_DISTANCE) comparable.push(y)
+    }
+    // Confidence tiers, same standing as targetMultiple.js's own
+    // fragile/moderate/stronger labels — descriptive of how much evidence
+    // backs the band, not a statistical guarantee. Below 3 retained years a
+    // percentile band is dominated by individual observations (the same
+    // MIN_PAIRED_YEARS-style floor the unconditioned band already respects).
+    const retainedCount = comparable.length
+    const confidence = retainedCount >= 5 ? 'usable' : retainedCount >= 3 ? 'weak' : 'none'
+    const conditionalOwn = { observationsConsidered: considered.length, observationsRetained: retainedCount, confidence }
+    if (confidence !== 'none') {
+      const pooled = comparable.flatMap(y => yearBuckets.get(y).ratios)
+      const cCleaned = filterRelativeOutliers(pooled, { multiple: OUTLIER_MULTIPLE, minKeep: Math.min(20, pooled.length) })
+      const cPs = percentileSpread(cCleaned, { minSamples: 2, preferredSamples: 100 })
+      if (cPs) {
+        conditionalOwn.low = round(cPs.low, 1)
+        conditionalOwn.median = round(cPs.median, 1)
+        conditionalOwn.high = round(cPs.high, 1)
+        conditionalOwn.samples = cPs.count
+      } else {
+        conditionalOwn.confidence = 'none'
+      }
+    }
+    result.conditionalOwn = conditionalOwn
+  }
+
+  return result
 }
 
 /**
@@ -2156,28 +2263,26 @@ export function buildEstimate(ratioResult, opts = {}) {
 
   // Same basis (reported, or reported-with-normalized-years-merged-in) as
   // the projection this band is applied to. See forwardPeBand's docblock.
-  const ownRaw = forwardPeBand(priceHistory, incomeHistory)
+  // conditionalFilter runs the SAME call through the comparable-regime
+  // filter too (own.conditionalOwn) — years whose forward growth/ROE
+  // actually resemble what's being forecast, not every year the stock has
+  // ever traded through regardless of what regime it was in at the time.
+  const ownRaw = forwardPeBand(priceHistory, incomeHistory, {
+    normBasis, balanceHistory,
+    conditionalFilter: (g != null && forwardRoeBasis.value != null)
+      ? { forecastGrowth: g, forecastRoe: forwardRoeBasis.value } : null,
+  })
   const bandReason = ownRaw?.insufficient ? ownRaw.reason : null
   let own = ownRaw?.insufficient ? null : ownRaw
+  // The unconditioned band, kept for display regardless of which tier below
+  // actually wins the forward range — historical evidence, never silently
+  // reused AS the forward range itself. See the conditionalOwn tier below.
+  const historicalContext = own
+    ? { low: own.low, median: own.median, high: own.high, spanYears: own.spanYears,
+        excludedLossYears: own.excludedLossYears, thin: own.thin }
+    : null
 
-  // A measured band sitting far from today's multiple (LIC: band 60-75x
-  // against a stock trading near 14x) used to be discarded outright — but
-  // "the band disagrees with today's price" is exactly what a genuine
-  // re-rating looks like, not only what a bad sample (a recent listing, a
-  // loss year, a demerger) looks like, and this had no way to tell the two
-  // apart before throwing the real measured data away. rerating.js exists
-  // specifically to make that distinction (how long the deviation has
-  // persisted, whether the sector moved too) — silently discarding the band
-  // here never gave it the chance. Kept and disclosed instead: the real
-  // band, with the gap named as a caveat rather than hidden behind a weaker
-  // fallback.
-  let ownDivergesFromCurrent = false
-  if (own && currentPe > 0) {
-    const ratio = own.median / currentPe
-    ownDivergesFromCurrent = ratio > 2.5 || ratio < 0.4
-  }
-
-  let multiples, multipleBasis, multipleLabel, thinMultiple = false, divergesFromCurrent = false, ownPeerBlend = null
+  let multiples, multipleBasis, multipleLabel, thinMultiple = false, divergesFromCurrent = false
   if (multipleOverride != null && multipleOverride > 0) {
     const c = multipleOverride
     // Keep whatever spread the measured band had, so a re-rating moves the
@@ -2205,75 +2310,84 @@ export function buildEstimate(ratioResult, opts = {}) {
     thinMultiple = !!fitted.thin
     multipleLabel = `${fitted.anchor}× historical anchor, adjusted for returns and growth`
     fittedSteps = fitted.steps
-  } else if (own) {
-    // Comparable-company cross-checking a firm's own historical multiple is
-    // standard analyst practice (see targetMultiple.js's own citations —
-    // Bradshaw 2002, Yin/Peasnell & Hunt 2018) and this app already applies
-    // it via peerWeight whenever targetMultiple()'s regression or plain
-    // median wins. It had no way to apply to THIS band at all — forwardPeBand
-    // was never given peerWeight/peerBand as inputs — which meant the same
-    // user-set slider silently did nothing whenever this (the most common)
-    // branch was the one chosen, with no indication that was happening.
-    // Mirrors targetMultiple.js's own blend formula exactly: center blends
-    // toward the peer median, and the RANGE'S WIDTH (not the edges
-    // independently) blends toward the peer band's own width, so a
-    // confident, narrow peer band can genuinely tighten an unusually wide
-    // own-history band instead of just recentring it.
-    let ownLow = own.low, ownMedian = own.median, ownHigh = own.high
-    if (peerWeight > 0 && peerBand?.median > 0) {
-      ownMedian = (1 - peerWeight) * own.median + peerWeight * peerBand.median
-      const ownMargin = (own.high - own.low) / 2
-      if (peerBand.low > 0 && peerBand.high > 0) {
-        const peerMargin = (peerBand.high - peerBand.low) / 2
-        const blendedMargin = (1 - peerWeight) * ownMargin + peerWeight * peerMargin
-        ownLow = ownMedian - blendedMargin
-        ownHigh = ownMedian + blendedMargin
-      } else {
-        ownLow = ownMedian - ownMargin
-        ownHigh = ownMedian + ownMargin
-      }
-      if (!(ownLow > 0)) ownLow = Math.min(own.low, ownMedian * 0.5)   // structural floor, not a plausibility cap
-      ownPeerBlend = { pct: Math.round(peerWeight * 100), peerMedian: round(peerBand.median, 1) }
-    }
-    multiples = { low: round(ownLow, 1), base: round(ownMedian, 1), high: round(ownHigh, 1) }
-    multipleBasis = 'observed'
-    thinMultiple = !!own.thin
-    divergesFromCurrent = ownDivergesFromCurrent
-    // Name the span, not just the sample count. A band from three years and one
-    // from nine both looked identical as "its own forward P/E range"; the first
-    // describes a recent regime and the second a genuine range.
-    // The span is stated either way; the prompt appears while a longer history
-    // is still available to fetch, without implying the shorter one is invalid.
-    multipleLabel = `its own forward P/E over ${own.spanYears} year${own.spanYears === 1 ? '' : 's'}` +
-      (own.spanYears < 5 ? ' — paste the Screener tables for a longer range' : '') +
-      // Disclosed, not hidden: P/E is undefined for a loss year, so it
-      // can't be used as a pairing year — but the exclusion itself, and
-      // how many years it applied to, is visible rather than silent.
-      (own.excludedLossYears > 0
-        ? ` (excludes ${own.excludedLossYears} loss year${own.excludedLossYears === 1 ? '' : 's'} — P/E undefined for negative earnings)`
-        : '') +
-      (ownPeerBlend ? ` — blended ${ownPeerBlend.pct}% toward peers' ${ownPeerBlend.peerMedian}× median` : '')
-    // targetMultiple() ran (it's computed unconditionally above, before this
-    // branch is even chosen) and may have tried a regression adjustment for
-    // returns/growth against this stock's own history — but its result only
-    // gets used when it actually wins one of the branches below/above this
-    // one. When THIS band wins instead, that reasoning — including exactly
-    // why a fit was or wasn't trusted (R² too low, not enough years, no
-    // forward figure) — used to be silently thrown away with no way to see
-    // it. Surfaced here instead, through the same multipleSteps UI already
-    // used for an adopted fit, with a header line making clear this is the
-    // REJECTED path, not what's shown above.
+  } else if (own?.conditionalOwn?.confidence === 'usable'
+    || (own?.conditionalOwn?.confidence === 'weak' && !(peerBand?.median > 0))) {
+    // Comparable-regime band: years whose forward growth/ROE actually
+    // resemble what's being forecast, not every year this stock has ever
+    // traded through regardless of regime (a near-zero-earnings-base year,
+    // a crisis-year collapse, a structurally different business). See
+    // forwardPeBand's own conditionalOwn comment for the full mechanism.
+    // 'usable' (5+ comparable years) always wins here; 'weak' (3-4) only
+    // wins when there's no real peer band to prefer instead — a handful of
+    // conveniently similar own years shouldn't automatically outrank a
+    // properly populated peer distribution.
+    const co = own.conditionalOwn
+    multiples = { low: co.low, base: co.median, high: co.high }
+    multipleBasis = 'conditional-own'
+    thinMultiple = co.confidence === 'weak'
+    multipleLabel = `comparable-regime forward P/E — ${co.observationsRetained} of ${co.observationsConsidered} years` +
+      ` matched this stock's own forecast growth/ROE closely enough to use` +
+      (co.confidence === 'weak' ? ' (weak support — few matching years)' : '')
     if (fitted?.steps?.length) {
       fittedSteps = [
-        'A regression-based adjustment (this stock\'s own ROE/growth vs. its multiple) was tried but not used — the plain historical band above is shown instead:',
+        'A regression-based adjustment (this stock\'s own ROE/growth vs. its multiple) was tried but not used — a comparable-regime historical band is shown instead:',
+        ...fitted.steps,
+      ]
+    }
+  } else if (peerBand?.median > 0) {
+    // Promoted ahead of the plain unconditioned own-history band (removed
+    // as a forward-range source entirely — see historicalContext above): a
+    // real peer distribution outranks both a non-comparable own-regime
+    // result (conditionalOwn was 'none') and a weak (3-4 year) one, per the
+    // same reasoning the conditionalOwn branch above already states.
+    multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
+    multipleBasis = 'peer'
+    multipleLabel = own?.conditionalOwn
+      ? `peer multiples — this stock's own history doesn't (yet) contain a comparable growth/ROE regime to forecast from` +
+        ` (${own.conditionalOwn.observationsRetained} of ${own.conditionalOwn.observationsConsidered} years matched)`
+      : 'peer multiples (no usable history for this stock)'
+    if (fitted?.steps?.length) {
+      fittedSteps = [
+        'A regression-based adjustment (this stock\'s own ROE/growth vs. its multiple) was tried but not used — peer multiples are shown instead:',
         ...fitted.steps,
       ]
     }
   } else if (fitted?.multiple > 0 && fitted.source === 'historical-median') {
-    multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
+    // fitted.multiple (targetMultiple()'s own plain median, same-year
+    // convention) is still a legitimate BASE — but fitted.low/high is the
+    // exact unconditioned historical range this whole ladder exists to
+    // stop treating as a forward range (it's targetMultiple's OWN internal
+    // fallback when its regression doesn't fit, same shape as forwardPeBand's
+    // 'own' used to be before conditionalOwn existed, just a different
+    // observation source — same-year, not forward-year — reached only when
+    // forwardPeBand's own conditionalOwn AND peerBand above both declined).
+    // Range comes from the next real source instead: peer-scaled, then this
+    // stock's own price dispersion, falling back to the unconditioned
+    // fitted.low/high only as an explicitly disclosed last resort — never
+    // silently.
+    let rangeSource
+    if (peerBand?.median > 0) {
+      const peerRatio = { lo: peerBand.low / peerBand.median, hi: peerBand.high / peerBand.median }
+      multiples = { low: round(fitted.multiple * peerRatio.lo, 1), base: fitted.multiple, high: round(fitted.multiple * peerRatio.hi, 1) }
+      rangeSource = 'peer-scaled'
+    } else {
+      const dd = priceDispersion(priceHistory)
+      if (dd != null) {
+        multiples = { low: round(fitted.multiple * (1 - dd.half), 1), base: fitted.multiple, high: round(fitted.multiple * (1 + dd.half), 1) }
+        thinMultiple = dd.thin
+        rangeSource = 'dispersion'
+      } else {
+        multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
+        thinMultiple = !!fitted.thin
+        rangeSource = 'unconditioned'
+      }
+    }
     multipleBasis = 'historical-median'
-    thinMultiple = !!fitted.thin
-    multipleLabel = `its own median multiple over ${fitted.observations} years`
+    multipleLabel = `its own median multiple over ${fitted.observations} years` + (
+      rangeSource === 'peer-scaled' ? ' — range scaled from peer dispersion, since this stock has too little of its own comparable-regime history to size one' :
+      rangeSource === 'dispersion' ? ' — range from this stock\'s own price dispersion, since neither a comparable-regime history nor peer data was available' :
+      ' — range is this stock\'s full historical spread (no comparable-regime history, peer data, or price dispersion available to narrow it)'
+    )
     fittedSteps = fitted.steps
   } else if (fitted?.multiple > 0 && fitted.source === 'peers') {
     // targetMultiple() falls back to peers itself when this stock has fewer
@@ -2313,6 +2427,18 @@ export function buildEstimate(ratioResult, opts = {}) {
       (bandReason ? ` — ${bandReason}` : '')
   } else {
     return blank('No usable P/E — nothing to anchor a multiple on.', { price })
+  }
+
+  // A winning multiple sitting far from today's actual P/E (LIC: band 60-75x
+  // against a stock trading near 14x) isn't discarded — "the range disagrees
+  // with today's price" is exactly what a genuine re-rating looks like, not
+  // only what a bad sample looks like, and rerating.js exists specifically
+  // to make that distinction. Checked generically against whichever tier
+  // won ('current'/'revision' are anchored to currentPe by construction, so
+  // divergence from it is meaningless for those two).
+  if (multipleBasis !== 'current' && multipleBasis !== 'revision' && currentPe > 0 && multiples.base > 0) {
+    const ratio = multiples.base / currentPe
+    divergesFromCurrent = ratio > 2.5 || ratio < 0.4
   }
 
   // A band has to actually be one — DEGENERATE means the percentiles have
@@ -2407,7 +2533,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     degraded.push(`Multiple from ${multipleLabel}`)
   if (thinMultiple) degraded.push('Multiple from a thinner-than-usual sample of trading days')
   if (divergesFromCurrent)
-    degraded.push(`Historical multiple (${round(own.median, 1)}×) differs substantially from today's (${round(currentPe, 1)}×) — ` +
+    degraded.push(`Selected multiple (${round(multiples.base, 1)}×) differs substantially from today's (${round(currentPe, 1)}×) — ` +
       `could be a real re-rating rather than a bad sample; check the rerating flag before relying on this`)
   if (wideMultipleRange)
     degraded.push(`Historical multiple range is unusually wide (${round(wideMultipleRange.low, 1)}×–${round(wideMultipleRange.high, 1)}×) — ` +
@@ -2448,7 +2574,18 @@ export function buildEstimate(ratioResult, opts = {}) {
 
     multiples, multipleBasis, multipleLabel,
     multipleSteps: fittedSteps,        // the working behind the adjustment
-    ownPeerBlend,                      // { pct, peerMedian } when the observed band was blended toward peers, else null
+    // ownPeerBlend's mechanism (blending the OLD unconditioned own-history
+    // band toward peers by a continuous weight) doesn't apply to the
+    // conditional-own/peer tiers that replaced it — those pick one source or
+    // the other by confidence, not a blend. Always null now; kept as a field
+    // (not removed) since ValuationPanel.jsx still reads it defensively.
+    ownPeerBlend: null,
+    // The unconditioned historical band, exposed as evidence/context — NEVER
+    // fed into target.low/high directly any more. See the conditionalOwn
+    // tier above for why: a historical high traded off a near-zero earnings
+    // base or a crisis-year collapse describes a regime the forecast year
+    // may not be in at all.
+    historicalContext,
     target, upside,
 
     financeability: financeabilityNote(ratioResult, g, { incomeHistory: resolvedOpts.incomeHistory, basis: normBasis }),
