@@ -1804,34 +1804,47 @@ export function buildEstimate(ratioResult, opts = {}) {
   const peDiagnostics = measurePeDiagnostics(resolvedOpts.incomeHistory, normBasis, resolvedOpts.priceHistory)
   const peSuitability = assessPeSuitability(peDiagnostics)
 
-  // Only genuine recurring-cycle evidence sends a company to the
-  // through-cycle treatment — NOT "P/E is unsuitable" on its own.
-  // buildCyclicalEstimate takes a FULL-HISTORY median on the assumption
-  // that the entire history is one undifferentiated cycle; a company whose
-  // P/E is unusable for a non-cyclical reason (too few profitable years,
-  // too little history, a single one-off collapse) doesn't fit that
-  // assumption — a turnaround (early losses, a real fix, now sustained
-  // profit) is exactly that case, and averaging its pre-fix years back in
-  // would drag the estimate toward a margin the business has already left
-  // behind. See assessPeSuitability's own comment on recurringCyclicalEvidence.
-  if (st === 'cyclical' || peSuitability.recurringCyclicalEvidence) {
+  // Company-level recurring-cycle evidence is the DEFAULT basis for the
+  // through-cycle treatment — the sector tag is a prior/contextual signal,
+  // not proof. buildCyclicalEstimate takes a FULL-HISTORY median on the
+  // assumption that the entire history is one undifferentiated cycle; a
+  // company whose P/E is unusable for a non-cyclical reason (too few
+  // profitable years, too little history, a single one-off collapse)
+  // doesn't fit that assumption — a turnaround (early losses, a real fix,
+  // now sustained profit) is exactly that case, and averaging its pre-fix
+  // years back in would drag the estimate toward a margin the business has
+  // already left behind.
+  //
+  // The sector tag can still act as an explicit, disclosed override — but
+  // only in the AMBIGUOUS middle ground, not against evidence that actively
+  // contradicts it. A clean 'suitable' P/E verdict (high profit coverage,
+  // no near-zero years, no drawdown pattern of any kind) isn't "not enough
+  // evidence of cyclicality yet" — it's evidence AGAINST it, over the same
+  // history the sector-based prior would otherwise be asked to override. A
+  // sector label shouldn't outrank that. See assessPeSuitability's own
+  // comment on recurringCyclicalEvidence.
+  const sectorSaysCyclical = st === 'cyclical'
+  const sectorCyclicalContradicted = sectorSaysCyclical && !peSuitability.recurringCyclicalEvidence
+    && peSuitability.suitability === 'suitable'
+
+  if (peSuitability.recurringCyclicalEvidence || (sectorSaysCyclical && !sectorCyclicalContradicted)) {
     const cyc = buildCyclicalEstimate(ratioResult, resolvedOpts)
     if (cyc) {
       if (peSuitability.recurringCyclicalEvidence) {
         // Evidence-based: this company's OWN earnings history shows the
         // recurring collapse-and-recovery pattern the through-cycle
         // treatment assumes — demonstrated, not merely asserted by a label.
-        return st === 'cyclical' ? cyc : {
+        return sectorSaysCyclical ? cyc : {
           ...cyc,
           degraded: [...cyc.degraded, ...peSuitability.reasons.map(r => `Routed to through-cycle treatment: ${r}`)],
         }
       }
-      // Sector-tag-only: the sector classification says "cyclical" but this
-      // company's OWN history doesn't show recurring cycles — a structurally
-      // growing, regulated, or otherwise atypical business within a
-      // generally cyclical sector. Disclosed as a policy override rather
-      // than presented as if the data itself supported it, same distinction
-      // the evidence-based branch above already gets to make honestly.
+      // Sector-tag-only, ambiguous evidence (not a clean 'suitable' verdict,
+      // but not 2+ completed cycles either): the sector classification says
+      // "cyclical," the company's own record doesn't clearly confirm or
+      // deny it, so the sector prior is used — disclosed as a policy
+      // override rather than presented as if the data itself supported it,
+      // same distinction the evidence-based branch above already makes.
       return {
         ...cyc,
         degraded: [...cyc.degraded,
@@ -1853,6 +1866,12 @@ export function buildEstimate(ratioResult, opts = {}) {
     ? 'Real estate is normally valued on the net asset value of the land bank; this is an earnings-based approximation.'
     : (st === 'holding')
     ? 'A holding company is normally valued as the sum of its stakes less a discount; this is an earnings-based approximation.'
+    // The sector says cyclical, but this company's own record contradicts
+    // it (a clean 'suitable' P/E verdict — see sectorCyclicalContradicted
+    // above) — the through-cycle override was declined, and that's stated
+    // rather than left to look like an unremarkable standard valuation.
+    : sectorCyclicalContradicted
+    ? `This sector is often cyclical, but this company's own earnings history doesn't show it — ${peDiagnostics.profitableYears} of ${peDiagnostics.totalYears} years profitable, no completed collapse-and-recovery cycle on record — so it's valued on its standard earnings profile instead of a through-cycle basis.`
     // Neither 'unsuitable' nor 'insufficient_history' blocks the standard
     // P/E chain any more — only recurring cyclical evidence (handled above)
     // diverts to a different model. A company that fails on data quality
