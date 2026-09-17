@@ -86,6 +86,7 @@ export function buildSnapshot({ state, buyDate, regime }) {
   const LATE_MS = 7 * 86400000
 
   const est = ratioResult ? buildEstimate(ratioResult, {
+    sectorType: state?.sectorType,
     guidedGrowth: (assumptions?.nearTermGrowth != null && isFinite(assumptions.nearTermGrowth))
       ? assumptions.nearTermGrowth : null,
     priceHistory:   data?.priceHistory   || [],
@@ -167,6 +168,7 @@ export async function recordBuy({ ticker, name, shares, buyPrice, buyDate, note,
   try {
     if (state?.ratioResult && !(await currentEstimate(ticker))) {
       const est = buildEstimate(state.ratioResult, {
+        sectorType: state.sectorType,
         guidedGrowth: (state.assumptions?.nearTermGrowth != null && isFinite(state.assumptions.nearTermGrowth))
           ? state.assumptions.nearTermGrowth : null,
         priceHistory:   state.data?.priceHistory   || [],
@@ -342,6 +344,7 @@ export async function backfillSnapshot(position, analysis) {
   if (!analysis?.ratioResult) return null
 
   const est = buildEstimate(analysis.ratioResult, {
+    sectorType: analysis.sectorType,
     priceHistory:   analysis.data?.priceHistory   || [],
     incomeHistory:  activeIncomeHistory(analysis.data),
     balanceHistory: activeBalanceHistory(analysis.data),

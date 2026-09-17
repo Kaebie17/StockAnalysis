@@ -298,6 +298,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
     const rawIncomeHistory = analysis.data?.reportedIncomeHistory || []
     const rawBalanceHistory = analysis.data?.balanceHistory || []
     const est = buildEstimate(rr, {
+      sectorType: analysis.sectorType,
       guidedGrowth: (isLive && state.assumptions?.nearTermGrowth != null
         && isFinite(state.assumptions.nearTermGrowth)) ? state.assumptions.nearTermGrowth : null,
       priceHistory:   analysis.data?.priceHistory   || [],

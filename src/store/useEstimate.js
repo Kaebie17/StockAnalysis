@@ -249,6 +249,7 @@ export function useEstimate(state, opts = {}) {
 
   // ESTIMATE 2 — what the market has been paying.
   const estimate = state?.ratioResult ? buildEstimate(state.ratioResult, {
+    sectorType: state.sectorType,
     guidedGrowth: guidedGrowthOf(state),
     guidedMargin: guidedMarginOf(state),
     guidanceFiscalYear: state.guidance?.revenueGuidance?.fiscalYear || null,

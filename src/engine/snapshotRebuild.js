@@ -165,6 +165,7 @@ export function rebuildSnapshot(analysis, asOfMs, regimeOn = null) {
   if (cagrThen == null) missing.push('growth history as of that date')
 
   const est = buildEstimate(ratioThen, {
+    sectorType: analysis.sectorType,
     priceHistory:   priceHistoryAsOf(priceHistory, asOfMs),
     incomeHistory:  incAsOf.length ? incAsOf : incomeHistory,
     balanceHistory: analysis.data?.balanceHistory || [],
