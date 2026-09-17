@@ -331,72 +331,122 @@ function EstimateExplainer({ state }) {
             <p className="text-slate-400">{est.note}</p>
           ) : (
             <>
-              <div className="space-y-2">
-                {est.projRevenue != null ? (
+              {(() => {
+                // Which per-share (or company-level, for the EV models)
+                // metric this estimate actually earns/rests on — the
+                // walkthrough used to assume EPS unconditionally, which
+                // read as blank ("₹—") for lender/EV-EBITDA/EV-Sales
+                // results (they use bookPerShare/ebitda/revenue instead)
+                // and, worse, would have shown a P/E-style single
+                // multiplication for EV-EBITDA/EV-Sales even once the
+                // right number was plugged in — those two need the actual
+                // enterprise-value bridge (× multiple, less net debt, ÷
+                // shares), not a direct per-share multiply, since EBITDA
+                // and revenue are company-level figures, not per-share ones.
+                const isEv = est.model === 'ev-ebitda' || est.model === 'ev-sales'
+                const metric = est.model === 'lender'
+                  ? { nowLabel: 'What it\'s worth now', nowNoun: 'book value per share', now: est.bookPerShare,
+                      forwardLabel: 'What it should be worth next year', forward: est.forwardBook, forwardNoun: 'per share',
+                      fmt: n }
+                  : est.model === 'ev-ebitda'
+                  ? { nowLabel: 'What it earns now', nowNoun: 'EBITDA', now: est.ebitda,
+                      forwardLabel: 'What it should earn next year', forward: est.forwardEbitda, forwardNoun: `${unit}`,
+                      fmt: big }
+                  : est.model === 'ev-sales'
+                  ? { nowLabel: 'What it sells now', nowNoun: 'revenue', now: est.revenue,
+                      forwardLabel: 'What it should sell next year', forward: est.forwardRevenue, forwardNoun: `${unit}`,
+                      fmt: big }
+                  : { nowLabel: 'What it earns now', nowNoun: 'profit per share', now: est.eps,
+                      forwardLabel: 'What it should earn next year', forward: est.forwardEps, forwardNoun: 'per share',
+                      fmt: n }
+
+                return (
                   <>
-                    <Step n="1" title="What it sells next year">
-                      Growing at <span className="text-accent">{est.growthPct}%</span> ({est.growthLabel}),
-                      revenue reaches <span className="text-slate-300">{cur}{big(est.projRevenue)} {unit}</span>.
-                    </Step>
-                    <Step n="2" title="What it keeps as profit">
-                      At a <span className="text-accent">{est.marginPct}%</span> margin ({est.marginLabel}),
-                      that's <span className="text-slate-300">{cur}{big(est.projProfit)} {unit}</span> of profit.
-                      {est.marginTrendPct != null && Math.abs(est.marginTrendPct) >= 1 && (
-                        <span className={est.marginTrendPct < 0 ? 'text-bear' : 'text-bull'}>
-                          {' '}Margin has moved {est.marginTrendPct > 0 ? '+' : ''}{est.marginTrendPct} pts over 3 years.
-                        </span>
+                    <div className="space-y-2">
+                      {est.projRevenue != null ? (
+                        <>
+                          <Step n="1" title="What it sells next year">
+                            Growing at <span className="text-accent">{est.growthPct}%</span> ({est.growthLabel}),
+                            revenue reaches <span className="text-slate-300">{cur}{big(est.projRevenue)} {unit}</span>.
+                          </Step>
+                          <Step n="2" title="What it keeps as profit">
+                            At a <span className="text-accent">{est.marginPct}%</span> margin ({est.marginLabel}),
+                            that's <span className="text-slate-300">{cur}{big(est.projProfit)} {unit}</span> of profit.
+                            {est.marginTrendPct != null && Math.abs(est.marginTrendPct) >= 1 && (
+                              <span className={est.marginTrendPct < 0 ? 'text-bear' : 'text-bull'}>
+                                {' '}Margin has moved {est.marginTrendPct > 0 ? '+' : ''}{est.marginTrendPct} pts over 3 years.
+                              </span>
+                            )}
+                          </Step>
+                          <Step n="3" title="Split across the shares">
+                            {est.dilutionPct > 0.1
+                              ? <>Share count is growing {est.dilutionPct}% a year, so profit is split more ways: </>
+                              : est.dilutionPct < -0.1
+                              ? <>Share count is shrinking {Math.abs(est.dilutionPct)}% a year (buybacks), so profit is split fewer ways: </>
+                              : <>Share count is steady, so that's </>}
+                            <span className="text-slate-300">{cur}{n(est.forwardEps)}</span> per share.
+                          </Step>
+                        </>
+                      ) : (
+                        <>
+                          <Step n="1" title={metric.nowLabel}>
+                            <span className="text-slate-300">{cur}{metric.fmt(metric.now)}</span> of {metric.nowNoun}.
+                          </Step>
+                          <Step n="2" title={metric.forwardLabel}>
+                            Growing at <span className="text-accent">{est.growthPct}%</span> ({est.growthLabel}) →{' '}
+                            <span className="text-slate-300">{cur}{metric.fmt(metric.forward)}</span> {metric.forwardNoun}.
+                            {est.model == null && est.epsPath?.startsWith('EPS compounded') && (
+                              <span className="text-neutral"> Margins assumed unchanged — no revenue/profit history to project them from.</span>
+                            )}
+                          </Step>
+                        </>
                       )}
-                    </Step>
-                    <Step n="3" title="Split across the shares">
-                      {est.dilutionPct > 0.1
-                        ? <>Share count is growing {est.dilutionPct}% a year, so profit is split more ways: </>
-                        : est.dilutionPct < -0.1
-                        ? <>Share count is shrinking {Math.abs(est.dilutionPct)}% a year (buybacks), so profit is split fewer ways: </>
-                        : <>Share count is steady, so that's </>}
-                      <span className="text-slate-300">{cur}{n(est.forwardEps)}</span> per share.
-                    </Step>
+                      <Step n={est.projRevenue != null ? '4' : '3'} title={isEv ? 'What buyers pay for that' : 'What buyers pay for those earnings'}>
+                        {est.multipleBasis === 'observed'
+                          ? <>Historically people have paid between <span className="text-slate-300">{est.multiples.low}×</span> and{' '}
+                             <span className="text-slate-300">{est.multiples.high}×</span> next year's earnings for this stock.
+                             {est.ownPeerBlend && (
+                               <span className="text-accent">
+                                 {' '}Blended {est.ownPeerBlend.pct}% toward confirmed peers' {est.ownPeerBlend.peerMedian}× median.
+                               </span>
+                             )}</>
+                          : <>Using {est.multipleLabel}: <span className="text-slate-300">{est.multiples.low}×</span> to{' '}
+                             <span className="text-slate-300">{est.multiples.high}×</span>.</>}
+                      </Step>
+                    </div>
+
+                    <PeerWeightSlider peerBand={peerBand} />
+
+                    {isEv ? (
+                      <div className="bg-navy-900/60 rounded px-3 py-2 space-y-1 font-mono text-[11px]">
+                        <div className="text-slate-500">
+                          {metric.nowNoun} × multiple = enterprise value, less net debt ({cur}{big(est.forwardNetDebt)} {unit}), ÷ {n(est.shares)} {unit} shares:
+                        </div>
+                        <div>({cur}{big(metric.forward)} {unit} × {est.multiples.low}× − {cur}{big(est.forwardNetDebt)} {unit}) ÷ shares = <span className="text-white">{cur}{n(est.target.low)}</span></div>
+                        <div>({cur}{big(metric.forward)} {unit} × {est.multiples.base}× − {cur}{big(est.forwardNetDebt)} {unit}) ÷ shares = <span className="text-white">{cur}{n(est.target.base)}</span> <span className="text-slate-500">← middle</span></div>
+                        <div>({cur}{big(metric.forward)} {unit} × {est.multiples.high}× − {cur}{big(est.forwardNetDebt)} {unit}) ÷ shares = <span className="text-white">{cur}{n(est.target.high)}</span></div>
+                      </div>
+                    ) : (
+                      <div className="bg-navy-900/60 rounded px-3 py-2 space-y-1 font-mono text-[11px]">
+                        <div className="text-slate-500">Multiply the last two together:</div>
+                        <div>{cur}{metric.fmt(metric.forward)} × {est.multiples.low}× = <span className="text-white">{cur}{n(est.target.low)}</span></div>
+                        <div>{cur}{metric.fmt(metric.forward)} × {est.multiples.base}× = <span className="text-white">{cur}{n(est.target.base)}</span> <span className="text-slate-500">← middle</span></div>
+                        <div>{cur}{metric.fmt(metric.forward)} × {est.multiples.high}× = <span className="text-white">{cur}{n(est.target.high)}</span></div>
+                      </div>
+                    )}
                   </>
-                ) : (
-                  <>
-                    <Step n="1" title="What it earns now">
-                      <span className="text-slate-300">{cur}{n(est.eps)}</span> of profit per share.
-                    </Step>
-                    <Step n="2" title="What it should earn next year">
-                      Growing at <span className="text-accent">{est.growthPct}%</span> ({est.growthLabel}) →{' '}
-                      <span className="text-slate-300">{cur}{n(est.forwardEps)}</span> per share.
-                      <span className="text-neutral"> Margins assumed unchanged — no revenue/profit history to project them from.</span>
-                    </Step>
-                  </>
-                )}
-                <Step n={est.projRevenue != null ? '4' : '3'} title="What buyers pay for those earnings">
-                  {est.multipleBasis === 'observed'
-                    ? <>Historically people have paid between <span className="text-slate-300">{est.multiples.low}×</span> and{' '}
-                       <span className="text-slate-300">{est.multiples.high}×</span> next year's earnings for this stock.
-                       {est.ownPeerBlend && (
-                         <span className="text-accent">
-                           {' '}Blended {est.ownPeerBlend.pct}% toward confirmed peers' {est.ownPeerBlend.peerMedian}× median.
-                         </span>
-                       )}</>
-                    : <>Using {est.multipleLabel}: <span className="text-slate-300">{est.multiples.low}×</span> to{' '}
-                       <span className="text-slate-300">{est.multiples.high}×</span>.</>}
-                </Step>
-              </div>
+                )
+              })()}
 
-              <PeerWeightSlider peerBand={peerBand} />
-
-              <div className="bg-navy-900/60 rounded px-3 py-2 space-y-1 font-mono text-[11px]">
-                <div className="text-slate-500">Multiply the last two together:</div>
-                <div>{cur}{n(est.forwardEps)} × {est.multiples.low}× = <span className="text-white">{cur}{n(est.target.low)}</span></div>
-                <div>{cur}{n(est.forwardEps)} × {est.multiples.base}× = <span className="text-white">{cur}{n(est.target.base)}</span> <span className="text-slate-500">← middle</span></div>
-                <div>{cur}{n(est.forwardEps)} × {est.multiples.high}× = <span className="text-white">{cur}{n(est.target.high)}</span></div>
-              </div>
-
-              {est.multipleBasis === 'observed' && (
+              {(est.multipleBasis === 'observed' || est.multipleBasis === 'conditional-own') && (
                 <p className="text-slate-500">
                   The high and low ignore the most extreme 15% of days at each end — one panic
                   sell-off or one frenzy shouldn't set the range. These are <em>forward</em>
                   {' '}multiples: what buyers paid for earnings that hadn't arrived yet, which is
                   the only kind that can fairly be applied to a projection.
+                  {est.multipleBasis === 'conditional-own' && (
+                    <> Only years whose growth/ROE resembled this forecast were used — see the range's own label above.</>
+                  )}
                 </p>
               )}
 

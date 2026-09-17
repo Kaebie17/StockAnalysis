@@ -1343,6 +1343,12 @@ export function buildEvEbitdaEstimate(ratioResult, opts = {}) {
     ebitda: round(ebitda), forwardEbitda: round(forwardEbitda),
     netDebt: round(netDebt),
     forwardNetDebt: round(forwardNetDebt),
+    // Exposed so a UI walkthrough can reproduce the actual EV→equity bridge
+    // (EBITDA × multiple = enterprise value; minus net debt; ÷ shares =
+    // per-share target) instead of a P/E-style single multiplication, which
+    // is only valid for a per-share-equity metric like EPS or book value —
+    // EBITDA is a company-level (enterprise) figure, not a per-share one.
+    shares: round(shares),
     epsPath: 'EBITDA × EV/EBITDA, less net debt after a year of cash generation, ÷ shares',
     marginPct: null, marginLabel: 'EBITDA-based — net margin not used', marginSource: 'n/a',
     growth, growthPct: round(growth * 100, 1),
@@ -1453,6 +1459,13 @@ export function buildEvSalesEstimate(ratioResult, opts = {}) {
     ok: true, model: 'ev-sales',
     createdAt: Date.now(), horizonYears: years,
     priceAtEstimate: round(price),
+    // Exposed so a UI walkthrough can reproduce the actual EV→equity bridge
+    // (revenue × multiple = enterprise value; minus net debt; ÷ shares =
+    // per-share target) instead of a P/E-style single multiplication —
+    // revenue, like EBITDA, is a company-level figure, not per-share.
+    revenue: round(revenue), forwardRevenue: round(forwardRevenue),
+    netDebt: round(netDebt), forwardNetDebt: round(forwardNetDebt),
+    shares: round(shares),
     epsPath: 'revenue × EV/Sales, less net debt, ÷ shares',
     marginPct: null, marginLabel: 'no profit to apply a margin to', marginSource: 'n/a',
     growth, growthPct: round(growth * 100, 1),
