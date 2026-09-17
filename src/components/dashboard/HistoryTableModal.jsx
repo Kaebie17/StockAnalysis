@@ -664,8 +664,14 @@ function EditableRow({ label, field, years, cellText, isDirty, editingKey, setEd
     {showConsumers && hasConsumers && (
       <tr className="border-b border-navy-800/50">
         <td colSpan={years.length + 1} className="py-1.5">
-          <div className="flex flex-wrap items-center gap-1.5 pl-1">
-            <span className="text-[10px] text-slate-500">Used by — drag onto another row to reassign:</span>
+          {/* max-w constrains this row so flex-wrap actually wraps to
+              multiple lines instead of extending indefinitely — the
+              enclosing table sits in an overflow-x-auto container with no
+              width of its own to wrap against, so without this the chips
+              just grew the table wider rather than stacking. Pushing later
+              rows down when it wraps is expected and fine. */}
+          <div className="flex flex-wrap items-center gap-1.5 pl-1 max-w-[min(90vw,72rem)]">
+            <span className="text-[10px] text-slate-500">Used by:</span>
             {consumers.map((c, i) => (
               <span
                 key={i}
