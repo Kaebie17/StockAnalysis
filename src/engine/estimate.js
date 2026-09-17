@@ -561,6 +561,103 @@ export function assessPeSuitability(diagnostics) {
 }
 
 /**
+ * Raw measurement only, same split as measurePeDiagnostics — whether
+ * EBITDA is a meaningful, reliable enterprise-valuation base is a
+ * DIFFERENT question from whether P/E is usable, not a weaker substitute
+ * for it. A company can have perfectly fine P/E and still have EBITDA
+ * that's positive only because of one exceptional year, or vice versa.
+ */
+export function measureEbitdaDiagnostics(incomeHistory = [], basis = 'reported', balanceHistory = []) {
+  const rows = (incomeHistory || [])
+    .map(r => ({ year: yearOf(r), ebitda: val(activeValue(r, 'ebitda', basis)), revenue: val(activeValue(r, 'revenue', basis)) }))
+    .filter(r => r.year != null && r.ebitda != null)
+    .sort((a, b) => a.year - b.year)
+
+  const totalYears = rows.length
+  const positive = rows.filter(r => r.ebitda > 0)
+  const ebitdaCoverage = totalYears > 0 ? positive.length / totalYears : null
+
+  // Margin stability — MAD of EBITDA margin across years with revenue,
+  // same robust-to-one-freak-year approach measurePeDiagnostics already
+  // uses for epsGrowthMAD.
+  const margins = rows.filter(r => r.revenue > 0).map(r => r.ebitda / r.revenue)
+  let medianMargin = null, marginMAD = null
+  if (margins.length >= 2) {
+    const sorted = [...margins].sort((a, b) => a - b)
+    medianMargin = sorted[Math.floor(sorted.length / 2)]
+    const devs = margins.map(m => Math.abs(m - medianMargin)).sort((a, b) => a - b)
+    marginMAD = devs[Math.floor(devs.length / 2)]
+  }
+
+  // Exceptional-period dependence: does a SINGLE year account for most of
+  // the positive EBITDA on record? Same "one dominant year" shape
+  // otherIncomeForecastBasis's maxShare check already guards other income
+  // with — a company whose "positive EBITDA" is really one good year isn't
+  // showing a sustained operating level.
+  const totalPositiveEbitda = positive.reduce((s, r) => s + r.ebitda, 0)
+  const maxYearShare = totalPositiveEbitda > 0
+    ? Math.max(...positive.map(r => r.ebitda)) / totalPositiveEbitda : null
+
+  // Enterprise-value relevance: the EV-to-equity bridge needs BOTH debt and
+  // cash actually reported, not assumed — same standard the DCF/WACC
+  // computation already holds itself to.
+  const latestBal = latestRealRow((balanceHistory || []).filter(x => !x?.synthetic))
+  const totalDebt = val(activeValue(latestBal, 'totalDebt', basis))
+  const cash = val(activeValue(latestBal, 'cash', basis))
+  const netDebtMeasurable = totalDebt != null && cash != null
+
+  return {
+    totalYears, positiveYears: positive.length, ebitdaCoverage,
+    medianMargin, marginMAD, maxYearShare, netDebtMeasurable,
+  }
+}
+
+/**
+ * Whether EBITDA is a meaningful, reliable base for an enterprise-value
+ * valuation — the EBITDA-side counterpart to assessPeSuitability. A
+ * capital-intensive/yield sector tag says "EV/EBITDA might be the right
+ * lens for this kind of business"; this is what actually establishes
+ * whether it is, for THIS company. Same four-state shape and same
+ * calibration numbers as assessPeSuitability (0.5/0.7 coverage tiers) —
+ * reusing the same thresholds keeps the two gates internally consistent
+ * rather than each carrying its own independently-chosen convention.
+ */
+export function assessEbitdaSuitability(diagnostics) {
+  const { totalYears, positiveYears, ebitdaCoverage, medianMargin, marginMAD, maxYearShare, netDebtMeasurable } = diagnostics || {}
+
+  if (totalYears == null || totalYears < 4) {
+    return {
+      suitability: 'insufficient_history',
+      reasons: [`Only ${totalYears ?? 0} year${totalYears === 1 ? '' : 's'} of EBITDA history — too little to assess whether it's a reliable valuation base.`],
+      ...diagnostics,
+    }
+  }
+
+  const reasons = []
+  let suitability = 'suitable'
+  if (ebitdaCoverage < 0.5) {
+    suitability = 'unsuitable'
+    reasons.push(`Only ${positiveYears} of ${totalYears} years had positive EBITDA — too little to anchor an enterprise valuation on.`)
+  } else if (!netDebtMeasurable) {
+    suitability = 'unsuitable'
+    reasons.push(`Debt and/or cash aren't both reported — the enterprise-to-equity bridge can't be built.`)
+  } else if (ebitdaCoverage < 0.7
+             || (maxYearShare != null && maxYearShare > 0.5 && positiveYears >= 2)
+             || (medianMargin > 0 && marginMAD != null && (marginMAD / medianMargin) > 0.5)) {
+    suitability = 'questionable'
+    if (ebitdaCoverage < 0.7) reasons.push(`Only ${positiveYears} of ${totalYears} years had positive EBITDA.`)
+    if (maxYearShare != null && maxYearShare > 0.5 && positiveYears >= 2) {
+      reasons.push(`A single year accounts for over half the positive EBITDA on record — recent EBITDA may reflect one exceptional period rather than a sustained level.`)
+    }
+    if (medianMargin > 0 && marginMAD != null && (marginMAD / medianMargin) > 0.5) {
+      reasons.push(`EBITDA margin has swung widely year to year relative to its own median — less confidence the latest margin is representative.`)
+    }
+  }
+
+  return { suitability, reasons, ...diagnostics }
+}
+
+/**
  * Lender estimate: grow book value by retained earnings, apply the P/B the
  * market has actually paid.
  *
@@ -1838,9 +1935,64 @@ export function buildEstimate(ratioResult, opts = {}) {
     }
   }
 
-  if (st === 'capital-intensive' || st === 'yield') {
+  // EBITDA suitability — measured unconditionally, once, mirroring
+  // peSuitability's own measure/classify split. A capital-intensive/yield
+  // tag says "EV/EBITDA might be the right lens for this business"; this
+  // is what actually establishes whether it is for THIS company. Skipped
+  // entirely for financial-sector companies — enterprise-value/EBITDA-FCFF
+  // logic doesn't apply to a business whose balance sheet IS the operating
+  // model, whether or not its lender model happened to build successfully.
+  const ebitdaDiagnostics = !isFinancialSector
+    ? measureEbitdaDiagnostics(resolvedOpts.incomeHistory, normBasis, resolvedOpts.balanceHistory)
+    : null
+  const ebitdaSuitability = ebitdaDiagnostics ? assessEbitdaSuitability(ebitdaDiagnostics) : null
+  const capitalIntensiveTag = st === 'capital-intensive' || st === 'yield'
+  const peWeak = peSuitability.suitability === 'unsuitable' || peSuitability.suitability === 'insufficient_history'
+
+  // EV/EBITDA is tried — and can WIN over an otherwise-suitable P/E — in
+  // two distinct circumstances, both requiring the data to actually
+  // establish it, never the tag alone:
+  //   (a) tag-informed preference: capital-intensive/yield business with
+  //       genuinely usable EBITDA — depreciation schedules and financing
+  //       structure can distort P/E comparability even when the P/E
+  //       itself is technically computable, so a suitable P/E doesn't by
+  //       itself rule this out.
+  //   (b) rescue: P/E is unsuitable/insufficient_history for ANY company,
+  //       regardless of sector tag — EV/EBITDA is a genuine alternative
+  //       basis, tried before falling further.
+  const preferEbitda = ebitdaSuitability?.suitability === 'suitable' && (capitalIntensiveTag || peWeak)
+  if (preferEbitda) {
     const ev = buildEvEbitdaEstimate(ratioResult, resolvedOpts)
-    if (ev) return ev
+    if (ev) {
+      const caveats = []
+      if (peWeak) {
+        caveats.push(`P/E-based valuation is on weak footing for this stock: ${peSuitability.reasons.join(' ')} Valued on EV/EBITDA instead.`)
+      } else if (capitalIntensiveTag) {
+        caveats.push(`Valued on EV/EBITDA rather than P/E: a capital-intensive/yield business with genuinely usable EBITDA, where depreciation and financing structure can distort P/E comparability even though its own P/E is technically usable.`)
+      }
+      return caveats.length ? { ...ev, degraded: [...ev.degraded, ...caveats] } : ev
+    }
+  }
+
+  // P/E is unsuitable/insufficient_history AND EV/EBITDA either wasn't
+  // eligible, wasn't preferred, or failed to build — revenue-based
+  // valuation is the next, weaker alternative (needs no profit line at
+  // all, so it works regardless of EPS sign). If even that can't run,
+  // nothing here is adequately supported by the data — an explicit
+  // insufficient-data result is more honest than forcing a caveated P/E
+  // number the way this used to, back when EV/EBITDA wasn't a real
+  // alternative to fall to first.
+  if (peWeak && !isFinancialSector) {
+    const sales = buildEvSalesEstimate(ratioResult, resolvedOpts)
+    if (sales) {
+      const ebitdaNote = ebitdaSuitability && ebitdaSuitability.suitability !== 'suitable' ? ' EV/EBITDA was also not usable.' : ''
+      return { ...sales, degraded: [...sales.degraded,
+        `P/E-based valuation is on weak footing for this stock: ${peSuitability.reasons.join(' ')}${ebitdaNote}`] }
+    }
+    return blank(
+      `No valuation model is adequately supported by this company's data: ${peSuitability.reasons.length ? peSuitability.reasons.join(' ') : 'too little reliable history to assess.'}`,
+      { price: ratioResult?.price }
+    )
   }
 
   // Realty and holding companies need NAV or stake data the app doesn't hold.
@@ -1864,40 +2016,21 @@ export function buildEstimate(ratioResult, opts = {}) {
     // unremarkable standard valuation.
     : (st === 'cyclical' && !peSuitability.recurringCyclicalEvidence)
     ? `This sector is often cyclical, but this company's own earnings history doesn't establish a recurring cyclical pattern (${peDiagnostics.profitableYears} of ${peDiagnostics.totalYears} years profitable, ${peDiagnostics.cycleCount} completed collapse-and-recovery cycle${peDiagnostics.cycleCount === 1 ? '' : 's'} on record) — valued on its standard earnings profile instead of a through-cycle basis.`
-    // Neither 'unsuitable' nor 'insufficient_history' blocks the standard
-    // P/E chain any more — only recurring cyclical evidence (handled above)
-    // diverts to a different model. A company that fails on data quality
-    // alone (too few profitable years, too little history) still proceeds
-    // on P/E here, since there's no better-fitting alternative for it (a
-    // profitable turnaround doesn't qualify for buildEvSalesEstimate
-    // either), just flagged more strongly than 'questionable's own caveat.
-    : (peSuitability.suitability === 'unsuitable' || peSuitability.suitability === 'insufficient_history')
-    ? `P/E-based valuation is on weak footing for this stock: ${peSuitability.reasons.join(' ')}`
+    // 'unsuitable'/'insufficient_history' (peWeak) is handled entirely
+    // above now (EV/EBITDA rescue -> EV/Sales rescue -> explicit decline)
+    // and never reaches this point — only 'questionable' still runs the
+    // standard chain, flagged rather than silently degraded.
     : (peSuitability.suitability === 'questionable')
     ? `P/E-based valuation is on weaker footing for this stock: ${peSuitability.reasons.join(' ')}`
     : null
 
-  // No positive earnings. Negative EPS is a SYMPTOM (excess interest, heavy
-  // D&A, a one-off charge, a temporary downturn), not proof every earnings
-  // layer is unusable — a company with genuinely healthy EBITDA gets a more
-  // informative valuation than sales alone. Tried here regardless of sector
-  // tag (the capital-intensive/yield check above only decides which method
-  // runs FIRST for those sectors, not which methods exist at all) — skipped
-  // when that tag already tried and failed above, so this isn't a redundant
-  // second attempt with identical inputs. Falls to EV/Sales, the weakest
-  // method here, only when EV/EBITDA also can't run.
-  //
-  // Financial-sector companies are excluded from BOTH — a failed lender
-  // build doesn't fall back to enterprise-value/EBITDA-FCFF logic, which
-  // isn't meaningful for a business whose balance sheet IS the operating
-  // model. This falls through to the plain "no positive EPS" decline
-  // below instead — an explicit insufficient-data result rather than a
-  // number from a model that doesn't fit the business at all.
+  // No positive earnings, but P/E suitability wasn't weak overall (e.g. a
+  // mostly-profitable history whose CURRENT year happens to be a loss) —
+  // the peWeak cascade above never fired, so this is the one remaining
+  // case needing its own fallback. Revenue-based valuation needs no
+  // profit line at all. Excludes financial-sector companies, same
+  // reasoning as the peWeak branch above.
   if (!(ratioResult?.eps > 0) && !isFinancialSector) {
-    if (st !== 'capital-intensive' && st !== 'yield') {
-      const ev = buildEvEbitdaEstimate(ratioResult, resolvedOpts)
-      if (ev) return methodCaveat ? { ...ev, degraded: [...ev.degraded, methodCaveat] } : ev
-    }
     const sales = buildEvSalesEstimate(ratioResult, resolvedOpts)
     if (sales) return methodCaveat
       ? { ...sales, degraded: [...sales.degraded, methodCaveat] } : sales
