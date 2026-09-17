@@ -1790,7 +1790,15 @@ export function buildEstimate(ratioResult, opts = {}) {
   // falling through is always to a weaker method, never to a broken one.
   const st = opts.sectorType
 
-  if (st === 'bank' || st === 'nbfc' || st === 'insurance' || st === 'financial') {
+  // isFinancialSector is a genuine strong routing rule, not a convenience
+  // label — for a bank/NBFC/insurer, book value and ROE are the central
+  // economic drivers, debt/interest mean something structurally different,
+  // and the balance sheet IS the operating model, so enterprise-value/
+  // EBITDA-FCFF logic (the rest of this chain) is generally not meaningful
+  // for it at all. Reused below to make sure a FAILED lender build doesn't
+  // silently fall through into that operating-company logic anyway.
+  const isFinancialSector = st === 'bank' || st === 'nbfc' || st === 'insurance' || st === 'financial'
+  if (isFinancialSector) {
     const lender = buildLenderEstimate(ratioResult, resolvedOpts)
     if (lender) return lender
   }
@@ -1804,51 +1812,28 @@ export function buildEstimate(ratioResult, opts = {}) {
   const peDiagnostics = measurePeDiagnostics(resolvedOpts.incomeHistory, normBasis, resolvedOpts.priceHistory)
   const peSuitability = assessPeSuitability(peDiagnostics)
 
-  // Company-level recurring-cycle evidence is the DEFAULT basis for the
-  // through-cycle treatment — the sector tag is a prior/contextual signal,
-  // not proof. buildCyclicalEstimate takes a FULL-HISTORY median on the
-  // assumption that the entire history is one undifferentiated cycle; a
-  // company whose P/E is unusable for a non-cyclical reason (too few
-  // profitable years, too little history, a single one-off collapse)
-  // doesn't fit that assumption — a turnaround (early losses, a real fix,
-  // now sustained profit) is exactly that case, and averaging its pre-fix
-  // years back in would drag the estimate toward a margin the business has
-  // already left behind.
-  //
-  // The sector tag can still act as an explicit, disclosed override — but
-  // only in the AMBIGUOUS middle ground, not against evidence that actively
-  // contradicts it. A clean 'suitable' P/E verdict (high profit coverage,
-  // no near-zero years, no drawdown pattern of any kind) isn't "not enough
-  // evidence of cyclicality yet" — it's evidence AGAINST it, over the same
-  // history the sector-based prior would otherwise be asked to override. A
-  // sector label shouldn't outrank that. See assessPeSuitability's own
-  // comment on recurringCyclicalEvidence.
-  const sectorSaysCyclical = st === 'cyclical'
-  const sectorCyclicalContradicted = sectorSaysCyclical && !peSuitability.recurringCyclicalEvidence
-    && peSuitability.suitability === 'suitable'
-
-  if (peSuitability.recurringCyclicalEvidence || (sectorSaysCyclical && !sectorCyclicalContradicted)) {
+  // Sector tags are a provisional classification — "what kinds of models
+  // might be relevant" — not proof of which one applies. Only genuine
+  // recurring-cycle evidence (2+ completed collapse-and-recovery cycles,
+  // measured from THIS company's own history) sends it to the through-
+  // cycle treatment; the 'cyclical' tag never forces that on its own any
+  // more, not even in an otherwise ambiguous case (one downturn and
+  // recovery is exactly as consistent with a one-off shock as with genuine
+  // cyclicality — insufficient either way to override what the data
+  // doesn't establish). buildCyclicalEstimate takes a FULL-HISTORY median
+  // on the assumption the entire history is one undifferentiated cycle; a
+  // turnaround (early losses, a real fix, now sustained profit) doesn't fit
+  // that assumption, and averaging its pre-fix years back in would drag the
+  // estimate toward a margin the business has already left behind. The tag
+  // is retained purely as context for whichever model the data actually
+  // supports (see the methodCaveat branch below), never as the deciding
+  // vote.
+  if (peSuitability.recurringCyclicalEvidence) {
     const cyc = buildCyclicalEstimate(ratioResult, resolvedOpts)
     if (cyc) {
-      if (peSuitability.recurringCyclicalEvidence) {
-        // Evidence-based: this company's OWN earnings history shows the
-        // recurring collapse-and-recovery pattern the through-cycle
-        // treatment assumes — demonstrated, not merely asserted by a label.
-        return sectorSaysCyclical ? cyc : {
-          ...cyc,
-          degraded: [...cyc.degraded, ...peSuitability.reasons.map(r => `Routed to through-cycle treatment: ${r}`)],
-        }
-      }
-      // Sector-tag-only, ambiguous evidence (not a clean 'suitable' verdict,
-      // but not 2+ completed cycles either): the sector classification says
-      // "cyclical," the company's own record doesn't clearly confirm or
-      // deny it, so the sector prior is used — disclosed as a policy
-      // override rather than presented as if the data itself supported it,
-      // same distinction the evidence-based branch above already makes.
-      return {
+      return st === 'cyclical' ? cyc : {
         ...cyc,
-        degraded: [...cyc.degraded,
-          `Valued through-cycle because of its sector classification, not because its own earnings history shows a recurring cyclical pattern — a structurally growing, regulated, or otherwise atypical business in this sector may not fit this treatment.`],
+        degraded: [...cyc.degraded, ...peSuitability.reasons.map(r => `Routed to through-cycle treatment: ${r}`)],
       }
     }
   }
@@ -1866,12 +1851,19 @@ export function buildEstimate(ratioResult, opts = {}) {
     ? 'Real estate is normally valued on the net asset value of the land bank; this is an earnings-based approximation.'
     : (st === 'holding')
     ? 'A holding company is normally valued as the sum of its stakes less a discount; this is an earnings-based approximation.'
-    // The sector says cyclical, but this company's own record contradicts
-    // it (a clean 'suitable' P/E verdict — see sectorCyclicalContradicted
-    // above) — the through-cycle override was declined, and that's stated
-    // rather than left to look like an unremarkable standard valuation.
-    : sectorCyclicalContradicted
-    ? `This sector is often cyclical, but this company's own earnings history doesn't show it — ${peDiagnostics.profitableYears} of ${peDiagnostics.totalYears} years profitable, no completed collapse-and-recovery cycle on record — so it's valued on its standard earnings profile instead of a through-cycle basis.`
+    // The financial-sector tag couldn't route to the lender model (it
+    // failed — missing payout history, most likely) and this company is
+    // still being valued here on the operating-company chain below, which
+    // book-value/ROE-driven businesses don't really fit either. Stated
+    // rather than left looking like an ordinary earnings-based valuation.
+    : isFinancialSector
+    ? `Lender-specific valuation (book value compounding at ROE × retention) couldn't be built for this financial company — this is an earnings-based approximation instead, which doesn't reflect how banks/NBFCs/insurers are normally valued.`
+    // The sector says cyclical, but recurring-cycle evidence wasn't
+    // established (handled above — the tag never forces this model any
+    // more, in any case) — stated rather than left looking like an
+    // unremarkable standard valuation.
+    : (st === 'cyclical' && !peSuitability.recurringCyclicalEvidence)
+    ? `This sector is often cyclical, but this company's own earnings history doesn't establish a recurring cyclical pattern (${peDiagnostics.profitableYears} of ${peDiagnostics.totalYears} years profitable, ${peDiagnostics.cycleCount} completed collapse-and-recovery cycle${peDiagnostics.cycleCount === 1 ? '' : 's'} on record) — valued on its standard earnings profile instead of a through-cycle basis.`
     // Neither 'unsuitable' nor 'insufficient_history' blocks the standard
     // P/E chain any more — only recurring cyclical evidence (handled above)
     // diverts to a different model. A company that fails on data quality
@@ -1894,7 +1886,14 @@ export function buildEstimate(ratioResult, opts = {}) {
   // when that tag already tried and failed above, so this isn't a redundant
   // second attempt with identical inputs. Falls to EV/Sales, the weakest
   // method here, only when EV/EBITDA also can't run.
-  if (!(ratioResult?.eps > 0)) {
+  //
+  // Financial-sector companies are excluded from BOTH — a failed lender
+  // build doesn't fall back to enterprise-value/EBITDA-FCFF logic, which
+  // isn't meaningful for a business whose balance sheet IS the operating
+  // model. This falls through to the plain "no positive EPS" decline
+  // below instead — an explicit insufficient-data result rather than a
+  // number from a model that doesn't fit the business at all.
+  if (!(ratioResult?.eps > 0) && !isFinancialSector) {
     if (st !== 'capital-intensive' && st !== 'yield') {
       const ev = buildEvEbitdaEstimate(ratioResult, resolvedOpts)
       if (ev) return methodCaveat ? { ...ev, degraded: [...ev.degraded, methodCaveat] } : ev
