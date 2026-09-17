@@ -432,9 +432,13 @@ function DataVintageBadge({ data, state, onNormalize }) {
 /**
  * The data-quality ⓘ.
  *
- * Adjustments the app made silently are shown alongside what it could not fix,
- * because a user reading a margin needs to know both — that FY24 has had an
- * exceptional item removed is as material as that FY26 looks odd.
+ * A flagging space, not a change log — it lists what still needs a decision
+ * (an unusual year the app can't explain on its own: normalize it, or
+ * confirm it's real) and what's missing. Exceptional-item adjustments the
+ * app already resolved automatically (the company's own disclosed one-off,
+ * backed out with a stated reason) aren't shown here — they don't need
+ * anything from the user, so they don't belong in a space meant for things
+ * that do.
  */
 function DataQualityDot({ quality, ticker, onNormalize }) {
   const [open, setOpen] = React.useState(false)
@@ -490,17 +494,6 @@ function DataQualityDot({ quality, ticker, onNormalize }) {
                  text-left font-normal normal-case cursor-default space-y-2"
                  onClick={e => e.stopPropagation()}>
 
-            {quality.adjustments.length > 0 && (
-              <span className="block">
-                <span className="block text-[11px] text-slate-300 mb-1">Adjusted</span>
-                {quality.adjustments.map(a => (
-                  <span key={a.year} className="block text-[11px] text-slate-500">
-                    FY{a.year}: {a.note} ({a.impactPct}% of profit)
-                  </span>
-                ))}
-              </span>
-            )}
-
             {quality.flags.length > 0 && (
               <span className="block">
                 <span className="block text-[11px] text-neutral mb-1">Unusual years</span>
@@ -549,8 +542,7 @@ function DataQualityDot({ quality, ticker, onNormalize }) {
             )}
 
             <span className="block text-[10px] text-slate-600 pt-1 border-t border-navy-800">
-              Adjustments are applied to every calculation. Unusual years are left exactly as
-              reported — nothing is altered on a guess.
+              Unusual years are left exactly as reported — nothing is altered on a guess.
             </span>
           </span>
         </>
