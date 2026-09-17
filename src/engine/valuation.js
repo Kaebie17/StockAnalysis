@@ -123,7 +123,32 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
     // DCF when there's no margin history to build a waterfall from at all —
     // same graceful decline as everywhere else, not a silently weaker number.
     const waterfallEV = waterfallDcfEV(data, wacc, termGrowth, projYears, ntG, ntY)
-    const ev = waterfallEV ?? (cfBaseDcf ? dcfEV(cfBaseDcf, growthRate, wacc, termGrowth, projYears, ntG, ntY) : null)
+    // The single-FCFF fallback trusts ONE year's number entirely — no
+    // multi-year smoothing the waterfall would otherwise provide — so a
+    // working-capital swing, a one-off capex spike, or an unusual tax
+    // position landing in exactly the latest reported year would otherwise
+    // pass straight through as if it were normal. Checked against the
+    // trailing years' own median FCFF, same 4x-either-side outlier
+    // convention peerBands.js already uses elsewhere in this app rather than
+    // a fresh, unexplained threshold. Declines (no DCF, not a silently
+    // substituted number) when it looks distorted and there's no waterfall
+    // to fall back on either — this is already the last-resort path; a
+    // false-precision number here is worse than none.
+    let fallbackFcffOk = cfBaseDcf != null
+    if (fallbackFcffOk && waterfallEV == null) {
+      const trailingFcff = (data?.reportedIncomeHistory || [])
+        .filter(row => !row.synthetic && row !== latestIncDcf)
+        .map(row => activeValue(row, 'fcff', data?.basis)?.value)
+        .filter(v => v > 0)
+      if (trailingFcff.length >= 2) {
+        const sorted = [...trailingFcff].sort((a, b) => a - b)
+        const trailingMedian = sorted[Math.floor(sorted.length / 2)]
+        if (trailingMedian > 0 && (cfBaseDcf > trailingMedian * 4 || cfBaseDcf < trailingMedian / 4)) {
+          fallbackFcffOk = false
+        }
+      }
+    }
+    const ev = waterfallEV ?? (fallbackFcffOk ? dcfEV(cfBaseDcf, growthRate, wacc, termGrowth, projYears, ntG, ntY) : null)
     const perShare = ev != null ? (ev + r.cash - r.totalDebt) / r.shares : null
     if (perShare != null && perShare > 0) {
       // growthRate is always the measured default now (see above — the

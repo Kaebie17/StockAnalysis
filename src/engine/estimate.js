@@ -1817,9 +1817,25 @@ export function buildEstimate(ratioResult, opts = {}) {
   if (st === 'cyclical' || peSuitability.recurringCyclicalEvidence) {
     const cyc = buildCyclicalEstimate(ratioResult, resolvedOpts)
     if (cyc) {
-      return st === 'cyclical' ? cyc : {
+      if (peSuitability.recurringCyclicalEvidence) {
+        // Evidence-based: this company's OWN earnings history shows the
+        // recurring collapse-and-recovery pattern the through-cycle
+        // treatment assumes — demonstrated, not merely asserted by a label.
+        return st === 'cyclical' ? cyc : {
+          ...cyc,
+          degraded: [...cyc.degraded, ...peSuitability.reasons.map(r => `Routed to through-cycle treatment: ${r}`)],
+        }
+      }
+      // Sector-tag-only: the sector classification says "cyclical" but this
+      // company's OWN history doesn't show recurring cycles — a structurally
+      // growing, regulated, or otherwise atypical business within a
+      // generally cyclical sector. Disclosed as a policy override rather
+      // than presented as if the data itself supported it, same distinction
+      // the evidence-based branch above already gets to make honestly.
+      return {
         ...cyc,
-        degraded: [...cyc.degraded, ...peSuitability.reasons.map(r => `Routed to through-cycle treatment: ${r}`)],
+        degraded: [...cyc.degraded,
+          `Valued through-cycle because of its sector classification, not because its own earnings history shows a recurring cyclical pattern — a structurally growing, regulated, or otherwise atypical business in this sector may not fit this treatment.`],
       }
     }
   }
@@ -1850,9 +1866,20 @@ export function buildEstimate(ratioResult, opts = {}) {
     ? `P/E-based valuation is on weaker footing for this stock: ${peSuitability.reasons.join(' ')}`
     : null
 
-  // No positive earnings — every method above needs them, so sales is what's
-  // left. Previously this returned nothing at all.
+  // No positive earnings. Negative EPS is a SYMPTOM (excess interest, heavy
+  // D&A, a one-off charge, a temporary downturn), not proof every earnings
+  // layer is unusable — a company with genuinely healthy EBITDA gets a more
+  // informative valuation than sales alone. Tried here regardless of sector
+  // tag (the capital-intensive/yield check above only decides which method
+  // runs FIRST for those sectors, not which methods exist at all) — skipped
+  // when that tag already tried and failed above, so this isn't a redundant
+  // second attempt with identical inputs. Falls to EV/Sales, the weakest
+  // method here, only when EV/EBITDA also can't run.
   if (!(ratioResult?.eps > 0)) {
+    if (st !== 'capital-intensive' && st !== 'yield') {
+      const ev = buildEvEbitdaEstimate(ratioResult, resolvedOpts)
+      if (ev) return methodCaveat ? { ...ev, degraded: [...ev.degraded, methodCaveat] } : ev
+    }
     const sales = buildEvSalesEstimate(ratioResult, resolvedOpts)
     if (sales) return methodCaveat
       ? { ...sales, degraded: [...sales.degraded, methodCaveat] } : sales
