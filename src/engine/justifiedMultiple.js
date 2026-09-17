@@ -307,20 +307,46 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   const revenue = activeValue(latestIncJm, 'revenue', opts.basis)?.value ?? ratioResult?.revenue
   if (ebitda > 0 && revenue > 0) {
     // Share of EBITDA reaching investors after tax and reinvestment. Prefer
-    // this company's own MEASURED FCF/EBITDA conversion (real capex and real
-    // tax already baked in) over a guess — `1 - retention x 0.5` was an
-    // invented halving with no derivation behind it, kept now only as the
-    // fallback for when FCF genuinely isn't available. No bound on the
-    // measured case: a real, differentiated business (near-zero-capex
-    // software vs. heavy-capex manufacturing) can legitimately sit anywhere
-    // in a wide range, and clamping a real measured ratio to fit an assumed
-    // band replaces real data with a guess. The estimated fallback keeps a
-    // sanity floor only against nonsense (a retention outside [0,1] would
-    // otherwise produce a negative or >100% conversion), not a plausibility
-    // judgment about what's "too high" or "too low" for this business.
-    const latestCfJm = latestRealRow(opts.cashflowHistory || [])
-    const fcfT = activeValue(latestCfJm, 'freeCashFlow', opts.basis)?.value ?? ratioResult?.fcf
-    const measuredConversion = (fcfT > 0) ? fcfT / ebitda : null
+    // this company's own MEASURED FCF/EBITDA conversion over a guess — but a
+    // SINGLE year's conversion is exactly as fragile here as a single year's
+    // ROE was for the growth input (see the ROE ladder above): a capex
+    // spike, a working-capital release, or any other one-year distortion
+    // would otherwise set this entire justified multiple. Normalized to the
+    // MEDIAN across valid historical years instead — only falling to the
+    // latest single year when there isn't enough history for a median to
+    // mean anything, and only falling further to the estimated `1 -
+    // retention x 0.5` guess when FCF genuinely isn't available at all. No
+    // bound on the measured case: a real, differentiated business
+    // (near-zero-capex software vs. heavy-capex manufacturing) can
+    // legitimately sit anywhere in a wide range, and clamping a real
+    // measured ratio to fit an assumed band replaces real data with a
+    // guess. Deliberately historical only — never the forecast year's own
+    // FCF/EBITDA (e.g. from buildWaterfallForecast), which would make this
+    // "independently justified" multiple partly circular with the forecast
+    // it's meant to be checked against.
+    const conversionPoints = []
+    for (const cfRow of (opts.cashflowHistory || [])) {
+      const y = yearOf(cfRow)
+      if (y == null) continue
+      const fcfY = val(activeValue(cfRow, 'freeCashFlow', opts.basis))
+      if (!(fcfY > 0)) continue   // a negative/zero conversion isn't a real rate to feed conversion/(r-g) with
+      const incRowY = (incomeHistory || []).find(row => yearOf(row) === y)
+      const ebitdaY = val(activeValue(incRowY, 'ebitda', opts.basis))
+      if (!(ebitdaY > 0)) continue
+      conversionPoints.push({ year: y, ratio: fcfY / ebitdaY })
+    }
+    conversionPoints.sort((a, b) => a.year - b.year)
+
+    const MIN_YEARS_FOR_CONVERSION_MEDIAN = 3
+    let measuredConversion = null, conversionSource = null
+    if (conversionPoints.length >= MIN_YEARS_FOR_CONVERSION_MEDIAN) {
+      const sortedRatios = [...conversionPoints.map(p => p.ratio)].sort((a, b) => a - b)
+      measuredConversion = sortedRatios[Math.floor(sortedRatios.length / 2)]
+      conversionSource = `${conversionPoints.length}yr-median`
+    } else if (conversionPoints.length >= 1) {
+      measuredConversion = conversionPoints[conversionPoints.length - 1].ratio
+      conversionSource = 'latest-year'
+    }
     const conversion = measuredConversion != null
       ? measuredConversion
       : Math.max(0, Math.min(1, retention > 0 ? 1 - retention * 0.5 : 0.5))
@@ -328,19 +354,23 @@ export function justifiedMultiples(ratioResult, opts = {}) {
       ? twoStageEvMultiple({ conversion, g, r, terminalG })
       : (r - g > 0 ? conversion / (r - g) : null)
     if (evEbitda > 0 && isFinite(evEbitda)) {
+      const conversionLabel =
+        conversionSource?.endsWith('yr-median') ? `median of ${conversionPoints.length} years' own measured FCF/EBITDA` :
+        conversionSource === 'latest-year' ? 'this company\'s own latest-year FCF/EBITDA — too little history for a median' :
+        'estimated — FCF not available'
       forms.evEbitda = {
         multiple: round(evEbitda, 1), basis: 'evEbitda',
-        // DERIVED when the real measured FCF/EBITDA ratio anchors it;
-        // ASSUMED when the estimated-fallback conversion is used — the
-        // comment above already calls that "an invented halving with no
-        // derivation behind it."
+        // DERIVED when a real measured FCF/EBITDA conversion anchors it
+        // (median or, failing that, latest-year); ASSUMED when the
+        // estimated-fallback conversion is used — the comment above already
+        // calls that "an invented halving with no derivation behind it."
         tier: measuredConversion != null ? TIER.DERIVED : TIER.ASSUMED,
         label: twoStage ? 'Justified EV/EBITDA (two-stage)' : 'Justified EV/EBITDA',
         steps: twoStage
           ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
              `explicitly for ${STAGE_1_YEARS} years then faded to ${round(terminalG * 100, 1)}%`,
-             `${round(conversion * 100, 0)}% of EBITDA reaching investors (${measuredConversion != null ? 'this company\'s own measured FCF/EBITDA' : 'estimated — FCF not available'}), applied to EBITDA at each stage`]
-          : [`${round(conversion * 100, 0)}% of EBITDA reaching investors (${measuredConversion != null ? 'this company\'s own measured FCF/EBITDA' : 'estimated — FCF not available'}) / (${round(r * 100, 1)}% required - ${round(g * 100, 1)}% growth)`,
+             `${round(conversion * 100, 0)}% of EBITDA reaching investors (${conversionLabel}), applied to EBITDA at each stage`]
+          : [`${round(conversion * 100, 0)}% of EBITDA reaching investors (${conversionLabel}) / (${round(r * 100, 1)}% required - ${round(g * 100, 1)}% growth)`,
              `EBITDA margin ${round((ebitda / revenue) * 100, 1)}%`],
       }
     }
