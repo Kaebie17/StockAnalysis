@@ -206,6 +206,14 @@ async function fetchCachedSameSector(meta, sectorType, excludeTicker) {
 
   const matches = all.filter(rec => {
     if (rec.symbol === t) return false
+    // This is a peer list for an NSE/BSE-listed company — a candidate that
+    // isn't itself Indian-listed has no business here no matter what its
+    // Yahoo sector text happens to match. sectorIndexFor's regex has no
+    // exchange awareness at all (it's a text match on Yahoo's sector/
+    // industry labels, e.g. "Consumer Electronics" or "Consumer Cyclical"
+    // both trivially match on the word "consumer"), so this has to be
+    // enforced here explicitly, not assumed.
+    if (!/\.(NS|BO)$/i.test(rec.symbol || '')) return false
     const recIdx = sectorIndexFor(rec.meta, rec.sectorType)
     return recIdx?.csvSlug === target.csvSlug
   })
@@ -242,6 +250,7 @@ async function fetchKnownRelationships(excludeTicker) {
 // (never triggered automatically here) rather than something this function
 // runs on its own.
 export async function fetchPeerCandidates({ ticker, meta, sectorType, classification } = {}) {
+  const t = String(ticker || '').trim().toUpperCase()
   const [nse, ownCache, known] = await Promise.all([
     fetchSectorConstituents(ticker),
     fetchCachedSameSector(meta, sectorType, ticker),
@@ -283,6 +292,12 @@ export async function fetchPeerCandidates({ ticker, meta, sectorType, classifica
     }
   }
 
+  // Belt-and-suspenders: every individual source already excludes the
+  // target's own symbol, but a mismatch anywhere upstream (case, a resolved
+  // vs. raw ticker string) shouldn't be able to leak the company through as
+  // its own "peer" — guaranteed here regardless of which source it came from.
+  bySymbol.delete(t)
+
   return [...bySymbol.values()]
 }
 
@@ -323,6 +338,8 @@ export async function ownNseIndustry(symbol) {
 // user's explicit confirm).
 export async function suggestPeers({ ticker, name, meta, userKey, model }) {
   const nseIndustry = await ownNseIndustry(ticker)   // display-only, not sent below
+  const t = String(ticker || '').trim().toUpperCase()
+  const targetName = String(name || '').trim().toLowerCase()
 
   try {
     const r = await fetch('/api/suggestPeers', {
@@ -334,11 +351,17 @@ export async function suggestPeers({ ticker, name, meta, userKey, model }) {
     if (!data || !Array.isArray(data.peers)) {
       return { peers: null, error: data?.error || 'fetch_failed', detail: data?.detail, nseIndustry }
     }
-    const withCache = await enrichFromCache(data.peers.filter(p => p.symbol).map(p => ({ ...p })))
+    // Nothing upstream (the model, or the app's own filtering) excludes the
+    // target from naming ITSELF as a "peer" — guard it here, on both symbol
+    // and name, since the model can return a candidate with no symbol at all.
+    const filtered = data.peers.filter(p =>
+      String(p.symbol || '').trim().toUpperCase() !== t &&
+      String(p.name || '').trim().toLowerCase() !== targetName)
+    const withCache = await enrichFromCache(filtered.filter(p => p.symbol).map(p => ({ ...p })))
     const bySymbol = new Map(withCache.map(p => [p.symbol, p]))
     // Entries with no resolvable symbol still carry real info (name,
     // rationale) worth showing, just not confirmable/warmable yet.
-    const unresolved = data.peers.filter(p => !p.symbol)
+    const unresolved = filtered.filter(p => !p.symbol)
     return { peers: [...bySymbol.values(), ...unresolved], nseIndustry }
   } catch (e) {
     return { peers: null, error: 'fetch_failed', detail: e?.message, nseIndustry }

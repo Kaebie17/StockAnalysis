@@ -182,12 +182,16 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
     revenue: ratioResult.revenue ?? null,
   } : null
 
-  // AI-suggested / known-relationship candidates first (the real discovery
-  // signal), then anything classification-tagged, then the rest.
-  const sortedPeers = [...peers].sort((a, b) => {
-    const rank = p => p.sources?.includes('ai-suggested') || p.sources?.includes('known-relationship') ? 0
-      : p.businessRelationship === 'DIRECT_BUSINESS_MODEL' ? 1
-      : p.businessRelationship === 'BROAD_BUSINESS_MODEL' ? 2 : 3
+  // Two separate groups, not one sorted list — a candidate validated by AI
+  // (or an already-known relationship) is a different kind of claim than one
+  // that merely shares NSE's coarse sector label or a loose cached-sector
+  // regex match. Anything in the AI group is REMOVED from the other group
+  // entirely — no duplicate row split across both.
+  const isAiGroup = p => p.sources?.includes('ai-suggested') || p.sources?.includes('known-relationship')
+  const aiPeers = peers.filter(isAiGroup)
+  const otherPeers = peers.filter(p => !isAiGroup(p)).sort((a, b) => {
+    const rank = p => p.businessRelationship === 'DIRECT_BUSINESS_MODEL' ? 0
+      : p.businessRelationship === 'BROAD_BUSINESS_MODEL' ? 1 : 2
     return rank(a) - rank(b)
   })
 
@@ -239,57 +243,87 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
           />
         )}
 
-        <div className="space-y-1 max-h-64 overflow-y-auto">
-          {sortedPeers.map(p => {
-            const isConfirmed = confirmedSet.has(p.symbol) && !p.unresolved
-            // Runs for every candidate with cached financials, not just
-            // classification-tagged ones — this check has to cover the
-            // PRIMARY discovery path (AI-suggested peers) at least as much
-            // as the secondary one; assessValuationPeerEligibility already
-            // degrades to UNASSESSED gracefully when a field is missing.
-            const eligibility = targetFin
-              ? assessValuationPeerEligibility(targetClassification, p, targetFin, p, { metric: 'ev_ebitda' }) : null
-            return (
-              <div key={p.symbol} className="py-1 border-b border-navy-800/60 last:border-0">
-                <div className="flex items-center gap-2 text-sm">
-                  <label className={`flex items-center gap-2 flex-1 min-w-0 ${p.unresolved ? '' : 'cursor-pointer'}`}>
-                    <input type="checkbox" checked={isConfirmed} onChange={() => !p.unresolved && toggle(p.symbol)}
-                           disabled={status[p.symbol] === 'loading' || p.unresolved}
-                           title={p.unresolved ? 'No confirmed ticker symbol for this suggestion yet'
-                             : isConfirmed ? 'Confirmed as a peer — untick to remove' : 'Confirm as a peer for this stock'}
-                           className="accent-accent" />
-                    <span className="flex-1 min-w-0 truncate">
-                      <span className="text-slate-300">{p.name || p.symbol}</span>
-                      <SourceTag p={p} />
-                    </span>
-                  </label>
-                  {eligibility && eligibility.valuationEligibility !== 'UNASSESSED' && (
-                    <EligibilityBadge eligibility={eligibility.valuationEligibility} reasons={eligibility.reasons} />
-                  )}
-                  <StatusBadge status={status[p.symbol]} queued={queue.includes(p.symbol) && status[p.symbol] !== 'loading'} unresolved={p.unresolved} />
-                </div>
-                <div className="pl-6 flex items-center gap-2">
-                  {!p.unresolved && !p.businessRelationship && classifyBusy !== p.symbol && (
-                    <button onClick={() => runClassify(p.symbol, p.name)} className="text-[10px] text-slate-500 hover:text-slate-300">
-                      add business-model detail
-                    </button>
-                  )}
-                  {classifyBusy === p.symbol && <span className="text-[10px] text-slate-500">classifying…</span>}
-                  {classifyError?.symbol === p.symbol && <span className="text-[10px] text-bear">{classifyError.detail || classifyError.error}</span>}
-                </div>
-                {draft?.symbol === p.symbol && (
-                  <div className="pl-6 mt-1">
-                    <ClassificationForm draft={draft} onSave={fields => saveDraft(fields, { edited: false })}
-                                        onSaveEdited={fields => saveDraft(fields, { edited: true })}
-                                        onCancel={() => setDraft(null)} />
-                  </div>
-                )}
-              </div>
-            )
-          })}
+        <div className="max-h-72 overflow-y-auto">
+          {aiPeers.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[10px] uppercase tracking-wide text-accent/70">AI-validated</div>
+              {aiPeers.map(p => (
+                <PeerRow key={p.symbol} p={p} confirmedSet={confirmedSet} status={status} queue={queue}
+                  targetFin={targetFin} targetClassification={targetClassification}
+                  toggle={toggle} runClassify={runClassify} classifyBusy={classifyBusy} classifyError={classifyError}
+                  draft={draft} saveDraft={saveDraft} setDraft={setDraft} />
+              ))}
+            </div>
+          )}
+
+          {aiPeers.length > 0 && otherPeers.length > 0 && (
+            // The "75%" divider — a soft break signalling a drop in context/
+            // confidence, not a hard section boundary.
+            <div className="my-2 border-t border-navy-700/75" />
+          )}
+
+          {otherPeers.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[10px] uppercase tracking-wide text-slate-600">Other NSE-based candidates</div>
+              {otherPeers.map(p => (
+                <PeerRow key={p.symbol} p={p} confirmedSet={confirmedSet} status={status} queue={queue}
+                  targetFin={targetFin} targetClassification={targetClassification}
+                  toggle={toggle} runClassify={runClassify} classifyBusy={classifyBusy} classifyError={classifyError}
+                  draft={draft} saveDraft={saveDraft} setDraft={setDraft} />
+              ))}
+            </div>
+          )}
+
           {peers.length === 0 && <p className="text-xs text-slate-500 py-2">No peer candidates yet — try "Discover peers with AI" above.</p>}
         </div>
     </Modal>
+  )
+}
+
+function PeerRow({ p, confirmedSet, status, queue, targetFin, targetClassification, toggle, runClassify, classifyBusy, classifyError, draft, saveDraft, setDraft }) {
+  const isConfirmed = confirmedSet.has(p.symbol) && !p.unresolved
+  // Runs for every candidate with cached financials, not just classification-
+  // tagged ones — has to cover the PRIMARY discovery path (AI-suggested
+  // peers) at least as much as the secondary one; degrades to UNASSESSED
+  // gracefully when a field is missing.
+  const eligibility = targetFin
+    ? assessValuationPeerEligibility(targetClassification, p, targetFin, p, { metric: 'ev_ebitda' }) : null
+  return (
+    <div className="py-1 border-b border-navy-800/60 last:border-0">
+      <div className="flex items-center gap-2 text-sm">
+        <label className={`flex items-center gap-2 flex-1 min-w-0 ${p.unresolved ? '' : 'cursor-pointer'}`}>
+          <input type="checkbox" checked={isConfirmed} onChange={() => !p.unresolved && toggle(p.symbol)}
+                 disabled={status[p.symbol] === 'loading' || p.unresolved}
+                 title={p.unresolved ? 'No confirmed ticker symbol for this suggestion yet'
+                   : isConfirmed ? 'Confirmed as a peer — untick to remove' : 'Confirm as a peer for this stock'}
+                 className="accent-accent" />
+          <span className="flex-1 min-w-0 truncate">
+            <span className="text-slate-300">{p.name || p.symbol}</span>
+            <SourceTag p={p} />
+          </span>
+        </label>
+        {eligibility && eligibility.valuationEligibility !== 'UNASSESSED' && (
+          <EligibilityBadge eligibility={eligibility.valuationEligibility} reasons={eligibility.reasons} />
+        )}
+        <StatusBadge status={status[p.symbol]} queued={queue.includes(p.symbol) && status[p.symbol] !== 'loading'} unresolved={p.unresolved} />
+      </div>
+      <div className="pl-6 flex items-center gap-2">
+        {!p.unresolved && !p.businessRelationship && classifyBusy !== p.symbol && (
+          <button onClick={() => runClassify(p.symbol, p.name)} className="text-[10px] text-slate-500 hover:text-slate-300">
+            add business-model detail
+          </button>
+        )}
+        {classifyBusy === p.symbol && <span className="text-[10px] text-slate-500">classifying…</span>}
+        {classifyError?.symbol === p.symbol && <span className="text-[10px] text-bear">{classifyError.detail || classifyError.error}</span>}
+      </div>
+      {draft?.symbol === p.symbol && (
+        <div className="pl-6 mt-1">
+          <ClassificationForm draft={draft} onSave={fields => saveDraft(fields, { edited: false })}
+                              onSaveEdited={fields => saveDraft(fields, { edited: true })}
+                              onCancel={() => setDraft(null)} />
+        </div>
+      )}
+    </div>
   )
 }
 
