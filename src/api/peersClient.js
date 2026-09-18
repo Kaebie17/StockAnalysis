@@ -347,6 +347,23 @@ function suggestionFingerprint(name, businessSummary) {
   return h.toString(36)
 }
 
+// Cache-only read — no network call, ever. This is what was actually
+// missing: suggestPeers() correctly WROTE to peerSuggestions, but nothing
+// read it back except suggestPeers() itself, which only runs from the
+// explicit "Discover" click. Reopening the modal called fetchPeerCandidates
+// alone, which has no idea peerSuggestions exists — so an unconfirmed AI
+// suggestion, sitting safely in IndexedDB the whole time, never made it back
+// onto the screen. This is called on modal open specifically so that gap is
+// closed without ever triggering a fresh AI call on open.
+export async function getCachedSuggestions(ticker) {
+  const t = String(ticker || '').trim().toUpperCase()
+  const cached = await getPeerSuggestions(t).catch(() => null)
+  if (!cached?.peers?.length) return []
+  const withCache = await enrichFromCache(cached.peers.filter(p => p.symbol).map(p => ({ ...p })))
+  const unresolved = cached.peers.filter(p => !p.symbol)
+  return [...withCache, ...unresolved]
+}
+
 export async function suggestPeers({ ticker, name, meta, userKey, model, force = false }) {
   const nseIndustry = await ownNseIndustry(ticker)   // display-only, not sent to the AI
   const t = String(ticker || '').trim().toUpperCase()

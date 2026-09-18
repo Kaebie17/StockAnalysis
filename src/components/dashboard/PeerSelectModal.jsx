@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { fetchPeerCandidates, suggestPeers, confirmPeerRelationship, ownNseIndustry } from '../../api/peersClient.js'
+import { fetchPeerCandidates, suggestPeers, confirmPeerRelationship, ownNseIndustry, getCachedSuggestions } from '../../api/peersClient.js'
 import { classifyCompany } from '../../api/businessProfileClient.js'
 import { analyzeTicker } from '../../store/analyzeTicker.js'
 import { getClassification, saveClassification } from '../../utils/db.js'
@@ -7,6 +7,23 @@ import { getAiKey } from '../../utils/aiKey.js'
 import { assessValuationPeerEligibility } from '../../engine/peerCompatibility.js'
 import { BUSINESS_MODELS, END_MARKETS, REVENUE_MODELS, PRODUCTION_PROFILES, CAPITAL_INTENSITY } from '../../engine/businessProfileEnums.js'
 import Modal from '../Modal.jsx'
+
+// Merges AI-suggested peers (fresh from suggestPeers, or restored from the
+// peerSuggestions cache on modal open) into whatever candidate list already
+// exists — used by both, so a reopen and a fresh "Discover" click land on
+// an identical shape.
+function mergeAiPeers(base, aiPeers) {
+  const bySymbol = new Map(base.map(p => [p.symbol, p]))
+  for (const s of aiPeers) {
+    const key = s.symbol || `unresolved:${s.name}`
+    const existing = bySymbol.get(key)
+    const merged = existing
+      ? { ...existing, ...s, sources: [...new Set([...existing.sources, 'ai-suggested'])] }
+      : { ...s, symbol: key, unresolved: !s.symbol, sources: ['ai-suggested'] }
+    bySymbol.set(key, merged)
+  }
+  return [...bySymbol.values()]
+}
 
 /**
  * PeerSelectModal — review real peer candidates, confirm which count, and
@@ -60,9 +77,18 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
       const cls = await getClassification(ticker).catch(() => null)
       if (cancelled) return
       setTargetClassification(cls)
-      const list = await fetchPeerCandidates({ ticker, meta, sectorType, classification: cls })
+      // Cache-only, no network call — restores any AI suggestions from a
+      // previous "Discover" run that were never confirmed (and so never
+      // written to peerRelationships). Without this, closing and reopening
+      // the modal silently dropped every unconfirmed suggestion, even
+      // though they were sitting safely in the peerSuggestions cache the
+      // whole time — the cache was being written, just never read back here.
+      const [list, cachedAi] = await Promise.all([
+        fetchPeerCandidates({ ticker, meta, sectorType, classification: cls }),
+        getCachedSuggestions(ticker),
+      ])
       if (cancelled) return
-      setPeers(list)
+      setPeers(mergeAiPeers(list, cachedAi))
       const st = {}
       for (const p of list) if (p.cached) st[p.symbol] = 'available'
       setStatus(st)
@@ -89,8 +115,15 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
   }, [queue])
 
   const refetchCandidates = async (cls) => {
-    const list = await fetchPeerCandidates({ ticker, meta, sectorType, classification: cls })
-    setPeers(list)
+    // Same gap as the open effect: fetchPeerCandidates alone knows nothing
+    // about peerSuggestions, so replacing `peers` with only its result would
+    // silently drop any AI-suggested candidates already on screen. Re-merge
+    // the cache (no network call) on top, same as on open.
+    const [list, cachedAi] = await Promise.all([
+      fetchPeerCandidates({ ticker, meta, sectorType, classification: cls }),
+      getCachedSuggestions(ticker),
+    ])
+    setPeers(mergeAiPeers(list, cachedAi))
     const st = {}
     for (const p of list) if (p.cached) st[p.symbol] = 'available'
     setStatus(prev => ({ ...st, ...prev }))
@@ -104,18 +137,7 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
     setDiscovering(false)
     if (res.nseIndustry !== undefined) setNseIndustry(res.nseIndustry)
     if (!res.peers) { setDiscoverError({ error: res.error, detail: res.detail }); return }
-    setPeers(prev => {
-      const bySymbol = new Map(prev.map(p => [p.symbol, p]))
-      for (const s of res.peers) {
-        const key = s.symbol || `unresolved:${s.name}`
-        const existing = bySymbol.get(key)
-        const merged = existing
-          ? { ...existing, ...s, sources: [...new Set([...existing.sources, 'ai-suggested'])] }
-          : { ...s, symbol: key, unresolved: !s.symbol, sources: ['ai-suggested'] }
-        bySymbol.set(key, merged)
-      }
-      return [...bySymbol.values()]
-    })
+    setPeers(prev => mergeAiPeers(prev, res.peers))
   }
 
   const toggle = (symbol) => {
