@@ -37,17 +37,19 @@ const MAX_PEERS = 20
 const SYSTEM_INSTRUCTION =
   'You identify real, listed peer companies for the target company given below. Search for and use your own ' +
   'knowledge of the actual market. Reply with ONLY a JSON object, no prose, no markdown fences:\n' +
-  '{"peers": [{"symbol": "<NSE or BSE ticker with .NS or .BO suffix, or null if you cannot find a real listed symbol>", ' +
+  '{"peers": [{"symbol": "<the real, currently-tradeable NSE or BSE ticker, with .NS or .BO suffix>", ' +
   '"name": "<company name>", "relationship": "<short phrase, e.g. \\"EMS/contract manufacturing\\" or \\"branded consumer electronics\\">", ' +
   '"overlap": ["<1-4 short tags describing what actually overlaps, e.g. business line, end market, customer type>"], ' +
   '"rationale": "<one sentence, specific, citing why this is or is not a close match>", ' +
   '"confidence": "high"|"medium"|"low"}]}\n' +
   `Include up to ${MAX_PEERS} candidates: direct competitors, companies with a substantially similar operating model, ` +
-  'and other relevant listed Indian companies — prefer NSE/BSE-listed names. For each one, state the real relationship ' +
-  'and any important caveats or business-line differences in the rationale; do not include a company merely because it ' +
-  'sits in the same broad sector if its actual business model differs materially (say so in the rationale instead, with ' +
-  'lower confidence, or leave it out). Do not invent a ticker symbol you are not reasonably sure of — use null for symbol ' +
-  'rather than guessing.'
+  'and other relevant listed Indian companies. For each one, state the real relationship and any important caveats or ' +
+  'business-line differences in the rationale; do not include a company merely because it sits in the same broad sector ' +
+  'if its actual business model differs materially (say so in the rationale instead, with lower confidence, or leave it ' +
+  'out entirely). ONLY include a company you are confident is currently listed on NSE or BSE with a real, tradeable ' +
+  'ticker symbol — if it is privately held, an unlisted subsidiary, delisted, listed on a different exchange only, or ' +
+  'you are not reasonably sure of its exact ticker, LEAVE IT OUT OF THE LIST ENTIRELY. Do not include an entry with a ' +
+  'null, guessed, or placeholder symbol under any circumstance.'
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method_not_allowed' })
@@ -132,15 +134,20 @@ function parsePeers(text) {
 
   // Validate/normalize each entry rather than discarding the whole response
   // over one bad row — a partial list of real candidates is useful, a hard
-  // all-or-nothing failure over one malformed symbol is not.
+  // all-or-nothing failure over one malformed symbol is not. A candidate
+  // with no real, exchange-suffixed symbol is DROPPED here, not kept as an
+  // "unresolved" row — an unlisted/private/unconfident-ticker company isn't
+  // a usable peer candidate in this app no matter how good its rationale
+  // reads, so it doesn't belong in the output at all.
   const out = []
   for (const p of j.peers.slice(0, MAX_PEERS)) {
     if (!p || typeof p !== 'object') continue
-    const symbol = typeof p.symbol === 'string' && TICKER_RE.test(p.symbol.trim()) ? p.symbol.trim().toUpperCase() : null
+    if (typeof p.symbol !== 'string' || !TICKER_RE.test(p.symbol.trim())) continue
+    const symbol = p.symbol.trim().toUpperCase()
     const name = typeof p.name === 'string' ? p.name.trim() : null
     if (!name) continue   // need at least a name to be useful at all
     out.push({
-      symbol,   // may be null — flagged to the client as unresolved, not dropped
+      symbol,
       name,
       relationship: typeof p.relationship === 'string' ? p.relationship.slice(0, 200) : '',
       overlap: Array.isArray(p.overlap) ? p.overlap.filter(o => typeof o === 'string').slice(0, 4) : [],

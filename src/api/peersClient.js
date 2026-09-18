@@ -340,9 +340,17 @@ export async function ownNseIndustry(symbol) {
 // fresh call for the same answer. Confirming a peer is still a separate,
 // stronger fact recorded in peerRelationships (confirmPeerRelationship
 // below); this cache only remembers what the AI last said, confirmed or not.
+// Bump this whenever a change to api/suggestPeers.js's PROMPT (not the
+// input data) should invalidate every already-cached suggestion list —
+// e.g. tightening what counts as a valid candidate. Without this, a prompt
+// fix has no effect on a ticker that was already discovered: the fingerprint
+// would still match on unchanged name+businessSummary and just keep
+// returning the old, stale response forever.
+const PROMPT_VERSION = 2   // v2: stopped including unlisted/no-symbol candidates
+
 function suggestionFingerprint(name, businessSummary) {
   let h = 0
-  const s = `${name || ''}|${businessSummary || ''}`
+  const s = `${PROMPT_VERSION}|${name || ''}|${businessSummary || ''}`
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
   return h.toString(36)
 }
