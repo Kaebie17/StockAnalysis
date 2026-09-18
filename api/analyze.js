@@ -1,9 +1,12 @@
 // api/analyze.js — serverless endpoint that sends the dashboard highlight summary
-// to Gemini and returns a brief, balanced verdict. Requires GEMINI_API_KEY in the
-// Vercel env as a fallback. Returns { text: null } on any failure so the client
-// falls back to the built-in boilerplate.
+// to Gemini and returns a brief, balanced verdict. Strictly BYOK: only ever
+// spends the caller's own key (req.body.userKey), sent per request from
+// AIVerdict.jsx — there is no server-owned key fallback here, on purpose, so
+// nothing can silently draw down a shared/central key on anyone's behalf.
+// Returns { text: null } on any failure so the client falls back to the
+// built-in boilerplate.
 
-import { checkOrigin, requireOrigin, rateLimit } from './_lib.js'
+import { checkOrigin, rateLimit } from './_lib.js'
 
 const DEFAULT_MODEL = 'gemini-2.5-flash'   // current stable; fallback if not provided by client
 
@@ -39,23 +42,18 @@ Return only the verdict text, 4-6 sentences. No buy/sell/hold advice, no recomme
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') { res.status(405).json({ text: null }); return }
-  // BYOK: prefer the user's own key (sent per request); fall back to a server key
-  // only if one is configured. Never logged.
-  const key = req.body?.userKey || process.env.GEMINI_API_KEY
+  // BYOK, strictly — no server-owned key fallback. Never logged.
+  const key = req.body?.userKey
   const summary = req.body?.summary
   const MODEL = req.body?.model || DEFAULT_MODEL
 
-  // When falling back to the server's own GEMINI_API_KEY, require a matching
-  // Origin — that path has a real per-call cost to us, and without this any
-  // unauthenticated caller on the internet could drain it, key of their own
-  // or not. A user-supplied key only spends the user's own quota, so the
-  // softer check (never blocks a missing Origin) is enough there.
-  const usingServerKey = !req.body?.userKey && !!process.env.GEMINI_API_KEY
-  if (usingServerKey) { if (!requireOrigin(req, res)) return }
-  else { if (!checkOrigin(req, res)) return }
+  // A user-supplied key only ever spends the user's own quota, so the softer
+  // check (never blocks a missing Origin) is enough here — there's no
+  // server-cost path left to protect with the stricter requireOrigin().
+  if (!checkOrigin(req, res)) return
   if (!rateLimit(req, res, { max: 20, windowMs: 60_000, keyPrefix: 'analyze' })) return
 
-  if (!key || !summary) { res.status(200).json({ text: null }); return }
+  if (!key || !summary) { res.status(200).json({ text: null, error: !key ? 'no_key' : undefined }); return }
 
   // Prompt echo, for local debugging only. SYSTEM is the analyst prompt — the
   // actual product here — so it must not be returned to a browser in

@@ -35,7 +35,6 @@ export default function AIVerdict() {
   const [loading, setLoad] = useState(false)
   const [failed, setFailed] = useState(false)
   const [errMsg, setErrMsg] = useState('')
-  const [reloadTick, setReloadTick] = useState(0)   // bump to force a fresh AI call
   const [keyVal, setKeyVal] = useState(() => getAiKey())
   const hasKey = !!keyVal
   const [editKey, setEditKey] = useState(false)
@@ -60,58 +59,68 @@ export default function AIVerdict() {
   const fp = summary ? hashStr(JSON.stringify(summary)) : ''
   const key = state?.ticker && summary ? `${state.ticker}|${fp}|${modelVal}` : null
 
+  // Cache-check ONLY — never calls the API on its own. A miss here just
+  // leaves `text` null, and the render below shows an explicit "Generate"
+  // trigger instead of firing a paid call automatically. This is the fix for
+  // "don't auto-trigger": the old version called /api/analyze itself the
+  // moment a key existed and nothing was cached, including the instant a key
+  // was first saved (keyVal was in this effect's own dependency array).
   useEffect(() => {
     if (!key || !valuation || !summary) return
-    const forced = reloadTick > 0
-    if (!forced && _cache.has(key)) { setText(_cache.get(key)); return }
+    if (_cache.has(key)) { setText(_cache.get(key)); setFailed(false); return }
+    setText(null); setFailed(false); setErrMsg('')   // avoid showing a stale prior ticker's text while this one loads
     let cancelled = false
     ;(async () => {
-      // 1) Persistent cache: same ticker + same data → reuse, no API call
-      //    (survives refresh and sessions; only regenerates when data changes).
-      if (!forced) {
-        const saved = await getAiVerdict(state.ticker, fp)
-        if (cancelled) return
-        if (saved) { _cache.set(key, saved); setText(saved); return }
-      }
-      // 2) Miss → need a key to generate. No key → render shows the key prompt.
-      if (!hasKey) return
-      setLoad(true); setText(null); setFailed(false); setErrMsg('')
-      try {
-        const r = await fetch('/api/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ summary, userKey: keyVal, model: modelVal }),
-        })
-        const d = await r.json()
-        if (cancelled) return
-        if (d?.text) {
-          _cache.set(key, d.text); setText(d.text)
-          setAiVerdict(state.ticker, fp, d.text)   // persist latest-per-ticker
-        } else {
-          setFailed(true)
-          setErrMsg(friendlyAiError(d?.error, d?.raw))
-        }
-      } catch (e) {
-        if (!cancelled) { setFailed(true); setErrMsg(friendlyAiError(String(e?.message || e))) }
-      }
-      finally { if (!cancelled) setLoad(false) }
+      const saved = await getAiVerdict(state.ticker, fp)
+      if (cancelled) return
+      if (saved) { _cache.set(key, saved); setText(saved) }
     })()
     return () => { cancelled = true }
-  }, [key, keyVal, reloadTick])   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key])   // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!valuation) return null
 
+  // Key storage is fully separate from generation — saving/removing a key
+  // never calls the API. keyVal isn't in the cache-check effect's deps
+  // above, so nothing reacts to it; the only path to a paid call is the
+  // explicit generate()/refresh() below, both triggered by a click.
   const saveKey = () => {
     const cleaned = keyInput.trim()
     setKeyVal(cleaned)              // in-memory: used for requests this session
     setAiKey(cleaned, remember)     // best-effort persistence (may fail in private/in-app browsers)
     setEditKey(false); setKeyInput('')
-    _cache.clear()
   }
-  const removeKey = () => { clearAiKey(); setKeyVal(''); setText(null); _cache.clear() }
+  const removeKey = () => { clearAiKey(); setKeyVal('') }
 
-  // Manual re-run: bypasses both caches and spends tokens deliberately.
-  const refresh = () => { _cache.delete(key); setText(null); setFailed(false); setErrMsg(''); setReloadTick(t => t + 1) }
+  // The one place that actually spends tokens — always a direct response to
+  // a click (the "Generate AI analysis" button, "↻ Refresh analysis", or
+  // "Try again" after a failure), never called from an effect.
+  const generate = async () => {
+    if (!key || !hasKey) return
+    setLoad(true); setFailed(false); setErrMsg('')
+    try {
+      const r = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ summary, userKey: keyVal, model: modelVal }),
+      })
+      const d = await r.json()
+      if (d?.text) {
+        _cache.set(key, d.text); setText(d.text)
+        setAiVerdict(state.ticker, fp, d.text)   // persist latest-per-ticker
+      } else {
+        setFailed(true)
+        setErrMsg(friendlyAiError(d?.error, d?.raw))
+      }
+    } catch (e) {
+      setFailed(true); setErrMsg(friendlyAiError(String(e?.message || e)))
+    } finally {
+      setLoad(false)
+    }
+  }
+  // Re-run over an existing verdict: clear its cache entry first so a stale
+  // one can't flash back in before the fresh call resolves.
+  const refresh = () => { _cache.delete(key); generate() }
 
   // Key entry UI (shown when no key, or when editing).
   const KeyBox = (
@@ -182,7 +191,18 @@ export default function AIVerdict() {
   )
   // No cached verdict and no key → show boilerplate + key prompt.
   if (!hasKey) return <>{Boilerplate}{KeyBox}</>
-  // Key present but call failed → boilerplate + retry affordance.
+  // Key present, nothing cached, nothing attempted yet → boilerplate + an
+  // explicit trigger. This is the state that used to auto-call the API.
+  if (!failed) return (
+    <div>
+      {Boilerplate}
+      <button onClick={generate} title="Uses your Gemini key"
+        className="mt-1.5 text-[11px] text-accent hover:text-accent-light inline-flex items-center gap-1">
+        ✨ Generate AI analysis
+      </button>
+    </div>
+  )
+  // Key present but the last call failed → boilerplate + retry affordance.
   return (
     <div>
       {Boilerplate}
