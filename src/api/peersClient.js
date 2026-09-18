@@ -17,7 +17,7 @@
  * shared across every stock in the same sector.
  */
 
-import { getCached, listCachedTickers, listClassifications } from '../utils/db.js'
+import { getCached, listCachedTickers, listClassifications, listPeerRelationshipsFor, savePeerRelationship } from '../utils/db.js'
 import { sectorIndexFor, NSE_SECTORAL_INDEX_KEYS } from './marketRegime.js'
 import { scoreBusinessModelMatch } from '../engine/peerCompatibility.js'
 
@@ -214,68 +214,39 @@ async function fetchCachedSameSector(meta, sectorType, excludeTicker) {
   return enrichFromCache(mapped)
 }
 
-// Merges NSE's real sectoral constituents (#fetchSectorConstituents — the
-// primary source, exchange-maintained and automatic) with this browser's
-// own analysis history in the same sector (#fetchCachedSameSector — covers
-// what NSE's list structurally can't: BSE-only names). Yahoo's
-// recommendationsBySymbol was dropped entirely, not kept as a third
-// best-effort source — confirmed empty for RELIANCE.NS, and the library's
-// own docs say international/small-cap coverage is weak generally, so for
-// this app's actual market (Indian equities) it was never contributing a
-// real candidate; every peer field it used to supply (pe/forwardPe/pb/
-// marketCap) is now read off each cached peer's own ratioResult instead
-// (see enrichFromCache above), so nothing downstream lost real data by
-// dropping it. Every candidate is tagged with which source(s) surfaced it,
-// so PeerSelectModal can show why it's in the list — these are candidates
-// to review, not automatic peers.
-// Scans the CENTRAL classifications store (src/utils/db.js), not this
-// browser's cached financials — decoupled from whether a company's own
-// financials were ever fully analyzed, unlike fetchCachedSameSector above.
-// Bidirectional by construction: once company A is classified (from ANY
-// ticker's peer review, or its own page), it becomes eligible to surface for
-// company B's list and vice versa, purely because both now appear in
-// `all` — no propagation step needed.
-//
-// SECTOR_OR_THEME_ONLY matches are deliberately excluded from this
-// DISCOVERY source — they'd just add noise here, and sector-level
-// candidates are already covered by fetchSectorConstituents/
-// fetchCachedSameSector. This does NOT stop an already-known
-// SECTOR_OR_THEME_ONLY candidate from being labelled if it was sourced some
-// other way — see the tagging pass in fetchPeerCandidates below.
-function fetchBusinessModelMatches(targetClassification, excludeTicker, all) {
-  if (!targetClassification?.businessModel || !all?.length) return []
+// Peer relationships already established for this ticker — via a prior
+// AI-suggest run (this ticker's own, or the OTHER side's: confirming Kaynes
+// as Dixon's peer writes ONE record, so opening Kaynes later finds it here
+// too, no re-discovery needed) — src/utils/db.js's peerRelationships store.
+// Free: no AI call, no network beyond enrichFromCache's own cached-ratio
+// reads.
+async function fetchKnownRelationships(excludeTicker) {
   const t = String(excludeTicker || '').trim().toUpperCase()
-  const scored = all
-    .filter(rec => rec.symbol !== t)
-    .map(rec => ({ rec, match: scoreBusinessModelMatch(targetClassification, rec) }))
-    .filter(({ match }) => match && match.businessRelationship !== 'SECTOR_OR_THEME_ONLY')
-  return scored.map(({ rec, match }) => ({
-    symbol: rec.symbol, name: rec.name, industry: rec.nse?.industry || null,
-    businessRelationship: match.businessRelationship, businessModelScore: match.businessModelScore, reasons: match.reasons,
+  let rels
+  try { rels = await listPeerRelationshipsFor(t) } catch { return [] }
+  const mapped = rels.map(r => ({
+    symbol: r.peerSymbol, name: r.peerName || r.peerSymbol,
+    relationship: r.relationshipType || null, overlap: r.overlap || [], rationale: r.rationale || '',
+    aiConfidence: r.confidence || null,
   }))
+  return enrichFromCache(mapped)
 }
 
 // Merges NSE's real sectoral constituents, this browser's own analysis
-// history in the same sector, AND the central business-model classification
-// store — see the individual source functions above for what each one
-// covers and why. `classification` is the TARGET ticker's own record (or
-// null if it hasn't been classified yet — the business-model source then
-// simply contributes nothing, same graceful-decline shape
-// fetchCachedSameSector already uses when sectorIndexFor resolves nothing).
-// Classification is never triggered implicitly here — see PeerSelectModal.jsx
-// for the explicit, cost-conscious trigger.
+// history in the same sector, and any peer relationship already established
+// for this ticker (AI-suggested and confirmed, on either side of the pair).
+// `classification` (this ticker's OWN business-model record, or null) is
+// used only to TAG candidates that already happen to have their own
+// classification too — enrichment, not discovery: see suggestPeers() below
+// for the actual discovery step, which is a separate, explicit AI call
+// (never triggered automatically here) rather than something this function
+// runs on its own.
 export async function fetchPeerCandidates({ ticker, meta, sectorType, classification } = {}) {
-  let allClassifications = []
-  if (classification?.businessModel) {
-    try { allClassifications = await listClassifications() } catch { allClassifications = [] }
-  }
-
-  const [nse, ownCache] = await Promise.all([
+  const [nse, ownCache, known] = await Promise.all([
     fetchSectorConstituents(ticker),
     fetchCachedSameSector(meta, sectorType, ticker),
+    fetchKnownRelationships(ticker),
   ])
-  const bizModel = fetchBusinessModelMatches(classification, ticker, allClassifications)
-  const bizModelEnriched = bizModel.length ? await enrichFromCache(bizModel) : []
 
   const bySymbol = new Map()
   for (const p of nse) bySymbol.set(p.symbol, { ...p, sources: ['nse-index'] })
@@ -287,31 +258,105 @@ export async function fetchPeerCandidates({ ticker, meta, sectorType, classifica
       bySymbol.set(p.symbol, { ...p, sources: ['own-cache'] })
     }
   }
-  for (const p of bizModelEnriched) {
+  for (const p of known) {
     const existing = bySymbol.get(p.symbol)
     bySymbol.set(p.symbol, existing
-      ? { ...existing, ...p, sources: [...existing.sources, 'business-model'] }
-      : { ...p, sources: ['business-model'] })
+      ? { ...existing, ...p, sources: [...existing.sources, 'known-relationship'] }
+      : { ...p, sources: ['known-relationship'] })
   }
 
-  // Second pass: tag any candidate NOT sourced via business-model matching
-  // (nse-index/own-cache only) that already has its own classification in
-  // the central store — so it can still show a businessRelationship badge,
-  // and be flagged if it's an already-confirmed peer scoring
-  // SECTOR_OR_THEME_ONLY (PeerSelectModal.jsx). Reuses the same
-  // allClassifications list already fetched above — no second DB read.
-  if (classification?.businessModel && allClassifications.length) {
-    const bySymbolClassification = new Map(allClassifications.map(rec => [rec.symbol, rec]))
-    for (const [symbol, p] of bySymbol) {
-      if (p.businessRelationship != null) continue   // already scored (came in via bizModel)
-      const rec = bySymbolClassification.get(symbol)
-      if (!rec) continue
-      const match = scoreBusinessModelMatch(classification, rec)
-      if (match) bySymbol.set(symbol, { ...p, businessRelationship: match.businessRelationship, businessModelScore: match.businessModelScore, reasons: match.reasons })
+  // Tag any candidate that already has its OWN classification in the
+  // central store, purely for display (a businessRelationship badge) — this
+  // never adds a new candidate to the list, only annotates ones already
+  // surfaced by the three sources above.
+  if (classification?.businessModel) {
+    let allClassifications = []
+    try { allClassifications = await listClassifications() } catch { /* no annotation, not fatal */ }
+    if (allClassifications.length) {
+      const bySymbolClassification = new Map(allClassifications.map(rec => [rec.symbol, rec]))
+      for (const [symbol, p] of bySymbol) {
+        const rec = bySymbolClassification.get(symbol)
+        if (!rec) continue
+        const match = scoreBusinessModelMatch(classification, rec)
+        if (match) bySymbol.set(symbol, { ...p, businessRelationship: match.businessRelationship, businessModelScore: match.businessModelScore, reasons: match.reasons })
+      }
     }
   }
 
   return [...bySymbol.values()]
+}
+
+// A symbol's own real NSE Industry label — every row fetchSectorConstituents
+// returns for a given ticker already carries that ticker's own Industry
+// string (the function filters its whole result down to rows sharing it),
+// so reading it off the first result IS the target's own label. Used as the
+// classification-input source everywhere in this feature instead of Yahoo's
+// sector/industry, which this app already treats as a lower-confidence
+// fallback elsewhere (fetchCachedSameSector's docblock) — there's no reason
+// the AI-facing parts of this feature should be the one place using the
+// weaker source when the real NSE label is one call away. Null for a
+// company NSE doesn't index (BSE-only, below a market-cap cutoff) — callers
+// fall back to businessSummary alone in that case, not to Yahoo's label.
+export async function ownNseIndustry(symbol) {
+  const candidates = await fetchSectorConstituents(symbol)
+  return candidates[0]?.industry || null
+}
+
+// ── AI peer suggestion — the actual discovery step ──────────────────────────
+// Asks Gemini directly for real peer companies, rather than only matching
+// against whatever's already in the classification store.
+//
+// NOT sent to the AI: any sector/industry classification label, NSE's or
+// Yahoo's. NSE's own per-company Industry label is still too coarse (Dixon:
+// "Consumer Electronics", same bucket as branded companies with a
+// completely different business model) and risked anchoring the model
+// toward it despite instructions not to. Only the company's name and its
+// real business description go in — see api/suggestPeers.js.
+//
+// `nseIndustry` is still looked up and returned here, purely as DISPLAY
+// context in the modal (so you can see what NSE's coarse label says
+// alongside what the AI actually found) — it never reaches the prompt.
+//
+// Never called automatically — PeerSelectModal.jsx's explicit "Discover
+// peers with AI" button is the only trigger. Returns the raw suggestion
+// list; nothing is saved here (that's confirmPeerRelationship below, on the
+// user's explicit confirm).
+export async function suggestPeers({ ticker, name, meta, userKey, model }) {
+  const nseIndustry = await ownNseIndustry(ticker)   // display-only, not sent below
+
+  try {
+    const r = await fetch('/api/suggestPeers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol: ticker, name, businessSummary: meta?.businessSummary, userKey, model }),
+    })
+    const data = await r.json().catch(() => null)
+    if (!data || !Array.isArray(data.peers)) {
+      return { peers: null, error: data?.error || 'fetch_failed', detail: data?.detail, nseIndustry }
+    }
+    const withCache = await enrichFromCache(data.peers.filter(p => p.symbol).map(p => ({ ...p })))
+    const bySymbol = new Map(withCache.map(p => [p.symbol, p]))
+    // Entries with no resolvable symbol still carry real info (name,
+    // rationale) worth showing, just not confirmable/warmable yet.
+    const unresolved = data.peers.filter(p => !p.symbol)
+    return { peers: [...bySymbol.values(), ...unresolved], nseIndustry }
+  } catch (e) {
+    return { peers: null, error: 'fetch_failed', detail: e?.message, nseIndustry }
+  }
+}
+
+// Writes the relationship bidirectionally — confirming Kaynes as Dixon's
+// peer means Dixon shows up for Kaynes too, immediately, with zero further
+// AI calls (see fetchKnownRelationships above).
+export async function confirmPeerRelationship(ticker, tickerName, peer) {
+  return savePeerRelationship(ticker, tickerName, peer.symbol, peer.name || peer.symbol, {
+    relationshipType: peer.relationship || null,
+    overlap: peer.overlap || [],
+    rationale: peer.rationale || '',
+    confidence: peer.aiConfidence || peer.confidence || null,
+    source: 'ai',
+    createdAt: Date.now(),
+  })
 }
 
 export function clearPeersCache() { sectorCache.clear() }

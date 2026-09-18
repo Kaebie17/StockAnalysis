@@ -1,10 +1,10 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { fetchPeerCandidates } from '../../api/peersClient.js'
+import { fetchPeerCandidates, suggestPeers, confirmPeerRelationship, ownNseIndustry } from '../../api/peersClient.js'
 import { classifyCompany } from '../../api/businessProfileClient.js'
 import { analyzeTicker } from '../../store/analyzeTicker.js'
 import { getClassification, saveClassification } from '../../utils/db.js'
 import { getAiKey } from '../../utils/aiKey.js'
-import { assessValuationPeerEligibility, summarizePeerSet } from '../../engine/peerCompatibility.js'
+import { assessValuationPeerEligibility } from '../../engine/peerCompatibility.js'
 import { BUSINESS_MODELS, END_MARKETS, REVENUE_MODELS, PRODUCTION_PROFILES, CAPITAL_INTENSITY } from '../../engine/businessProfileEnums.js'
 import Modal from '../Modal.jsx'
 
@@ -12,28 +12,26 @@ import Modal from '../Modal.jsx'
  * PeerSelectModal — review real peer candidates, confirm which count, and
  * deliberately warm this ticker's peer cache along the way.
  *
- * Candidates come from THREE automatic sources, merged (peersClient.js's
- * fetchPeerCandidates):
- *   - NSE's own sectoral index constituents — real, exchange-maintained,
- *     but NSE-listed only, so a BSE-only comparable never appears here, and
- *     limited to NSE's own flat Industry label (Dixon and Havells share one
- *     label despite very different business models).
- *   - This browser's own analysis history in the same sector — covers what
- *     NSE's list structurally can't (BSE-only names).
- *   - The central business-model classification store — see the "Classify"
- *     affordances below. A company classified once (by AI, reviewed/edited
- *     by hand, or corrected outright) is reused as a peer-discovery signal
- *     for EVERY ticker from then on, not just this one — recovering
- *     candidates the other two sources structurally can't (Kaynes, labelled
- *     "Industrial Products" by NSE, still surfaces for Dixon here).
- * None of the three is a guarantee of comparability, so nothing is
- * pre-checked, including already-cached peers: confirming is what makes a
- * candidate count toward peerBand().
- *
- * Classification is NEVER triggered automatically — it costs real tokens
- * (BYOK Gemini). Every classify action here is an explicit click, and the
- * result is cached centrally (src/utils/db.js's `classifications` store) so
- * it's a one-time cost per company, not per ticker that reviews it.
+ * Discovery has two parts, deliberately kept separate:
+ *   - AI SUGGESTS real peer companies directly (suggestPeers, "Discover
+ *     peers with AI" below) — given this company's name and real business
+ *     description only (no sector/industry label of any kind — NSE's own
+ *     label is still too coarse and risked biasing the model even with
+ *     instructions not to lean on it), name actual candidates, not just
+ *     match against whatever's already sitting in the classification store.
+ *     This is the real discovery step. Confirming a suggestion saves the
+ *     relationship BIDIRECTIONALLY (src/utils/db.js's peerRelationships
+ *     store) — confirm Kaynes as Dixon's peer once, and Kaynes's own page
+ *     already shows Dixon, no re-discovery needed.
+ *   - Classification (business model / end markets / production profile)
+ *     is supporting infrastructure, not how peers get found — it EXPLAINS
+ *     and VALIDATES a discovered peer, and lets the financial-eligibility
+ *     check run, but nothing here requires classifying a company before it
+ *     can appear as a candidate.
+ * Also still merged in: NSE's own sectoral index constituents, and this
+ * browser's own analysis history in the same sector — neither requires an
+ * AI call, both are free background candidates. Nothing is pre-checked;
+ * confirming is what makes any candidate count toward peerBand().
  */
 export default function PeerSelectModal({ open, onClose, ticker, name, meta, sectorType, ratioResult, confirmedPeers = [], onToggleConfirm }) {
   const [peers, setPeers] = useState([])
@@ -43,16 +41,21 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
   const loadedAnyRef = useRef(false)
   const confirmedSet = new Set(confirmedPeers)
 
+  const [discovering, setDiscovering] = useState(false)
+  const [discoverError, setDiscoverError] = useState(null)
+  const [nseIndustry, setNseIndustry] = useState(undefined)   // undefined = not yet looked up, null = not NSE-indexed
+
   const [targetClassification, setTargetClassification] = useState(null)
-  const [draft, setDraft] = useState(null)          // pending AI result under review, or null
-  const [classifyBusy, setClassifyBusy] = useState(null)   // symbol currently being classified
-  const [classifyError, setClassifyError] = useState(null) // { symbol, error, detail }
+  const [showEnrich, setShowEnrich] = useState(false)
+  const [draft, setDraft] = useState(null)          // pending AI classification under review, or null
+  const [classifyBusy, setClassifyBusy] = useState(null)
+  const [classifyError, setClassifyError] = useState(null)
 
   useEffect(() => {
-    if (!open || !ticker) { setPeers([]); setTargetClassification(null); return }
+    if (!open || !ticker) { setPeers([]); setTargetClassification(null); setNseIndustry(undefined); return }
     let cancelled = false
     loadedAnyRef.current = false
-    setQueue([])
+    setQueue([]); setDiscoverError(null)
     ;(async () => {
       const cls = await getClassification(ticker).catch(() => null)
       if (cancelled) return
@@ -85,16 +88,6 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
     })
   }, [queue])
 
-  const toggle = (symbol) => {
-    const isConfirming = !confirmedSet.has(symbol)
-    onToggleConfirm?.(symbol)
-    if (isConfirming) {
-      if (status[symbol] !== 'available') setQueue(q => (q.includes(symbol) ? q : [...q, symbol]))
-    } else {
-      setQueue(q => q.filter(s => s !== symbol))
-    }
-  }
-
   const refetchCandidates = async (cls) => {
     const list = await fetchPeerCandidates({ ticker, meta, sectorType, classification: cls })
     setPeers(list)
@@ -103,25 +96,64 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
     setStatus(prev => ({ ...st, ...prev }))
   }
 
-  const runClassify = async (symbol, candName, candMeta, { force = false } = {}) => {
+  // The actual discovery step — asks Gemini directly for real peer
+  // companies. Only ever runs on this explicit click.
+  const runDiscover = async () => {
+    setDiscovering(true); setDiscoverError(null)
+    const res = await suggestPeers({ ticker, name, meta, userKey: getAiKey() })
+    setDiscovering(false)
+    if (res.nseIndustry !== undefined) setNseIndustry(res.nseIndustry)
+    if (!res.peers) { setDiscoverError({ error: res.error, detail: res.detail }); return }
+    setPeers(prev => {
+      const bySymbol = new Map(prev.map(p => [p.symbol, p]))
+      for (const s of res.peers) {
+        const key = s.symbol || `unresolved:${s.name}`
+        const existing = bySymbol.get(key)
+        const merged = existing
+          ? { ...existing, ...s, sources: [...new Set([...existing.sources, 'ai-suggested'])] }
+          : { ...s, symbol: key, unresolved: !s.symbol, sources: ['ai-suggested'] }
+        bySymbol.set(key, merged)
+      }
+      return [...bySymbol.values()]
+    })
+  }
+
+  const toggle = (symbol) => {
+    const isConfirming = !confirmedSet.has(symbol)
+    onToggleConfirm?.(symbol)
+    if (isConfirming) {
+      const p = peers.find(x => x.symbol === symbol)
+      if (status[symbol] !== 'available') setQueue(q => (q.includes(symbol) ? q : [...q, symbol]))
+      // AI-suggested peer being confirmed for the first time: save the
+      // relationship bidirectionally so the OTHER side already has it too.
+      if (p?.sources?.includes('ai-suggested')) confirmPeerRelationship(ticker, name, p).catch(() => {})
+    } else {
+      setQueue(q => q.filter(s => s !== symbol))
+    }
+  }
+
+  // ── Classification (secondary, optional enrichment) ─────────────────────
+  const runClassify = async (symbol, candName, { force = false } = {}) => {
     setClassifyBusy(symbol); setClassifyError(null)
     const existingBefore = await getClassification(symbol).catch(() => null)
-    const res = await classifyCompany({ symbol, name: candName, meta: candMeta, userKey: getAiKey(), force })
+    const industry = await ownNseIndustry(symbol)
+    const candMeta = symbol === ticker ? meta : peers.find(p => p.symbol === symbol)?.meta
+    const res = await classifyCompany({ symbol, name: candName, nseIndustry: industry, businessSummary: candMeta?.businessSummary, userKey: getAiKey(), force })
     setClassifyBusy(null)
     if (res.error) { setClassifyError({ symbol, error: res.error, detail: res.detail }); return }
     if (res.skipped === 'user-owned') {
       setClassifyError({ symbol, error: 'user-owned',
-        detail: 'This was corrected by hand and is kept as-is. Use "Re-run AI classification" to review a fresh AI suggestion without losing the correction.' })
+        detail: 'This was corrected by hand and is kept as-is. Use "Re-run AI classification" to review a fresh suggestion without losing the correction.' })
       return
     }
-    if (res.skipped === 'unchanged') return   // already current, nothing to review
-    setDraft({ symbol, name: candName, ...res.result, _previous: existingBefore, _meta: candMeta })
+    if (res.skipped === 'unchanged') return
+    setDraft({ symbol, name: candName, ...res.result, _previous: existingBefore, _industry: industry })
   }
 
   const saveDraft = async (fields, { edited }) => {
     if (!draft) return
     const nse = draft._previous?.nse
-      || (draft._meta ? { sector: draft._meta.sector, industry: draft._meta.industry, basicIndustry: null, source: 'yahoo-meta', updatedAt: Date.now() } : null)
+      || (draft._industry ? { sector: null, industry: draft._industry, basicIndustry: null, source: 'nse-index', updatedAt: Date.now() } : null)
     const rec = await saveClassification({
       symbol: draft.symbol, name: draft.name,
       nse,
@@ -150,13 +182,14 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
     revenue: ratioResult.revenue ?? null,
   } : null
 
+  // AI-suggested / known-relationship candidates first (the real discovery
+  // signal), then anything classification-tagged, then the rest.
   const sortedPeers = [...peers].sort((a, b) => {
-    const rank = r => r === 'DIRECT_BUSINESS_MODEL' ? 0 : r === 'BROAD_BUSINESS_MODEL' ? 1 : r === 'SECTOR_OR_THEME_ONLY' ? 3 : 2
-    return rank(a.businessRelationship) - rank(b.businessRelationship)
+    const rank = p => p.sources?.includes('ai-suggested') || p.sources?.includes('known-relationship') ? 0
+      : p.businessRelationship === 'DIRECT_BUSINESS_MODEL' ? 1
+      : p.businessRelationship === 'BROAD_BUSINESS_MODEL' ? 2 : 3
+    return rank(a) - rank(b)
   })
-
-  const confirmedScored = peers.filter(p => confirmedSet.has(p.symbol) && p.businessRelationship)
-  const peerSet = targetClassification ? summarizePeerSet(confirmedScored) : null
 
   return (
     <Modal
@@ -172,79 +205,77 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
         </button>
       }
     >
-        <p className="text-xs text-slate-400">
-          Candidates from NSE's own sectoral index, stocks you've already analyzed in the same sector, and
-          companies classified as the same business model. Confirm the ones that are genuinely comparable —
-          only confirmed peers count toward peer-median multiples.
-        </p>
-
-        <TargetClassificationBox
-          ticker={ticker} name={name}
-          classification={targetClassification}
-          draft={draft?.symbol === ticker ? draft : null}
-          busy={classifyBusy === ticker}
-          error={classifyError?.symbol === ticker ? classifyError : null}
-          onClassify={() => runClassify(ticker, name, meta)}
-          onReclassify={() => runClassify(ticker, name, meta, { force: true })}
-          onSaveDraft={saveDraft}
-          onCancelDraft={() => setDraft(null)}
-        />
-
-        {peerSet && (
-          <p className={`text-[11px] rounded-lg px-3 py-2 ${
-            peerSet.relevance === 'strong' ? 'bg-bull/10 text-bull'
-            : peerSet.relevance === 'weak' || peerSet.relevance === 'unscored' ? 'bg-neutral/10 text-neutral'
-            : 'bg-navy-800/60 text-slate-400'}`}>
-            {peerSet.primaryPeerCount} direct peer{peerSet.primaryPeerCount === 1 ? '' : 's'}, {peerSet.broadPeerCount} broad
-            {peerSet.reason ? ` — ${peerSet.reason}` : ' — solid business-model composition'}
+        <div className="bg-navy-800/40 rounded-lg p-3 space-y-1.5">
+          <p className="text-[11px] text-slate-400">
+            Ask AI to name real peer companies directly — uses your Gemini key, and confirming a match saves it
+            both ways, so {name || ticker}'s peers already show up on their own pages too.
           </p>
+          <button onClick={runDiscover} disabled={discovering}
+            className="text-[11px] font-medium text-accent hover:text-accent-light disabled:opacity-50">
+            {discovering ? 'Discovering…' : '✨ Discover peers with AI'}
+          </button>
+          {nseIndustry !== undefined && (
+            <p className="text-[10px] text-slate-600">
+              {nseIndustry ? `NSE labels this "${nseIndustry}" (shown for comparison only — not sent to the AI)` : 'Not a member of any NSE sectoral index.'}
+            </p>
+          )}
+          {discoverError && <p className="text-[10px] text-bear">{discoverError.detail || discoverError.error}</p>}
+        </div>
+
+        <button onClick={() => setShowEnrich(s => !s)} className="text-[10px] text-slate-500 hover:text-slate-300">
+          {showEnrich ? '▲' : '▼'} Business-model detail for {name || ticker} (optional)
+        </button>
+        {showEnrich && (
+          <TargetClassificationBox
+            ticker={ticker} name={name}
+            classification={targetClassification}
+            draft={draft?.symbol === ticker ? draft : null}
+            busy={classifyBusy === ticker}
+            error={classifyError?.symbol === ticker ? classifyError : null}
+            onClassify={() => runClassify(ticker, name)}
+            onReclassify={() => runClassify(ticker, name, { force: true })}
+            onSaveDraft={saveDraft}
+            onCancelDraft={() => setDraft(null)}
+          />
         )}
 
         <div className="space-y-1 max-h-64 overflow-y-auto">
           {sortedPeers.map(p => {
-            const isConfirmed = confirmedSet.has(p.symbol)
-            const eligibility = (targetClassification && targetFin && p.businessRelationship)
+            const isConfirmed = confirmedSet.has(p.symbol) && !p.unresolved
+            // Runs for every candidate with cached financials, not just
+            // classification-tagged ones — this check has to cover the
+            // PRIMARY discovery path (AI-suggested peers) at least as much
+            // as the secondary one; assessValuationPeerEligibility already
+            // degrades to UNASSESSED gracefully when a field is missing.
+            const eligibility = targetFin
               ? assessValuationPeerEligibility(targetClassification, p, targetFin, p, { metric: 'ev_ebitda' }) : null
-            const lowConfidence = isConfirmed && (p.businessRelationship === 'SECTOR_OR_THEME_ONLY' || eligibility?.valuationEligibility === 'NOT_ELIGIBLE')
             return (
               <div key={p.symbol} className="py-1 border-b border-navy-800/60 last:border-0">
                 <div className="flex items-center gap-2 text-sm">
-                  <label className="flex items-center gap-2 flex-1 min-w-0 cursor-pointer">
-                    <input type="checkbox" checked={isConfirmed} onChange={() => toggle(p.symbol)}
-                           disabled={status[p.symbol] === 'loading'}
-                           title={isConfirmed ? 'Confirmed as a peer — untick to remove' : 'Confirm as a peer for this stock'}
+                  <label className={`flex items-center gap-2 flex-1 min-w-0 ${p.unresolved ? '' : 'cursor-pointer'}`}>
+                    <input type="checkbox" checked={isConfirmed} onChange={() => !p.unresolved && toggle(p.symbol)}
+                           disabled={status[p.symbol] === 'loading' || p.unresolved}
+                           title={p.unresolved ? 'No confirmed ticker symbol for this suggestion yet'
+                             : isConfirmed ? 'Confirmed as a peer — untick to remove' : 'Confirm as a peer for this stock'}
                            className="accent-accent" />
                     <span className="flex-1 min-w-0 truncate">
                       <span className="text-slate-300">{p.name || p.symbol}</span>
-                      <SourceTag sources={p.sources} industry={p.industry} businessRelationship={p.businessRelationship} reasons={p.reasons} />
+                      <SourceTag p={p} />
                     </span>
                   </label>
-                  {lowConfidence && (
-                    <span title={eligibility?.reasons?.join('; ') || p.reasons?.join('; ')}
-                          className="text-[10px] text-neutral shrink-0">⚠ low match</span>
-                  )}
                   {eligibility && eligibility.valuationEligibility !== 'UNASSESSED' && (
                     <EligibilityBadge eligibility={eligibility.valuationEligibility} reasons={eligibility.reasons} />
                   )}
-                  <StatusBadge status={status[p.symbol]} queued={queue.includes(p.symbol) && status[p.symbol] !== 'loading'} />
+                  <StatusBadge status={status[p.symbol]} queued={queue.includes(p.symbol) && status[p.symbol] !== 'loading'} unresolved={p.unresolved} />
                 </div>
                 <div className="pl-6 flex items-center gap-2">
-                  {!p.businessRelationship && classifyBusy !== p.symbol && (
-                    <button onClick={() => runClassify(p.symbol, p.name, p.meta)}
-                            className="text-[10px] text-accent hover:text-accent-light">
-                      classify business model
+                  {!p.unresolved && !p.businessRelationship && classifyBusy !== p.symbol && (
+                    <button onClick={() => runClassify(p.symbol, p.name)} className="text-[10px] text-slate-500 hover:text-slate-300">
+                      add business-model detail
                     </button>
                   )}
                   {classifyBusy === p.symbol && <span className="text-[10px] text-slate-500">classifying…</span>}
-                  {p.businessRelationship && classifyBusy !== p.symbol && (
-                    <button onClick={() => runClassify(p.symbol, p.name, p.meta, { force: true })}
-                            className="text-[10px] text-slate-600 hover:text-slate-400">
-                      ↻ re-run AI classification
-                    </button>
-                  )}
-                  {classifyError?.symbol === p.symbol && (
-                    <span className="text-[10px] text-bear">{classifyError.detail || classifyError.error}</span>
-                  )}
+                  {classifyError?.symbol === p.symbol && <span className="text-[10px] text-bear">{classifyError.detail || classifyError.error}</span>}
                 </div>
                 {draft?.symbol === p.symbol && (
                   <div className="pl-6 mt-1">
@@ -256,7 +287,7 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
               </div>
             )
           })}
-          {peers.length === 0 && <p className="text-xs text-slate-500 py-2">No peer candidates found for this stock.</p>}
+          {peers.length === 0 && <p className="text-xs text-slate-500 py-2">No peer candidates yet — try "Discover peers with AI" above.</p>}
         </div>
     </Modal>
   )
@@ -266,9 +297,7 @@ function TargetClassificationBox({ ticker, name, classification, draft, busy, er
   if (draft) {
     return (
       <div className="bg-navy-800/40 rounded-lg p-3 space-y-2">
-        <p className="text-[11px] text-slate-400">
-          Review {name || ticker}'s classification before saving — nothing is applied until you save.
-        </p>
+        <p className="text-[11px] text-slate-400">Review before saving — nothing is applied until you save.</p>
         <ClassificationForm draft={draft}
           onSave={fields => onSaveDraft(fields, { edited: false })}
           onSaveEdited={fields => onSaveDraft(fields, { edited: true })}
@@ -276,23 +305,16 @@ function TargetClassificationBox({ ticker, name, classification, draft, busy, er
       </div>
     )
   }
-
   if (!classification) {
     return (
       <div className="bg-navy-800/40 rounded-lg p-3 space-y-1.5">
-        <p className="text-[11px] text-slate-400">
-          Classify this company's business model — uses your Gemini key, reused everywhere this company
-          shows up as a peer.
-        </p>
-        <button onClick={onClassify} disabled={busy}
-          className="text-[11px] font-medium text-accent hover:text-accent-light disabled:opacity-50">
+        <button onClick={onClassify} disabled={busy} className="text-[11px] font-medium text-accent hover:text-accent-light disabled:opacity-50">
           {busy ? 'Classifying…' : 'Classify business model'}
         </button>
         {error && <p className="text-[10px] text-bear">{error.detail || error.error}</p>}
       </div>
     )
   }
-
   return (
     <div className="bg-navy-800/40 rounded-lg p-3 space-y-1">
       <div className="flex items-center justify-between">
@@ -327,7 +349,6 @@ function ClassificationForm({ draft, onSave, onSaveEdited, onCancel }) {
 
   const set = (key, val) => { setFields(f => ({ ...f, [key]: val })); setEdited(true) }
   const toggleMulti = (key, val) => set(key, fields[key].includes(val) ? fields[key].filter(v => v !== val) : [...fields[key], val])
-
   const changedFrom = (key) => prev && prev[key] != null && JSON.stringify(prev[key]) !== JSON.stringify(fields[key])
 
   return (
@@ -358,12 +379,10 @@ function ClassificationForm({ draft, onSave, onSaveEdited, onCancel }) {
       </Field>
       <label className="block">
         <span className="text-slate-500 block mb-0.5">Rationale</span>
-        <textarea value={fields.rationale} onChange={e => set('rationale', e.target.value)}
-                  className="input-field text-[11px] w-full" rows={2} />
+        <textarea value={fields.rationale} onChange={e => set('rationale', e.target.value)} className="input-field text-[11px] w-full" rows={2} />
       </label>
       <div className="flex items-center gap-3 pt-1">
-        <button onClick={() => (edited ? onSaveEdited : onSave)(fields)}
-                className="text-accent hover:text-accent-light font-medium">Save</button>
+        <button onClick={() => (edited ? onSaveEdited : onSave)(fields)} className="text-accent hover:text-accent-light font-medium">Save</button>
         <button onClick={onCancel} className="text-slate-500 hover:text-slate-300">Cancel</button>
       </div>
     </div>
@@ -373,9 +392,7 @@ function ClassificationForm({ draft, onSave, onSaveEdited, onCancel }) {
 function Field({ label, changed, was, children }) {
   return (
     <label className="block">
-      <span className="text-slate-500 block mb-0.5">
-        {label}{changed && was && <span className="text-neutral"> (was: {was})</span>}
-      </span>
+      <span className="text-slate-500 block mb-0.5">{label}{changed && was && <span className="text-neutral"> (was: {was})</span>}</span>
       {children}
     </label>
   )
@@ -398,7 +415,8 @@ function ChipField({ label, options, selected, onToggle }) {
   )
 }
 
-function StatusBadge({ status, queued }) {
+function StatusBadge({ status, queued, unresolved }) {
+  if (unresolved) return <span className="text-[10px] text-slate-600 shrink-0">no ticker yet</span>
   if (status === 'available') return <span className="text-[10px] text-bull shrink-0">✓ available</span>
   if (status === 'loading')   return <span className="text-[10px] text-slate-500 shrink-0">loading…</span>
   if (queued)                 return <span className="text-[10px] text-slate-600 shrink-0">queued…</span>
@@ -414,21 +432,27 @@ function EligibilityBadge({ eligibility, reasons }) {
   return <span title={reasons?.join('; ')} className={`text-[10px] shrink-0 ${tone}`}>{label}</span>
 }
 
-// Why this candidate is in the list — which source(s) surfaced it, the NSE
-// index's own industry sub-classification where there is one, and the
-// business-model relationship once either side is classified.
-function SourceTag({ sources, industry, businessRelationship, reasons }) {
+// Why this candidate is in the list. AI-suggested/known-relationship
+// candidates show the AI's own relationship phrase and rationale directly
+// (the real discovery signal); others show NSE/own-cache source plus a
+// classification badge if one happens to exist.
+function SourceTag({ p }) {
+  const { sources, industry, relationship, rationale, aiConfidence, businessRelationship, reasons } = p
   if (!sources?.length) return null
-  const label = sources.includes('nse-index') ? (industry || 'NSE sector index')
-    : sources.includes('business-model') ? 'Business-model match'
-    : 'Previously analyzed, same sector'
-  const relLabel = businessRelationship === 'DIRECT_BUSINESS_MODEL' ? 'Direct business-model peer'
-    : businessRelationship === 'BROAD_BUSINESS_MODEL' ? 'Broad business-model peer'
-    : businessRelationship === 'SECTOR_OR_THEME_ONLY' ? 'Sector/theme only' : null
+  if (sources.includes('ai-suggested') || sources.includes('known-relationship')) {
+    return (
+      <span title={rationale} className="block text-[10px] text-accent/80 truncate">
+        {relationship || 'AI-suggested peer'}{aiConfidence && ` · ${aiConfidence} confidence`}
+      </span>
+    )
+  }
+  const label = sources.includes('nse-index') ? (industry || 'NSE sector index') : 'Previously analyzed, same sector'
+  const relLabel = businessRelationship === 'DIRECT_BUSINESS_MODEL' ? 'Direct business-model match'
+    : businessRelationship === 'BROAD_BUSINESS_MODEL' ? 'Broad business-model match' : null
   return (
     <span className="block text-[10px] text-slate-500 truncate">
       {label}
-      {relLabel && <span title={reasons?.join('; ')} className={businessRelationship === 'SECTOR_OR_THEME_ONLY' ? ' text-slate-600' : ' text-accent/80'}> · {relLabel}</span>}
+      {relLabel && <span title={reasons?.join('; ')} className="text-accent/80"> · {relLabel}</span>}
     </span>
   )
 }

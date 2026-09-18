@@ -21,8 +21,15 @@ function hashStr(str) {
   return h.toString(36)
 }
 
-export function classificationFingerprint({ name, sector, industry, businessSummary }) {
-  return hashStr(`${name || ''}|${sector || ''}|${industry || ''}|${businessSummary || ''}`)
+// `nseIndustry` — the real NSE per-company Industry label (src/api/
+// peersClient.js's ownNseIndustry), NOT Yahoo's meta.sector/industry. This
+// app already treats Yahoo's sector/industry as a lower-confidence fallback
+// everywhere else in the peer pipeline (fetchCachedSameSector); classifying
+// off it here was a mistake in an earlier pass, not a deliberate choice —
+// there's no reason the AI-facing side of this feature should use the
+// weaker source when the real NSE label is available.
+export function classificationFingerprint({ name, nseIndustry, businessSummary }) {
+  return hashStr(`${name || ''}|${nseIndustry || ''}|${businessSummary || ''}`)
 }
 
 // One in-flight request per symbol — de-dupes a double click or a re-render
@@ -36,11 +43,11 @@ const inflight = new Map()
  *   { result: {...classification fields...} }  — a fresh AI result, NOT yet saved
  *   { error: 'no_key' | 'fetch_failed' | 'unparseable' | 'unclassifiable' | 'missing_input', detail }
  */
-export async function classifyCompany({ symbol, name, meta, userKey, model, force = false }) {
+export async function classifyCompany({ symbol, name, nseIndustry, businessSummary, userKey, model, force = false }) {
   const sym = String(symbol || '').trim().toUpperCase()
   if (!sym || !name) return { error: 'missing_input', detail: 'symbol and name are required' }
 
-  const fp = classificationFingerprint({ name, sector: meta?.sector, industry: meta?.industry, businessSummary: meta?.businessSummary })
+  const fp = classificationFingerprint({ name, nseIndustry, businessSummary })
 
   if (!force) {
     const existing = await getClassification(sym)
@@ -57,8 +64,8 @@ export async function classifyCompany({ symbol, name, meta, userKey, model, forc
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           symbol: sym, name,
-          sector: meta?.sector || null, industry: meta?.industry || null,
-          businessSummary: meta?.businessSummary || null,
+          sector: null, industry: nseIndustry || null,
+          businessSummary: businessSummary || null,
           userKey, model,
         }),
       })

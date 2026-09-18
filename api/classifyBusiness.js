@@ -1,6 +1,8 @@
 // api/classifyBusiness.js — classify one company's business model from its
-// own description, for peer-discovery purposes (see src/engine/
-// peerCompatibility.js and src/api/peersClient.js's fetchBusinessModelMatches).
+// own description. Supporting/enrichment infrastructure, not the discovery
+// step — see api/suggestPeers.js for that (AI names real peer companies
+// directly). This endpoint explains/validates a company once it's already a
+// candidate (see src/engine/peerCompatibility.js, src/api/peersClient.js).
 //
 // Per-COMPANY, not per-market like api/erp.js — there's no useful server-side
 // cache here (thousands of possible tickers, one-shot serverless instances);

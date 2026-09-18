@@ -11,7 +11,7 @@
  */
 
 const DB_NAME    = 'stockanalyzr'
-const DB_VERSION = 10
+const DB_VERSION = 11
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
@@ -100,13 +100,21 @@ function openDB() {
         d.createObjectStore('aliasOverrides', { keyPath: 'id' })
       }
       // Business-model peer classifications — keyed by SYMBOL, not by ticker
-      // this browser happens to have fully analyzed: a company gets
-      // classified once (by AI, or corrected by hand) and every OTHER
-      // ticker's peer discovery can reuse it from then on, whether or not
-      // its own financials were ever cached. See src/api/peersClient.js's
-      // fetchBusinessModelMatches and src/engine/peerCompatibility.js.
+      // this browser happens to have fully analyzed. Supporting/enrichment
+      // data for a discovered peer (explains and validates it), not how
+      // peers get discovered — that's peerRelationships below, seeded by
+      // src/api/peersClient.js's suggestPeers (AI-suggested peers directly).
+      // See src/engine/peerCompatibility.js.
       if (!d.objectStoreNames.contains('classifications')) {
         d.createObjectStore('classifications', { keyPath: 'symbol' })
+      }
+      // Peer relationships — AI-discovered (or user-confirmed) links between
+      // two companies, stored ONCE per pair, not duplicated per direction.
+      // Confirming A as a peer of B writes ONE record; opening B later reads
+      // the same record and already sees A — no re-discovery, no separate
+      // classification of B required. See src/api/peersClient.js.
+      if (!d.objectStoreNames.contains('peerRelationships')) {
+        d.createObjectStore('peerRelationships', { keyPath: 'id' })
       }
     }
     req.onsuccess = e => {
@@ -514,6 +522,49 @@ export async function saveClassification(rec) {
   return withTs
 }
 
+// ─── Peer relationships (bidirectional, one record per pair) ─────────────────
+// `id` is the two symbols sorted and joined, so A-peer-of-B and B-peer-of-A
+// are the SAME record, not two copies that can drift out of sync. Confirming
+// a peer on either side is a single write; reading either side's peers is a
+// filter over the same table, not a separate lookup.
+
+function pairId(a, b) {
+  return [String(a || '').toUpperCase(), String(b || '').toUpperCase()].sort().join('|')
+}
+
+export async function listPeerRelationships() {
+  try { return await txGetAll('peerRelationships') } catch { return [] }
+}
+
+// Every relationship touching this symbol, with `peerSymbol`/`peerName`
+// naming the OTHER side — callers don't need to know which of
+// symbolA/symbolB they are.
+export async function listPeerRelationshipsFor(symbol) {
+  const sym = String(symbol || '').toUpperCase()
+  const all = await listPeerRelationships()
+  return all
+    .filter(r => r.symbolA === sym || r.symbolB === sym)
+    .map(r => ({
+      ...r,
+      peerSymbol: r.symbolA === sym ? r.symbolB : r.symbolA,
+      peerName: r.symbolA === sym ? r.nameB : r.nameA,
+    }))
+}
+
+export async function savePeerRelationship(symbolA, nameA, symbolB, nameB, fields) {
+  const a = String(symbolA || '').toUpperCase()
+  const b = String(symbolB || '').toUpperCase()
+  if (!a || !b || a === b) return null
+  // Sort symbol+name together so symbolA/nameA and symbolB/nameB always
+  // refer to the same company, regardless of which side called this.
+  const [[x, xName], [y, yName]] = [[a, nameA || a], [b, nameB || b]].sort((p, q) => p[0].localeCompare(q[0]))
+  const id = pairId(a, b)
+  const rec = { id, symbolA: x, nameA: xName, symbolB: y, nameB: yName, ...fields, updatedAt: Date.now() }
+  await txPut('peerRelationships', rec)
+  import('../sync/sync.js').then(m => m.queuePush(`peerRelationships:${id}`, rec)).catch(() => {})
+  return rec
+}
+
 // ─── Revision log (append-only) ──────────────────────────────────────────────
 // Every estimate change AND every deliberate decision not to change one. A
 // dismissal is as much a fact worth keeping as a revision: it's the difference
@@ -634,7 +685,7 @@ export async function listEstimates(ticker) {
 // never wipes stores it doesn't mention). fsHandles is skipped (not serializable).
 
 const BACKUP_STORES = ['financials', 'guidance', 'swapStates', 'aiVerdicts', 'profiles',
-                       'positions', 'revisions', 'estimates', 'exitPlans', 'classifications']
+                       'positions', 'revisions', 'estimates', 'exitPlans', 'classifications', 'peerRelationships']
 
 export async function exportAllData() {
   const stores = {}
@@ -677,6 +728,7 @@ export const SYNC_STORES = {
   exitPlans:  'ticker',
   classifications: 'symbol',   // every classification always syncs, AI or user — no filter,
                                 // that's the whole point of the shared, growing store
+  peerRelationships: 'id',
 }
 
 export async function exportSyncableRecords() {
@@ -721,6 +773,7 @@ const LOCAL_TS_FIELD = {
   estimates:  null,
   exitPlans:  'updatedAt',
   classifications: 'updatedAt',
+  peerRelationships: 'updatedAt',
 }
 
 export async function putSyncableRecord(store, record, remoteUpdatedAt) {
