@@ -17,7 +17,7 @@
  * shared across every stock in the same sector.
  */
 
-import { getCached, listCachedTickers, listClassifications, listPeerRelationshipsFor, savePeerRelationship } from '../utils/db.js'
+import { getCached, listCachedTickers, listClassifications, listPeerRelationshipsFor, savePeerRelationship, getPeerSuggestions, savePeerSuggestions } from '../utils/db.js'
 import { sectorIndexFor, NSE_SECTORAL_INDEX_KEYS } from './marketRegime.js'
 import { scoreBusinessModelMatch } from '../engine/peerCompatibility.js'
 
@@ -333,39 +333,65 @@ export async function ownNseIndustry(symbol) {
 // alongside what the AI actually found) — it never reaches the prompt.
 //
 // Never called automatically — PeerSelectModal.jsx's explicit "Discover
-// peers with AI" button is the only trigger. Returns the raw suggestion
-// list; nothing is saved here (that's confirmPeerRelationship below, on the
-// user's explicit confirm).
-export async function suggestPeers({ ticker, name, meta, userKey, model }) {
-  const nseIndustry = await ownNseIndustry(ticker)   // display-only, not sent below
+// peers with AI" button is the only trigger. The RAW suggestion list (pre-
+// enrichment) is cached per target symbol (src/utils/db.js's
+// peerSuggestions store), fingerprinted on name+businessSummary — a re-open
+// of the modal, or clicking Discover again, reuses it instead of spending a
+// fresh call for the same answer. Confirming a peer is still a separate,
+// stronger fact recorded in peerRelationships (confirmPeerRelationship
+// below); this cache only remembers what the AI last said, confirmed or not.
+function suggestionFingerprint(name, businessSummary) {
+  let h = 0
+  const s = `${name || ''}|${businessSummary || ''}`
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
+  return h.toString(36)
+}
+
+export async function suggestPeers({ ticker, name, meta, userKey, model, force = false }) {
+  const nseIndustry = await ownNseIndustry(ticker)   // display-only, not sent to the AI
   const t = String(ticker || '').trim().toUpperCase()
   const targetName = String(name || '').trim().toLowerCase()
+  const fp = suggestionFingerprint(name, meta?.businessSummary)
 
-  try {
-    const r = await fetch('/api/suggestPeers', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol: ticker, name, businessSummary: meta?.businessSummary, userKey, model }),
-    })
-    const data = await r.json().catch(() => null)
-    if (!data || !Array.isArray(data.peers)) {
-      return { peers: null, error: data?.error || 'fetch_failed', detail: data?.detail, nseIndustry }
-    }
-    // Nothing upstream (the model, or the app's own filtering) excludes the
-    // target from naming ITSELF as a "peer" — guard it here, on both symbol
-    // and name, since the model can return a candidate with no symbol at all.
-    const filtered = data.peers.filter(p =>
-      String(p.symbol || '').trim().toUpperCase() !== t &&
-      String(p.name || '').trim().toLowerCase() !== targetName)
-    const withCache = await enrichFromCache(filtered.filter(p => p.symbol).map(p => ({ ...p })))
-    const bySymbol = new Map(withCache.map(p => [p.symbol, p]))
-    // Entries with no resolvable symbol still carry real info (name,
-    // rationale) worth showing, just not confirmable/warmable yet.
-    const unresolved = filtered.filter(p => !p.symbol)
-    return { peers: [...bySymbol.values(), ...unresolved], nseIndustry }
-  } catch (e) {
-    return { peers: null, error: 'fetch_failed', detail: e?.message, nseIndustry }
+  let filtered
+  if (!force) {
+    const cached = await getPeerSuggestions(t)
+    if (cached?.fingerprint === fp) filtered = cached.peers
   }
+
+  if (!filtered) {
+    try {
+      const r = await fetch('/api/suggestPeers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: ticker, name, businessSummary: meta?.businessSummary, userKey, model }),
+      })
+      const data = await r.json().catch(() => null)
+      if (!data || !Array.isArray(data.peers)) {
+        return { peers: null, error: data?.error || 'fetch_failed', detail: data?.detail, nseIndustry }
+      }
+      // Nothing upstream (the model, or the app's own filtering) excludes
+      // the target from naming ITSELF as a "peer" — guard it here, on both
+      // symbol and name, since the model can return a candidate with no
+      // symbol at all.
+      filtered = data.peers.filter(p =>
+        String(p.symbol || '').trim().toUpperCase() !== t &&
+        String(p.name || '').trim().toLowerCase() !== targetName)
+      savePeerSuggestions({ symbol: t, name, peers: filtered, fingerprint: fp, model: model || 'gemini-2.5-flash', generatedAt: Date.now() }).catch(() => {})
+    } catch (e) {
+      return { peers: null, error: 'fetch_failed', detail: e?.message, nseIndustry }
+    }
+  }
+
+  // Enrichment always runs fresh, cache hit or not — a peer's financials can
+  // change (warmed later, re-analyzed) even when the suggestion list itself
+  // hasn't, so this is never what's cached.
+  const withCache = await enrichFromCache(filtered.filter(p => p.symbol).map(p => ({ ...p })))
+  const bySymbol = new Map(withCache.map(p => [p.symbol, p]))
+  // Entries with no resolvable symbol still carry real info (name,
+  // rationale) worth showing, just not confirmable/warmable yet.
+  const unresolved = filtered.filter(p => !p.symbol)
+  return { peers: [...bySymbol.values(), ...unresolved], nseIndustry }
 }
 
 // Writes the relationship bidirectionally — confirming Kaynes as Dixon's

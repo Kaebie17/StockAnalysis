@@ -11,7 +11,7 @@
  */
 
 const DB_NAME    = 'stockanalyzr'
-const DB_VERSION = 11
+const DB_VERSION = 12
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
@@ -115,6 +115,14 @@ function openDB() {
       // classification of B required. See src/api/peersClient.js.
       if (!d.objectStoreNames.contains('peerRelationships')) {
         d.createObjectStore('peerRelationships', { keyPath: 'id' })
+      }
+      // Raw AI peer-suggestion output, per TARGET symbol — cached so
+      // "Discover peers with AI" isn't a fresh paid call every time the
+      // modal reopens with nothing confirmed. Fingerprinted the same way
+      // classifications are: a fresh call is only needed once the
+      // underlying business description actually changes.
+      if (!d.objectStoreNames.contains('peerSuggestions')) {
+        d.createObjectStore('peerSuggestions', { keyPath: 'symbol' })
       }
     }
     req.onsuccess = e => {
@@ -565,6 +573,21 @@ export async function savePeerRelationship(symbolA, nameA, symbolB, nameB, field
   return rec
 }
 
+// ─── Peer suggestions (raw AI output cache, per target symbol) ───────────────
+
+export async function getPeerSuggestions(symbol) {
+  try { return (await txGet('peerSuggestions', String(symbol || '').toUpperCase())) || null }
+  catch { return null }
+}
+
+export async function savePeerSuggestions(rec) {
+  if (!rec?.symbol) return null
+  const withTs = { ...rec, symbol: String(rec.symbol).toUpperCase(), updatedAt: Date.now() }
+  await txPut('peerSuggestions', withTs)
+  import('../sync/sync.js').then(m => m.queuePush(`peerSuggestions:${withTs.symbol}`, withTs)).catch(() => {})
+  return withTs
+}
+
 // ─── Revision log (append-only) ──────────────────────────────────────────────
 // Every estimate change AND every deliberate decision not to change one. A
 // dismissal is as much a fact worth keeping as a revision: it's the difference
@@ -685,7 +708,7 @@ export async function listEstimates(ticker) {
 // never wipes stores it doesn't mention). fsHandles is skipped (not serializable).
 
 const BACKUP_STORES = ['financials', 'guidance', 'swapStates', 'aiVerdicts', 'profiles',
-                       'positions', 'revisions', 'estimates', 'exitPlans', 'classifications', 'peerRelationships']
+                       'positions', 'revisions', 'estimates', 'exitPlans', 'classifications', 'peerRelationships', 'peerSuggestions']
 
 export async function exportAllData() {
   const stores = {}
@@ -729,6 +752,7 @@ export const SYNC_STORES = {
   classifications: 'symbol',   // every classification always syncs, AI or user — no filter,
                                 // that's the whole point of the shared, growing store
   peerRelationships: 'id',
+  peerSuggestions: 'symbol',
 }
 
 export async function exportSyncableRecords() {
@@ -774,6 +798,7 @@ const LOCAL_TS_FIELD = {
   exitPlans:  'updatedAt',
   classifications: 'updatedAt',
   peerRelationships: 'updatedAt',
+  peerSuggestions: 'updatedAt',
 }
 
 export async function putSyncableRecord(store, record, remoteUpdatedAt) {
