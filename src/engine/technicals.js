@@ -197,8 +197,14 @@ function computeLevels(priceHistory, last, { k = 5, tol = 0.02 } = {}) {
   const near = arr => arr.length ? arr.reduce((a, b) => Math.abs(b.price - last) < Math.abs(a.price - last) ? b : a) : null
   const strong = arr => arr.length ? arr.reduce((a, b) => b.strength > a.strength ? b : a) : null
   const withDist = lvl => lvl && { ...lvl, distancePct: +(((lvl.price - last) / last) * 100).toFixed(1) }
+  // Closest few first — a level price would reach soonest is what's actionable
+  // right now; a "strongest" level miles away is context, not a lead item.
+  const byProximity = arr => [...arr].sort((a, b) => Math.abs(a.price - last) - Math.abs(b.price - last))
 
   // A level within ~0.5% of price is effectively "at" price; treat by side of the cluster mid.
+  // Sidedness is recomputed fresh from the CURRENT price every call, so a level
+  // price has already broken through doesn't linger mislabeled on its old side —
+  // once price closes past it, it reclassifies to the other side automatically.
   const resistance = levels.filter(l => l.price > last * 1.001)
   const support    = levels.filter(l => l.price < last * 0.999)
 
@@ -208,6 +214,9 @@ function computeLevels(priceHistory, last, { k = 5, tol = 0.02 } = {}) {
     strongestResistance: withDist(strong(resistance)),
     nearestSupport: withDist(near(support)),
     strongestSupport: withDist(strong(support)),
+    // Up to 3 nearest per side, closest first — what the panel leads with.
+    nearResistances: byProximity(resistance).slice(0, 3).map(withDist),
+    nearSupports: byProximity(support).slice(0, 3).map(withDist),
     all: levels
       .map(l => ({ ...l, distancePct: +(((l.price - last) / last) * 100).toFixed(1), side: l.price >= last ? 'resistance' : 'support' }))
       .sort((a, b) => a.price - b.price),

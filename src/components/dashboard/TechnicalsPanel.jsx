@@ -147,34 +147,37 @@ export default function TechnicalsPanel({ open, onClose }) {
           <div className="grid grid-cols-2 gap-4 text-xs">
             <div className="space-y-1">
               <div className="text-slate-500 uppercase tracking-wide">Resistance (above)</div>
-              {technicals.levels.nearestResistance && (
-                <div className="text-red-400">Nearest ₹{technicals.levels.nearestResistance.price}
-                  <span className="text-slate-500"> (+{technicals.levels.nearestResistance.distancePct}%, {technicals.levels.nearestResistance.touches}×)</span></div>
+              {(technicals.levels.nearResistances || []).map(l => (
+                <div key={`res-${l.price}`} className="text-red-400">₹{l.price}
+                  <span className="text-slate-500"> (+{l.distancePct}%, {l.touches}×)</span></div>
+              ))}
+              {!technicals.levels.nearResistances?.length && (
+                <div className="text-slate-600">None nearby</div>
               )}
-              {technicals.levels.strongestResistance && (
-                <div className="text-red-400/80">Strongest ₹{technicals.levels.strongestResistance.price}
+              {technicals.levels.strongestResistance &&
+               !technicals.levels.nearResistances?.some(l => l.price === technicals.levels.strongestResistance.price) && (
+                <div className="text-red-400/60">Strongest ₹{technicals.levels.strongestResistance.price}
                   <span className="text-slate-500"> (+{technicals.levels.strongestResistance.distancePct}%, {technicals.levels.strongestResistance.touches}×)</span></div>
               )}
             </div>
             <div className="space-y-1">
               <div className="text-slate-500 uppercase tracking-wide">Support (below)</div>
-              {technicals.levels.nearestSupport && (
-                <div className="text-emerald-400">Nearest ₹{technicals.levels.nearestSupport.price}
-                  <span className="text-slate-500"> ({technicals.levels.nearestSupport.distancePct}%, {technicals.levels.nearestSupport.touches}×)</span></div>
+              {(technicals.levels.nearSupports || []).map(l => (
+                <div key={`sup-${l.price}`} className="text-emerald-400">₹{l.price}
+                  <span className="text-slate-500"> ({l.distancePct}%, {l.touches}×)</span></div>
+              ))}
+              {!technicals.levels.nearSupports?.length && (
+                <div className="text-slate-600">None nearby</div>
               )}
-              {technicals.levels.strongestSupport && (
-                <div className="text-emerald-400/80">Strongest ₹{technicals.levels.strongestSupport.price}
+              {technicals.levels.strongestSupport &&
+               !technicals.levels.nearSupports?.some(l => l.price === technicals.levels.strongestSupport.price) && (
+                <div className="text-emerald-400/60">Strongest ₹{technicals.levels.strongestSupport.price}
                   <span className="text-slate-500"> ({technicals.levels.strongestSupport.distancePct}%, {technicals.levels.strongestSupport.touches}×)</span></div>
               )}
             </div>
           </div>
         </div>
       )}
-      
-      {/* Edit Settings link */}
-      <div className="text-xs text-slate-500">
-        Adjust indicator weights in <span className="text-accent cursor-pointer">⚙ Scoring Studio</span>
-      </div>
     </div>
   )
 }

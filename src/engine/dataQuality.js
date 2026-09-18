@@ -568,7 +568,10 @@ export function assessDataQuality(incomeHistory = [], opts = {}) {
     years,
     span: years.length,
     gaps,
-    hasIssues: allAdjustments.length > 0 || flags.length > 0 || gaps.length > 0,
+    // Adjustments the app already resolved on its own don't need a decision from
+    // the user, so they don't drive whether the flag icon appears at all — only
+    // something that still needs one (an unusual year) or is missing does.
+    hasIssues: flags.length > 0 || gaps.length > 0,
     summary: {
       adjusted: allAdjustments.length,
       flagged: flags.length,

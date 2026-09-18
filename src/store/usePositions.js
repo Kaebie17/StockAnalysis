@@ -407,6 +407,42 @@ export async function updatePositionDate(id, newDateMs) {
 }
 
 /**
+ * Rebuild every position's purchase baseline against the CURRENT engine, each
+ * on its own buyDate. Snapshots are frozen at the moment they're taken —
+ * `buildEstimate` fixes made after a position was added never reach it on
+ * their own, so a snapshot taken under an older, since-corrected version of
+ * the routing logic stays wrong indefinitely and silently skews every drift
+ * and exit-review comparison built on it. This is the batch form of what
+ * updatePositionDate already does for one position when its date changes;
+ * here every position gets it, on its existing date, closed ones included
+ * since reviewExit's estimateVerdict also reads pos.snapshot.
+ */
+export async function rebuildAllSnapshots(onProgress) {
+  const all = await listPositions()
+  const analysisCache = {}
+  let updated = 0
+  for (let i = 0; i < all.length; i++) {
+    const rec = all[i]
+    onProgress?.(i + 1, all.length)
+    if (!rec || !isFinite(rec.buyDate)) continue
+    try {
+      if (!(rec.ticker in analysisCache)) analysisCache[rec.ticker] = await analyzeTicker(rec.ticker)
+      const analysis = analysisCache[rec.ticker]
+      if (!analysis) continue
+      const indian = /\.(NS|BO)$/i.test(rec.ticker || '')
+      let regimeOn = null
+      try { regimeOn = await fetchRegimeOn(rec.buyDate, { indian }) } catch { /* optional */ }
+      const rebuilt = rebuildSnapshot(analysis, rec.buyDate, regimeOn)
+      if (rebuilt) {
+        const saved = await savePosition({ ...rec, snapshot: rebuilt })
+        if (saved) { queuePush(`positions:${saved.id}`, saved); updated++ }
+      }
+    } catch { /* leave this one's existing snapshot alone */ }
+  }
+  return { total: all.length, updated }
+}
+
+/**
  * The exit plan for a HOLDING: an optional stop, an optional target, and any
  * threshold overrides. Keyed by ticker, not by lot id — a stop-loss is a
  * decision about the position, not about whichever lot happened to be

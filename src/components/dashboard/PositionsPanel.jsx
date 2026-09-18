@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import PositionModal from './PositionModal.jsx'
 import Modal from '../Modal.jsx'
-import { usePositions, positionMath, removePosition, saveExitPlan, updatePositionDate, backfillSnapshot } from '../../store/usePositions.js'
+import { usePositions, positionMath, removePosition, saveExitPlan, updatePositionDate, backfillSnapshot, rebuildAllSnapshots } from '../../store/usePositions.js'
 import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
 import { assessFromQuarterly } from '../../engine/quarterlyBridge.js'
@@ -16,6 +16,9 @@ import { forwardPeBand } from '../../engine/estimate.js'
 import { yearlyObservations } from '../../engine/targetMultiple.js'
 import { benchmarkReturn } from '../../engine/snapshotRebuild.js'
 import { aggregateLots, holdingMath, summaryLevel } from '../../engine/positionAggregate.js'
+
+// Loaded on demand, same as EmptyState.jsx does for it.
+const SoldPositions = React.lazy(() => import('./SoldPositions.jsx'))
 
 const sym = c => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[c]) || '₹'
 const money = (v, c) => (v == null ? '—' : sym(c) + Math.abs(Math.round(v)).toLocaleString('en-IN'))
@@ -47,6 +50,8 @@ export default function PositionsPanel({ open, onClose }) {
   const [quotes, setQuotes] = useState({})
   const [fetching, setFetching] = useState(0)
   const [exitPlans, setExitPlans] = useState({})   // ticker -> {stopPrice, targetPrice}
+  const [rebuilding, setRebuilding] = useState(null)   // { done, total } while running, or a result summary
+  const [soldOpen, setSoldOpen] = useState(false)
 
   React.useEffect(() => {
     if (!open) return
@@ -180,6 +185,22 @@ export default function PositionsPanel({ open, onClose }) {
   const totalValue = allPriced ? holdings.reduce((s, h) => s + h.shares * priceOf(h.ticker), 0) : null
   const totalCost  = holdings.reduce((s, h) => s + h.shares * (h.avgPrice ?? 0), 0)
 
+  // Rebuilds every position's frozen purchase baseline against today's engine
+  // (see rebuildAllSnapshots) — for snapshots taken before a routing/estimate
+  // fix, which otherwise stay wrong forever since nothing recomputes them on
+  // its own.
+  const handleRebuildSnapshots = async () => {
+    if (rebuilding?.done != null) return
+    setRebuilding({ done: 0, total: positions.length })
+    try {
+      const result = await rebuildAllSnapshots((done, total) => setRebuilding({ done, total }))
+      setRebuilding({ result })
+      refresh()
+    } catch {
+      setRebuilding({ result: { total: positions.length, updated: 0, failed: true } })
+    }
+  }
+
   if (!open) return null
 
   return (
@@ -191,7 +212,21 @@ export default function PositionsPanel({ open, onClose }) {
       icon="📊"
       widthClass="sm:max-w-2xl"
       bodyClassName="space-y-2"
-      actions={<button onClick={() => setAddOpen(true)} className="text-xs text-accent hover:text-accent-light">+ Add</button>}
+      actions={
+        <>
+          {closed.length > 0 && (
+            <button onClick={() => setSoldOpen(true)} className="text-xs text-slate-500 hover:text-slate-300">
+              📕 Exit record
+            </button>
+          )}
+          <button onClick={handleRebuildSnapshots} disabled={rebuilding?.done != null}
+            title="Rebuild every position's purchase baseline against today's estimate logic"
+            className="text-xs text-slate-500 hover:text-slate-300 disabled:opacity-50">
+            {rebuilding?.done != null ? `↻ ${rebuilding.done}/${rebuilding.total}` : '↻ Rebuild baselines'}
+          </button>
+          <button onClick={() => setAddOpen(true)} className="text-xs text-accent hover:text-accent-light">+ Add</button>
+        </>
+      }
     >
           {loading ? (
             <p className="text-sm text-slate-500">Loading…</p>
@@ -214,6 +249,15 @@ export default function PositionsPanel({ open, onClose }) {
               {fetching > 0 && (
                 <p className="text-[11px] text-slate-500">
                   Refreshing {fetching} stock{fetching > 1 ? 's' : ''}…
+                </p>
+              )}
+
+              {rebuilding?.result && (
+                <p className="text-[11px] text-slate-500">
+                  {rebuilding.result.failed
+                    ? 'Rebuild failed partway through — existing baselines were left as they were.'
+                    : `Rebuilt ${rebuilding.result.updated} of ${rebuilding.result.total} baseline${rebuilding.result.total === 1 ? '' : 's'}.`}
+                  <button onClick={() => setRebuilding(null)} className="ml-2 text-slate-600 hover:text-slate-400">dismiss</button>
                 </p>
               )}
 
@@ -265,6 +309,9 @@ export default function PositionsPanel({ open, onClose }) {
     <PositionModal open={sellTarget !== null} mode="sell"
       lots={sellTarget ? held.filter(p => p.ticker === sellTarget.ticker) : []}
       onClose={() => setSellTarget(null)} onSaved={refresh} />
+    <React.Suspense fallback={null}>
+      {soldOpen && <SoldPositions open onClose={() => setSoldOpen(false)} />}
+    </React.Suspense>
     </>
   )
 }
