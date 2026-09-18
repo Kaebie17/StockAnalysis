@@ -12,7 +12,7 @@ import { materializeFormulas, materializeCustomRows, recomputeNormalizedTargets 
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
-import { getCached, setCached, deleteCached, clearAllCached, saveGuidance, loadGuidance } from '../utils/db.js'
+import { getCached, setCached, deleteCached, clearAllCached, saveGuidance, loadGuidance, getClassification } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
 import { useSync } from '../sync/SyncProvider.jsx'
 import { listRevisions } from '../utils/db.js'
@@ -998,7 +998,12 @@ export function AppProvider({ children }) {
   const refreshPeers = useCallback(async () => {
     if (!state.ticker || !state.data) return
     clearPeersCache()
-    const rawPeers = await fetchPeerCandidates({ ticker: state.data?.ticker || state.ticker, meta: state.data?.meta, sectorType: state.sectorType })
+    // null until the user explicitly classifies this ticker via
+    // PeerSelectModal.jsx — fetchPeerCandidates treats that as "business-
+    // model matching contributes nothing yet," never triggers an AI call
+    // itself.
+    const classification = await getClassification(state.ticker).catch(() => null)
+    const rawPeers = await fetchPeerCandidates({ ticker: state.data?.ticker || state.ticker, meta: state.data?.meta, sectorType: state.sectorType, classification })
     const assumptions = { ...state.assumptions, peers: rawPeers }   // full raw candidate pool, confirmations applied fresh below
     const peers = activePeers(rawPeers, state.data.confirmedPeers)
     const valuation = runValuation(state.data, state.ratioResult, state.stage, state.sectorType, { ...assumptions, peers })

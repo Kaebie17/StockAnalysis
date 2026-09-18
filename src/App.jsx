@@ -191,8 +191,10 @@ function Dashboard() {
         open={peerModalOpen}
         onClose={closePeerModal}
         ticker={state.data?.ticker || state.ticker}
+        name={state.data?.name}
         meta={state.data?.meta}
         sectorType={state.sectorType}
+        ratioResult={state.ratioResult}
         confirmedPeers={confirmedPeers}
         onToggleConfirm={togglePeerConfirmation}
       />

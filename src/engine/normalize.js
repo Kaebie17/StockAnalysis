@@ -513,6 +513,10 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
       sector:    ap.sector    || null,
       industry:  ap.industry  || null,
       website:   ap.website   || null,
+      // Free-text company description — the input the business-model
+      // classifier (api/classifyBusiness.js) actually reads. Already arrives
+      // in every assetProfile payload, was just discarded until now.
+      businessSummary: ap.longBusinessSummary || null,
       exchange:  q.exchange   || null,
       pe:        n(q.trailingPE)   ?? n(sd.trailingPE),
       pb:        n(q.priceToBook)  ?? n(ks.priceToBook),

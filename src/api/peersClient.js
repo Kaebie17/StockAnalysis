@@ -17,8 +17,9 @@
  * shared across every stock in the same sector.
  */
 
-import { getCached, listCachedTickers } from '../utils/db.js'
+import { getCached, listCachedTickers, listClassifications } from '../utils/db.js'
 import { sectorIndexFor, NSE_SECTORAL_INDEX_KEYS } from './marketRegime.js'
+import { scoreBusinessModelMatch } from '../engine/peerCompatibility.js'
 
 // EV/Revenue, EV/FCF, EV/EBITDA, P/E and P/B all need each peer's own
 // financials, not just a live quote — and every one of them is read off
@@ -62,7 +63,25 @@ async function enrichFromCache(peers) {
       const evEbitda    = (r?.ev > 0 && r.ebitda > 0)  ? r.ev / r.ebitda  : null
       const pe = r?.ratios?.pe?.value > 0 ? r.ratios.pe.value : null
       const pb = r?.ratios?.pb?.value > 0 ? r.ratios.pb.value : null
-      return { ...p, cached: true, evRevenue, evFcf, evEbitda, pe, pb }
+      // Read for assessValuationPeerEligibility (peerCompatibility.js) — same
+      // "already-computed on this ticker's own ratioResult, no new network
+      // call" reasoning as everything else in this function. netDebtRatio's
+      // own formula label (currentSnapshot.js) confirms it IS net debt/EBITDA,
+      // not a generic leverage ratio.
+      const ebitdaMargin  = r?.ratios?.ebitdaMargin?.value ?? null
+      const netMargin     = r?.ratios?.netMargin?.value ?? null
+      const revCagr       = r?.ratios?.revCagr?.value ?? null
+      const netDebtEbitda = r?.ratios?.netDebtRatio?.value ?? null
+      const revenue       = r?.revenue ?? null
+      // Passed through so a cached candidate can be classified without a
+      // second DB read — PeerSelectModal's per-candidate classify button
+      // needs the same sector/industry/businessSummary inputs the target
+      // ticker's own classify flow uses.
+      const meta = rec.data?.meta ? {
+        sector: rec.data.meta.sector, industry: rec.data.meta.industry, businessSummary: rec.data.meta.businessSummary,
+      } : null
+      return { ...p, cached: true, evRevenue, evFcf, evEbitda, pe, pb,
+               ebitdaMargin, netMargin, revCagr, netDebtEbitda, revenue, meta }
     } catch {
       return { ...p, cached: false }   // a read failure just leaves this one peer without the extra fields
     }
@@ -209,11 +228,54 @@ async function fetchCachedSameSector(meta, sectorType, excludeTicker) {
 // dropping it. Every candidate is tagged with which source(s) surfaced it,
 // so PeerSelectModal can show why it's in the list — these are candidates
 // to review, not automatic peers.
-export async function fetchPeerCandidates({ ticker, meta, sectorType } = {}) {
+// Scans the CENTRAL classifications store (src/utils/db.js), not this
+// browser's cached financials — decoupled from whether a company's own
+// financials were ever fully analyzed, unlike fetchCachedSameSector above.
+// Bidirectional by construction: once company A is classified (from ANY
+// ticker's peer review, or its own page), it becomes eligible to surface for
+// company B's list and vice versa, purely because both now appear in
+// `all` — no propagation step needed.
+//
+// SECTOR_OR_THEME_ONLY matches are deliberately excluded from this
+// DISCOVERY source — they'd just add noise here, and sector-level
+// candidates are already covered by fetchSectorConstituents/
+// fetchCachedSameSector. This does NOT stop an already-known
+// SECTOR_OR_THEME_ONLY candidate from being labelled if it was sourced some
+// other way — see the tagging pass in fetchPeerCandidates below.
+function fetchBusinessModelMatches(targetClassification, excludeTicker, all) {
+  if (!targetClassification?.businessModel || !all?.length) return []
+  const t = String(excludeTicker || '').trim().toUpperCase()
+  const scored = all
+    .filter(rec => rec.symbol !== t)
+    .map(rec => ({ rec, match: scoreBusinessModelMatch(targetClassification, rec) }))
+    .filter(({ match }) => match && match.businessRelationship !== 'SECTOR_OR_THEME_ONLY')
+  return scored.map(({ rec, match }) => ({
+    symbol: rec.symbol, name: rec.name, industry: rec.nse?.industry || null,
+    businessRelationship: match.businessRelationship, businessModelScore: match.businessModelScore, reasons: match.reasons,
+  }))
+}
+
+// Merges NSE's real sectoral constituents, this browser's own analysis
+// history in the same sector, AND the central business-model classification
+// store — see the individual source functions above for what each one
+// covers and why. `classification` is the TARGET ticker's own record (or
+// null if it hasn't been classified yet — the business-model source then
+// simply contributes nothing, same graceful-decline shape
+// fetchCachedSameSector already uses when sectorIndexFor resolves nothing).
+// Classification is never triggered implicitly here — see PeerSelectModal.jsx
+// for the explicit, cost-conscious trigger.
+export async function fetchPeerCandidates({ ticker, meta, sectorType, classification } = {}) {
+  let allClassifications = []
+  if (classification?.businessModel) {
+    try { allClassifications = await listClassifications() } catch { allClassifications = [] }
+  }
+
   const [nse, ownCache] = await Promise.all([
     fetchSectorConstituents(ticker),
     fetchCachedSameSector(meta, sectorType, ticker),
   ])
+  const bizModel = fetchBusinessModelMatches(classification, ticker, allClassifications)
+  const bizModelEnriched = bizModel.length ? await enrichFromCache(bizModel) : []
 
   const bySymbol = new Map()
   for (const p of nse) bySymbol.set(p.symbol, { ...p, sources: ['nse-index'] })
@@ -225,6 +287,30 @@ export async function fetchPeerCandidates({ ticker, meta, sectorType } = {}) {
       bySymbol.set(p.symbol, { ...p, sources: ['own-cache'] })
     }
   }
+  for (const p of bizModelEnriched) {
+    const existing = bySymbol.get(p.symbol)
+    bySymbol.set(p.symbol, existing
+      ? { ...existing, ...p, sources: [...existing.sources, 'business-model'] }
+      : { ...p, sources: ['business-model'] })
+  }
+
+  // Second pass: tag any candidate NOT sourced via business-model matching
+  // (nse-index/own-cache only) that already has its own classification in
+  // the central store — so it can still show a businessRelationship badge,
+  // and be flagged if it's an already-confirmed peer scoring
+  // SECTOR_OR_THEME_ONLY (PeerSelectModal.jsx). Reuses the same
+  // allClassifications list already fetched above — no second DB read.
+  if (classification?.businessModel && allClassifications.length) {
+    const bySymbolClassification = new Map(allClassifications.map(rec => [rec.symbol, rec]))
+    for (const [symbol, p] of bySymbol) {
+      if (p.businessRelationship != null) continue   // already scored (came in via bizModel)
+      const rec = bySymbolClassification.get(symbol)
+      if (!rec) continue
+      const match = scoreBusinessModelMatch(classification, rec)
+      if (match) bySymbol.set(symbol, { ...p, businessRelationship: match.businessRelationship, businessModelScore: match.businessModelScore, reasons: match.reasons })
+    }
+  }
+
   return [...bySymbol.values()]
 }
 

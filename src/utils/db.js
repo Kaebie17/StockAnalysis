@@ -11,7 +11,7 @@
  */
 
 const DB_NAME    = 'stockanalyzr'
-const DB_VERSION = 9
+const DB_VERSION = 10
 const MAX_CACHE_BYTES = 40 * 1024 * 1024  // 40MB for financial cache
 
 let db = null
@@ -98,6 +98,15 @@ function openDB() {
       // wording never asks again.
       if (!d.objectStoreNames.contains('aliasOverrides')) {
         d.createObjectStore('aliasOverrides', { keyPath: 'id' })
+      }
+      // Business-model peer classifications — keyed by SYMBOL, not by ticker
+      // this browser happens to have fully analyzed: a company gets
+      // classified once (by AI, or corrected by hand) and every OTHER
+      // ticker's peer discovery can reuse it from then on, whether or not
+      // its own financials were ever cached. See src/api/peersClient.js's
+      // fetchBusinessModelMatches and src/engine/peerCompatibility.js.
+      if (!d.objectStoreNames.contains('classifications')) {
+        d.createObjectStore('classifications', { keyPath: 'symbol' })
       }
     }
     req.onsuccess = e => {
@@ -477,6 +486,34 @@ export async function loadExitPlanForTicker(ticker) {
   return (await txGet('exitPlans', String(ticker || '').toUpperCase())) || null
 }
 
+// ─── Business-model peer classifications (central, per-SYMBOL) ───────────────
+// One record per company, reused as a peer-discovery/eligibility signal by
+// every ticker's peer review — see src/engine/peerCompatibility.js and
+// src/api/peersClient.js. `source: 'user'` records are never silently
+// overwritten by a routine AI refresh (src/api/businessProfileClient.js
+// enforces this); the caller is responsible for building the record with the
+// right `source`/`userEdited`/`fingerprint` before calling saveClassification.
+
+export async function getClassification(symbol) {
+  try { return (await txGet('classifications', String(symbol || '').toUpperCase())) || null }
+  catch { return null }
+}
+
+export async function listClassifications() {
+  try { return await txGetAll('classifications') } catch { return [] }
+}
+
+export async function saveClassification(rec) {
+  if (!rec?.symbol) return null
+  const withTs = { ...rec, symbol: String(rec.symbol).toUpperCase(), updatedAt: Date.now() }
+  await txPut('classifications', withTs)
+  // Sync so a classification done on one device is reused on another,
+  // rather than re-spending an AI call (or re-typing a manual correction)
+  // per device — same reasoning/pattern as setAiVerdict's sync above.
+  import('../sync/sync.js').then(m => m.queuePush(`classifications:${withTs.symbol}`, withTs)).catch(() => {})
+  return withTs
+}
+
 // ─── Revision log (append-only) ──────────────────────────────────────────────
 // Every estimate change AND every deliberate decision not to change one. A
 // dismissal is as much a fact worth keeping as a revision: it's the difference
@@ -597,7 +634,7 @@ export async function listEstimates(ticker) {
 // never wipes stores it doesn't mention). fsHandles is skipped (not serializable).
 
 const BACKUP_STORES = ['financials', 'guidance', 'swapStates', 'aiVerdicts', 'profiles',
-                       'positions', 'revisions', 'estimates', 'exitPlans']
+                       'positions', 'revisions', 'estimates', 'exitPlans', 'classifications']
 
 export async function exportAllData() {
   const stores = {}
@@ -638,6 +675,8 @@ export const SYNC_STORES = {
   revisions:  'id',         // append-only; last-write-wins is safe (rows are immutable)
   estimates:  'id',         // superseded rows are kept, so these are immutable too
   exitPlans:  'ticker',
+  classifications: 'symbol',   // every classification always syncs, AI or user — no filter,
+                                // that's the whole point of the shared, growing store
 }
 
 export async function exportSyncableRecords() {
@@ -681,6 +720,7 @@ const LOCAL_TS_FIELD = {
   revisions:  null,
   estimates:  null,
   exitPlans:  'updatedAt',
+  classifications: 'updatedAt',
 }
 
 export async function putSyncableRecord(store, record, remoteUpdatedAt) {
