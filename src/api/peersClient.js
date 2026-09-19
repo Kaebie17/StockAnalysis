@@ -20,6 +20,7 @@
 import { getCached, listCachedTickers, listClassifications, listPeerRelationshipsFor, savePeerRelationship, getPeerSuggestions, savePeerSuggestions } from '../utils/db.js'
 import { sectorIndexFor, NSE_SECTORAL_INDEX_KEYS } from './marketRegime.js'
 import { scoreBusinessModelMatch, financialsFromRatioResult } from '../engine/peerCompatibility.js'
+import { buildWaterfallForecast } from '../engine/estimate.js'
 
 // EV/Revenue, EV/FCF, EV/EBITDA, P/E and P/B all need each peer's own
 // financials, not just a live quote — and every one of them is read off
@@ -64,6 +65,22 @@ async function enrichFromCache(peers) {
       const pe = r?.ratios?.pe?.value > 0 ? r.ratios.pe.value : null
       const pb = r?.ratios?.pb?.value > 0 ? r.ratios.pb.value : null
       const revCagr = r?.ratios?.revCagr?.value ?? null
+      // A genuine, self-computed forward P/E — the SAME machinery that
+      // projects the target's own forward EPS (buildWaterfallForecast: this
+      // peer's own revenue-growth trend, its own margin trend, its own tax
+      // rate, all read off its own multi-year history), run on this peer's
+      // cached data instead. No analyst estimate anywhere in it. Preferred
+      // over Yahoo's own analyst-consensus forwardPE (meta.forwardPe,
+      // coverage-dependent and this app can't verify it) — that stays only
+      // as the fallback for a peer this can't be computed for (e.g. too
+      // little margin history), same "decline to a cruder source, never
+      // silently" pattern this codebase uses everywhere else.
+      const selfForecast = rec.data ? buildWaterfallForecast(rec.data) : null
+      const selfForwardEps = selfForecast?.eps > 0 ? selfForecast.eps : null
+      const selfForwardPe = (selfForwardEps > 0 && r?.price > 0) ? r.price / selfForwardEps : null
+      const yahooForwardPe = rec.data?.meta?.forwardPe > 0 ? rec.data.meta.forwardPe : null
+      const forwardPe = selfForwardPe ?? yahooForwardPe
+      const forwardPeSource = selfForwardPe != null ? 'self' : yahooForwardPe != null ? 'yahoo' : null
       // The ONE shared path for "ratioResult → eligibility-relevant financial
       // summary" (peerCompatibility.js) — used here for every peer, and
       // separately for the target wherever screenedPeerBand() is called.
@@ -80,7 +97,7 @@ async function enrichFromCache(peers) {
       const meta = rec.data?.meta ? {
         sector: rec.data.meta.sector, industry: rec.data.meta.industry, businessSummary: rec.data.meta.businessSummary,
       } : null
-      return { ...p, cached: true, evRevenue, evFcf, evEbitda, pe, pb, revCagr, ...fin, meta }
+      return { ...p, cached: true, evRevenue, evFcf, evEbitda, pe, pb, forwardPe, forwardPeSource, revCagr, ...fin, meta }
     } catch {
       return { ...p, cached: false }   // a read failure just leaves this one peer without the extra fields
     }

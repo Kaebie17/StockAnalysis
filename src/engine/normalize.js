@@ -519,6 +519,14 @@ function normalizeYahoo({ ticker, quote, summary, history, fts }) {
       businessSummary: ap.longBusinessSummary || null,
       exchange:  q.exchange   || null,
       pe:        n(q.trailingPE)   ?? n(sd.trailingPE),
+      // Yahoo's own analyst-consensus-based forward P/E — already fetched
+      // in api/yahoo.js's quote() field list, just never mapped through
+      // until now (same class of bug as businessSummary above). There's no
+      // way for this app to independently derive a forward P/E the way it
+      // does trailing P/E (price ÷ its own computed EPS) — a real forward
+      // EPS needs analyst estimates this app has no other source for — so
+      // this is passed through as-is, same as the raw pe/pb fields below.
+      forwardPe: n(q.forwardPE) ?? null,
       pb:        n(q.priceToBook)  ?? n(ks.priceToBook),
       divYield:  n(q.trailingAnnualDividendYield) ?? n(sd.dividendYield),
       beta:      n(q.beta)         ?? n(sd.beta),

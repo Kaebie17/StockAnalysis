@@ -328,7 +328,11 @@ function PeerRow({ p, confirmedSet, status, queue, targetFin, targetClassificati
       </div>
       {p.cached && (
         <div className="pl-6 text-[10px] text-slate-500">
-          P/E {p.pe != null ? `${p.pe.toFixed(1)}×` : '—'} · Net margin {p.netMargin != null ? `${p.netMargin.toFixed(1)}%` : '—'}
+          P/E {p.pe != null ? `${p.pe.toFixed(1)}×` : '—'}
+          {p.forwardPe != null ? ` (fwd ${p.forwardPe.toFixed(1)}×${p.forwardPeSource === 'yahoo' ? ', Yahoo consensus' : ''})` : ''}
+          {' '}· Net margin {p.netMargin != null ? `${p.netMargin.toFixed(1)}%` : '—'}
+          {' '}· ROE {p.roe != null ? `${p.roe.toFixed(1)}%` : '—'}
+          {' '}· Rev CAGR {p.revCagr != null ? `${p.revCagr.toFixed(1)}%` : '—'}
           {' '}· Revenue {p.revenue != null ? `₹${Math.round(p.revenue / 1e7).toLocaleString('en-IN')}Cr` : '—'}
         </div>
       )}

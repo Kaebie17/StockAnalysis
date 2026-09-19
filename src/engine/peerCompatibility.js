@@ -93,6 +93,8 @@ export function financialsFromRatioResult(ratioResult) {
     // already reads it the same way for its own evFcf calc) — not nested
     // under .ratios like the margin fields above.
     fcfMargin: (ratioResult.fcf != null && revenue > 0) ? (ratioResult.fcf / revenue) * 100 : null,
+    roe: ratioResult.ratios?.roe?.value ?? null,
+    revCagr: ratioResult.ratios?.revCagr?.value ?? null,
   }
 }
 
@@ -101,6 +103,8 @@ export function financialsFromRatioResult(ratioResult) {
 const MARGIN_CAVEAT_PTS = 15    // margin gap beyond this → caveat
 const SCALE_CAVEAT_RATIO = 5    // revenue >5x or <0.2x → caveat, never exclusion alone
 const LEVERAGE_CAVEAT_GAP = 2   // net-debt/EBITDA gap beyond this (turns) → caveat
+const GROWTH_CAVEAT_PTS = 15    // revenue-CAGR gap beyond this (points) → caveat
+const ROE_CAVEAT_PTS = 10       // ROE gap beyond this (points) → caveat
 
 // Which margin field gates PROFITABILITY per metric. ev_revenue and pb have
 // no profitability gate at all — deliberate, not an oversight: a book-value
@@ -165,6 +169,21 @@ export function assessValuationPeerEligibility(target, candidate, targetFin, can
   if (targetFin.netDebtEbitda != null && candidateFin.netDebtEbitda != null &&
       Math.abs(targetFin.netDebtEbitda - candidateFin.netDebtEbitda) > LEVERAGE_CAVEAT_GAP) {
     reasons.push(`Net debt/EBITDA differs by >${LEVERAGE_CAVEAT_GAP} turns`)
+  }
+
+  // Growth and ROE comparability — caveat-only, same as every check above:
+  // a real difference is disclosed, never grounds for exclusion by itself.
+  // Two companies with the same business model and similar scale can still
+  // be at very different points in their growth/earnings-quality cycle,
+  // which is exactly the kind of thing a multiple comparison should carry
+  // a caveat for rather than pretend doesn't matter.
+  if (targetFin.revCagr != null && candidateFin.revCagr != null &&
+      Math.abs(targetFin.revCagr - candidateFin.revCagr) > GROWTH_CAVEAT_PTS) {
+    reasons.push(`Revenue growth (CAGR) differs by >${GROWTH_CAVEAT_PTS}pts (${round(targetFin.revCagr)}% vs ${round(candidateFin.revCagr)}%)`)
+  }
+  if (targetFin.roe != null && candidateFin.roe != null &&
+      Math.abs(targetFin.roe - candidateFin.roe) > ROE_CAVEAT_PTS) {
+    reasons.push(`ROE differs by >${ROE_CAVEAT_PTS}pts (${round(targetFin.roe)}% vs ${round(candidateFin.roe)}%)`)
   }
 
   return { valuationEligibility: reasons.length === 0 ? 'ELIGIBLE' : 'ELIGIBLE_WITH_CAVEAT', reasons }
