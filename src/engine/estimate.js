@@ -2303,6 +2303,32 @@ export function buildEstimate(ratioResult, opts = {}) {
     ? ` (screening fallback: ${pb.warning || 'fewer than 3 eligible peers, all confirmed peers used'})`
     : pb?.screeningMode === 'eligible_only' ? ` (${pb.count} screened peer${pb.count === 1 ? '' : 's'})` : ''
 
+  // The ONE blend mechanism every own-history rung below uses now — so 0%
+  // peer weight means zero peer influence in every fallback, not just the
+  // regression rung that used to be the only place this was honored. At
+  // weight 0 with `own` available: pure own, untouched. At weight 1: pure
+  // peer. In between: base blended linearly; the spread is blended as a
+  // RATIO around the new base (own's own low/high ÷ its own base, blended
+  // against peer's low/high ÷ peer's own median) — same convention
+  // targetMultiple.js's regression path already uses for its own peer
+  // blend, not peer's absolute low/high pasted onto a different center.
+  // Returns null when there is genuinely nothing to show (no own answer,
+  // and weight is 0 or there's no peer band either) — the caller is
+  // expected to fall through to the next rung, not treat null as a value.
+  const blendWithPeers = (own, weight) => {
+    const w = Math.max(0, Math.min(1, weight ?? 0))
+    const hasPeer = peerBand?.median > 0
+    const hasOwn = own?.base > 0
+    if (!hasOwn && !hasPeer) return null
+    if (!hasPeer || w <= 0) return hasOwn ? own : null
+    if (!hasOwn) return null   // nothing to blend FROM even though weight > 0 — handled per-rung below, not silently defaulted to pure peer here
+    const base = (1 - w) * own.base + w * peerBand.median
+    const ownLo = own.low / own.base, ownHi = own.high / own.base
+    const peerLo = peerBand.low / peerBand.median, peerHi = peerBand.high / peerBand.median
+    const lo = (1 - w) * ownLo + w * peerLo, hi = (1 - w) * ownHi + w * peerHi
+    return { low: round(base * lo, 1), base: round(base, 1), high: round(base * hi, 1) }
+  }
+
   let multiples, multipleBasis, multipleLabel, thinMultiple = false, divergesFromCurrent = false
   if (multipleOverride != null && multipleOverride > 0) {
     const c = multipleOverride
@@ -2331,101 +2357,78 @@ export function buildEstimate(ratioResult, opts = {}) {
     thinMultiple = !!fitted.thin
     multipleLabel = `${fitted.anchor}× historical anchor, adjusted for returns and growth`
     fittedSteps = fitted.steps
-  } else if (own?.conditionalOwn?.confidence === 'usable'
-    || (own?.conditionalOwn?.confidence === 'weak' && !(peerBand?.median > 0))) {
+  } else if (own?.conditionalOwn?.confidence === 'usable' || own?.conditionalOwn?.confidence === 'weak') {
     // Comparable-regime band: years whose forward growth/ROE actually
     // resemble what's being forecast, not every year this stock has ever
     // traded through regardless of regime (a near-zero-earnings-base year,
     // a crisis-year collapse, a structurally different business). See
     // forwardPeBand's own conditionalOwn comment for the full mechanism.
-    // 'usable' (5+ comparable years) always wins here; 'weak' (3-4) only
-    // wins when there's no real peer band to prefer instead — a handful of
-    // conveniently similar own years shouldn't automatically outrank a
-    // properly populated peer distribution.
+    //
+    // Both 'usable' (5+ years) and 'weak' (3-4) land here now and blend with
+    // any peer band by the user's own peerWeight — dropped the old rule
+    // where 'weak' automatically deferred to peers outright whenever a peer
+    // band existed at all, regardless of the slider. That rule meant 0%
+    // peer weight was never actually honored for a 'weak' reading: the
+    // slider was overridden by a hard-coded preference. The confidence
+    // difference still shows up as a caveat, not as a silent override.
     const co = own.conditionalOwn
-    multiples = { low: co.low, base: co.median, high: co.high }
+    const ownM = { low: co.low, base: co.median, high: co.high }
+    const blended = blendWithPeers(ownM, peerWeight)
+    multiples = blended || ownM
     multipleBasis = 'conditional-own'
     thinMultiple = co.confidence === 'weak'
+    const blendNote = peerWeight > 0 && peerBand?.median > 0
+      ? ` — blended ${round(peerWeight * 100, 0)}% toward peer multiples${peerScreeningNote(peerBand)}` : ''
     multipleLabel = `comparable-regime forward P/E — ${co.observationsRetained} of ${co.observationsConsidered} years` +
       ` matched this stock's own forecast growth/ROE closely enough to use` +
-      (co.confidence === 'weak' ? ' (weak support — few matching years)' : '')
+      (co.confidence === 'weak' ? ' (weak support — few matching years)' : '') + blendNote
     if (fitted?.steps?.length) {
       fittedSteps = [
         'A regression-based adjustment (this stock\'s own ROE/growth vs. its multiple) was tried but not used — a comparable-regime historical band is shown instead:',
         ...fitted.steps,
       ]
     }
-  } else if (peerBand?.median > 0) {
-    // Promoted ahead of the plain unconditioned own-history band (removed
-    // as a forward-range source entirely — see historicalContext above): a
-    // real peer distribution outranks both a non-comparable own-regime
-    // result (conditionalOwn was 'none') and a weak (3-4 year) one, per the
-    // same reasoning the conditionalOwn branch above already states.
-    multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
-    multipleBasis = 'peer'
-    multipleLabel = (own?.conditionalOwn
-      ? `peer multiples — this stock's own history doesn't (yet) contain a comparable growth/ROE regime to forecast from` +
-        ` (${own.conditionalOwn.observationsRetained} of ${own.conditionalOwn.observationsConsidered} years matched)`
-      : 'peer multiples (no usable history for this stock)') + peerScreeningNote(peerBand)
-    if (fitted?.steps?.length) {
-      fittedSteps = [
-        'A regression-based adjustment (this stock\'s own ROE/growth vs. its multiple) was tried but not used — peer multiples are shown instead:',
-        ...fitted.steps,
-      ]
-    }
   } else if (fitted?.multiple > 0 && fitted.source === 'historical-median') {
     // fitted.multiple (targetMultiple()'s own plain median, same-year
-    // convention) is still a legitimate BASE — but fitted.low/high is the
-    // exact unconditioned historical range this whole ladder exists to
-    // stop treating as a forward range (it's targetMultiple's OWN internal
-    // fallback when its regression doesn't fit, same shape as forwardPeBand's
-    // 'own' used to be before conditionalOwn existed, just a different
-    // observation source — same-year, not forward-year — reached only when
-    // forwardPeBand's own conditionalOwn AND peerBand above both declined).
-    // Range comes from the next real source instead: peer-scaled, then this
-    // stock's own price dispersion, falling back to the unconditioned
-    // fitted.low/high only as an explicitly disclosed last resort — never
-    // silently.
-    let rangeSource
-    if (peerBand?.median > 0) {
-      const peerRatio = { lo: peerBand.low / peerBand.median, hi: peerBand.high / peerBand.median }
-      multiples = { low: round(fitted.multiple * peerRatio.lo, 1), base: fitted.multiple, high: round(fitted.multiple * peerRatio.hi, 1) }
-      rangeSource = 'peer-scaled'
-    } else {
-      const dd = priceDispersion(priceHistory)
-      if (dd != null) {
-        multiples = { low: round(fitted.multiple * (1 - dd.half), 1), base: fitted.multiple, high: round(fitted.multiple * (1 + dd.half), 1) }
-        thinMultiple = dd.thin
-        rangeSource = 'dispersion'
-      } else {
-        multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
-        thinMultiple = !!fitted.thin
-        rangeSource = 'unconditioned'
-      }
-    }
+    // convention) — a legitimate own-history answer that a real peer
+    // distribution should be BLENDED against, by the user's actual weight,
+    // not skipped outright just because a peer band happens to exist (that
+    // was the previous behavior: a standalone peer-only rung was checked
+    // BEFORE this one, so this branch could only ever fire when no peer
+    // band existed at all — the plain historical median never got a chance
+    // to compete with, or blend against, a peer distribution).
+    //
+    // Own's own range is still sized the same way as before blending
+    // applies: price dispersion preferred over the raw unconditioned
+    // historical spread, which this whole ladder exists to stop treating as
+    // a forward range on its own.
+    const dd = priceDispersion(priceHistory)
+    const ownM = dd != null
+      ? { low: round(fitted.multiple * (1 - dd.half), 1), base: fitted.multiple, high: round(fitted.multiple * (1 + dd.half), 1) }
+      : { low: fitted.low, base: fitted.multiple, high: fitted.high }
+    const ownRangeSource = dd != null ? 'dispersion' : 'unconditioned'
+    multiples = blendWithPeers(ownM, peerWeight) || ownM
     multipleBasis = 'historical-median'
+    thinMultiple = dd != null ? dd.thin : !!fitted.thin
+    const blendNote = peerWeight > 0 && peerBand?.median > 0
+      ? ` — blended ${round(peerWeight * 100, 0)}% toward peer multiples${peerScreeningNote(peerBand)}` : ''
     multipleLabel = `its own median multiple over ${fitted.observations} years` + (
-      rangeSource === 'peer-scaled' ? ' — range scaled from peer dispersion, since this stock has too little of its own comparable-regime history to size one' + peerScreeningNote(peerBand) :
-      rangeSource === 'dispersion' ? ' — range from this stock\'s own price dispersion, since neither a comparable-regime history nor peer data was available' :
-      ' — range is this stock\'s full historical spread (no comparable-regime history, peer data, or price dispersion available to narrow it)'
-    )
+      ownRangeSource === 'dispersion' ? ' — range from this stock\'s own price dispersion'
+      : ' — range is this stock\'s full historical spread (no price dispersion available to narrow it)'
+    ) + blendNote
     fittedSteps = fitted.steps
-  } else if (fitted?.multiple > 0 && fitted.source === 'peers') {
+  } else if (fitted?.multiple > 0 && fitted.source === 'peers' && peerWeight > 0) {
     // targetMultiple() falls back to peers itself when this stock has fewer
     // than 3 years of matched price/earnings history (too recently listed to
-    // measure a real band of its own) — that result was being displayed with
-    // the SAME "its own median multiple" label as the branch above, i.e. as
-    // if it had been measured from this stock's own trading when it was
-    // actually borrowed from other companies. Routed to the same 'peer'
-    // basis (and its existing, honest caveat) used elsewhere in this chain.
+    // measure a real band of its own) — there is no "own" side to blend
+    // against here at all, so any nonzero weight means use it fully (a
+    // fractional blend against nothing isn't a meaningful concept); exactly
+    // 0% correctly falls through instead of forcing a peer-only answer
+    // against an explicit "no peer influence" setting.
     multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
     multipleBasis = 'peer'
     multipleLabel = `peer multiples — only ${fitted.observations} year${fitted.observations === 1 ? '' : 's'} of this stock's own trading history, too little to measure its own band` + peerScreeningNote(peerBand)
     fittedSteps = fitted.steps
-  } else if (peerBand?.median > 0) {
-    multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
-    multipleBasis = 'peer'
-    multipleLabel = 'peer multiples (no usable history for this stock)' + peerScreeningNote(peerBand)
   } else if (currentPe > 0) {
     const c = currentPe
     const dd = priceDispersion(priceHistory)
