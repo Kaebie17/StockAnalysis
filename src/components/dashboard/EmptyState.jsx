@@ -30,14 +30,17 @@ export default function EmptyState() {
         and most global markets. Add <code className="text-accent">.NS</code> for NSE
         or <code className="text-accent">.BO</code> for BSE listed stocks.
       </p>
-      <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs text-slate-500 max-w-sm">
+      <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs text-slate-500 max-w-md">
         {[
           ['Valuation', '7 models including DCF'],
           ['Fundamentals', 'Quality score + ratios'],
           ['Technicals', 'RSI, MACD, patterns'],
-          ['Indian stocks', 'Screener.in fallback'],
-          ['Offline', 'PWA with 1hr cache'],
-          ['No login', 'No API key needed']
+          ['Peer comparison', 'Valuation bands from real peers'],
+          ['AI verdict', 'Optional, your own API key'],
+          ['Exit signals', 'Trade setups + exit triggers'],
+          ['Indian stocks', 'Paste Screener for deeper history'],
+          ['Offline', 'Installable, works offline'],
+          ['No login required', 'Sync across devices is optional']
         ].map(([t, d]) => (
           <div key={t} className="card-sm text-left">
             <div className="text-slate-300 font-medium mb-0.5">{t}</div>
