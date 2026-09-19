@@ -30,15 +30,12 @@ export default function EmptyState() {
         and most global markets. Add <code className="text-accent">.NS</code> for NSE
         or <code className="text-accent">.BO</code> for BSE listed stocks.
       </p>
-      <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs text-slate-500 max-w-md">
+      <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs text-slate-500 max-w-sm">
         {[
           ['Valuation', '7 models including DCF'],
-          ['Fundamentals', 'Quality score + ratios'],
-          ['Technicals', 'RSI, MACD, patterns'],
           ['Peer comparison', 'Valuation bands from real peers'],
           ['AI verdict', 'Optional, your own API key'],
           ['Exit signals', 'Trade setups + exit triggers'],
-          ['Indian stocks', 'Paste Screener for deeper history'],
           ['Offline', 'Installable, works offline'],
           ['No login required', 'Sync across devices is optional']
         ].map(([t, d]) => (
