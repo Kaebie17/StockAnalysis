@@ -88,10 +88,10 @@ function Dashboard() {
   const showDashboard = state.status === 'success'
 
   return (
-    <div className="min-h-screen bg-navy-950 overflow-x-hidden">
+    <div className="min-h-screen bg-navy-950 overflow-x-hidden flex flex-col">
       <Header />
 
-      <main className="max-w-5xl mx-auto px-4 space-y-4">
+      <main className={`max-w-5xl mx-auto px-4 space-y-4 w-full flex-1 ${!showDashboard ? 'flex flex-col items-center justify-center' : ''}`}>
         {!showDashboard
           ? <EmptyState />
           : <>

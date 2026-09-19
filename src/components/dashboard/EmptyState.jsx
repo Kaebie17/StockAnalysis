@@ -19,18 +19,18 @@ export default function EmptyState() {
   if (state.status === 'error')   return <ErrorState />
 
   return (
-    <div className="flex flex-col items-center justify-center px-4 text-center">
+    <div className="flex flex-col items-center justify-center px-4 py-4 text-center">
       <img src="/logo.png" alt="StockAnalyzr"
-           className="w-60 max-w-[78%] h-auto select-none" draggable="false" />
-      <h2 className="text-xl font-semibold text-white mb-2">
+           className="w-32 max-w-[45%] h-auto select-none" draggable="false" />
+      <h2 className="text-xl font-semibold text-white mt-2 mb-1">
         Enter any stock ticker to begin
       </h2>
-      <p className="text-slate-400 text-sm max-w-md">
+      <p className="text-slate-400 text-sm max-w-2xl">
         Works with US stocks (AAPL, MSFT), Indian stocks (RELIANCE.NS, TCS.NS),
         and most global markets. Add <code className="text-accent">.NS</code> for NSE
         or <code className="text-accent">.BO</code> for BSE listed stocks.
       </p>
-      <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs text-slate-500 max-w-sm">
+      <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs text-slate-500 w-full max-w-4xl">
         {[
           ['Valuation', '7 models including DCF'],
           ['Peer comparison', 'Valuation bands from real peers'],
@@ -49,41 +49,43 @@ export default function EmptyState() {
       {/* Portfolio entry point. On the landing page rather than buried in a menu
           because the natural moment to enter holdings you already own is when
           setting the app up — before you've looked up anything. */}
-      <div className="mt-6 w-full max-w-sm">
+      <div className="mt-4 w-full max-w-4xl">
         {/* Portfolio lives here, not on the ticker pages: this is the screen you
             open to think about holdings as a whole rather than about one
             company. The ticker pages keep only buy and sell. */}
         {held.length > 0 || hasClosed ? (
-          <div className="card-sm text-left space-y-2">
+          <div className="card-sm text-left flex items-center gap-3">
             {held.length > 0 && (
-              <button onClick={() => setPanel('list')} className="w-full text-left group">
-                <div className="flex items-center justify-between">
+              <button onClick={() => setPanel('list')} className="flex-1 min-w-0 text-left group flex items-center justify-between gap-3">
+                <span className="min-w-0">
                   <span className="text-slate-300 text-sm font-medium">
                     💼 {held.length} holding{held.length > 1 ? 's' : ''} tracked
                   </span>
-                  <span className="text-accent text-xs group-hover:text-accent-light">View →</span>
-                </div>
-                <div className="text-xs text-slate-500 mt-0.5 truncate">
-                  {held.slice(0, 4).map(p => p.ticker.replace(/\.(NS|BO)$/, '')).join(' · ')}
-                  {held.length > 4 ? ` +${held.length - 4}` : ''}
-                </div>
+                  <span className="block text-xs text-slate-500 mt-0.5 truncate">
+                    {held.slice(0, 4).map(p => p.ticker.replace(/\.(NS|BO)$/, '')).join(' · ')}
+                    {held.length > 4 ? ` +${held.length - 4}` : ''}
+                  </span>
+                </span>
+                <span className="text-accent text-xs group-hover:text-accent-light shrink-0">View →</span>
               </button>
             )}
-            <div className="flex items-center gap-3 pt-1 border-t border-navy-800">
+            <div className="flex items-center gap-3 pl-3 border-l border-navy-800 shrink-0">
               <button onClick={() => setPanel('bulk')}
-                className="text-xs text-accent hover:text-accent-light">+ Add holdings</button>
+                className="text-xs text-accent hover:text-accent-light whitespace-nowrap">+ Add holdings</button>
               {hasClosed && (
                 <button onClick={() => setPanel('sold')}
-                  className="text-xs text-slate-500 hover:text-slate-300 ml-auto">📕 Exit record</button>
+                  className="text-xs text-slate-500 hover:text-slate-300 whitespace-nowrap">📕 Exit record</button>
               )}
             </div>
           </div>
         ) : (
           <button onClick={() => setPanel('bulk')}
-            className="w-full card-sm text-left hover:border-accent/40 transition-colors">
-            <div className="text-slate-300 text-sm font-medium">📥 Already own stocks?</div>
-            <div className="text-xs text-slate-500 mt-0.5">
-              Add them once and the app tracks how they're doing against what you paid.
+            className="w-full card-sm text-left hover:border-accent/40 transition-colors flex items-center justify-between gap-3">
+            <div>
+              <div className="text-slate-300 text-sm font-medium">📥 Already own stocks?</div>
+              <div className="text-xs text-slate-500 mt-0.5">
+                Add them once and the app tracks how they're doing against what you paid.
+              </div>
             </div>
           </button>
         )}
