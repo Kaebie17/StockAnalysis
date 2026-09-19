@@ -284,6 +284,22 @@ export async function deleteCached(ticker) {
   try { await txDelete('financials', ticker.toUpperCase()) } catch { /* non-critical */ }
 }
 
+// Most recently looked-up tickers, newest first — powers the "Try:" row on
+// the landing page (Header.jsx) with the user's own search history instead
+// of a fixed example list. Reuses the financials cache's lastAccessed
+// (bumped on every getCached() read, i.e. every real visit) rather than a
+// separate history store.
+export async function listRecentTickers(limit = 8) {
+  try {
+    const all = await txGetAll('financials')
+    return all
+      .filter(rec => rec.lastAccessed)
+      .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
+      .slice(0, limit)
+      .map(rec => rec.key)
+  } catch { return [] }
+}
+
 // Every ticker this browser has ever analyzed, reduced to just what
 // peersClient.js's own-cache sector scan needs (symbol/name/sector/
 // industry) — not the full cached payload (price history, statements,

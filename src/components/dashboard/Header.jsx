@@ -3,18 +3,33 @@
 import React, { useState } from 'react'
 import { usePositions } from '../../store/usePositions.js'
 import { assessDataQuality, hasAnyNormalization, activeValue } from '../../engine/dataQuality.js'
-import { saveDataResolution, listDataResolutions } from '../../utils/db.js'
+import { saveDataResolution, listDataResolutions, listRecentTickers } from '../../utils/db.js'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
 import SyncControls from '../../sync/SyncControls.jsx'
 import HistoryTableModal from './HistoryTableModal.jsx'
 
-const EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
+// Only shown until the user has actually looked anything up — once there's
+// real search history, listRecentTickers() replaces this entirely.
+const DEFAULT_EXAMPLES = ['RELIANCE', 'TCS', 'LICI', 'MARUTI', 'ZOMATO', 'HDFCBANK', 'AAPL', 'MSFT']
 
 export default function Header() {
   const { state, load, reset } = useApp()
   const [input, setInput] = useState('')
+  const [examples, setExamples] = useState(DEFAULT_EXAMPLES)
+
+  // Re-read the user's own search history each time the landing page comes
+  // back up (idle), so a ticker just analyzed shows up next time they hit
+  // Home — not just once on first mount.
+  React.useEffect(() => {
+    if (state.status !== 'idle') return
+    let dead = false
+    listRecentTickers(8).then(list => {
+      if (!dead && list.length) setExamples(list)
+    })
+    return () => { dead = true }
+  }, [state.status])
 
   // Keep the box showing whatever ticker is actually loaded. Without this the
   // input is local state that starts empty and is never written back to, so
@@ -97,7 +112,7 @@ export default function Header() {
         {state.status === 'idle' && (
           <div className="flex flex-wrap gap-1.5 pt-1">
             <span className="text-xs text-slate-600">Try:</span>
-            {EXAMPLES.map(t => (
+            {examples.map(t => (
               <button key={t} onClick={() => { setInput(t); load(t) }}
                 className="text-xs px-2 py-0.5 rounded bg-navy-800 text-slate-400 hover:text-white hover:bg-navy-700 transition-colors font-mono">
                 {t}
