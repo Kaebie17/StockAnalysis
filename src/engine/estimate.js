@@ -2330,6 +2330,13 @@ export function buildEstimate(ratioResult, opts = {}) {
   }
 
   let multiples, multipleBasis, multipleLabel, thinMultiple = false, divergesFromCurrent = false
+  // The own-history multiple BEFORE any peer blend — captured inside
+  // whichever rung actually fires, so the return value below can show own,
+  // peer, and blended figures side by side instead of only the final
+  // blended number. Without this there's no way to see WHAT the blend
+  // actually did — e.g. "peers pushed this from 65x to 95x" is invisible if
+  // only the post-blend 95x is ever shown.
+  let ownMultipleUnblended = null
   if (multipleOverride != null && multipleOverride > 0) {
     const c = multipleOverride
     // Keep whatever spread the measured band had, so a re-rating moves the
@@ -2373,6 +2380,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     // difference still shows up as a caveat, not as a silent override.
     const co = own.conditionalOwn
     const ownM = { low: co.low, base: co.median, high: co.high }
+    ownMultipleUnblended = ownM
     const blended = blendWithPeers(ownM, peerWeight)
     multiples = blended || ownM
     multipleBasis = 'conditional-own'
@@ -2407,6 +2415,7 @@ export function buildEstimate(ratioResult, opts = {}) {
       ? { low: round(fitted.multiple * (1 - dd.half), 1), base: fitted.multiple, high: round(fitted.multiple * (1 + dd.half), 1) }
       : { low: fitted.low, base: fitted.multiple, high: fitted.high }
     const ownRangeSource = dd != null ? 'dispersion' : 'unconditioned'
+    ownMultipleUnblended = ownM
     multiples = blendWithPeers(ownM, peerWeight) || ownM
     multipleBasis = 'historical-median'
     thinMultiple = dd != null ? dd.thin : !!fitted.thin
@@ -2598,12 +2607,25 @@ export function buildEstimate(ratioResult, opts = {}) {
 
     multiples, multipleBasis, multipleLabel,
     multipleSteps: fittedSteps,        // the working behind the adjustment
-    // ownPeerBlend's mechanism (blending the OLD unconditioned own-history
-    // band toward peers by a continuous weight) doesn't apply to the
-    // conditional-own/peer tiers that replaced it — those pick one source or
-    // the other by confidence, not a blend. Always null now; kept as a field
-    // (not removed) since ValuationPanel.jsx still reads it defensively.
-    ownPeerBlend: null,
+    // Own-history and peer-derived multiples shown SEPARATELY, alongside the
+    // final blended figure — otherwise a blend's effect is invisible: only
+    // the post-blend number was ever exposed, so there was no way to see
+    // whether peers pushed the multiple up 5% or 150%, or why. Null when
+    // this rung didn't produce an own-only figure to compare against (the
+    // regression-fit and pure-peer-only rungs don't set
+    // ownMultipleUnblended), or when no peer band exists at all — nothing to
+    // contrast in either case.
+    ownPeerBlend: (ownMultipleUnblended && peerBand?.median > 0) ? {
+      own: ownMultipleUnblended,
+      peer: { low: peerBand.low, median: peerBand.median, high: peerBand.high, count: peerBand.count,
+              screeningMode: peerBand.screeningMode ?? null, warning: peerBand.warning ?? null },
+      weight: peerWeight,
+      // Positive = peers currently command a richer multiple than this
+      // stock's own history; negative = peers are cheaper. Signed
+      // deliberately so "peer premium: -30%" reads as obviously different
+      // from "+30%", not just a magnitude.
+      premiumPct: round(((peerBand.median - ownMultipleUnblended.base) / ownMultipleUnblended.base) * 100, 0),
+    } : null,
     // The unconditioned historical band, exposed as evidence/context — NEVER
     // fed into target.low/high directly any more. See the conditionalOwn
     // tier above for why: a historical high traded off a near-zero earnings

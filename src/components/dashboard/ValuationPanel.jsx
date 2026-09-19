@@ -402,17 +402,24 @@ function EstimateExplainer({ state }) {
                         </>
                       )}
                       <Step n={est.projRevenue != null ? '4' : '3'} title={isEv ? 'What buyers pay for that' : 'What buyers pay for those earnings'}>
-                        {est.multipleBasis === 'observed'
-                          ? <>Historically people have paid between <span className="text-slate-300">{est.multiples.low}×</span> and{' '}
-                             <span className="text-slate-300">{est.multiples.high}×</span> next year's earnings for this stock.
-                             {est.ownPeerBlend && (
-                               <span className="text-accent">
-                                 {' '}Blended {est.ownPeerBlend.pct}% toward confirmed peers' {est.ownPeerBlend.peerMedian}× median.
-                               </span>
-                             )}</>
-                          : <>Using {est.multipleLabel}: <span className="text-slate-300">{est.multiples.low}×</span> to{' '}
-                             <span className="text-slate-300">{est.multiples.high}×</span>.</>}
+                        Using {est.multipleLabel}: <span className="text-slate-300">{est.multiples.low}×</span> to{' '}
+                        <span className="text-slate-300">{est.multiples.high}×</span>.
                       </Step>
+                      {est.ownPeerBlend && (
+                        <div className="mt-1.5 text-[11px] bg-navy-800/40 rounded-lg px-2.5 py-2 space-y-1">
+                          <div className="text-slate-400">Own-history: <span className="text-slate-300">
+                            {est.ownPeerBlend.own.low}×–{est.ownPeerBlend.own.high}×</span> (base {est.ownPeerBlend.own.base}×)</div>
+                          <div className="text-slate-400">Peer-derived: <span className="text-slate-300">
+                            {est.ownPeerBlend.peer.low}×–{est.ownPeerBlend.peer.high}×</span> (median {est.ownPeerBlend.peer.median}×,{' '}
+                            {est.ownPeerBlend.peer.count} peer{est.ownPeerBlend.peer.count === 1 ? '' : 's'}
+                            {est.ownPeerBlend.peer.screeningMode === 'fallback_all_confirmed' ? ' — screening fallback' : ''})</div>
+                          <div className="text-slate-400">Blended @ {Math.round(est.ownPeerBlend.weight * 100)}% peer weight:{' '}
+                            <span className="text-accent">{est.multiples.low}×–{est.multiples.high}×</span></div>
+                          <div className={est.ownPeerBlend.premiumPct >= 30 || est.ownPeerBlend.premiumPct <= -30 ? 'text-neutral' : 'text-slate-500'}>
+                            Peer premium to own-history: {est.ownPeerBlend.premiumPct >= 0 ? '+' : ''}{est.ownPeerBlend.premiumPct}%
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <PeerWeightSlider peerBand={peerBand} />

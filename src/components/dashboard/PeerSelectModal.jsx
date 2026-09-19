@@ -299,12 +299,14 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
 
 function PeerRow({ p, confirmedSet, status, queue, targetFin, targetClassification, toggle, runClassify, classifyBusy, classifyError, draft, saveDraft, setDraft }) {
   const isConfirmed = confirmedSet.has(p.symbol) && !p.unresolved
-  // Runs for every candidate with cached financials, not just classification-
-  // tagged ones — has to cover the PRIMARY discovery path (AI-suggested
-  // peers) at least as much as the secondary one; degrades to UNASSESSED
-  // gracefully when a field is missing.
+  // 'pe' — not 'ev_ebitda' as this was previously hardcoded. App Target's
+  // P/E ladder (and Fair Value's/Market Expectation's own P/E models)
+  // screen peers on 'pe' (rerating.js's peerBandFrom); showing an
+  // EV/EBITDA-based badge here meant the modal's verdict could disagree
+  // with the ACTUAL screening decision driving the P/E multiple a user is
+  // looking at — the one thing this badge is supposed to be honest about.
   const eligibility = targetFin
-    ? assessValuationPeerEligibility(targetClassification, p, targetFin, p, { metric: 'ev_ebitda' }) : null
+    ? assessValuationPeerEligibility(targetClassification, p, targetFin, p, { metric: 'pe' }) : null
   return (
     <div className="py-1 border-b border-navy-800/60 last:border-0">
       <div className="flex items-center gap-2 text-sm">
@@ -324,6 +326,15 @@ function PeerRow({ p, confirmedSet, status, queue, targetFin, targetClassificati
         )}
         <StatusBadge status={status[p.symbol]} queued={queue.includes(p.symbol) && status[p.symbol] !== 'loading'} unresolved={p.unresolved} />
       </div>
+      {p.cached && (
+        <div className="pl-6 text-[10px] text-slate-500">
+          P/E {p.pe != null ? `${p.pe.toFixed(1)}×` : '—'} · Net margin {p.netMargin != null ? `${p.netMargin.toFixed(1)}%` : '—'}
+          {' '}· Revenue {p.revenue != null ? `₹${Math.round(p.revenue / 1e7).toLocaleString('en-IN')}Cr` : '—'}
+        </div>
+      )}
+      {eligibility?.reasons?.length > 0 && eligibility.valuationEligibility !== 'ELIGIBLE' && (
+        <div className="pl-6 text-[10px] text-neutral">{eligibility.reasons.join('; ')}</div>
+      )}
       <div className="pl-6 flex items-center gap-2">
         {!p.unresolved && !p.businessRelationship && classifyBusy !== p.symbol && (
           <button onClick={() => runClassify(p.symbol, p.name)} className="text-[10px] text-slate-500 hover:text-slate-300">
