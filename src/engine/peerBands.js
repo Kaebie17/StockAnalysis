@@ -11,6 +11,7 @@
  */
 
 import { percentileSpread, filterRelativeOutliers } from './spread.js'
+import { assessValuationPeerEligibility } from './peerCompatibility.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 
@@ -42,5 +43,59 @@ export function peerBand(peers = [], metric = 'pe') {
     median: round(ps.median, 1),
     high: round(ps.high, 1),
     count: ps.count,
+  }
+}
+
+/**
+ * peerBand(), screened by financial-eligibility first — deliberately a
+ * wrapper, not a change to peerBand() itself, so the underlying statistical
+ * function (outlier filtering, percentile spread) stays reusable and
+ * untouched. Without this, a peer flagged "not eligible" in the UI (e.g.
+ * loss-making, wrong scale) still fully drove the multiple once confirmed —
+ * the eligibility badge was advisory-only with no actual gate anywhere.
+ *
+ * Falls back to every confirmed peer (peerBand()'s original behavior) when
+ * fewer than `minimumEligiblePeers` clear ELIGIBLE — but that fallback is
+ * NEVER silent: `screeningMode`/`warning` on the result say exactly when it
+ * happened, so a caller (or the UI) can't accidentally present a fallback
+ * result as a clean screened one.
+ *
+ * @param eligibilityMetric  separate from `metric` on purpose — e.g. an
+ *   EV/Revenue band (`metric: 'evRevenue'`) still screens on net-margin-type
+ *   comparability via `eligibilityMetric: 'pe'` if that's the more relevant
+ *   check, though callers here mostly keep them aligned. See
+ *   peerCompatibility.js's PROFITABILITY_FIELD for which metrics actually
+ *   gate on profitability at all (ev_revenue and pb never do, by design).
+ */
+export function screenedPeerBand({ peers = [], metric = 'pe', targetFin, eligibilityMetric = metric, minimumEligiblePeers = 3 } = {}) {
+  const scored = peers.map(peer => ({
+    ...peer,
+    eligibility: assessValuationPeerEligibility(null, null, targetFin, peer, { metric: eligibilityMetric }),
+  }))
+  // USABLE means ELIGIBLE or ELIGIBLE_WITH_CAVEAT — a caveat is a disclosed
+  // difference (margin gap, scale gap, a missing optional field), not a
+  // reason to throw the peer out. Only NOT_ELIGIBLE (a real profitability
+  // mismatch for this metric) and UNASSESSED (a field REQUIRED for this
+  // metric's own hard check is missing — see peerCompatibility.js's
+  // PROFITABILITY_FIELD) are excluded. An earlier version of this filtered
+  // to ELIGIBLE only, which meant almost any real peer — margin, scale, and
+  // leverage all matching closely enough to carry zero caveats is rare —
+  // fell out of the "clean" set, so the fallback below fired on nearly
+  // every real peer set and the screening did almost nothing in practice.
+  const usable = scored.filter(p =>
+    p.eligibility.valuationEligibility === 'ELIGIBLE' || p.eligibility.valuationEligibility === 'ELIGIBLE_WITH_CAVEAT')
+  const useUsableOnly = usable.length >= minimumEligiblePeers
+  const peersUsed = useUsableOnly ? usable : scored
+
+  const band = peerBand(peersUsed, metric)
+  if (!band) return null
+
+  return {
+    ...band,
+    peersUsed,
+    excludedPeers: useUsableOnly ? scored.filter(p => !usable.includes(p)) : [],
+    screeningMode: useUsableOnly ? 'eligible_only' : 'fallback_all_confirmed',
+    warning: useUsableOnly ? null
+      : `Only ${usable.length} usable peer${usable.length === 1 ? '' : 's'} of ${scored.length} confirmed — all confirmed peers were used instead of the screened set.`,
   }
 }

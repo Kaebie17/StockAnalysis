@@ -4,7 +4,7 @@ import { classifyCompany } from '../../api/businessProfileClient.js'
 import { analyzeTicker } from '../../store/analyzeTicker.js'
 import { getClassification, saveClassification } from '../../utils/db.js'
 import { getAiKey } from '../../utils/aiKey.js'
-import { assessValuationPeerEligibility } from '../../engine/peerCompatibility.js'
+import { assessValuationPeerEligibility, financialsFromRatioResult } from '../../engine/peerCompatibility.js'
 import { BUSINESS_MODELS, END_MARKETS, REVENUE_MODELS, PRODUCTION_PROFILES, CAPITAL_INTENSITY } from '../../engine/businessProfileEnums.js'
 import Modal from '../Modal.jsx'
 
@@ -197,12 +197,7 @@ export default function PeerSelectModal({ open, onClose, ticker, name, meta, sec
 
   if (!open) return null
 
-  const targetFin = ratioResult ? {
-    ebitdaMargin: ratioResult.ratios?.ebitdaMargin?.value ?? null,
-    netMargin: ratioResult.ratios?.netMargin?.value ?? null,
-    netDebtEbitda: ratioResult.ratios?.netDebtRatio?.value ?? null,
-    revenue: ratioResult.revenue ?? null,
-  } : null
+  const targetFin = financialsFromRatioResult(ratioResult)
 
   // Two separate groups, not one sorted list — a candidate validated by AI
   // (or an already-known relationship) is a different kind of claim than one

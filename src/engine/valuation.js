@@ -14,11 +14,12 @@ import { getApplicableModels } from './stage.js'
 import { computePeg } from './peg.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { sectorPe as getSectorPe, sectorEvEbitda as getSectorEvEbitda, sectorEvSales as getSectorEvSales, financialPb } from './sectorMultiples.js'
-import { peerBand } from './peerBands.js'
+import { screenedPeerBand } from './peerBands.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
 import { latestRealRow, tableGrowthRate } from './formulas.js'
 import { buildWaterfallForecast } from './estimate.js'
+import { financialsFromRatioResult } from './peerCompatibility.js'
 
 export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // Every call site guards on state.data being truthy, not state.ratioResult
@@ -186,11 +187,25 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // is trying to); trailing P/E as a second peer-based attempt; the sector
   // table only when peer data isn't available at all.
   const peers = assumptions.peers || []
+  // Screens every peer band below against the target's own financials before
+  // trusting it for the actual valuation number — a peer flagged loss-making,
+  // wildly differently scaled, or far more/less leveraged than this stock
+  // previously still fully drove the multiple once confirmed; the eligibility
+  // badge shown in PeerSelectModal.jsx was advisory-only with no real gate
+  // anywhere. Falls back to every confirmed peer (old behavior) when fewer
+  // than 3 clear ELIGIBLE, but that fallback is never silent — see each
+  // band's own `screeningMode`/`warning`.
+  const targetFin = financialsFromRatioResult(r)
+  // A screening fallback (too few peers passed eligibility — see
+  // peerBands.js's screenedPeerBand) must never read like a clean result.
+  const screeningSuffix = pb => pb?.screeningMode === 'fallback_all_confirmed'
+    ? `, screening fallback: ${pb.warning || 'fewer than 3 eligible peers'}` : ''
   if (isApplicable('pe', modelMeta) && r.eps > 0) {
-    const peBand = peerBand(peers, 'forwardPe') || peerBand(peers, 'pe')
+    const peBand = screenedPeerBand({ peers, metric: 'forwardPe', targetFin, eligibilityMetric: 'pe' })
+      || screenedPeerBand({ peers, metric: 'pe', targetFin, eligibilityMetric: 'pe' })
     const targetPe = peBand?.median ?? sectorPe
     const note = peBand
-      ? `EPS × peer median ${targetPe}× P/E (${peBand.count} peers)`
+      ? `EPS × peer median ${targetPe}× P/E (${peBand.count} peers${screeningSuffix(peBand)})`
       : `EPS × sector median ${targetPe}× P/E`
     // DERIVED when a real peer band anchors it (real data + a percentile
     // formula); ASSUMED when it falls to the static sector table, which has
@@ -205,14 +220,14 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // peer ticker has already been analyzed in this app (its full financials
   // are already in this browser's IndexedDB from that analysis) ───────────
   if (isApplicable('evEbitda', modelMeta) && r.ebitda > 0 && r.shares && r.totalDebt != null) {
-    const evEbBand = peerBand(peers, 'evEbitda')
+    const evEbBand = screenedPeerBand({ peers, metric: 'evEbitda', targetFin, eligibilityMetric: 'ev_ebitda' })
     const targetEvEb = evEbBand?.median ?? sectorEvEb
     const impliedEV = r.ebitda * targetEvEb
     const impliedEq = impliedEV + r.cash - r.totalDebt
     const perShare  = impliedEq / r.shares
     if (perShare > 0) {
       const note = evEbBand
-        ? `EBITDA × peer median ${targetEvEb.toFixed(1)}× EV/EBITDA (${evEbBand.count} peers)`
+        ? `EBITDA × peer median ${targetEvEb.toFixed(1)}× EV/EBITDA (${evEbBand.count} peers${screeningSuffix(evEbBand)})`
         : `EBITDA × ${targetEvEb.toFixed(1)}× sector median EV/EBITDA`
       results.evEbitda = { value: perShare, note, tier: evEbBand ? TIER.DERIVED : TIER.ASSUMED }
     }
@@ -233,12 +248,12 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // a REAL measured ROE or the row simply doesn't exist.
   if (isApplicable('pb', modelMeta) && r.bookPerShare > 0 && !pbDistorted &&
       (isFinancialSector || roe > 0)) {
-    const pbBand = peerBand(peers, 'pb')
+    const pbBand = screenedPeerBand({ peers, metric: 'pb', targetFin, eligibilityMetric: 'pb' })
     let targetPb = null, pbNote = null
     let pbTier = TIER.DERIVED
     if (pbBand) {
       targetPb = pbBand.median
-      pbNote = `Book x ${targetPb.toFixed(1)}x (peer median PB, ${pbBand.count} peers)`
+      pbNote = `Book x ${targetPb.toFixed(1)}x (peer median PB, ${pbBand.count} peers${screeningSuffix(pbBand)})`
     } else if (isFinancialSector) {
       targetPb = financialPb(sectorType)
       pbNote = `Book x ${targetPb.toFixed(1)}x (sector median PB)`
@@ -268,14 +283,14 @@ export function runValuation(data, r, stage, sectorType, assumptions = {}) {
   // usable yet — gating this model on positive margin would disqualify the
   // exact companies it exists to serve.
   if (isApplicable('ps', modelMeta) && r.revenue > 0 && r.shares && r.totalDebt != null) {
-    const psBand = peerBand(peers, 'evRevenue')
+    const psBand = screenedPeerBand({ peers, metric: 'evRevenue', targetFin, eligibilityMetric: 'ev_revenue' })
     const targetPs = psBand?.median ?? sectorPs
     const impliedEV = r.revenue * targetPs
     const impliedEq = impliedEV + r.cash - r.totalDebt
     const perShare  = impliedEq / r.shares
     if (perShare > 0) {
       const note = psBand
-        ? `Revenue × peer median ${targetPs.toFixed(1)}× EV/Sales (${psBand.count} peers)`
+        ? `Revenue × peer median ${targetPs.toFixed(1)}× EV/Sales (${psBand.count} peers${screeningSuffix(psBand)})`
         : `Revenue × ${targetPs.toFixed(1)}× sector median EV/Sales`
       results.ps = { value: perShare, note, tier: psBand ? TIER.DERIVED : TIER.ASSUMED }
     }

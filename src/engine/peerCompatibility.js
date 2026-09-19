@@ -75,16 +75,38 @@ export function scoreBusinessModelMatch(target, candidate) {
   return { businessModelScore: score, businessRelationship, reasons }
 }
 
+// Shared shape both sides of an eligibility check need — the target's own
+// ratioResult and a peer's own cached one (src/api/peersClient.js's
+// enrichFromCache) already carry these under the identical field names, so
+// target and candidate are structurally interchangeable here. Never
+// converts a missing value to 0 — assessValuationPeerEligibility treats
+// "missing" and "present but fails" as distinct outcomes on purpose.
+export function financialsFromRatioResult(ratioResult) {
+  if (!ratioResult) return null
+  const revenue = ratioResult.revenue ?? null
+  return {
+    ebitdaMargin: ratioResult.ratios?.ebitdaMargin?.value ?? null,
+    netMargin: ratioResult.ratios?.netMargin?.value ?? null,
+    netDebtEbitda: ratioResult.ratios?.netDebtRatio?.value ?? null,
+    revenue,
+    // fcf is a flat field on ratioResult (peersClient.js's enrichFromCache
+    // already reads it the same way for its own evFcf calc) — not nested
+    // under .ratios like the margin fields above.
+    fcfMargin: (ratioResult.fcf != null && revenue > 0) ? (ratioResult.fcf / revenue) * 100 : null,
+  }
+}
+
 // ── Valuation-peer eligibility ──────────────────────────────────────────────
 
 const MARGIN_CAVEAT_PTS = 15    // margin gap beyond this → caveat
 const SCALE_CAVEAT_RATIO = 5    // revenue >5x or <0.2x → caveat, never exclusion alone
 const LEVERAGE_CAVEAT_GAP = 2   // net-debt/EBITDA gap beyond this (turns) → caveat
 
-// Which margin field gates PROFITABILITY per metric. ev_revenue has no
-// profitability gate at all — revenue-based multiples don't need positive
-// earnings to be meaningful.
-const PROFITABILITY_FIELD = { ev_ebitda: 'ebitdaMargin', pe: 'netMargin' }
+// Which margin field gates PROFITABILITY per metric. ev_revenue and pb have
+// no profitability gate at all — deliberate, not an oversight: a book-value
+// or revenue multiple doesn't need positive earnings to be meaningful.
+const PROFITABILITY_FIELD = { ev_ebitda: 'ebitdaMargin', pe: 'netMargin', ev_fcf: 'fcfMargin' }
+const PROFITABILITY_LABEL = { ebitdaMargin: 'EBITDA', netMargin: 'net profit', fcfMargin: 'free cash flow' }
 
 /**
  * Given a business-model relationship, is THIS pair actually usable for a
@@ -101,10 +123,13 @@ const PROFITABILITY_FIELD = { ev_ebitda: 'ebitdaMargin', pe: 'netMargin' }
  * 'ev_revenue' (no profitability gate) without a rewrite; only 'ev_ebitda'
  * is exercised by this app's callers in v1.
  *
- * @param targetFin/candidateFin: { ebitdaMargin, netMargin, revCagr, netDebtEbitda, revenue }
- *   read off each company's own cached ratioResult (peersClient.js's
- *   enrichFromCache). Any field may be null (missing) — missing is handled
- *   distinctly from present-but-fails.
+ * @param targetFin/candidateFin: { ebitdaMargin, netMargin, fcfMargin, netDebtEbitda, revenue }
+ *   — both built by financialsFromRatioResult() above, the one shared path
+ *   for turning a ratioResult into this shape (used for the target directly,
+ *   and inside peersClient.js's enrichFromCache for every peer, so there's
+ *   no second, independently-maintained copy of "how to read these fields").
+ *   Any field may be null (missing) — missing is handled distinctly from
+ *   present-but-fails.
  */
 export function assessValuationPeerEligibility(target, candidate, targetFin, candidateFin, { metric = 'ev_ebitda' } = {}) {
   const reasons = []
@@ -120,7 +145,7 @@ export function assessValuationPeerEligibility(target, candidate, targetFin, can
       return { valuationEligibility: 'UNASSESSED', reasons: [`${profField} missing for one side`] }
     }
     if (!(tVal > 0 && cVal > 0)) {
-      reasons.push(`One side has non-positive ${profField === 'ebitdaMargin' ? 'EBITDA' : 'net profit'} — ${metric.toUpperCase()} is not a meaningful comparison here`)
+      reasons.push(`One side has non-positive ${PROFITABILITY_LABEL[profField] || profField} — ${metric.toUpperCase()} is not a meaningful comparison here`)
       return { valuationEligibility: 'NOT_ELIGIBLE', reasons }
     }
     if (Math.abs(tVal - cVal) > MARGIN_CAVEAT_PTS) {

@@ -11,6 +11,7 @@ import { getEquityRiskPremium } from '../api/erpClient.js'
 import { getAiKey } from '../utils/aiKey.js'
 import { peerBandFrom, detectRerating } from '../engine/rerating.js'
 import { forwardPeBand } from '../engine/estimate.js'
+import { financialsFromRatioResult } from '../engine/peerCompatibility.js'
 
 /**
  * useEstimate — the live estimate, with your accepted revisions applied.
@@ -198,7 +199,7 @@ export function useEstimate(state, opts = {}) {
     await ensureRiskFree(market, opts?.userKey || getAiKey(), { force: true })
   }, [market, opts?.userKey])
 
-  const peerBand = peerBandFrom(peers)
+  const peerBand = peerBandFrom(peers, financialsFromRatioResult(state?.ratioResult))
 
   // Every function called below this point — assessFromQuarterly,
   // buildJustifiedEstimate/averagePayoutPct, buildEstimate, forwardPeBand,

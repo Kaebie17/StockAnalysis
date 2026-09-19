@@ -21,11 +21,12 @@
 import { SECTOR_TYPES } from './stage.js'
 import { capmCostOfEquity, DEFAULT_RISK_FREE_BY_MARKET, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { sectorPe, sectorEvSales, sectorEvFcf, financialPe, financialSales } from './sectorMultiples.js'
-import { peerBand } from './peerBands.js'
+import { screenedPeerBand } from './peerBands.js'
 import { reverseDcfGrowth, computeWacc } from './valuation.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
 import { latestRealRow, tableGrowthRate } from './formulas.js'
+import { financialsFromRatioResult } from './peerCompatibility.js'
 
 // ─── Default assumptions by stage + sector ───────────────────────────────────
 
@@ -46,11 +47,16 @@ import { latestRealRow, tableGrowthRate } from './formulas.js'
 export function getDefaultAssumptions(stage, sectorType, ratios, data = null, opts = {}) {
   // Terminal Sales multiple — what the market will value the company at maturity
   // Based on sector median EV/Sales for mature companies in that sector
-  const salesResult = getSalesMultiple(sectorType, ratios, data, opts.peers)
+  // Screens each peer band against the target's own financials before
+  // trusting it for these terminal-multiple anchors — see peerBands.js's
+  // screenedPeerBand. opts.ratioResult is the full ratioResult (see the
+  // computeWacc comment below for why it's threaded through opts).
+  const targetFin = financialsFromRatioResult(opts.ratioResult)
+  const salesResult = getSalesMultiple(sectorType, ratios, data, opts.peers, targetFin)
   const terminalSalesMultiple = salesResult.value
 
   // Terminal PE multiple — what earnings multiple a mature company deserves
-  const peResult = getPeMultiple(sectorType, ratios, data, opts.peers)
+  const peResult = getPeMultiple(sectorType, ratios, data, opts.peers, targetFin)
   const terminalPeMultiple = peResult.value
 
   const market = opts.market ?? 'IN'
@@ -81,7 +87,7 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   // all). Now anchors on the stock's own actual FCF conversion when a usable
   // one exists, else the sector median table (same two-tier pattern as the
   // Sales/P/E multiples above).
-  const fcfResult = getFcfMultiple(sectorType, ratios, data, opts.peers)
+  const fcfResult = getFcfMultiple(sectorType, ratios, data, opts.peers, targetFin)
   const terminalFcfMultiple = fcfResult.value
 
   return {
@@ -105,9 +111,9 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
     },
     // Rationale strings shown in ⓘ tooltips
     rationale: {
-      terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple, salesResult.source, salesResult.peerCount),
-      terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple,    peResult.source,    peResult.peerCount),
-      terminalFcfMultiple:   getMultipleRationale('fcf',   sectorType, terminalFcfMultiple,   fcfResult.source,   fcfResult.peerCount),
+      terminalSalesMultiple: getMultipleRationale('sales', sectorType, terminalSalesMultiple, salesResult.source, salesResult.peerCount, salesResult),
+      terminalPeMultiple:    getMultipleRationale('pe',    sectorType, terminalPeMultiple,    peResult.source,    peResult.peerCount, peResult),
+      terminalFcfMultiple:   getMultipleRationale('fcf',   sectorType, terminalFcfMultiple,   fcfResult.source,   fcfResult.peerCount, fcfResult),
       discountRate:           getDiscountRationale(stage, discountRate, capm),
       enterpriseDiscountRate: getWaccRationale(enterpriseDiscountRate, waccResult, discountRate),
       horizon:               'Standard investment horizon of 10 years. Long enough to smooth out cycles, short enough to be meaningful. Change to 5 years for faster-moving sectors.'
@@ -115,15 +121,18 @@ export function getDefaultAssumptions(stage, sectorType, ratios, data = null, op
   }
 }
 
-function getSalesMultiple(sectorType, ratios, data, peers) {
+function getSalesMultiple(sectorType, ratios, data, peers, targetFin) {
   // Real peer-median EV/Revenue first — same reasoning as getPeMultiple's
   // peer tier above: not self-referential to what the market is currently
   // pricing THIS stock's own growth at. Only populated on a peer when that
   // ticker has been analyzed before (peersClient.js's enrichFromCache) —
   // peerBand() already returns null below its own minSamples floor, so
-  // this simply falls through when too few peers are covered yet.
-  const pb = peerBand(peers, 'evRevenue')
-  if (pb?.median > 0) return { value: Math.round(pb.median * 2) / 2, tier: TIER.DERIVED, source: 'peer', peerCount: pb.count }
+  // this simply falls through when too few peers are covered yet. Screened
+  // against the target's own financials first (screenedPeerBand) — no
+  // profitability gate for EV/Revenue by design, but still checks scale/
+  // leverage comparability.
+  const pb = screenedPeerBand({ peers, metric: 'evRevenue', targetFin, eligibilityMetric: 'ev_revenue' })
+  if (pb?.median > 0) return { value: Math.round(pb.median * 2) / 2, tier: TIER.DERIVED, source: 'peer', peerCount: pb.count, screeningMode: pb.screeningMode, warning: pb.warning }
 
   // Real EV/Revenue, used as-is (rounded to the nearest 0.5) — never
   // clamped to a band. This used to clamp to [1.5, 8] while still labeling
@@ -159,9 +168,10 @@ function getSalesMultiple(sectorType, ratios, data, peers) {
 // isn't fetched anywhere in this app (see valuation.js's own comment on
 // sectorEvEbDefault) — a real data-availability gap, not a design choice,
 // so they don't get a fabricated third tier pretending otherwise.
-function getPeMultiple(sectorType, ratios, data, peers) {
-  const peBand = peerBand(peers, 'forwardPe') || peerBand(peers, 'pe')
-  if (peBand?.median > 0) return { value: Math.round(peBand.median), tier: TIER.DERIVED, source: 'peer', peerCount: peBand.count }
+function getPeMultiple(sectorType, ratios, data, peers, targetFin) {
+  const peBand = screenedPeerBand({ peers, metric: 'forwardPe', targetFin, eligibilityMetric: 'pe' })
+    || screenedPeerBand({ peers, metric: 'pe', targetFin, eligibilityMetric: 'pe' })
+  if (peBand?.median > 0) return { value: Math.round(peBand.median), tier: TIER.DERIVED, source: 'peer', peerCount: peBand.count, screeningMode: peBand.screeningMode, warning: peBand.warning }
 
   const actual = ratios?.pe?.value
   if (actual != null && actual > 0 && actual < 60) return { value: Math.round(actual), tier: TIER.DERIVED, source: 'own' }
@@ -175,11 +185,14 @@ function getPeMultiple(sectorType, ratios, data, peers) {
 // above), sector median EV/FCF table (sectorMultiples.js) otherwise. Was
 // previously a single flat 18x for every sector alike, with no per-company
 // anchor tier at all.
-function getFcfMultiple(sectorType, ratios, data, peers) {
+function getFcfMultiple(sectorType, ratios, data, peers, targetFin) {
   // Real peer-median EV/FCF first — same reasoning as getSalesMultiple's
-  // peer tier above.
-  const pb = peerBand(peers, 'evFcf')
-  if (pb?.median > 0) return { value: Math.round(pb.median), tier: TIER.DERIVED, source: 'peer', peerCount: pb.count }
+  // peer tier above. eligibilityMetric 'ev_fcf' currently applies no
+  // profitability gate (peerCompatibility.js has no fcfMargin field tracked
+  // yet — a real, named gap, not a silent oversight) but still screens
+  // scale/leverage comparability.
+  const pb = screenedPeerBand({ peers, metric: 'evFcf', targetFin, eligibilityMetric: 'ev_fcf' })
+  if (pb?.median > 0) return { value: Math.round(pb.median), tier: TIER.DERIVED, source: 'peer', peerCount: pb.count, screeningMode: pb.screeningMode, warning: pb.warning }
 
   const fcfYield = ratios?.fcfYield?.value
   const actual = (fcfYield != null && fcfYield > 0) ? 100 / fcfYield : null
@@ -196,14 +209,20 @@ function getFcfMultiple(sectorType, ratios, data, peers) {
 // real trading data in the first place). Mixing any two of these framings
 // on screen at once previously left it unclear which source actually
 // produced the number.
-function getMultipleRationale(type, sectorType, value, source, peerCount) {
+function getMultipleRationale(type, sectorType, value, source, peerCount, result = null) {
   const growthCaveat = ' If today\'s multiple is elevated because the market already expects high growth, using it as the maturity multiple too can understate how much growth is really being priced in.'
   const label = type === 'sales' ? 'Sales' : type === 'fcf' ? 'FCF' : 'P/E'
   const metricName = type === 'sales' ? 'EV/Revenue' : type === 'fcf' ? 'EV/FCF' : 'P/E'
 
   if (source === 'peer') {
+    // A screening fallback (too few peers passed financial eligibility — see
+    // peerBands.js's screenedPeerBand) must say so here, not read like a
+    // clean screened median.
+    const screeningNote = result?.screeningMode === 'fallback_all_confirmed'
+      ? ` Screening note: ${result.warning || 'fewer than 3 eligible peers, all confirmed peers were used instead.'}`
+      : ''
     return `${value}× ${label} is the MEDIAN current ${metricName} across ${peerCount} real peer compan${peerCount === 1 ? 'y' : 'ies'}, used as a proxy for what this company will trade at once mature. ` +
-      `Preferred over this company's own current multiple because a peer median isn't as directly inflated by growth expectations priced into this ONE stock specifically — though a sector-wide re-rating can still affect it.`
+      `Preferred over this company's own current multiple because a peer median isn't as directly inflated by growth expectations priced into this ONE stock specifically — though a sector-wide re-rating can still affect it.${screeningNote}`
   }
   if (source === 'own') {
     return `${value}× ${label} is this company's OWN current ${metricName}, used as a proxy for what it will trade at once mature (no peer data was available to use the less circular peer-median anchor instead).${growthCaveat}`

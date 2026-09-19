@@ -2295,6 +2295,14 @@ export function buildEstimate(ratioResult, opts = {}) {
         excludedLossYears: own.excludedLossYears, thin: own.thin }
     : null
 
+  // A fallback (too few peers passed financial screening — see peerBands.js's
+  // screenedPeerBand) must never read like a clean screened result — this is
+  // the exact disclosure gap that let a loss-making or wrong-scale peer fully
+  // drive this multiple with no visible sign anything was off.
+  const peerScreeningNote = pb => pb?.screeningMode === 'fallback_all_confirmed'
+    ? ` (screening fallback: ${pb.warning || 'fewer than 3 eligible peers, all confirmed peers used'})`
+    : pb?.screeningMode === 'eligible_only' ? ` (${pb.count} screened peer${pb.count === 1 ? '' : 's'})` : ''
+
   let multiples, multipleBasis, multipleLabel, thinMultiple = false, divergesFromCurrent = false
   if (multipleOverride != null && multipleOverride > 0) {
     const c = multipleOverride
@@ -2355,10 +2363,10 @@ export function buildEstimate(ratioResult, opts = {}) {
     // same reasoning the conditionalOwn branch above already states.
     multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
     multipleBasis = 'peer'
-    multipleLabel = own?.conditionalOwn
+    multipleLabel = (own?.conditionalOwn
       ? `peer multiples — this stock's own history doesn't (yet) contain a comparable growth/ROE regime to forecast from` +
         ` (${own.conditionalOwn.observationsRetained} of ${own.conditionalOwn.observationsConsidered} years matched)`
-      : 'peer multiples (no usable history for this stock)'
+      : 'peer multiples (no usable history for this stock)') + peerScreeningNote(peerBand)
     if (fitted?.steps?.length) {
       fittedSteps = [
         'A regression-based adjustment (this stock\'s own ROE/growth vs. its multiple) was tried but not used — peer multiples are shown instead:',
@@ -2397,7 +2405,7 @@ export function buildEstimate(ratioResult, opts = {}) {
     }
     multipleBasis = 'historical-median'
     multipleLabel = `its own median multiple over ${fitted.observations} years` + (
-      rangeSource === 'peer-scaled' ? ' — range scaled from peer dispersion, since this stock has too little of its own comparable-regime history to size one' :
+      rangeSource === 'peer-scaled' ? ' — range scaled from peer dispersion, since this stock has too little of its own comparable-regime history to size one' + peerScreeningNote(peerBand) :
       rangeSource === 'dispersion' ? ' — range from this stock\'s own price dispersion, since neither a comparable-regime history nor peer data was available' :
       ' — range is this stock\'s full historical spread (no comparable-regime history, peer data, or price dispersion available to narrow it)'
     )
@@ -2412,12 +2420,12 @@ export function buildEstimate(ratioResult, opts = {}) {
     // basis (and its existing, honest caveat) used elsewhere in this chain.
     multiples = { low: fitted.low, base: fitted.multiple, high: fitted.high }
     multipleBasis = 'peer'
-    multipleLabel = `peer multiples — only ${fitted.observations} year${fitted.observations === 1 ? '' : 's'} of this stock's own trading history, too little to measure its own band`
+    multipleLabel = `peer multiples — only ${fitted.observations} year${fitted.observations === 1 ? '' : 's'} of this stock's own trading history, too little to measure its own band` + peerScreeningNote(peerBand)
     fittedSteps = fitted.steps
   } else if (peerBand?.median > 0) {
     multiples = { low: peerBand.low, base: peerBand.median, high: peerBand.high }
     multipleBasis = 'peer'
-    multipleLabel = 'peer multiples (no usable history for this stock)'
+    multipleLabel = 'peer multiples (no usable history for this stock)' + peerScreeningNote(peerBand)
   } else if (currentPe > 0) {
     const c = currentPe
     const dd = priceDispersion(priceHistory)

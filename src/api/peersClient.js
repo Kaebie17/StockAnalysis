@@ -19,7 +19,7 @@
 
 import { getCached, listCachedTickers, listClassifications, listPeerRelationshipsFor, savePeerRelationship, getPeerSuggestions, savePeerSuggestions } from '../utils/db.js'
 import { sectorIndexFor, NSE_SECTORAL_INDEX_KEYS } from './marketRegime.js'
-import { scoreBusinessModelMatch } from '../engine/peerCompatibility.js'
+import { scoreBusinessModelMatch, financialsFromRatioResult } from '../engine/peerCompatibility.js'
 
 // EV/Revenue, EV/FCF, EV/EBITDA, P/E and P/B all need each peer's own
 // financials, not just a live quote — and every one of them is read off
@@ -63,16 +63,16 @@ async function enrichFromCache(peers) {
       const evEbitda    = (r?.ev > 0 && r.ebitda > 0)  ? r.ev / r.ebitda  : null
       const pe = r?.ratios?.pe?.value > 0 ? r.ratios.pe.value : null
       const pb = r?.ratios?.pb?.value > 0 ? r.ratios.pb.value : null
-      // Read for assessValuationPeerEligibility (peerCompatibility.js) — same
-      // "already-computed on this ticker's own ratioResult, no new network
-      // call" reasoning as everything else in this function. netDebtRatio's
-      // own formula label (currentSnapshot.js) confirms it IS net debt/EBITDA,
-      // not a generic leverage ratio.
-      const ebitdaMargin  = r?.ratios?.ebitdaMargin?.value ?? null
-      const netMargin     = r?.ratios?.netMargin?.value ?? null
-      const revCagr       = r?.ratios?.revCagr?.value ?? null
-      const netDebtEbitda = r?.ratios?.netDebtRatio?.value ?? null
-      const revenue       = r?.revenue ?? null
+      const revCagr = r?.ratios?.revCagr?.value ?? null
+      // The ONE shared path for "ratioResult → eligibility-relevant financial
+      // summary" (peerCompatibility.js) — used here for every peer, and
+      // separately for the target wherever screenedPeerBand() is called.
+      // Previously this function re-derived the same four fields inline with
+      // its own expression, a second copy of the same read that could
+      // silently drift from the shared one if either changed without the
+      // other. netDebtRatio's own formula label (currentSnapshot.js)
+      // confirms it IS net debt/EBITDA, not a generic leverage ratio.
+      const fin = financialsFromRatioResult(r)
       // Passed through so a cached candidate can be classified without a
       // second DB read — PeerSelectModal's per-candidate classify button
       // needs the same sector/industry/businessSummary inputs the target
@@ -80,8 +80,7 @@ async function enrichFromCache(peers) {
       const meta = rec.data?.meta ? {
         sector: rec.data.meta.sector, industry: rec.data.meta.industry, businessSummary: rec.data.meta.businessSummary,
       } : null
-      return { ...p, cached: true, evRevenue, evFcf, evEbitda, pe, pb,
-               ebitdaMargin, netMargin, revCagr, netDebtEbitda, revenue, meta }
+      return { ...p, cached: true, evRevenue, evFcf, evEbitda, pe, pb, revCagr, ...fin, meta }
     } catch {
       return { ...p, cached: false }   // a read failure just leaves this one peer without the extra fields
     }

@@ -22,7 +22,7 @@
  */
 
 const round = (v, d = 1) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
-import { peerBand } from './peerBands.js'
+import { peerBand, screenedPeerBand } from './peerBands.js'
 import { activeValue } from './dataQuality.js'
 
 const DAY = 86400000
@@ -209,9 +209,18 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
  * second pool if that doesn't yield enough"). Unchanged signature, unchanged
  * behavior, zero callers touched.
  */
-export function peerBandFrom(peers = []) {
+export function peerBandFrom(peers = [], targetFin = null) {
   const withFallback = (peers || []).map(p => ({ ...p, pe: p.forwardPe ?? p.pe }))
-  return peerBand(withFallback, 'pe')
+  // Screened when the caller has the target's own financials to screen
+  // against — estimate.js's whole multiple ladder ultimately reads this
+  // (App Target's peer fallback rungs), which previously used every
+  // confirmed peer at full, unweighted strength regardless of whether that
+  // peer was even a financially sane comparison for this stock. Falls back
+  // to the plain, unscreened band (old behavior) only when no targetFin is
+  // supplied at all, so this stays a safe drop-in for any caller not yet
+  // updated to pass one.
+  if (!targetFin) return peerBand(withFallback, 'pe')
+  return screenedPeerBand({ peers: withFallback, metric: 'pe', targetFin, eligibilityMetric: 'pe' })
 }
 
 function latestEps(incomeHistory = [], basis) {
