@@ -179,12 +179,21 @@ function getPeMultiple(sectorType, ratios, data, peers, targetFin) {
   return { value: isFinancial ? financialPe(sectorType) : sectorPe(data), tier: TIER.ASSUMED, source: 'sector' }
 }
 
-// EV/FCF anchor — same two-tier pattern as Sales above: the stock's own
-// actual FCF conversion first (via fcfYield, FCF/MarketCap — the same rough,
-// not EV-adjusted, precision the "own" tier already has for Sales/P/E
-// above), sector median EV/FCF table (sectorMultiples.js) otherwise. Was
-// previously a single flat 18x for every sector alike, with no per-company
-// anchor tier at all.
+// EV/FCFF anchor — same two-tier pattern as Sales above: the stock's own
+// actual FCF conversion first, sector median EV/FCF table (sectorMultiples.js)
+// otherwise. Was previously a single flat 18x for every sector alike, with no
+// per-company anchor tier at all.
+//
+// KNOWN GAP: the "own" and "peer" tiers below still calibrate off fcfYield
+// (ratios.js: reported/derived FCF = Operating CF − CapEx, a LEVERED figure)
+// rather than the table's `fcff` field the base metric now uses — peer data
+// has no stored FCFF (peersClient.js only ever computed evFcf from each
+// peer's cached Operating-CF-based `fcf`), and building that would mean
+// threading FCFF through the peer cache for every ticker, not just this one.
+// So the multiple applied to a year-10 FCFF figure is still calibrated on a
+// related-but-not-identical measure — a real, named imprecision, smaller than
+// the target/rate mismatch this fixed (both are "how much cash the business
+// throws off," just levered vs unlevered), not a silent one.
 function getFcfMultiple(sectorType, ratios, data, peers, targetFin) {
   // Real peer-median EV/FCF first — same reasoning as getSalesMultiple's
   // peer tier above. eligibilityMetric 'ev_fcf' currently applies no
@@ -211,7 +220,13 @@ function getFcfMultiple(sectorType, ratios, data, peers, targetFin) {
 // produced the number.
 function getMultipleRationale(type, sectorType, value, source, peerCount, result = null) {
   const growthCaveat = ' If today\'s multiple is elevated because the market already expects high growth, using it as the maturity multiple too can understate how much growth is really being priced in.'
-  const label = type === 'sales' ? 'Sales' : type === 'fcf' ? 'FCF' : 'P/E'
+  // FCFF proxy caveat: the peer/own tiers below are still calibrated on
+  // Operating CF − CapEx (a levered figure — see getFcfMultiple's own note),
+  // not the FCFF the FCF-based variant's base metric actually is. Related
+  // measures, not identical, so this is disclosed rather than presented as a
+  // clean FCFF-calibrated multiple.
+  const fcffProxyCaveat = ' (Calibrated on Operating CF − CapEx, a related but not identical measure to the FCFF this multiple is applied to — see the data gaps banner.)'
+  const label = type === 'sales' ? 'Sales' : type === 'fcf' ? 'FCFF' : 'P/E'
   const metricName = type === 'sales' ? 'EV/Revenue' : type === 'fcf' ? 'EV/FCF' : 'P/E'
 
   if (source === 'peer') {
@@ -222,10 +237,10 @@ function getMultipleRationale(type, sectorType, value, source, peerCount, result
       ? ` Screening note: ${result.warning || 'fewer than 3 eligible peers, all confirmed peers were used instead.'}`
       : ''
     return `${value}× ${label} is the MEDIAN current ${metricName} across ${peerCount} real peer compan${peerCount === 1 ? 'y' : 'ies'}, used as a proxy for what this company will trade at once mature. ` +
-      `Preferred over this company's own current multiple because a peer median isn't as directly inflated by growth expectations priced into this ONE stock specifically — though a sector-wide re-rating can still affect it.${screeningNote}`
+      `Preferred over this company's own current multiple because a peer median isn't as directly inflated by growth expectations priced into this ONE stock specifically — though a sector-wide re-rating can still affect it.${screeningNote}${type === 'fcf' ? fcffProxyCaveat : ''}`
   }
   if (source === 'own') {
-    return `${value}× ${label} is this company's OWN current ${metricName}, used as a proxy for what it will trade at once mature (no peer data was available to use the less circular peer-median anchor instead).${growthCaveat}`
+    return `${value}× ${label} is this company's OWN current ${metricName}, used as a proxy for what it will trade at once mature (no peer data was available to use the less circular peer-median anchor instead).${growthCaveat}${type === 'fcf' ? fcffProxyCaveat : ''}`
   }
   // source === 'sector'
   if (type === 'sales') {
@@ -234,7 +249,7 @@ function getMultipleRationale(type, sectorType, value, source, peerCount, result
       `Increase if you believe the company will command a premium at maturity; decrease for commoditised businesses.`
   }
   if (type === 'fcf') {
-    return `${value}× FCF is the assumed terminal FCF multiple for this sector (no usable current FCF yield or peer data to anchor on) — what the market will pay per rupee of free cash flow at maturity. ` +
+    return `${value}× FCFF is the assumed terminal FCFF multiple for this sector (no usable current FCF yield or peer data to anchor on) — what the market will pay per rupee of free cash flow to the firm at maturity. ` +
       `Asset-light, high-conversion sectors (tech, FMCG, pharma) trade richest; capital-intensive sectors (telecom, power, energy) trade lowest. ` +
       `Increase for high-quality, low-capex businesses; decrease for capital-intensive ones.`
   }
@@ -391,24 +406,30 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
   // getDefaultAssumptions.
   const enterpriseDiscountRate = overrides.discountRate ?? overrides.enterpriseDiscountRate ?? defaults.enterpriseDiscountRate
 
-  // revenue/netProfit/fcf/netDebt are all table-native — read directly off
+  // revenue/netProfit/fcff/netDebt are all table-native — read directly off
   // the latest real row rather than through the currentSnapshot bundle.
   // price/marketCap have no table-native home (live-price-dependent), stay
   // sourced from ratioResult.
   const incRow = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
   const balRow = latestRealRow((data?.balanceHistory || []).filter(x => !x.synthetic))
-  const cfRow  = latestRealRow((data?.cashflowHistory || []).filter(x => !x.synthetic))
   const basis = data?.basis
 
   const price     = r?.price
   const marketCap = r?.marketCap
   const revenue   = activeValue(incRow, 'revenue', basis)?.value
   const netProfit = activeValue(incRow, 'netProfit', basis)?.value
-  const fcfRaw    = activeValue(cfRow, 'freeCashFlow', basis)?.value
-  const fcf       = fcfRaw > 0 ? fcfRaw : null
-  const opCF      = null   // was `r.opCF * 0.7` — an invented capex assumption
-                           // dressed up as a fair-value input. FCF or nothing.
-  const operatingCF = activeValue(cfRow, 'operatingCF', basis)?.value
+  // FCFF (Free Cash Flow to Firm) — EBIT×(1-tax) + D&A - CapEx - ΔNWC, the
+  // unlevered, firm-level cash flow. The FCF-based variant used to read the
+  // cashflow table's plain `freeCashFlow` (Operating CF - CapEx) here — a
+  // levered figure that already reflects interest paid — while still
+  // discounting it against Enterprise Value at WACC, a firm-level target and
+  // rate. That's a units mismatch: CFO already nets out interest, so it's
+  // closer to cash flow to EQUITY than cash flow to the FIRM, yet it was
+  // being solved against an enterprise-value target. FCFF is table-native on
+  // the income statement (same materialized field the forward DCF and
+  // Reverse DCF below both already read) and is the correct pairing for an
+  // EV/WACC solve.
+  const fcffValue = activeValue(incRow, 'fcff', basis)?.value
 
   const historicalRevGrowth = tableGrowthRate(data, 'revenueGrowth', basis).value
   // EV target for the EV/Sales variant (equity market cap ignores net debt, which
@@ -503,40 +524,34 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   }
 
   // ── FCF-based ────────────────────────────────────────────────────────────────
-  // FCF here is firm-level (opCF - capex, before financing), so it has to be
-  // solved against enterprise value (evTarget = marketCap + net debt), the
-  // same bridge the Sales variant already uses and for the same reason —
-  // equity market cap ignores net debt, which would overstate the implied
-  // growth for a levered firm. Comparing firm-level cash flow to a bare
-  // equity market cap while calling the multiple "EV/FCF" was a units
-  // mismatch: pairing an enterprise-value-denominated multiple with an
-  // equity-value target.
-  const fcfBase = fcf ?? opCF
-  if (fcfBase != null && fcfBase > 0 && evTarget != null) {
-    // For FCF we use EV/FCF terminal multiple — typically 15-25×
-    // enterpriseDiscountRate (WACC), not discountRate (Ke) — see the note
-    // on evTarget above; this variant solves against an ENTERPRISE value.
+  // FCFF is firm-level (unlevered, before financing), so it's solved against
+  // enterprise value (evTarget = marketCap + net debt), the same bridge the
+  // Sales variant uses and for the same reason — equity market cap ignores
+  // net debt, which would overstate the implied growth for a levered firm.
+  // Base metric is FCFF (see the note on fcffValue above) — the same
+  // materialized field the forward DCF and Reverse DCF below both read, so
+  // all three "cash flow" lenses in this app now agree on what that means.
+  if (fcffValue > 0 && evTarget != null) {
+    // EV/FCFF terminal multiple — enterpriseDiscountRate (WACC), not
+    // discountRate (Ke) — see the note on evTarget above; this variant
+    // solves against an ENTERPRISE value.
     const termFcfMult = assumptions.terminalFcfMultiple
-    const impliedG = solveImpliedGrowth(fcfBase, evTarget, termFcfMult, enterpriseDiscountRate, horizon)
+    const impliedG = solveImpliedGrowth(fcffValue, evTarget, termFcfMult, enterpriseDiscountRate, horizon)
     const sanity   = impliedG != null
-      ? buildSanityTable(fcfBase, evTarget, termFcfMult, enterpriseDiscountRate, horizon, impliedG)
+      ? buildSanityTable(fcffValue, evTarget, termFcfMult, enterpriseDiscountRate, horizon, impliedG)
       : null
 
     variants.fcf = {
       applicable: true,
       label: 'FCF-based',
-      note: [
-        r?.fcfEstimated && 'FCF estimated as Operating CF − Depreciation (CapEx ≈ Depreciation).',
-        r?.cashEstimated && 'Cash not reported — assumed nil.',
-        !r?.fcfEstimated && !r?.cashEstimated && 'Uses Free Cash Flow — most precise for cash-generative businesses.',
-      ].filter(Boolean).join(' '),
-      base: fcfBase,
-      baseLabel: r?.fcfEstimated ? 'Free Cash Flow (estimated)' : 'Free Cash Flow',
+      note: 'Uses Free Cash Flow to Firm (EBIT after tax, plus D&A, minus CapEx and the change in working capital) — the unlevered, firm-level cash flow this variant\'s EV/WACC pairing requires. Solves for a constant 10-year growth rate and an exit multiple; Reverse DCF below uses this same FCFF but fades growth toward a terminal rate instead.',
+      base: fcffValue,
+      baseLabel: 'Free Cash Flow to Firm',
       terminalMultiple: termFcfMult,
-      terminalMultipleLabel: `${termFcfMult}× FCF`,
+      terminalMultipleLabel: `${termFcfMult}× FCFF`,
       impliedGrowth: impliedG,
       sanityTable: sanity,
-      conclusion: getConclusion(impliedG, historicalRevGrowth, stage, 'FCF'),
+      conclusion: getConclusion(impliedG, historicalRevGrowth, stage, 'FCFF'),
       assumptions: {
         terminalMultiple: { value: termFcfMult, rationale: assumptions.rationale.terminalFcfMultiple, tier: assumptions.tiers.terminalFcfMultiple },
         discountRate:     { value: enterpriseDiscountRate, rationale: assumptions.rationale.enterpriseDiscountRate, tier: assumptions.tiers.enterpriseDiscountRate },
@@ -546,12 +561,12 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   } else {
     variants.fcf = {
       applicable: false,
-      reason: (fcf != null && fcf <= 0) || (operatingCF != null && operatingCF <= 0)
+      reason: fcffValue != null && fcffValue <= 0
         ? (isFinancial
-            ? 'Operating CF is negative — this is structurally normal for banks/insurers (loan disbursements count as operating outflow) and does not indicate financial distress. Use Earnings-based instead.'
-            : 'FCF and Operating CF are negative — FCF-based method not applicable')
-        : fcfBase == null
-        ? 'Free Cash Flow not available (needs CapEx — see the data gaps banner)'
+            ? 'FCFF is negative or not a meaningful concept for banks/insurers (interest is their core business, not a financing cost to add back) — use Earnings-based instead.'
+            : 'Free Cash Flow to Firm is negative — FCF-based method not applicable')
+        : fcffValue == null
+        ? 'Free Cash Flow to Firm not available (needs EBIT, D&A, CapEx and the change in working capital — see the data gaps banner)'
         : 'Debt and/or cash not available — needed to bridge market cap to enterprise value'
     }
   }
@@ -570,11 +585,9 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   // to pass discountRate (Ke) here, the same units mismatch fixed on the
   // Sales/FCF variants above.
   // Reverse DCF shares reverseDcfGrowth() with the Valuation tab's forward
-  // DCF, which now reads FCFF (Free Cash Flow to Firm) off the table rather
-  // than plain FCF — see valuation.js's own note on why FCFF is the correct
-  // pairing for a WACC-discounted DCF. Gated and labeled on that same FCFF
-  // figure so what's shown matches what the math actually uses.
-  const fcffValue = activeValue(incRow, 'fcff', basis)?.value
+  // DCF, and shares fcffValue (computed above) with the FCF-based variant —
+  // all three now read the identical materialized FCFF field, so what's
+  // shown matches what the math actually uses everywhere it's used.
   if (fcffValue > 0 && price > 0 && marketCap && r?.shares && r?.totalDebt != null) {
     // Its own override key (not shared with the other variants' terminal-
     // multiple overrides, which are a different convention) — editable via
@@ -607,7 +620,7 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
   } else {
     variants.reverseDcf = {
       applicable: false,
-      reason: !(fcf > 0) ? 'Free Cash Flow not available (needs CapEx — see the data gaps banner)'
+      reason: !(fcffValue > 0) ? 'Free Cash Flow to Firm not available (needs EBIT, D&A, CapEx and the change in working capital — see the data gaps banner)'
         : 'Insufficient data (needs shares outstanding and debt)',
     }
   }
