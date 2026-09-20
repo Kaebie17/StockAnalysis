@@ -180,31 +180,24 @@ function getPeMultiple(sectorType, ratios, data, peers, targetFin) {
 }
 
 // EV/FCFF anchor — same two-tier pattern as Sales above: the stock's own
-// actual FCF conversion first, sector median EV/FCF table (sectorMultiples.js)
+// actual EV/FCFF first (ratios.evFcff — currentSnapshot.js, calibrated on the
+// same materialized `fcff` field the base metric uses, not the levered
+// Operating-CF-based `fcf`), sector median EV/FCF table (sectorMultiples.js)
 // otherwise. Was previously a single flat 18x for every sector alike, with no
 // per-company anchor tier at all.
-//
-// KNOWN GAP: the "own" and "peer" tiers below still calibrate off fcfYield
-// (ratios.js: reported/derived FCF = Operating CF − CapEx, a LEVERED figure)
-// rather than the table's `fcff` field the base metric now uses — peer data
-// has no stored FCFF (peersClient.js only ever computed evFcf from each
-// peer's cached Operating-CF-based `fcf`), and building that would mean
-// threading FCFF through the peer cache for every ticker, not just this one.
-// So the multiple applied to a year-10 FCFF figure is still calibrated on a
-// related-but-not-identical measure — a real, named imprecision, smaller than
-// the target/rate mismatch this fixed (both are "how much cash the business
-// throws off," just levered vs unlevered), not a silent one.
 function getFcfMultiple(sectorType, ratios, data, peers, targetFin) {
-  // Real peer-median EV/FCF first — same reasoning as getSalesMultiple's
-  // peer tier above. eligibilityMetric 'ev_fcf' currently applies no
-  // profitability gate (peerCompatibility.js has no fcfMargin field tracked
-  // yet — a real, named gap, not a silent oversight) but still screens
-  // scale/leverage comparability.
-  const pb = screenedPeerBand({ peers, metric: 'evFcf', targetFin, eligibilityMetric: 'ev_fcf' })
+  // Real peer-median EV/FCFF first — same reasoning as getSalesMultiple's
+  // peer tier above. Each peer's evFcff is read straight off ITS OWN cached
+  // ratioResult.ratios.evFcff (peersClient.js) — the same ratio computed
+  // here for this stock, so peer and own tiers are genuinely comparable.
+  // eligibilityMetric 'ev_fcf' currently applies no profitability gate
+  // (peerCompatibility.js has no fcfMargin field tracked yet — a real, named
+  // gap, not a silent oversight) but still screens scale/leverage
+  // comparability.
+  const pb = screenedPeerBand({ peers, metric: 'evFcff', targetFin, eligibilityMetric: 'ev_fcf' })
   if (pb?.median > 0) return { value: Math.round(pb.median), tier: TIER.DERIVED, source: 'peer', peerCount: pb.count, screeningMode: pb.screeningMode, warning: pb.warning }
 
-  const fcfYield = ratios?.fcfYield?.value
-  const actual = (fcfYield != null && fcfYield > 0) ? 100 / fcfYield : null
+  const actual = ratios?.evFcff?.value
   if (actual != null && actual > 0 && actual < 50) return { value: Math.round(actual), tier: TIER.DERIVED, source: 'own' }
   return { value: sectorEvFcf(data), tier: TIER.ASSUMED, source: 'sector' }
 }
@@ -220,14 +213,8 @@ function getFcfMultiple(sectorType, ratios, data, peers, targetFin) {
 // produced the number.
 function getMultipleRationale(type, sectorType, value, source, peerCount, result = null) {
   const growthCaveat = ' If today\'s multiple is elevated because the market already expects high growth, using it as the maturity multiple too can understate how much growth is really being priced in.'
-  // FCFF proxy caveat: the peer/own tiers below are still calibrated on
-  // Operating CF − CapEx (a levered figure — see getFcfMultiple's own note),
-  // not the FCFF the FCF-based variant's base metric actually is. Related
-  // measures, not identical, so this is disclosed rather than presented as a
-  // clean FCFF-calibrated multiple.
-  const fcffProxyCaveat = ' (Calibrated on Operating CF − CapEx, a related but not identical measure to the FCFF this multiple is applied to — see the data gaps banner.)'
   const label = type === 'sales' ? 'Sales' : type === 'fcf' ? 'FCFF' : 'P/E'
-  const metricName = type === 'sales' ? 'EV/Revenue' : type === 'fcf' ? 'EV/FCF' : 'P/E'
+  const metricName = type === 'sales' ? 'EV/Revenue' : type === 'fcf' ? 'EV/FCFF' : 'P/E'
 
   if (source === 'peer') {
     // A screening fallback (too few peers passed financial eligibility — see
@@ -237,10 +224,10 @@ function getMultipleRationale(type, sectorType, value, source, peerCount, result
       ? ` Screening note: ${result.warning || 'fewer than 3 eligible peers, all confirmed peers were used instead.'}`
       : ''
     return `${value}× ${label} is the MEDIAN current ${metricName} across ${peerCount} real peer compan${peerCount === 1 ? 'y' : 'ies'}, used as a proxy for what this company will trade at once mature. ` +
-      `Preferred over this company's own current multiple because a peer median isn't as directly inflated by growth expectations priced into this ONE stock specifically — though a sector-wide re-rating can still affect it.${screeningNote}${type === 'fcf' ? fcffProxyCaveat : ''}`
+      `Preferred over this company's own current multiple because a peer median isn't as directly inflated by growth expectations priced into this ONE stock specifically — though a sector-wide re-rating can still affect it.${screeningNote}`
   }
   if (source === 'own') {
-    return `${value}× ${label} is this company's OWN current ${metricName}, used as a proxy for what it will trade at once mature (no peer data was available to use the less circular peer-median anchor instead).${growthCaveat}${type === 'fcf' ? fcffProxyCaveat : ''}`
+    return `${value}× ${label} is this company's OWN current ${metricName}, used as a proxy for what it will trade at once mature (no peer data was available to use the less circular peer-median anchor instead).${growthCaveat}`
   }
   // source === 'sector'
   if (type === 'sales') {

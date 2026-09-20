@@ -89,9 +89,11 @@ export function financialsFromRatioResult(ratioResult) {
     netMargin: ratioResult.ratios?.netMargin?.value ?? null,
     netDebtEbitda: ratioResult.ratios?.netDebtRatio?.value ?? null,
     revenue,
-    // fcf is a flat field on ratioResult (peersClient.js's enrichFromCache
-    // already reads it the same way for its own evFcf calc) — not nested
-    // under .ratios like the margin fields above.
+    // fcf is a flat field on ratioResult, not nested under .ratios like the
+    // margin fields above. Deliberately the levered fcf here, not fcff — this
+    // is a scale/profitability comparability check (peer eligibility), not a
+    // valuation-multiple base metric, so it's asking a different question
+    // from the one evFcff (ratios.evFcff) answers.
     fcfMargin: (ratioResult.fcf != null && revenue > 0) ? (ratioResult.fcf / revenue) * 100 : null,
     roe: ratioResult.ratios?.roe?.value ?? null,
     revCagr: ratioResult.ratios?.revCagr?.value ?? null,

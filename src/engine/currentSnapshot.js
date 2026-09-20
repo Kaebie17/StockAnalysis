@@ -353,6 +353,16 @@ export function computeCurrentSnapshot(data) {
   const ps           = div(marketCap, revenue)
   const evEbitda     = div(ev, ebitda)
   const evRevenue    = div(ev, revenue)
+  // FCFF (Free Cash Flow to Firm) pairs with Enterprise Value, not market cap
+  // — unlike `fcf` above (levered: Operating CF already nets out interest
+  // paid), FCFF is the unlevered, firm-level cash flow. Read off the same
+  // materialized `fcff` table row (formulas.js) the forward DCF, Reverse DCF
+  // and Market Expectation's FCF-based variant all already use for their own
+  // base metric, so this ratio — and anything anchored on it, including peer
+  // bands (peersClient.js reads this same field off each cached peer) —
+  // agrees with them on what FCFF means.
+  const fcff         = val(activeValue(latestI, 'fcff', basis))
+  const evFcff       = div(ev, fcff)
 
   // Graham Number = √(22.5 × EPS × Book Value per Share)
   const grahamNumber = eps > 0 && bookPerShare > 0
@@ -401,6 +411,7 @@ export function computeCurrentSnapshot(data) {
       ps:              tag(ps,              'calculated', 'Market Cap ÷ Revenue'),
       evEbitda:        tagBs(evEbitda,        'calculated', 'EV ÷ EBITDA'),
       evRevenue:       tagBs(evRevenue,       'calculated', 'EV ÷ Revenue'),
+      evFcff:          tagBs(evFcff,          'calculated', 'EV ÷ Free Cash Flow to Firm'),
       grahamNumber:    tag(grahamNumber,    'calculated', '√(22.5 × EPS × Book Value per Share)'),
       // Growth
       revCagr:            tag(revCagr, 'calculated',

@@ -22,7 +22,7 @@ import { sectorIndexFor, NSE_SECTORAL_INDEX_KEYS } from './marketRegime.js'
 import { scoreBusinessModelMatch, financialsFromRatioResult } from '../engine/peerCompatibility.js'
 import { buildWaterfallForecast } from '../engine/estimate.js'
 
-// EV/Revenue, EV/FCF, EV/EBITDA, P/E and P/B all need each peer's own
+// EV/Revenue, EV/FCFF, EV/EBITDA, P/E and P/B all need each peer's own
 // financials, not just a live quote — and every one of them is read off
 // each peer's OWN cached ratioResult (db.js's getCached/setCached) rather
 // than any live network call. Reused for free: if a peer ticker has
@@ -60,11 +60,17 @@ async function enrichFromCache(peers) {
       // of a live Yahoo quote means peer P/E and P/B bands need no network
       // call at all, same as the EV multiples below.
       const evRevenue = (r?.ev > 0 && r.revenue > 0) ? r.ev / r.revenue : null
-      const evFcf      = (r?.ev > 0 && r.fcf > 0)     ? r.ev / r.fcf     : null
       const evEbitda    = (r?.ev > 0 && r.ebitda > 0)  ? r.ev / r.ebitda  : null
       const pe = r?.ratios?.pe?.value > 0 ? r.ratios.pe.value : null
       const pb = r?.ratios?.pb?.value > 0 ? r.ratios.pb.value : null
       const revCagr = r?.ratios?.revCagr?.value ?? null
+      // FCFF (Free Cash Flow to Firm), not the old CFO-CapEx-based EV/FCF —
+      // read straight off this peer's own ratioResult.ratios.evFcff, the SAME
+      // ratio currentSnapshot.js now computes for every analyzed ticker (see
+      // its own note on why FCFF, not levered FCF, is what pairs correctly
+      // with an EV-based multiple). No re-derivation from raw statement rows
+      // needed here — it's already sitting in this exact cache entry.
+      const evFcff = r?.ratios?.evFcff?.value > 0 ? r.ratios.evFcff.value : null
       // A genuine, self-computed forward P/E — the SAME machinery that
       // projects the target's own forward EPS (buildWaterfallForecast: this
       // peer's own revenue-growth trend, its own margin trend, its own tax
@@ -97,7 +103,7 @@ async function enrichFromCache(peers) {
       const meta = rec.data?.meta ? {
         sector: rec.data.meta.sector, industry: rec.data.meta.industry, businessSummary: rec.data.meta.businessSummary,
       } : null
-      return { ...p, cached: true, evRevenue, evFcf, evEbitda, pe, pb, forwardPe, forwardPeSource, revCagr, ...fin, meta }
+      return { ...p, cached: true, evRevenue, evFcff, evEbitda, pe, pb, forwardPe, forwardPeSource, revCagr, ...fin, meta }
     } catch {
       return { ...p, cached: false }   // a read failure just leaves this one peer without the extra fields
     }
