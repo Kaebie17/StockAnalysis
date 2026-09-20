@@ -183,30 +183,32 @@ export default function SummaryStrip({ onExpand, expanded, detail, onAddHistory 
         </PillarCard>
 
         {/* ── MARKET EXPECTATION ─────────────────────────────────────────── */}
+        {/* No AGGRESSIVE/MODERATE/CONSERVATIVE badge here any more — a fixed
+            growth-rate threshold can't tell a stretched assumption for a
+            mature utility from an ordinary one for a scaling small-cap. The
+            detail panel (marketExpectation.js) compares the implied rate
+            against THIS company's own historical median YoY growth instead,
+            which is shown here too when available, rather than a threshold
+            verdict against no benchmark at all. */}
         <PillarCard
           title="🔮 MARKET EXPECTATION"
-          badge={me?.primary?.impliedGrowth != null
-            ? me.primary.impliedGrowth > 25 ? 'AGGRESSIVE'
-            : me.primary.impliedGrowth > 15 ? 'MODERATE'
-            : 'CONSERVATIVE'
-            : null}
           onExpand={() => onExpand('market-expectation')}
           isExpanded={expanded === 'market-expectation'}>
           {me?.primary?.applicable ? (
             <div className="space-y-1">
-              <div className={`text-xl font-bold font-mono ${
-                me.primary.impliedGrowth > 25 ? 'text-bear'
-                : me.primary.impliedGrowth > 15 ? 'text-neutral' : 'text-bull'
-              }`}>
+              <div className="text-xl font-bold font-mono text-white">
                 {me.primary.impliedGrowth?.toFixed(1)}%/yr
               </div>
               <div className="text-xs text-slate-400">implied growth</div>
               <div className="text-xs text-slate-500">{me.primary.label}</div>
-              <div className="text-xs text-slate-500">
-                {me.primary.impliedGrowth > 25 ? 'Aggressive market expectation'
-                : me.primary.impliedGrowth > 15 ? 'Moderate market expectation'
-                : 'Conservative market expectation'}
-              </div>
+              {me.primary.historicalComparison?.available ? (
+                <div className="text-xs text-slate-500">
+                  vs {me.primary.historicalComparison.medianYoY.toFixed(1)}% historical median YoY
+                  ({me.primary.historicalComparison.gapVsMedianYoY > 0 ? '+' : ''}{me.primary.historicalComparison.gapVsMedianYoY.toFixed(1)} pp)
+                </div>
+              ) : me.primary.impliedMultiple != null ? (
+                <div className="text-xs text-slate-500">~{me.primary.impliedMultiple.toFixed(1)}× over {me.primary.assumptions?.horizon?.value ?? 10}yr</div>
+              ) : null}
             </div>
           ) : (
             <div className="text-sm text-slate-500">Insufficient data for expectation analysis</div>

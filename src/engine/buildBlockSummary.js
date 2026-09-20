@@ -114,12 +114,20 @@ export function buildBlockSummary(state, extra = {}) {
     } : null,
 
     // ── MARKET EXPECTATION highlight ── growth the CURRENT PRICE implies, by method.
+    // No fixed "aggressive/moderate/conservative" band here — that judgment
+    // needs company/sector context this app doesn't have (see
+    // marketExpectation.js's own note). The real comparison the engine DOES
+    // have — implied rate vs THIS company's own historical median YoY
+    // growth — is passed through instead, so the AI reasons from an actual
+    // company-specific fact rather than a fabricated universal threshold.
     marketExpectation: {
       primaryImpliedGrowthPct: num(me?.primary?.impliedGrowth),
       primaryMethod: me?.primary?.label ?? null,
-      band: me?.primary?.impliedGrowth != null
-        ? (me.primary.impliedGrowth > 25 ? 'aggressive' : me.primary.impliedGrowth > 15 ? 'moderate' : 'conservative')
-        : null,
+      impliedMultipleOverHorizon: num(me?.primary?.impliedMultiple),
+      historicalMedianYoYPct: me?.primary?.historicalComparison?.available
+        ? num(me.primary.historicalComparison.medianYoY) : null,
+      gapVsHistoricalMedianPp: me?.primary?.historicalComparison?.available
+        ? num(me.primary.historicalComparison.gapVsMedianYoY) : null,
       reverseDcfImpliedGrowthPct: num(v.impliedGrowth),
       salesBasedImpliedGrowthPct: meVar('sales'),
       earningsBasedImpliedGrowthPct: meVar('earnings'),

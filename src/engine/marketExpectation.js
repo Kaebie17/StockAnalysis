@@ -12,7 +12,7 @@
  * Each solves: given current base metric + market cap + terminal multiple +
  * discount rate + horizon, what annual growth rate justifies current market cap?
  *
- * Then shows sanity check: at conservative / base / aggressive / extreme growth,
+ * Then shows a sanity check: across a range of growth rates (5% to 40%),
  * what would the implied market cap be vs current?
  *
  * Default assumptions are justified by sector and stage — not arbitrary.
@@ -25,7 +25,7 @@ import { screenedPeerBand } from './peerBands.js'
 import { reverseDcfGrowth, computeWacc } from './valuation.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
-import { latestRealRow, tableGrowthRate } from './formulas.js'
+import { latestRealRow, median } from './formulas.js'
 import { financialsFromRatioResult } from './peerCompatibility.js'
 
 // ─── Default assumptions by stage + sector ───────────────────────────────────
@@ -314,8 +314,9 @@ function impliedMarketCap(baseValue, growthRate, terminalMult, discountRate, hor
 // ─── Sanity check table ───────────────────────────────────────────────────────
 
 function buildSanityTable(baseValue, marketCap, terminalMult, discountRate, horizon, impliedG) {
-  // Build a range of growth rates around the implied rate
-  // Always include: conservative, base, implied, aggressive, extreme
+  // A fixed spread of growth rates (5% to 40%) — not centered on the implied
+  // rate — so the row nearest it (isCurrentImplied) shows where it falls
+  // relative to the same fixed scale every ticker is measured against.
   const rates = [5, 10, 15, 20, 25, 30, 35, 40]
 
   return rates.map(g => {
@@ -332,35 +333,105 @@ function buildSanityTable(baseValue, marketCap, terminalMult, discountRate, hori
 }
 
 // ─── Conclusion text ──────────────────────────────────────────────────────────
+//
+// Deliberately NOT categorized ("conservative"/"aggressive"/"extreme"). A
+// fixed growth-rate threshold has no way to know whether 25% is stretched
+// (a mature utility) or ordinary (a scaling small-cap off a low base) — that
+// judgment needs company/sector context this function doesn't have, so
+// asserting one anyway would make the panel look more analytical than it
+// actually is. Same reasoning for the "may offer value" / "only invest if"
+// language this used to carry: this model computes what's PRICED IN, not
+// whether that price is a buy. The text below states three facts only —
+// the implied rate and its basis, how it compares with the company's own
+// historical growth, and what it compounds to — and leaves the judgment to
+// the reader.
 
-function getConclusion(impliedG, historicalGrowth, stage, metricType) {
+/** One purely descriptive sentence: the implied rate and what produced it. */
+function describeImplication(impliedG, metricLabel, basisPhrase, horizon) {
   if (impliedG == null) return null
+  return `The current price implies approximately ${impliedG.toFixed(1)}% annual ${metricLabel} growth over the next ${horizon} years, based on ${basisPhrase}.`
+}
 
-  const metric = metricType === 'sales' ? 'sales' : metricType === 'earnings' ? 'earnings'
-    : metricType === 'FCFF' ? 'FCFF' : 'FCF'
-  const historical = historicalGrowth != null ? historicalGrowth.toFixed(1) : null
+/** What a constant annual rate compounds to over the given horizon, as a multiple. */
+function impliedMultipleOverHorizon(impliedG, horizon) {
+  if (impliedG == null || !isFinite(impliedG)) return null
+  const m = Math.pow(1 + impliedG / 100, horizon)
+  return isFinite(m) ? m : null
+}
 
-  const category = impliedG > 35 ? 'extreme'
-    : impliedG > 25 ? 'aggressive'
-    : impliedG > 15 ? 'moderate'
-    : impliedG > 8  ? 'conservative'
-    : 'very conservative'
+/**
+ * The table's own median-YoY and full-period-CAGR readings for a
+ * DERIVED_FORMULAS growth entry ('revenueGrowth' or 'netProfitGrowth'),
+ * independent of whichever method is actually SELECTED for forecasting
+ * (tableGrowthRate collapses to one number per the header's override —
+ * this reads both, always, because the Market Expectation comparison wants
+ * both the primary and secondary reference regardless of that override).
+ * Reads the REPORTED-basis bundle materializeFormulas always writes onto
+ * `row[growthKey]`, or its Normalized sibling when basis is 'normalized'
+ * and one was actually written — same activeValue pattern every other
+ * basis-aware read in this app uses.
+ */
+function historicalGrowthBundle(data, growthKey, basis) {
+  const latest = latestRealRow((data?.reportedIncomeHistory || []).filter(x => !x.synthetic))
+  const methods = activeValue(latest, growthKey, basis)?.methods
+  return { medianYoY: methods?.medianYoY ?? null, fullPeriodCagr: methods?.fullPeriodCagr ?? null }
+}
 
-  const verdict = impliedG > 35
-    ? `This is an extreme growth expectation. Very few companies sustain ${impliedG.toFixed(1)}% ${metric} growth for 10 years. Only invest if you have very strong conviction in the business model.`
-    : impliedG > 25
-    ? `This is an aggressive growth expectation. Achievable for exceptional businesses but requires consistent execution over a decade. Validate with industry growth rates and competitive position.`
-    : impliedG > 15
-    ? `This is a moderate growth expectation — challenging but achievable for a well-run company in a growing sector. Compare against the company's historical growth rate.`
-    : impliedG > 8
-    ? `This is a conservative growth expectation. If you believe the company can grow ${metric} at ${impliedG.toFixed(1)}%/yr, the current price may offer value.`
-    : `The market is pricing in low growth. Either the market is pessimistic, or the company faces structural headwinds. Investigate which before investing.`
+/**
+ * The same two stats for FCFF specifically. FCFF isn't a DERIVED_FORMULAS
+ * growth entry (materializeFormulas runs before materializeCustomRows
+ * computes `fcff` itself, so a 'fcffGrowth' entry there would always read
+ * an unmaterialized field) — computed locally instead, same math
+ * (median-of-YoY, endpoint CAGR) as computeGrowthBundle uses for
+ * revenue/netProfit, over positive-value years only. A CAGR or median
+ * computed through a zero or negative FCFF year isn't a growth RATE, it's
+ * a sign change — excluded rather than producing a number that looks
+ * precise but means something else.
+ */
+function fcffHistoricalGrowth(data, basis) {
+  const rows = (data?.reportedIncomeHistory || [])
+    .filter(r => !r?.synthetic && /^\d{4}$/.test(String(r?.year ?? '').trim()))
+    .map(r => ({ year: +r.year, value: activeValue(r, 'fcff', basis)?.value }))
+    .filter(p => p.value != null && p.value > 0)
+    .sort((a, b) => a.year - b.year)
+  if (rows.length < 2) return { medianYoY: null, fullPeriodCagr: null }
 
-  const histContext = historical
-    ? ` Historical ${metric} CAGR: ${historical}% — market expects ${impliedG > parseFloat(historical) ? 'acceleration' : 'deceleration'} from this.`
-    : ''
+  const span = rows[rows.length - 1].year - rows[0].year
+  const fullPeriodCagr = span > 0
+    ? (Math.pow(rows[rows.length - 1].value / rows[0].value, 1 / span) - 1) * 100
+    : null
 
-  return `Market is pricing in ~${impliedG.toFixed(1)}% annual ${metric} growth for ${10} years (${category}). ${verdict}${histContext}`
+  const yoy = []
+  for (let i = 1; i < rows.length; i++) yoy.push((rows[i].value / rows[i - 1].value - 1) * 100)
+  const medianYoY = yoy.length ? median(yoy) : null
+
+  return { medianYoY, fullPeriodCagr }
+}
+
+/**
+ * Median YoY as the PRIMARY historical comparator, not CAGR — CAGR is
+ * endpoint-sensitive (one unusually weak first year or strong final year
+ * swings it, especially for FCFF, which can start from a depressed or
+ * near-zero base), where a median of every YoY observation reflects the
+ * typical year rather than the two years happening to sit at each end.
+ * CAGR is kept as secondary context (it answers a different, also real
+ * question: total compounding start-to-end), never as the sole basis for
+ * a judgment. Returns unavailable — not a misleading number — when there
+ * isn't enough usable history to compute a median at all.
+ */
+function buildHistoricalComparison(impliedG, bundle) {
+  if (impliedG == null) return null
+  const { medianYoY, fullPeriodCagr } = bundle || {}
+  if (medianYoY == null) {
+    return { available: false, medianYoY: null, fullPeriodCagr: null, gapVsMedianYoY: null,
+      unavailableReason: 'Historical growth not shown — insufficient positive-value history to compute a meaningful comparison.' }
+  }
+  return {
+    available: true,
+    medianYoY: +medianYoY.toFixed(1),
+    fullPeriodCagr: fullPeriodCagr != null ? +fullPeriodCagr.toFixed(1) : null,
+    gapVsMedianYoY: +(impliedG - medianYoY).toFixed(1),
+  }
 }
 
 // ─── Main function ────────────────────────────────────────────────────────────
@@ -418,15 +489,17 @@ export function runMarketExpectation(data, ratioResult, stage, sectorType, overr
   // EV/WACC solve.
   const fcffValue = activeValue(incRow, 'fcff', basis)?.value
 
-  const historicalRevGrowth = tableGrowthRate(data, 'revenueGrowth', basis).value
+  // Each variant's historical comparison uses THAT variant's own metric —
+  // never a different one passed in by mistake (the FCF-based and Reverse
+  // DCF variants used to both get handed revenue growth here, mislabeled as
+  // "historical FCFF growth", which produced fluent but wrong comparisons).
+  const revenueGrowthHist   = historicalGrowthBundle(data, 'revenueGrowth', basis)
+  const netProfitGrowthHist = historicalGrowthBundle(data, 'netProfitGrowth', basis)
+  const fcffGrowthHist      = fcffHistoricalGrowth(data, basis)
   // EV target for the EV/Sales variant (equity market cap ignores net debt, which
   // overstates sales-implied growth for levered firms). Earnings uses P/E → equity.
   const netDebt = activeValue(balRow, 'netDebt', basis)?.value
   const evTarget = (marketCap != null && netDebt != null) ? marketCap + netDebt : null
-  // npCagr, not npGrowthYoY — getConclusion() below labels this "Historical
-  // earnings CAGR", but npGrowthYoY is one year's change, not a multi-year
-  // compound rate, and never moved when the growth-window slider did.
-  const historicalNPGrowth  = tableGrowthRate(data, 'netProfitGrowth', basis).value
 
 const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
 
@@ -457,8 +530,10 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       terminalMultiple: terminalSalesMultiple,
       terminalMultipleLabel: `${terminalSalesMultiple}× Sales`,
       impliedGrowth: impliedG,
+      impliedMultiple: impliedMultipleOverHorizon(impliedG, horizon),
       sanityTable: sanity,
-      conclusion: getConclusion(impliedG, historicalRevGrowth, stage, 'sales'),
+      conclusion: describeImplication(impliedG, 'sales', `the selected terminal ${terminalSalesMultiple}× EV/Sales multiple`, horizon),
+      historicalComparison: buildHistoricalComparison(impliedG, revenueGrowthHist),
       assumptions: {
         terminalMultiple: { value: terminalSalesMultiple, rationale: assumptions.rationale.terminalSalesMultiple, tier: assumptions.tiers.terminalSalesMultiple },
         discountRate:     { value: enterpriseDiscountRate, rationale: assumptions.rationale.enterpriseDiscountRate, tier: assumptions.tiers.enterpriseDiscountRate },
@@ -493,8 +568,10 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       terminalMultiple: terminalPeMultiple,
       terminalMultipleLabel: `${terminalPeMultiple}× P/E`,
       impliedGrowth: impliedG,
+      impliedMultiple: impliedMultipleOverHorizon(impliedG, horizon),
       sanityTable: sanity,
-      conclusion: getConclusion(impliedG, historicalNPGrowth, stage, 'earnings'),
+      conclusion: describeImplication(impliedG, 'net-profit', `the selected terminal ${terminalPeMultiple}× P/E`, horizon),
+      historicalComparison: buildHistoricalComparison(impliedG, netProfitGrowthHist),
       assumptions: {
         terminalMultiple: { value: terminalPeMultiple, rationale: assumptions.rationale.terminalPeMultiple, tier: assumptions.tiers.terminalPeMultiple },
         discountRate:     { value: discountRate,        rationale: assumptions.rationale.discountRate,       tier: assumptions.tiers.discountRate },
@@ -537,8 +614,10 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       terminalMultiple: termFcfMult,
       terminalMultipleLabel: `${termFcfMult}× FCFF`,
       impliedGrowth: impliedG,
+      impliedMultiple: impliedMultipleOverHorizon(impliedG, horizon),
       sanityTable: sanity,
-      conclusion: getConclusion(impliedG, historicalRevGrowth, stage, 'FCFF'),
+      conclusion: describeImplication(impliedG, 'FCFF', `the selected terminal ${termFcfMult}× EV/FCFF multiple`, horizon),
+      historicalComparison: buildHistoricalComparison(impliedG, fcffGrowthHist),
       assumptions: {
         terminalMultiple: { value: termFcfMult, rationale: assumptions.rationale.terminalFcfMultiple, tier: assumptions.tiers.terminalFcfMultiple },
         discountRate:     { value: enterpriseDiscountRate, rationale: assumptions.rationale.enterpriseDiscountRate, tier: assumptions.tiers.enterpriseDiscountRate },
@@ -589,11 +668,13 @@ const isFinancial = ['insurance', 'bank', 'nbfc'].includes(sectorType)
       base: fcffValue,
       baseLabel: 'Free Cash Flow to Firm',
       impliedGrowth: impliedG,
+      impliedMultiple: impliedMultipleOverHorizon(impliedG, horizon),
       // The exit-multiple sanity table (buildSanityTable/impliedMarketCap)
       // doesn't translate to a perpetuity-growth DCF — skipped rather than
       // force-fitted onto a convention it wasn't built for.
       sanityTable: null,
-      conclusion: impliedG != null ? getConclusion(impliedG, historicalRevGrowth, stage, 'FCFF') : null,
+      conclusion: describeImplication(impliedG, 'FCFF', `the full DCF fade-to-terminal-growth mechanics (${(reverseDcfTermGrowth * 100).toFixed(1)}% terminal growth)`, horizon),
+      historicalComparison: buildHistoricalComparison(impliedG, fcffGrowthHist),
       assumptions: {
         // termGrowth, not terminalMultiple — this variant has no terminal
         // multiple at all (perpetuity-growth convention, not exit-multiple).

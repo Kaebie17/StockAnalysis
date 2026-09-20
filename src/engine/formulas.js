@@ -892,7 +892,7 @@ const RECENT_GROWTH_YEARS = 3
 // convention to calibrate against real data, not a law of finance.
 const VOLATILITY_BANDS = { low: 8, medium: 20 }
 
-function median(arr) {
+export function median(arr) {
   if (!arr.length) return null
   const s = [...arr].sort((a, b) => a - b)
   const m = Math.floor(s.length / 2)

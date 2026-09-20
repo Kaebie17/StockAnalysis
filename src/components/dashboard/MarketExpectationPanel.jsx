@@ -29,30 +29,62 @@ function InfoTip({ text }) {
   )
 }
 
-function GrowthBar({ impliedG, max = 40 }) {
+// Deliberately no "Conservative/Aggressive/Extreme" word here — a fixed
+// growth-rate threshold can't tell a stretched assumption for a mature
+// utility from an ordinary one for a scaling small-cap; that judgment needs
+// context this bar doesn't have. The bar's fill length still scales with the
+// rate (a plain visual magnitude cue, not a verdict), and the multiple this
+// rate compounds to over the horizon is shown instead of a category word —
+// "~9.6× over 10yr" is a fact, "Aggressive" was an opinion.
+function GrowthBar({ impliedG, impliedMultiple, horizon, max = 40 }) {
   if (impliedG == null) return null
-  const pct   = Math.min(Math.abs(impliedG) / max * 100, 100)
-  const color  = impliedG > 35 ? 'bg-bear'
-    : impliedG > 25 ? 'bg-orange-500'
-    : impliedG > 15 ? 'bg-neutral'
-    : 'bg-bull'
-  const label  = impliedG > 35 ? 'Extreme'
-    : impliedG > 25 ? 'Aggressive'
-    : impliedG > 15 ? 'Moderate'
-    : impliedG > 8  ? 'Conservative'
-    : 'Very conservative'
+  const pct = Math.min(Math.abs(impliedG) / max * 100, 100)
 
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs">
         <span className="text-slate-400">Market implied growth</span>
-        <span className={`font-semibold font-mono ${
-          impliedG > 25 ? 'text-bear' : impliedG > 15 ? 'text-neutral' : 'text-bull'
-        }`}>{impliedG.toFixed(1)}%/yr — {label}</span>
+        <span className="font-semibold font-mono text-white">
+          {impliedG.toFixed(1)}%/yr
+          {impliedMultiple != null && ` — ~${impliedMultiple.toFixed(1)}× over ${horizon}yr`}
+        </span>
       </div>
       <div className="h-2 bg-navy-800 rounded-full overflow-hidden">
-        <div className={`h-full ${color} rounded-full transition-all`} style={{ width: `${pct}%` }} />
+        <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${pct}%` }} />
       </div>
+    </div>
+  )
+}
+
+// Median YoY is the PRIMARY comparator (typical-year growth, robust to one
+// unusual endpoint), CAGR a secondary reference (total start-to-end
+// compounding — a different, also real question). Never a standalone
+// "conservative/aggressive" call — just the two numbers and the gap between
+// implied and the median, so the reader draws their own conclusion about
+// whether that gap seems reasonable for this specific company.
+function HistoricalComparison({ comparison }) {
+  if (!comparison) return null
+  if (!comparison.available) {
+    return <div className="text-xs text-slate-600">{comparison.unavailableReason}</div>
+  }
+  return (
+    <div className="text-xs space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-slate-400">Historical median YoY growth</span>
+        <span className="font-mono text-slate-200">{comparison.medianYoY.toFixed(1)}%</span>
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="text-slate-400">Implied vs historical median</span>
+        <span className="font-mono text-slate-200">
+          {comparison.gapVsMedianYoY > 0 ? '+' : ''}{comparison.gapVsMedianYoY.toFixed(1)} pp
+        </span>
+      </div>
+      {comparison.fullPeriodCagr != null && (
+        <div className="flex items-center justify-between text-slate-500">
+          <span>Historical CAGR (secondary reference)</span>
+          <span className="font-mono">{comparison.fullPeriodCagr.toFixed(1)}%</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -129,7 +161,7 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, termi
       </div>
 
       {/* Implied growth bar */}
-      <GrowthBar impliedG={variant.impliedGrowth} />
+      <GrowthBar impliedG={variant.impliedGrowth} impliedMultiple={variant.impliedMultiple} horizon={variant.assumptions.horizon.value} />
 
       {/* Editable assumptions — the ⓘ rationale text says "increase if you
           believe…, decrease if…", which only means something if the field it
@@ -212,11 +244,14 @@ function VariantBlock({ variant, name, cur, marketCap, onAssumptionChange, termi
         <SanityTable rows={variant.sanityTable} marketCap={marketCap} cur={cur} />
       )}
 
-      {/* Conclusion */}
-      {variant.conclusion && (
-        <div className="bg-navy-800/50 rounded-lg px-3 py-2">
-          <div className="text-xs text-slate-500 font-medium mb-1">💡 Conclusion</div>
-          <p className="text-xs text-slate-300 leading-relaxed">{variant.conclusion}</p>
+      {/* What this implies, and how it compares with the company's own
+          history — descriptive facts only, no conservative/aggressive
+          judgment and no investment recommendation. See marketExpectation.js's
+          own note on why that judgment was removed. */}
+      {(variant.conclusion || variant.historicalComparison) && (
+        <div className="bg-navy-800/50 rounded-lg px-3 py-2 space-y-2">
+          {variant.conclusion && <p className="text-xs text-slate-300 leading-relaxed">{variant.conclusion}</p>}
+          <HistoricalComparison comparison={variant.historicalComparison} />
         </div>
       )}
     </div>
