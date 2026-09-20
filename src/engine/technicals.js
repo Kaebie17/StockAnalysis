@@ -2,6 +2,8 @@
  * src/engine/technicals.js
  */
 
+import { atr } from './exitTriggers.js'
+
 export function runTechnicals(priceHistory) {
   if (!priceHistory || priceHistory.length < 30) {
     return { available: false, reason: 'Insufficient price history (need 30+ days)' }
@@ -28,6 +30,7 @@ export function runTechnicals(priceHistory) {
   // Volume metrics
   const vol20avg = avg(volumes.slice(-20))
   const volRatio = volumes[volumes.length - 1] / (vol20avg || 1)
+  const volumeClass = classifyVolume(volRatio)
 
   // OBV was computed above and then never read — "OBV rising ✓" in the UI was
   // actually inferring accumulation from the volume ratio (today vs the 20-day
@@ -38,7 +41,7 @@ export function runTechnicals(priceHistory) {
   const obvPrev = obv[Math.max(0, obv.length - 21)]
   const obvRising = obvNow > obvPrev
 
-  // Trend detection
+  // ── Trend ────────────────────────────────────────────────────────────────
   const lastSma50  = sma50[sma50.length - 1]
   const lastSma200 = sma200[sma200.length - 1]
   const prevSma50  = sma50[sma50.length - 2]
@@ -46,68 +49,133 @@ export function runTechnicals(priceHistory) {
 
   const goldenCross = lastSma50 > lastSma200 && prevSma50 <= prevSma200
   const deathCross  = lastSma50 < lastSma200 && prevSma50 >= prevSma200
+  // Kept exactly as before (an unavailable SMA200 on a short history coerces
+  // the comparison to `false`, reading as "above") — signals.* below feeds
+  // positionHealth.js's own scoring and isn't worth changing here. The new
+  // Trend group/regime below use the null-aware versions instead, so short
+  // histories report "no evidence" there rather than a manufactured reading.
   const aboveSma50  = last > lastSma50
   const aboveSma200 = last > lastSma200
 
-  // RSI signals
-  const rsiOverbought  = latestRsi > 70
+  const sma50Known  = lastSma50  != null
+  const sma200Known = lastSma200 != null
+  const aboveSma50Safe   = sma50Known  ? last > lastSma50  : null
+  const aboveSma200Safe  = sma200Known ? last > lastSma200 : null
+  const sma50AboveSma200 = (sma50Known && sma200Known) ? lastSma50 > lastSma200 : null
+
+  const sma50Pct  = sma50Known  ? +(((last - lastSma50)  / lastSma50)  * 100).toFixed(1) : null
+  const sma200Pct = sma200Known ? +(((last - lastSma200) / lastSma200) * 100).toFixed(1) : null
+  const regime = classifyRegime({ aboveSma50: aboveSma50Safe, aboveSma200: aboveSma200Safe, sma50AboveSma200 })
+
+  // ── RSI ──────────────────────────────────────────────────────────────────
+  const rsiOverbought = latestRsi > 70
   const rsiOversold    = latestRsi < 30
   const rsiBullDiv     = detectRsiDivergence(closes, rsiVal, 'bull')
   const rsiBearDiv     = detectRsiDivergence(closes, rsiVal, 'bear')
+  const rsiZone = rsiOverbought ? 'Overbought' : rsiOversold ? 'Oversold' : latestRsi >= 50 ? 'Positive' : 'Weak/neutral'
+  // Momentum reading, not a contrarian reversal call. An extreme RSI describes
+  // how stretched the recent move is — it doesn't by itself flip which way
+  // momentum points. So the score only rewards the confirmed-positive band; a
+  // low or oversold reading registers as "not positive" rather than
+  // manufacturing a bearish point out of "might bounce," and a genuine
+  // reversal only counts once something else (MACD, a pattern) confirms it.
+  const rsiDirection = latestRsi >= 50 ? 1 : 0
 
-  // MACD signals
-  const macdBullCross = latestMacd > latestSig && macdLine[macdLine.length - 2] <= signalLine[signalLine.length - 2]
-  const macdBearCross = latestMacd < latestSig && macdLine[macdLine.length - 2] >= signalLine[signalLine.length - 2]
+  // ── MACD ─────────────────────────────────────────────────────────────────
+  const macdAboveSignal = latestMacd > latestSig
+  const macdBullCross = macdAboveSignal  && macdLine[macdLine.length - 2] <= signalLine[signalLine.length - 2]
+  const macdBearCross = !macdAboveSignal && macdLine[macdLine.length - 2] >= signalLine[signalLine.length - 2]
   const macdAboveZero = latestMacd > 0
+  const macdHistRising = prevHist != null ? latestHist > prevHist : null
+  const macdDirection = macdAboveSignal ? 1 : -1
 
-  // Candlestick patterns (last 5 candles)
+  // ── Participation (volume + OBV) ────────────────────────────────────────
+  // Raw volume expansion isn't directional on its own — 1.1x average is
+  // ordinary activity either way. It only says something once paired with
+  // which way price actually moved on it: expansion on an advance reads as
+  // buying participation, expansion on a decline reads as selling pressure.
+  const priceUpToday = last > closes[closes.length - 2]
+  const volumeConfirms = volRatio > 1.3 ? (priceUpToday ? 1 : -1) : 0
+  const obvDirection = obvRising ? 1 : -1
+  // Price and OBV disagreeing over the same 20-session window obvRising already
+  // looks at. Surfaced as a caveat, not scored — a divergence is something to
+  // watch, not a confirmed reversal.
+  const divergence = computeDivergence(closes, obvRising)
+
+  // ── Patterns (last 5 candles) ────────────────────────────────────────────
   const patterns = detectPatterns(priceHistory.slice(-5))
+  const patternDirection = patterns.some(p => p.type === 'bullish') ? 1
+                          : patterns.some(p => p.type === 'bearish') ? -1 : 0
 
-  // Bollinger position
+  // Bollinger position — still computed for the price chart overlay, but no
+  // longer scored. It correlates heavily with the RSI/SMA readings already
+  // counted and was adding an opinion rather than new evidence.
   const latestBB = { upper: bb.upper[bb.upper.length - 1], lower: bb.lower[bb.lower.length - 1], mid: bb.mid[bb.mid.length - 1] }
   const bbPosition = (last - latestBB.lower) / (latestBB.upper - latestBB.lower) // 0=at lower, 1=at upper
 
-  // ── Scoring ───────────────────────────────────────────────────────────────────
-  let bullPoints = 0, bearPoints = 0
+  // ── Four groups — trend / momentum / participation / structure ─────────────
+  // Every metric is directional evidence only: +1/-1 when it actually points
+  // somewhere, 0 when it doesn't (an unconfirmed reading, a level that isn't
+  // there, "no pattern today"). A group reads Bullish/Bearish only when
+  // everything in it agrees, Neutral only when nothing in it has a reading at
+  // all, and Mixed for everything in between — so "no evidence" can never
+  // pass itself off as "bearish evidence."
+  const trendMetrics = [
+    aboveSma50Safe   != null && { label: 'Price vs SMA50',   direction: aboveSma50Safe   ? 1 : -1 },
+    aboveSma200Safe  != null && { label: 'Price vs SMA200',  direction: aboveSma200Safe  ? 1 : -1 },
+    sma50AboveSma200 != null && { label: 'SMA50 vs SMA200',  direction: sma50AboveSma200 ? 1 : -1 },
+  ].filter(Boolean)
+  const momentumMetrics = [
+    { label: 'RSI',  direction: rsiDirection },
+    { label: 'MACD', direction: macdDirection },
+  ]
+  const participationMetrics = [
+    { label: 'OBV',    direction: obvDirection },
+    { label: 'Volume', direction: volumeConfirms },
+  ]
+  const structureMetrics = [
+    { label: 'Pattern', direction: patternDirection },
+  ]
 
-  if (aboveSma50)    bullPoints += 1
-  if (aboveSma200)   bullPoints += 1
-  if (goldenCross)   bullPoints += 2
-  if (deathCross)    bearPoints += 2
-  if (!aboveSma50)   bearPoints += 1
-  if (!aboveSma200)  bearPoints += 1
+  const groups = {
+    trend:         { status: groupStatus(trendMetrics),         metrics: trendMetrics },
+    momentum:      { status: groupStatus(momentumMetrics),      metrics: momentumMetrics },
+    participation: { status: groupStatus(participationMetrics), metrics: participationMetrics },
+    structure:     { status: groupStatus(structureMetrics),     metrics: structureMetrics },
+  }
 
-  if (rsiOversold)   bullPoints += 2
-  if (rsiOverbought) bearPoints += 2
-  if (rsiBullDiv)    bullPoints += 1
-  if (rsiBearDiv)    bearPoints += 1
-
-  if (latestHist > 0 && latestHist > prevHist) bullPoints += 1
-  if (latestHist < 0 && latestHist < prevHist) bearPoints += 1
-  if (macdBullCross)  bullPoints += 1
-  if (macdBearCross)  bearPoints += 1
-  if (macdAboveZero)  bullPoints += 0.5
-
-  if (bbPosition < 0.2) bullPoints += 1
-  if (bbPosition > 0.8) bearPoints += 1
-
-  patterns.forEach(p => {
-    if (p.type === 'bullish') bullPoints += 1
-    if (p.type === 'bearish') bearPoints += 1
-  })
-
-  const totalScore = bullPoints + bearPoints || 1
-  const techScore = (bullPoints / totalScore) * 10
-
+  // ── Overall score ────────────────────────────────────────────────────────
+  // Every metric counts once, equally — no double-weighting a cross event AND
+  // the trend reading it produces, no folding Bollinger position on top of
+  // RSI/SMA readings it mostly duplicates. A 5.0 midpoint means "no net
+  // directional evidence," not "everything's bearish."
+  const allDirections = [...trendMetrics, ...momentumMetrics, ...participationMetrics, ...structureMetrics].map(m => m.direction)
+  const netMean = allDirections.length ? allDirections.reduce((s, d) => s + d, 0) / allDirections.length : 0
+  const techScore = +(((netMean + 1) / 2) * 10).toFixed(1)
   const label = techScore >= 6.5 ? 'BULLISH' : techScore <= 3.5 ? 'BEARISH' : 'NEUTRAL'
+  const bias  = label === 'BULLISH' ? 'Bullish-leaning' : label === 'BEARISH' ? 'Bearish-leaning' : 'Neutral'
 
-  // ── Support / Resistance (swing-pivot clustering) ────────────────────────────
+  // ── Support / Resistance (swing-pivot clustering) ────────────────────────
   const levels = computeLevels(priceHistory, last)
+
+  // ── Volatility — the same ATR the exit-plan's "moves about X on an
+  // ordinary day" language already uses, so the technical read and the stop-
+  // loss math are talking about the same number. ──────────────────────────
+  const atrVal = atr(priceHistory, 14)
+  const volatility = (atrVal > 0 && last > 0)
+    ? { atr: +atrVal.toFixed(2), atrPct: +((atrVal / last) * 100).toFixed(1) }
+    : null
+
+  // ── 52-week position ─────────────────────────────────────────────────────
+  const week52 = compute52Week(closes)
 
   return {
     available: true,
-    score: +techScore.toFixed(1),
+    score: techScore,
     label,
+    bias,
+    regime,
+    groups,
     indicators: {
       price: last,
       sma50: lastSma50, sma200: lastSma200, ema20: ema20[ema20.length - 1],
@@ -119,8 +187,16 @@ export function runTechnicals(priceHistory) {
     signals: {
       goldenCross, deathCross, aboveSma50, aboveSma200,
       rsiOverbought, rsiOversold, rsiBullDiv, rsiBearDiv,
-      macdBullCross, macdBearCross, macdAboveZero, obvRising
+      macdBullCross, macdBearCross, macdAboveZero, macdAboveSignal, macdHistRising,
+      obvRising
     },
+    smaDistances: { sma50Pct, sma200Pct },
+    sma50vs200: sma50AboveSma200 == null ? null : (sma50AboveSma200 ? 'above' : 'below'),
+    rsiZone,
+    volumeClass,
+    divergence,
+    volatility,
+    week52,
     levels,
     patterns,
     series: {
@@ -141,12 +217,79 @@ export function runTechnicals(priceHistory) {
 
 // ─── Indicator functions ───────────────────────────────────────────────────────
 
+function classifyVolume(ratio) {
+  if (ratio == null || !isFinite(ratio)) return null
+  if (ratio < 0.7) return 'low'
+  if (ratio <= 1.3) return 'normal'
+  if (ratio <= 2)   return 'elevated'
+  return 'high'
+}
+
+// Explicit rules, describing the CURRENT alignment of price against its own
+// moving averages — not a forecast of where it goes next.
+function classifyRegime({ aboveSma50, aboveSma200, sma50AboveSma200 }) {
+  if (sma50AboveSma200 == null || aboveSma50 == null || aboveSma200 == null) return null
+  if (aboveSma50 && aboveSma200 && sma50AboveSma200)   return 'Strong uptrend'
+  if (!aboveSma50 && !aboveSma200 && !sma50AboveSma200) return 'Strong downtrend'
+  if (aboveSma200 && sma50AboveSma200)   return 'Uptrend'
+  if (!aboveSma200 && !sma50AboveSma200) return 'Downtrend'
+  return 'Range / transition'
+}
+
+// Bullish/Bearish only when every metric in the group agrees; Neutral only
+// when none of them have a directional read at all; anything else is a
+// genuine mix and is labeled that way rather than forced toward one side.
+function groupStatus(metrics) {
+  const dirs = metrics.map(m => m.direction)
+  if (!dirs.length || dirs.every(d => d === 0))  return 'Neutral'
+  if (dirs.every(d => d === 1))  return 'Bullish'
+  if (dirs.every(d => d === -1)) return 'Bearish'
+  return 'Mixed'
+}
+
+function computeDivergence(closes, obvRising) {
+  const n = closes.length
+  const refIdx = Math.max(0, n - 21)
+  if (refIdx === 0) return null
+  const priceUp   = closes[n - 1] > closes[refIdx]
+  const priceDown = closes[n - 1] < closes[refIdx]
+  if (priceUp && !obvRising) return 'bearish'
+  if (priceDown && obvRising) return 'bullish'
+  return null
+}
+
+const MIN_DAYS_FOR_52W = 180
+function compute52Week(closes) {
+  if (closes.length < MIN_DAYS_FOR_52W) return null
+  const window = closes.slice(-252)
+  const last = window[window.length - 1]
+  const high = Math.max(...window)
+  const low  = Math.min(...window)
+  if (!(high > low)) return null
+  return {
+    high: +high.toFixed(2),
+    low:  +low.toFixed(2),
+    positionPct: +(((last - low) / (high - low)) * 100).toFixed(0),
+    fromHighPct: +(((last - high) / high) * 100).toFixed(1),
+    fromLowPct:  +(((last - low) / low) * 100).toFixed(1),
+  }
+}
+
 // Support / resistance from swing pivots.
 //  1. Find swing highs/lows (a bar that is the extreme within a ±k window).
 //  2. Cluster pivots that sit within `tol` of each other into a single level.
-//  3. Score each level by touches (recency-weighted) + volume at those pivots.
-//  4. Split by current price → resistance (above) / support (below); report the
-//     nearest of each and the strongest of each.
+//  3. Score each level by touches (recency-weighted) + volume at those pivots
+//     — that's `historicalStrength`, "biggest level this stock has ever shown."
+//  4. Discount that by distance from the current price for `strength` — a
+//     level touched 14 times a decade ago and 90% away shouldn't outrank one
+//     touched 3 times last month and 1% away just because it's an older,
+//     bigger number. `strength` (current relevance) drives strongestSupport/
+//     strongestResistance, which exitTriggers.js anchors stop/target
+//     suggestions to; `historicalStrength` drives majorSupport/
+//     majorResistance, shown separately as "biggest level on record."
+//  5. Split by current price → resistance (above) / support (below); report
+//     the nearest of each, the current-relevant strongest of each, and the
+//     historical major of each.
 function computeLevels(priceHistory, last, { k = 5, tol = 0.02 } = {}) {
   const n = priceHistory.length
   if (n < 2 * k + 5 || !(last > 0)) return null
@@ -179,23 +322,27 @@ function computeLevels(priceHistory, last, { k = 5, tol = 0.02 } = {}) {
     }
   }
 
-  // Score: touches, weighted so recent touches count more (last bar = weight ~1,
-  // oldest ~0.4), plus a small bump for volume at the pivots.
   const totalVol = vols.reduce((s, v) => s + v, 0) || 1
   const levels = clusters.map(c => {
     const touches = c.members.length
     const recencyW = c.members.reduce((s, m) => s + (0.4 + 0.6 * (m.idx / n)), 0)
     const volW = c.members.reduce((s, m) => s + m.vol, 0) / totalVol
+    const historicalStrength = +(recencyW + volW * 3).toFixed(2)
+    const distancePct = Math.abs((c.price - last) / last) * 100
+    const proximityW = 1 / (1 + distancePct / 25)
     return {
       price: +c.price.toFixed(2),
+      range: [+Math.min(...c.members.map(m => m.price)).toFixed(2), +Math.max(...c.members.map(m => m.price)).toFixed(2)],
       touches,
       lastTouch: Math.max(...c.members.map(m => m.idx)),
-      strength: +(recencyW + volW * 3).toFixed(2),   // composite score
+      historicalStrength,
+      strength: +(historicalStrength * proximityW).toFixed(2),   // current-relevance composite score
     }
   })
 
-  const near = arr => arr.length ? arr.reduce((a, b) => Math.abs(b.price - last) < Math.abs(a.price - last) ? b : a) : null
+  const near   = arr => arr.length ? arr.reduce((a, b) => Math.abs(b.price - last) < Math.abs(a.price - last) ? b : a) : null
   const strong = arr => arr.length ? arr.reduce((a, b) => b.strength > a.strength ? b : a) : null
+  const major  = arr => arr.length ? arr.reduce((a, b) => b.historicalStrength > a.historicalStrength ? b : a) : null
   const withDist = lvl => lvl && { ...lvl, distancePct: +(((lvl.price - last) / last) * 100).toFixed(1) }
   // Closest few first — a level price would reach soonest is what's actionable
   // right now; a "strongest" level miles away is context, not a lead item.
@@ -212,8 +359,10 @@ function computeLevels(priceHistory, last, { k = 5, tol = 0.02 } = {}) {
     price: last,
     nearestResistance: withDist(near(resistance)),
     strongestResistance: withDist(strong(resistance)),
+    majorResistance: withDist(major(resistance)),
     nearestSupport: withDist(near(support)),
     strongestSupport: withDist(strong(support)),
+    majorSupport: withDist(major(support)),
     // Up to 3 nearest per side, closest first — what the panel leads with.
     nearResistances: byProximity(resistance).slice(0, 3).map(withDist),
     nearSupports: byProximity(support).slice(0, 3).map(withDist),
