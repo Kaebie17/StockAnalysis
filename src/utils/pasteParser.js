@@ -342,16 +342,23 @@ export function parsePastedTable(text, tableType, opts = {}) {
   // source. It used to live here AND in api/sec.js.
   //
   // A field with no `pctOf` has no base to convert against — if it still got a
-  // %-flagged row (nothing here declares that combination, but a future METRICS
-  // entry could), the raw percentage number gets DISCARDED, not stored as-is.
+  // %-flagged row, the raw percentage number gets DISCARDED, not stored as-is.
   // Leaving it would silently drop a bare percentage (e.g. 24.5) into a field
   // every other consumer reads as an absolute Crore figure — the exact "number
   // where a percent belongs" bug this whole pass exists to prevent, just from
   // the other direction.
+  //
+  // The one declared exception: METRICS.<key>.keepAsPercent — a field that's
+  // legitimately percent-valued in its own right (dividendPayout: Screener
+  // always labels it "Dividend Payout %", which trips isPct, but there's
+  // nothing to convert it TO). Without this, every such field's real,
+  // correctly-parsed value was silently nulled on every paste, indistinguishable
+  // from the field never having been pasted at all.
   for (const [key, m] of Object.entries(METRICS)) {
     for (let i = 0; i < fieldsByYear.length; i++) {
       const f = fieldsByYear[i]
       if (f[key] == null || !pctFlagsByYear[i][key]) continue     // absolute (or blank) — leave it
+      if (m.keepAsPercent) continue                               // percent IS the value — keep as-is
       if (!m.pctOf) { f[key] = null; continue }
       const base = f[m.pctOf]
       f[key] = base != null ? base * (f[key] / 100) : null

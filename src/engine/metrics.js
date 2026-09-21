@@ -290,6 +290,20 @@ export const METRICS = {
     sec: [],
     // Screener prints this as a percent ("Dividend Payout %"). It's already a
     // ratio, not an absolute — captured as-is, no pctOf conversion.
+    //
+    // keepAsPercent: true is load-bearing, not decorative. pasteParser.js's
+    // generic percent-handling pass flags ANY row whose Screener label
+    // contains a literal '%' (this one always does) and, finding no `pctOf`
+    // to convert it against, DISCARDS the value entirely — a safety net
+    // meant to catch a percent landing somewhere it doesn't belong (see that
+    // file's own comment: "nothing here declares that combination, but a
+    // future METRICS entry could"). This field IS that combination: a
+    // metric that's legitimately percent-valued in its own right, with
+    // nothing to convert it TO. Without this flag, every Dividend Payout %
+    // paste was silently nulled across every year, every time — not a
+    // paste mistake, not missing source data, the field being correctly
+    // captured and then discarded one step later.
+    keepAsPercent: true,
     screener: ['dividendpayout', 'dividendpayout%', 'payoutratio', 'payout'],
     expandFrom: null,
     ar: [/dividend payout/i, /payout ratio/i],
