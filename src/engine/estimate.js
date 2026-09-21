@@ -2581,7 +2581,12 @@ export function buildEstimate(ratioResult, opts = {}) {
   // shows constantly gets ignored, so silence has to be the normal state.
   const degraded = [...degradedExtra]
   if (growthBasis.rung !== 'best') degraded.push(`Growth from ${growthBasis.label}, not guidance`)
-  if (marginBasis.rung === 'fallback' || marginBasis.rung === 'none')
+  // marginBasis (the plain 3-yr average net-margin ladder) isn't even
+  // consulted when the waterfall ran — its own rung says nothing about
+  // whether THAT succeeded, so gating on it here would flag e.g. "no margin
+  // history" while the waterfall (a different set of inputs: EBITDA margin,
+  // D&A, interest, tax) produced a perfectly good number.
+  if (!waterfall && (marginBasis.rung === 'fallback' || marginBasis.rung === 'none'))
     degraded.push(`Margin from ${marginBasis.label}`)
   // This ladder's own rungs are fitted/conditional-own/historical-median/
   // peer/current/revision — 'observed' belongs to a DIFFERENT ladder
@@ -2627,10 +2632,21 @@ export function buildEstimate(ratioResult, opts = {}) {
       pct: round(a.growth * 100, 1), label: a.label })),
     growthSpreadPts: growthBasis.spreadPts ?? null,
 
-    marginPct: marginBasis.margin != null ? round(marginBasis.margin * 100, 1) : null,
-    marginSource: marginBasis.source,
-    marginLabel: marginBasis.label,
-    marginTrendPct: marginBasis.trendPct ?? null,
+    // When the waterfall ran, projProfit/projRevenue was NEVER
+    // marginBasis.margin — it's EBITDA margin minus D&A minus interest plus
+    // other income, taxed. marginBasis is a completely separate, unrelated
+    // "3-yr average net margin" reading in that case, and displaying it next
+    // to the waterfall's own profit figure claimed a margin that wasn't the
+    // one actually used — the same inconsistency basisSummary two lines
+    // below already correctly avoids by branching on `waterfall` itself.
+    marginPct: waterfall
+      ? (projRevenue > 0 ? round((projProfit / projRevenue) * 100, 1) : null)
+      : (marginBasis.margin != null ? round(marginBasis.margin * 100, 1) : null),
+    marginSource: waterfall ? 'waterfall' : marginBasis.source,
+    marginLabel: waterfall
+      ? `implied by the EBITDA margin (${round(waterfall.drivers.ebitdaMarginPct, 1)}%, ${waterfall.drivers.ebitdaMarginSource}) → EBIT → PBT → net profit waterfall, not a flat margin assumption`
+      : marginBasis.label,
+    marginTrendPct: waterfall ? null : (marginBasis.trendPct ?? null),
 
     dilutionPct: round(dilution.rate * 100, 1),
     dilutionLabel: dilution.label,
