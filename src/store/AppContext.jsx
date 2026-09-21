@@ -167,6 +167,21 @@ function reducer(s, a) {
         if (!merged[row.year]) merged[row.year] = { year: row.year }
         for (const [field, tagged] of Object.entries(row)) {
           if (field === 'year') continue
+          // Quarterly rows carry a few structural fields (fiscalYear,
+          // quarterIndex, period, fiscalYearFull, assumedIndianFY) as plain
+          // values, not the {value,status,formula} shape — tagPastedRows
+          // (pasteParser.js) tags them that way on purpose, since they
+          // describe the row itself rather than a financial figure. The
+          // tagged-field merge rule below keys entirely off `tagged?.value`,
+          // which is always undefined for a plain string/number — so without
+          // this branch every quarterly paste silently lost its fiscal-year
+          // placement on the way into state, even though the paste itself
+          // parsed it correctly.
+          const isTaggedField = tagged && typeof tagged === 'object' && 'value' in tagged
+          if (!isTaggedField) {
+            if (tagged != null) merged[row.year][field] = tagged
+            continue
+          }
           // A pasted figure ALWAYS beats a Yahoo-derived one for the same
           // field, in every paste mode, not just Replace — Yahoo and
           // Screener don't necessarily mean the same thing by "current
