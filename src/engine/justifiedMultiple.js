@@ -266,7 +266,7 @@ function determineROEStart({ data, basis, fallbackRoe, latestBalRow }) {
       if (extrap?.runRateFullYear > 0) {
         return {
           roe: (extrap.runRateFullYear / equity) * 100,
-          source: `${extrap.quartersReported}/${extrap.quartersInYear} quarters reported for FY${extrap.targetFy}, seasonality-extrapolated`,
+          source: `${extrap.quartersReported}/${extrap.quartersInYear} quarters reported for ${extrap.targetFy}, seasonality-extrapolated`,
         }
       }
     }
