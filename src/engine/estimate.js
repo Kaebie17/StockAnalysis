@@ -2572,7 +2572,16 @@ export function buildEstimate(ratioResult, opts = {}) {
   if (growthBasis.rung !== 'best') degraded.push(`Growth from ${growthBasis.label}, not guidance`)
   if (marginBasis.rung === 'fallback' || marginBasis.rung === 'none')
     degraded.push(`Margin from ${marginBasis.label}`)
-  if (multipleBasis !== 'observed' && multipleBasis !== 'revision')
+  // This ladder's own rungs are fitted/conditional-own/historical-median/
+  // peer/current/revision — 'observed' belongs to a DIFFERENT ladder
+  // (buildLenderEstimate's), so comparing against it here always failed to
+  // match, meaning even 'fitted' (this ladder's BEST rung — the whole reason
+  // targetMultiple.js's regression exists over a plain median) was flagged
+  // as degraded on every estimate. 'fitted'/'conditional-own'/
+  // 'historical-median' are all real, disclosed, own-history-derived
+  // answers (targetMultiple.js's own tier is DERIVED for all three); only
+  // 'peer'/'current' are genuine fallbacks worth surfacing here.
+  if (multipleBasis === 'peer' || multipleBasis === 'current')
     degraded.push(`Multiple from ${multipleLabel}`)
   if (thinMultiple) degraded.push('Multiple from a thinner-than-usual sample of trading days')
   if (divergesFromCurrent)

@@ -25,7 +25,7 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
   // One source of truth with ValuationPanel: the same hook resolves guidance,
   // applies stored revisions and fetches peers, so the dashboard line and the
   // detail screen can never disagree about what the estimate currently is.
-  const { estimate, justified, overrides, sanity, riskFree, refreshRate } = useEstimate(state)
+  const { estimate, justified, overrides, sanity, riskFree, refreshRate, rerating } = useEstimate(state)
 
   // Which of the two this line shows. They answer different questions —
   // Estimate 1 what the fundamentals justify, Estimate 2 what the market has
@@ -88,7 +88,20 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
           ({upside.base >= 0 ? '+' : ''}{upside.base}%)
         </span>
       )}
-      <Dot open={open} setOpen={setOpen} degraded={isDegraded || (!isJustified && sanity?.severity === 'high')}>
+      <Dot open={open} setOpen={setOpen}
+           degraded={isDegraded || (!isJustified && (sanity?.severity === 'high' || rerating?.detected))}>
+        {/* A detected re-rating is the single most direct answer to "why does
+            this number look so far from the price" — the market has measurably
+            stopped paying what this stock's own history says, which the
+            multiple basis below can't see on its own (it's still built from
+            the pre-re-rating band until this is actually applied). Shown
+            first, ahead of the more generic sanity comparison, since it's a
+            specific, actionable finding rather than a general caveat. */}
+        {!isJustified && rerating?.detected && (
+          <span className="block text-[11px] text-neutral border-b border-navy-800 pb-1.5 mb-1.5">
+            ⚑ {rerating.summary}
+          </span>
+        )}
         {/* sanityCheck() is always run against the MARKET estimate (see
             useEstimate.js) — it never examines Estimate 1. Showing its verdict
             on the Justified Multiples line's own tooltip made that line look
@@ -110,17 +123,6 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
                     pct={est.marginPct != null ? `${est.marginPct}%` : null} />
           <BasisRow label="Multiple" value={est.multipleLabel}
                     pct={isJustified ? `${est.multiples.base}×` : `${est.multiples.low}–${est.multiples.high}×`} />
-          {/* The full anchor -> returns/growth-adjustment derivation already
-              exists (multipleSteps) and is already rendered in Valuation
-              Detail — pointing there instead of duplicating it here. This
-              popover is narrow (260px) and meant to stay a glance, not a
-              second copy of the full working; the earlier attempt to inline
-              the steps list here just made sentences wrap and truncate. */}
-          {est.multipleSteps?.length > 0 && (
-            <span className="block text-[10px] text-slate-600">
-              Full derivation in Valuation Detail (▼ why)
-            </span>
-          )}
           {est.growthAlternatives?.length > 0 && est.growthSpreadPts >= 5 && (
             <span className="block text-[11px] text-slate-500">
               Other bases: {est.growthAlternatives.map(a => `${a.pct}% ${a.label}`).join(' · ')}
@@ -129,9 +131,13 @@ export default function EstimateLine({ currency, state, which = 'market' }) {
           {Math.abs(est.dilutionPct) > 0.1 && (
             <BasisRow label="Dilution" value={est.dilutionLabel} pct={null} />
           )}
+          {/* Just which levers carry a manual/news-driven override — the WHY
+              is already fully shown on that lever's own row above (Growth/
+              Margin/Multiple), so repeating est.growthLabel here duplicated
+              it verbatim instead of adding anything new. */}
           {Object.keys(overrides || {}).length > 0 && (
             <BasisRow label="Revised" pct={null}
-              value={`${Object.keys(overrides).join(', ')} — ${est.growthLabel || 'revised'}`} />
+              value={Object.keys(overrides).join(', ')} />
           )}
           {isDegraded && (
             <span className="block border-t border-navy-800 pt-1 mt-1 text-neutral">
@@ -154,7 +160,11 @@ function BasisRow({ label, value, pct }) {
     <span className="flex items-baseline gap-1.5 min-w-0">
       <span className="text-slate-500 w-14 shrink-0">{label}</span>
       {pct && <span className="font-mono text-slate-300 shrink-0 tabular-nums">{pct}</span>}
-      <span className="text-slate-500 truncate min-w-0">{value}</span>
+      {/* Wraps rather than truncates — a cut-off mid-word ("...historical
+          anch...") loses information with no way to recover it in this
+          popover, unlike wrapping, which just makes it a couple lines
+          taller in a panel that already scrolls (overflow-y-auto). */}
+      <span className="text-slate-500 min-w-0">{value}</span>
     </span>
   )
 }
