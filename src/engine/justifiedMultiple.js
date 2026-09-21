@@ -250,7 +250,7 @@ function twoStagePbMultiple({ roeStart, g1, r, years = STAGE_1_YEARS, terminalG 
  * Returns { roe, source } — `source` feeds the on-screen rationale so
  * which basis actually produced the number is never hidden.
  */
-function determineROEStart({ data, basis, fallbackRoe, latestBalRow }) {
+export function determineROEStart({ data, basis, fallbackRoe, latestBalRow }) {
   const quarterRows = fieldHistory(data, 'quarterly')
   if (quarterRows.length && latestBalRow) {
     const equity = val(activeValue(latestBalRow, 'totalEquity', basis))

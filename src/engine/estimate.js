@@ -22,7 +22,7 @@
  */
 
 import { targetMultiple } from './targetMultiple.js'
-import { justifiedMultiples, preferredForm, averagePayoutPct } from './justifiedMultiple.js'
+import { justifiedMultiples, preferredForm, averagePayoutPct, determineROEStart } from './justifiedMultiple.js'
 import { percentileSpread, filterRelativeOutliers } from './spread.js'
 import { activeValue } from './dataQuality.js'
 import { tableGrowthRate, tableRatioBasis, otherIncomeForecastBasis, latestRealRow } from './formulas.js'
@@ -799,7 +799,23 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
       return val(bRow?.totalEquity) > 0
     },
   })
-  const roe = roeBasis.value ?? activeValue(incRowL, 'roe', basis)?.value ?? ratioResult?.ratios?.roe?.value
+  const fallbackRoe = roeBasis.value ?? activeValue(incRowL, 'roe', basis)?.value ?? ratioResult?.ratios?.roe?.value
+  let roe = fallbackRoe
+  let roeSource = roeBasis.value != null ? roeBasis.source : 'latest'
+  // Same principle as justifiedMultiple.js's determineROEStart: a current,
+  // mid-year quarterly run-rate beats a stale annual median wherever one is
+  // actually available. Without this, the book-compounding growth rate here
+  // kept using a 3-year median (e.g. 46%) even after quarterly data showed
+  // the current year running well below it — the two models then disagreed
+  // for no defensible reason, since both are answering the same "what's this
+  // company's ROE right now" question.
+  if (fallbackRoe != null) {
+    const started = determineROEStart({
+      data: { reportedIncomeHistory: incomeHistory, quarterlyHistory: opts.quarterlyHistory || [] },
+      basis, fallbackRoe, latestBalRow: latestRealRow(balanceHistory),
+    })
+    if (started.source !== '3-year annual median') { roe = started.roe; roeSource = started.source }
+  }
   const payout = activeValue(incRowL, 'dividendPayout', basis)?.value ?? ratioResult?.ratios?.dividendPayout?.value
   if (!(bps > 0)) return null
 
@@ -901,13 +917,13 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
     growth, growthPct: round(growth * 100, 1),
     growthSource: growthOverride != null ? 'revision' : 'roe-retention',
     growthLabel: growthOverride != null ? (opts.overrideLabel || 'an applied revision')
-      : `${round(roe, 1)}% ROE (${roeBasis.value != null ? roeBasis.source : 'latest'}) × ${round(retention * 100, 0)}% retained`,
+      : `${round(roe, 1)}% ROE (${roeSource}) × ${round(retention * 100, 0)}% retained`,
     marginPct: null, marginLabel: 'not applicable to a lender', marginSource: 'n/a',
     dilutionPct: 0, dilutionLabel: 'book already net of issuance',
     multiples, multipleBasis, multipleLabel,
     target, upside, degraded,
     epsPath: 'book × (ROE × retention) × P/B',
-    basisSummary: `Book compounding at ${round(growth * 100, 1)}% (${round(roe, 1)}% ROE, ${roeBasis.value != null ? roeBasis.source : 'latest'} × ${round(retention * 100, 0)}% retained) · Multiple: ${multipleLabel}`,
+    basisSummary: `Book compounding at ${round(growth * 100, 1)}% (${round(roe, 1)}% ROE, ${roeSource} × ${round(retention * 100, 0)}% retained) · Multiple: ${multipleLabel}`,
   }
 }
 

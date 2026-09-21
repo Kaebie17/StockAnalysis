@@ -273,6 +273,7 @@ export function useEstimate(state, opts = {}) {
     priceHistory:   state.data?.priceHistory   || [],
     incomeHistory:  rawIncomeHistory,
     balanceHistory: rawBalanceHistory,
+    quarterlyHistory: state.data?.quarterlyHistory || [],
     basis,
     peerBand,
     // 0-1, how much peerBand pulls the own-history fitted multiple — a
