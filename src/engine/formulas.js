@@ -1294,8 +1294,18 @@ export function materializeSustainableGrowth(data) {
   const latest = latestRealRow(incRows.filter(isFiscalYearRow))
   if (!latest) return data
 
-  const reportedBundle = computeSustainableGrowthBundle(data, 'reported')
-  const normalizedBundle = computeSustainableGrowthBundle(data, 'normalized')
+  // A thrown exception here (a shape of real-world data this hasn't been
+  // tested against) must never silently skip writing the row — that's
+  // indistinguishable from the feature not existing at all, which is
+  // exactly the failure mode this whole function exists to avoid. Caught
+  // and surfaced as the row's own reason instead, so a real bug shows up
+  // as visible, readable text on the tab rather than nothing.
+  const safeBundle = (basis) => {
+    try { return computeSustainableGrowthBundle(data, basis) }
+    catch (err) { return { available: false, reason: `Internal error: ${err?.message || err}` } }
+  }
+  const reportedBundle = safeBundle('reported')
+  const normalizedBundle = safeBundle('normalized')
 
   const newHistory = incRows.map(row => {
     if (row !== latest) {

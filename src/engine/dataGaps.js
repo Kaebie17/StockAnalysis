@@ -105,6 +105,15 @@ function resolvedValues(r, data) {
     tradePayables:           latestB.tradePayables?.value ?? null,
     advanceFromCustomers:    latestB.advanceFromCustomers?.value ?? null,
     changeInWC:              latestC.changeInWC?.value ?? null,
+    // Not on ratioResult (no scalar home there) — read off the latest row,
+    // same as capex/cogs above. Feeds justifiedMultiple.js's Sustainable
+    // Growth Rate (every Justified Multiple form) — when it's genuinely
+    // absent, that calculation silently assumes 100% retention (a
+    // non-payer) instead of a real payout, which is exactly the kind of
+    // silent, consequential gap this banner exists to surface instead of
+    // hide. Previously untracked here entirely — its absence was invisible
+    // regardless of whether the ticker actually had the data or not.
+    dividendPayout:          latestI.dividendPayout?.value ?? null,
   }
 }
 

@@ -1123,12 +1123,30 @@ function SustainableGrowthRow({ data, setGrowthMethodWindow, lastSeen, markSeen 
   latestRef.current = { basis, value: currentValue }
   useEffect(() => () => markSeen(latestRef.current.basis, latestRef.current.value), [markSeen])
 
-  // No row at all means this ticker's income history hasn't gone through
-  // materializeSustainableGrowth yet (very old cached data) — genuinely
-  // nothing to show. `methods.available === false` is different: it DID
-  // run, and couldn't resolve a number for a stated reason (shown below,
-  // not hidden) — see formulas.js's computeSustainableGrowthBundle.
-  if (!methods) return null
+  // This row must never silently disappear — every branch below renders
+  // SOMETHING, even a plain "not available yet" placeholder, rather than
+  // returning null. A row that vanishes with no trace is indistinguishable
+  // from the feature never having been built at all, which is exactly what
+  // happened before this fix: computeSustainableGrowthBundle failing (e.g.
+  // income and balance-sheet years not lining up) meant nothing got
+  // written, and this returned null, so there was nothing on screen to
+  // even suggest something had gone wrong.
+  if (!incRows.length) {
+    return (
+      <fieldset className="flex items-center gap-2 rounded-lg border border-navy-800 px-3 py-2 text-xs min-w-0">
+        <legend className="px-1 text-[11px] text-slate-400">Sustainable Growth Rate</legend>
+        <span className="text-slate-600">Unavailable — no income statement history for this ticker</span>
+      </fieldset>
+    )
+  }
+  if (!latestRow || !methods) {
+    return (
+      <fieldset className="flex items-center gap-2 rounded-lg border border-navy-800 px-3 py-2 text-xs min-w-0">
+        <legend className="px-1 text-[11px] text-slate-400">Sustainable Growth Rate</legend>
+        <span className="text-slate-600">Unavailable — this ticker's data hasn't been recomputed since this row was added (try reopening the ticker)</span>
+      </fieldset>
+    )
+  }
   if (!methods.available) {
     return (
       <fieldset className="flex items-center gap-2 rounded-lg border border-navy-800 px-3 py-2 text-xs min-w-0">
