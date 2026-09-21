@@ -24,7 +24,8 @@
 import { capmCostOfEquity, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
-import { latestRealRow, tableRatioBasis, averagePayoutPct } from './formulas.js'
+import { latestRealRow, tableRatioBasis, averagePayoutPct, fieldHistory } from './formulas.js'
+import { extrapolateFullYear } from './guidanceTracking.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -69,34 +70,51 @@ export function sustainableGrowth({ roe, payoutPct } = {}) {
 }
 
 /**
+ * Linear fade from `start` to `end` across `years` periods, reaching `end`
+ * exactly at the last period — the same H-model-style linear fade
+ * convention valuation.js's own DCF terminal-value already uses (Fuller &
+ * Hsia, 1984: growth declines by a constant AMOUNT each year, arriving at
+ * the terminal rate exactly rather than asymptotically). Applied here to
+ * both the growth rate (g1 -> terminalG) and, for P/B, ROE itself
+ * (roeStart -> r) — replacing what used to be a FLAT rate for all
+ * `years` years followed by a sudden jump to the terminal rate. That
+ * discontinuity (e.g. 46%, 46%, 46%, 46%, 46%, then instantly 5%) wasn't a
+ * defensible forecast, just the easiest thing to code.
+ */
+function fadeSchedule(start, end, years) {
+  if (years <= 1) return [end]
+  return Array.from({ length: years }, (_, i) => start - (start - end) * i / (years - 1))
+}
+
+/**
  * Present value of a two-stage stream, expressed as a multiple.
  *
  * Used when g >= r, where the single-stage formula divides by zero or turns
  * negative. That isn't a flaw to work around — it's the model correctly refusing
  * an impossible assumption, since no company outgrows its discount rate forever.
  */
-function twoStageMultiple({ payout, g, r, roe, years = STAGE_1_YEARS, terminalG }) {
+function twoStageMultiple({ payout, g1, r, years = STAGE_1_YEARS, terminalG }) {
   if (!(r > terminalG)) return null
 
-  // Stage 1: dividends at the CURRENT payout, growing at g.
+  // Stage 1: dividends at the CURRENT payout, growing at a rate fading
+  // linearly from g1 down to terminalG (reached exactly by year `years`).
+  const growthPath = fadeSchedule(g1, terminalG, years)
   let pv = 0
   let dividend = payout
   for (let t = 1; t <= years; t++) {
-    dividend *= (1 + g)
+    dividend *= (1 + growthPath[t - 1])
     pv += dividend / Math.pow(1 + r, t)
   }
 
-  // Terminal: the payout RISES when growth fades.
-  //
-  // Holding it at the current rate was the error here: a company growing 25%
-  // retains almost everything, but one growing 6% only needs to retain g/ROE to
-  // fund that growth and pays out the rest. Freezing a 10% payout into
-  // perpetuity valued a compounder at 2.6x earnings — it counted the dividends
-  // and ignored what the retained earnings were building.
-  const terminalPayout = (roe > 0 && roe > terminalG)
-    ? Math.max(0, Math.min(1, 1 - terminalG / roe))
-    : payout
-  const earningsAtT = Math.pow(1 + g, years)          // per unit of current earnings
+  // Terminal: the payout RISES when growth fades — a company growing 25%
+  // retains almost everything, but one growing 6% only needs to retain g/ROE
+  // to fund that growth and pays out the rest. ROE itself has also faded to
+  // `r` by year `years` (the standard "excess returns erode to the cost of
+  // capital" assumption — a company earning exactly its cost of equity in
+  // the terminal state), so the terminal payout is solved against `r`
+  // directly rather than the company's (possibly much higher) starting ROE.
+  const terminalPayout = Math.max(0, Math.min(1, 1 - terminalG / r))
+  const earningsAtT = dividend / payout          // per unit of current earnings
   const terminal = (earningsAtT * (1 + terminalG) * terminalPayout) / (r - terminalG)
   pv += terminal / Math.pow(1 + r, years)
   return pv
@@ -124,22 +142,23 @@ function twoStageMultiple({ payout, g, r, roe, years = STAGE_1_YEARS, terminalG 
  * reinvestment-need calculation. Holding it constant is a reasonable
  * simplification; it is not the gap this function exists to close.
  */
-function twoStageEvMultiple({ conversion, g, r, years = STAGE_1_YEARS, terminalG }) {
+function twoStageEvMultiple({ conversion, g1, r, years = STAGE_1_YEARS, terminalG }) {
   if (!(r > terminalG)) return null
 
   // Stage 1: cash reaching investors, per unit of TODAY's EBITDA/revenue,
-  // growing at g.
+  // growing at a rate fading linearly from g1 to terminalG.
+  const growthPath = fadeSchedule(g1, terminalG, years)
   let pv = 0
   let cf = conversion
   for (let t = 1; t <= years; t++) {
-    cf *= (1 + g)
+    cf *= (1 + growthPath[t - 1])
     pv += cf / Math.pow(1 + r, t)
   }
 
-  // Terminal: EBITDA/revenue has grown by (1+g)^years by the time growth
-  // fades — the terminal value sits on THAT larger base, discounted back from
-  // year 5, mirroring earningsAtT above.
-  const baseAtT = Math.pow(1 + g, years)   // per unit of today's EBITDA/revenue
+  // Terminal: EBITDA/revenue has grown along the fade path by the time it
+  // fades — the terminal value sits on THAT base, discounted back from
+  // year `years`, mirroring earningsAtT above.
+  const baseAtT = cf / conversion   // per unit of today's EBITDA/revenue
   const terminal = (baseAtT * (1 + terminalG) * conversion) / (r - terminalG)
   pv += terminal / Math.pow(1 + r, years)
   return pv
@@ -160,24 +179,38 @@ function twoStageEvMultiple({ conversion, g, r, years = STAGE_1_YEARS, terminalG
  * P/E needs an explicit payoutPct input; P/B derives an EQUIVALENT implied
  * payout from g and ROE themselves (payout = 1 - g/ROE, the same
  * sustainable-growth relationship — g = ROE x retention — that produced g in
- * the first place, just solved for the other variable). That's what lets
+ * the first place, just solved for the other variable, EACH YEAR along its
+ * own fade path rather than frozen at the starting rate). That's what lets
  * this stay payout-data-free, like the single-stage P/B form already is.
+ *
+ * ROE fades too, from `roeStart` to `r` — a company earning an unusually
+ * high ROE today (the reason two-stage triggered at all) isn't assumed to
+ * keep earning it forever; competitive erosion normalizes it toward the
+ * cost of equity over the same window growth fades over. Both P/B's
+ * per-year dividend AND its book-compounding rate use the CURRENT year's
+ * point on each fade path, not the starting or ending value alone.
  */
-function twoStagePbMultiple({ roe, g, r, years = STAGE_1_YEARS, terminalG }) {
+function twoStagePbMultiple({ roeStart, g1, r, years = STAGE_1_YEARS, terminalG }) {
   if (!(r > terminalG)) return null
-  const roeDec = roe / 100
-  if (!(roeDec > 0)) return null
-  const payout = Math.max(0, Math.min(1, 1 - g / roeDec))
+  const roeStartDec = roeStart / 100
+  if (!(roeStartDec > 0)) return null
+
+  const growthPath = fadeSchedule(g1, terminalG, years)
+  const roePath = fadeSchedule(roeStartDec, r, years)
 
   // Stage 1: dividends at the implied payout, per unit of TODAY's book value.
-  // Book value at the START of year t earns ROE that year; what isn't paid
-  // out is retained and grows next year's book base.
+  // Book value at the START of year t earns that year's (faded) ROE; what
+  // isn't paid out is retained and grows next year's book base at that
+  // year's (faded) growth rate.
   let pv = 0
   let bookAtStart = 1   // per unit of today's book value
   for (let t = 1; t <= years; t++) {
-    const dividend = bookAtStart * roeDec * payout
+    const gt = growthPath[t - 1]
+    const roet = roePath[t - 1]
+    const payoutT = Math.max(0, Math.min(1, 1 - gt / roet))
+    const dividend = bookAtStart * roet * payoutT
     pv += dividend / Math.pow(1 + r, t)
-    bookAtStart *= (1 + g)
+    bookAtStart *= (1 + gt)
   }
 
   // Terminal: bookAtStart already IS the book value at the START of the
@@ -187,16 +220,58 @@ function twoStagePbMultiple({ roe, g, r, years = STAGE_1_YEARS, terminalG }) {
   // that terminal year are bookAtStart x ROE directly; no extra (1+terminalG)
   // step is needed here (unlike twoStageMultiple's P/E form, whose `earningsAtT`
   // is deliberately computed as the level AT year `years`, one step short of
-  // the terminal year, and does need that step). Multiplying by (1+terminalG)
-  // here was a copy-paste of that P/E shape onto a variable with a different
-  // convention — it silently overstated the terminal component (and so the
-  // whole two-stage P/B multiple) by a factor of (1+terminalG), confirmed by
-  // checking that the correct decomposition exactly reproduces the known-good
-  // single-stage formula (ROE-g)/(r-g) when g == terminalG.
-  const terminalPayout = (roeDec > terminalG) ? Math.max(0, Math.min(1, 1 - terminalG / roeDec)) : payout
-  const terminal = (bookAtStart * roeDec * terminalPayout) / (r - terminalG)
+  // the terminal year, and does need that step). ROE by now has faded to `r`
+  // exactly (roePath's last point), so the terminal payout solves against
+  // `r` directly, same as twoStageMultiple's terminal payout above.
+  const terminalPayout = Math.max(0, Math.min(1, 1 - terminalG / r))
+  const terminal = (bookAtStart * r * terminalPayout) / (r - terminalG)
   pv += terminal / Math.pow(1 + r, years)
   return pv
+}
+
+/**
+ * The starting ROE for the two-stage fade (`roeStart` in twoStagePbMultiple/
+ * twoStageMultiple above), preferring a CURRENT estimate over the 3-year
+ * annual median wherever one is actually available:
+ *
+ *   1. Mid-year quarters for the current, not-yet-annually-reported fiscal
+ *      year, extrapolated to a full year via seasonality learned from a
+ *      prior complete year (extrapolateFullYear, guidanceTracking.js) —
+ *      the only case quarterly data is worth anything for this purpose.
+ *      (A full 4-quarter "TTM" is NOT a separate case: in Indian reporting
+ *      Q4 is never independently published, it's back-solved as Annual −
+ *      (Q1+Q2+Q3), so summing 4 quarters is mathematically identical to
+ *      the annual figure already sitting in the income table — no new
+ *      information, not worth a special path.)
+ *   2. Otherwise, the SAME 3-year annual median already computed for the
+ *      Sustainable Growth Rate trigger (`fallbackRoe` — no second,
+ *      independent calculation).
+ *
+ * Returns { roe, source } — `source` feeds the on-screen rationale so
+ * which basis actually produced the number is never hidden.
+ */
+function determineROEStart({ data, basis, fallbackRoe, latestBalRow }) {
+  const quarterRows = fieldHistory(data, 'quarterly')
+  if (quarterRows.length && latestBalRow) {
+    const equity = val(activeValue(latestBalRow, 'totalEquity', basis))
+    if (equity > 0) {
+      const plainRows = quarterRows
+        .map(r => ({
+          fiscalYear: val(r?.fiscalYear) ?? r?.fiscalYear,
+          quarterIndex: val(r?.quarterIndex) ?? r?.quarterIndex,
+          netProfit: val(activeValue(r, 'netProfit', basis)),
+        }))
+        .filter(r => r.fiscalYear && r.netProfit != null)
+      const extrap = extrapolateFullYear(plainRows, { metric: 'netProfit' })
+      if (extrap?.runRateFullYear > 0) {
+        return {
+          roe: (extrap.runRateFullYear / equity) * 100,
+          source: `${extrap.quartersReported}/${extrap.quartersInYear} quarters reported for FY${extrap.targetFy}, seasonality-extrapolated`,
+        }
+      }
+    }
+  }
+  return { roe: fallbackRoe, source: '3-year annual median' }
 }
 
 /**
@@ -211,13 +286,14 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   // IN/US values were identical, but a real bug once terminal growth (below)
   // is split by market instead of shared.
   const { riskFreeRate, equityRiskPremium, beta, betaMeta = null, incomeHistory = [],
-          balanceHistory = [], market = 'IN' } = opts
+          balanceHistory = [], quarterlyHistory = [], market = 'IN' } = opts
   const R = ratioResult?.ratios || {}
   // roe/dividendPayout/ebitda/revenue are table-native — read off the latest
   // real row directly, falling back to ratioResult when the table can't
   // resolve one (e.g. a caller supplying a hand-built ratioResult without a
   // live materialized table, same reasoning as estimate.js's builders).
   const latestIncJm = latestRealRow(incomeHistory)
+  const latestBalRow = latestRealRow(balanceHistory)
 
   // ROE ladder: median of the equity-supported years in the Formulas tab's
   // Sustainable Growth Rate window (formulas.js's materializeSustainableGrowth,
@@ -262,22 +338,38 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   const forms = {}
   const twoStage = g >= r
 
+  // The two-stage fade's OWN starting point — a current estimate (mid-year
+  // quarters, seasonality-extrapolated) when one exists, else the same
+  // 3-year median that decided the trigger above. Only computed when
+  // actually needed: single-stage uses the plain g/roe directly, and this
+  // does real work (reading quarterly data) that would be wasted otherwise.
+  // g1/roeStartPct feed EVERY two-stage form below identically — one shared
+  // starting point, not a per-form recomputation.
+  let g1 = g, roeStartPct = roe, roeStartSource = null
+  if (twoStage) {
+    const started = determineROEStart({ data: { reportedIncomeHistory: incomeHistory, quarterlyHistory }, basis: opts.basis, fallbackRoe: roe, latestBalRow })
+    roeStartPct = started.roe
+    roeStartSource = started.source
+    g1 = (roeStartPct / 100) * retention
+  }
+
   // P/E — a company paying nothing has a justified P/E of zero under the
   // single-stage formula, which is a limitation of the FORM rather than a
   // valuation. Those are better served by P/B, so this returns nothing.
   if (payoutPct > 0) {
     const payout = payoutPct / 100
-    const pe = twoStage ? twoStageMultiple({ payout, g, r, roe: roe / 100, terminalG })
+    const pe = twoStage ? twoStageMultiple({ payout, g1, r, terminalG })
                         : (payout * (1 + g)) / (r - g)
     if (pe > 0 && isFinite(pe)) {
       forms.pe = {
         multiple: round(pe, 1), basis: 'pe', tier: TIER.DERIVED,
         label: twoStage ? 'Justified P/E (two-stage)' : 'Justified P/E',
         steps: twoStage
-          ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
-             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(terminalG * 100, 1)}%`,
-             `Payout rises from ${round(payoutPct, 0)}% to ${round((1 - terminalG / (roe / 100)) * 100, 0)}% once growth slows`,
-             `— a company that stops reinvesting pays out what it no longer needs`]
+          ? [`Sustainable growth capacity (ROE × retention) is ${round(g * 100, 1)}%, which exceeds the ${round(r * 100, 1)}% required return`,
+             `Starting growth for the model is ${round(g1 * 100, 1)}%, from ROE ${round(roeStartPct, 1)}% (${roeStartSource})`,
+             `Modelled explicitly for ${STAGE_1_YEARS} years, fading linearly to ${round(terminalG * 100, 1)}% growth and ${round(r * 100, 1)}% ROE`,
+             `Payout rises from ${round(payoutPct, 0)}% toward ${round((1 - terminalG / r) * 100, 0)}% as growth and ROE both fade`,
+             `— a company that stops reinvesting, and whose returns normalize, pays out what it no longer needs`]
           : [`Payout ${round(payoutPct, 0)}% / (${round(r * 100, 1)}% required - ${round(g * 100, 1)}% growth)`],
       }
     }
@@ -291,16 +383,17 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   if (roe != null) {
     const roeDec = roe / 100
     const pb = twoStage
-      ? twoStagePbMultiple({ roe, g, r, terminalG })
+      ? twoStagePbMultiple({ roeStart: roeStartPct, g1, r, terminalG })
       : (r - g > 0 ? (roeDec - g) / (r - g) : null)
     if (pb > 0 && isFinite(pb)) {
       forms.pb = {
         multiple: round(pb, 2), basis: 'pb', tier: TIER.DERIVED,
         label: twoStage ? 'Justified P/B (two-stage)' : 'Justified P/B',
         steps: twoStage
-          ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
-             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(terminalG * 100, 1)}%`,
-             `Implied payout rises as growth fades, same as the Justified P/E basis`]
+          ? [`Sustainable growth capacity (ROE × retention) is ${round(g * 100, 1)}%, which exceeds the ${round(r * 100, 1)}% required return`,
+             `Starting point for the model is ROE ${round(roeStartPct, 1)}% (${roeStartSource}), implying ${round(g1 * 100, 1)}% growth`,
+             `Modelled explicitly for ${STAGE_1_YEARS} years, with BOTH growth and ROE fading linearly — growth to ${round(terminalG * 100, 1)}%, ROE to this company's own ${round(r * 100, 1)}% cost of equity`,
+             `Implied payout rises each year as both fade, same relationship as the Justified P/E basis`]
           : [`(ROE ${round(roe, 1)}% - growth ${round(g * 100, 1)}%) / (required ${round(r * 100, 1)}% - growth ${round(g * 100, 1)}%)`,
              roeDec > r ? 'Earning above its cost of equity, so worth more than book.'
                         : 'Earning below its cost of equity, so worth less than book.'],
@@ -358,7 +451,7 @@ export function justifiedMultiples(ratioResult, opts = {}) {
       ? measuredConversion
       : Math.max(0, Math.min(1, retention > 0 ? 1 - retention * 0.5 : 0.5))
     const evEbitda = twoStage
-      ? twoStageEvMultiple({ conversion, g, r, terminalG })
+      ? twoStageEvMultiple({ conversion, g1, r, terminalG })
       : (r - g > 0 ? conversion / (r - g) : null)
     if (evEbitda > 0 && isFinite(evEbitda)) {
       const conversionLabel =
@@ -374,9 +467,10 @@ export function justifiedMultiples(ratioResult, opts = {}) {
         tier: measuredConversion != null ? TIER.DERIVED : TIER.ASSUMED,
         label: twoStage ? 'Justified EV/EBITDA (two-stage)' : 'Justified EV/EBITDA',
         steps: twoStage
-          ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
-             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(terminalG * 100, 1)}%`,
-             `${round(conversion * 100, 0)}% of EBITDA reaching investors (${conversionLabel}), applied to EBITDA at each stage`]
+          ? [`Sustainable growth capacity (ROE × retention) is ${round(g * 100, 1)}%, which exceeds the ${round(r * 100, 1)}% required return`,
+             `Starting growth for the model is ${round(g1 * 100, 1)}%, from ROE ${round(roeStartPct, 1)}% (${roeStartSource})`,
+             `Modelled explicitly for ${STAGE_1_YEARS} years, fading linearly to ${round(terminalG * 100, 1)}%`,
+             `${round(conversion * 100, 0)}% of EBITDA reaching investors (${conversionLabel}), applied to EBITDA at each stage (held constant — no ROIC-based terminal conversion to fade it toward)`]
           : [`${round(conversion * 100, 0)}% of EBITDA reaching investors (${conversionLabel}) / (${round(r * 100, 1)}% required - ${round(g * 100, 1)}% growth)`,
              `EBITDA margin ${round((ebitda / revenue) * 100, 1)}%`],
       }
@@ -389,7 +483,7 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   if (netMargin > 0 && revenue > 0) {
     const conversion = netMargin / 100
     const evSales = twoStage
-      ? twoStageEvMultiple({ conversion, g, r, terminalG })
+      ? twoStageEvMultiple({ conversion, g1, r, terminalG })
       : (r - g > 0 ? conversion / (r - g) : null)
     if (evSales > 0 && isFinite(evSales)) {
       forms.evSales = {
@@ -400,8 +494,9 @@ export function justifiedMultiples(ratioResult, opts = {}) {
         tier: TIER.ASSUMED,
         label: twoStage ? 'Justified EV/Sales (two-stage)' : 'Justified EV/Sales',
         steps: twoStage
-          ? [`Growth ${round(g * 100, 1)}% exceeds the ${round(r * 100, 1)}% required return, so it is modelled`,
-             `explicitly for ${STAGE_1_YEARS} years then faded to ${round(terminalG * 100, 1)}%`,
+          ? [`Sustainable growth capacity (ROE × retention) is ${round(g * 100, 1)}%, which exceeds the ${round(r * 100, 1)}% required return`,
+             `Starting growth for the model is ${round(g1 * 100, 1)}%, from ROE ${round(roeStartPct, 1)}% (${roeStartSource})`,
+             `Modelled explicitly for ${STAGE_1_YEARS} years, fading linearly to ${round(terminalG * 100, 1)}%`,
              `Net margin ${round(netMargin, 1)}%, applied to revenue at each stage`]
           : [`Net margin ${round(netMargin, 1)}% / (${round(r * 100, 1)}% - ${round(g * 100, 1)}%)`],
       }
@@ -415,7 +510,12 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     growth: { g, gPct: round(g * 100, 1), retention, roe,
       roeSource: sgMethods?.available ? `${sgMethods.startYear}–${sgMethods.endYear} median (Formulas tab)`
         : (roeBasis?.value != null ? roeBasis.source : 'latest'),
-      payoutPct },
+      payoutPct,
+      // Only meaningful once two-stage triggers — the actual starting point
+      // fed to the fade, vs `g`/`roe` above (the trigger's own inputs,
+      // unchanged, still what decides single- vs two-stage).
+      twoStageStart: twoStage ? { g1, g1Pct: round(g1 * 100, 1), roeStartPct: round(roeStartPct, 1), roeStartSource } : null,
+    },
     twoStage,
     stageOneYears: twoStage ? STAGE_1_YEARS : null,
     terminalGrowthPct: twoStage ? round(terminalG * 100, 1) : null,

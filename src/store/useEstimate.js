@@ -245,6 +245,7 @@ export function useEstimate(state, opts = {}) {
     incomeHistory: rawIncomeHistory,
     balanceHistory: rawBalanceHistory,
     cashflowHistory: state.data?.cashflowHistory || [],
+    quarterlyHistory: state.data?.quarterlyHistory || [],
     basis,
   }) : null
 

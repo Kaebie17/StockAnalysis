@@ -131,15 +131,18 @@ export function assessGuidance(guidance, quarters = [], opts = {}) {
 }
 
 /**
- * Quarterly revenue shares of a normal year, from the company's own history.
+ * Quarterly shares of a normal year for the given metric, from the company's
+ * own history. `metric` defaults to 'revenue' (every existing caller here is
+ * revenue-only, unchanged); extrapolateFullYear() below reuses this for
+ * other metrics (net profit) rather than a second copy of the same logic.
  * Pass prior full years' quarterly rows (any number of complete years); returns
  * weights summing to 1, or null when there isn't a complete year to learn from —
  * in which case the caller falls back to flat quarters and says so.
  */
-export function seasonalityFrom(historicalQuarters = [], quartersInYear = 4) {
+export function seasonalityFrom(historicalQuarters = [], quartersInYear = 4, metric = 'revenue') {
   const byYear = new Map()
   for (const q of historicalQuarters) {
-    if (!q || q.revenue == null || !q.fiscalYear) continue
+    if (!q || q[metric] == null || !q.fiscalYear) continue
     if (!byYear.has(q.fiscalYear)) byYear.set(q.fiscalYear, [])
     byYear.get(q.fiscalYear).push(q)
   }
@@ -149,15 +152,75 @@ export function seasonalityFrom(historicalQuarters = [], quartersInYear = 4) {
   const sums = Array(quartersInYear).fill(0)
   let years = 0
   for (const qs of complete) {
-    const total = qs.reduce((s, q) => s + q.revenue, 0)
+    const total = qs.reduce((s, q) => s + q[metric], 0)
     if (!(total > 0)) continue
     // Order within the year matters — sort by quarterIndex when given.
     const ordered = qs.slice().sort((a, b) => (a.quarterIndex ?? 0) - (b.quarterIndex ?? 0))
-    ordered.forEach((q, i) => { sums[i] += q.revenue / total })
+    ordered.forEach((q, i) => { sums[i] += q[metric] / total })
     years++
   }
   if (years === 0) return null
   return sums.map(s => s / years)
+}
+
+/**
+ * The seasonality-weighted run-rate extrapolation ONLY — the piece of
+ * assessGuidance() below that doesn't need a guidance record or a growth
+ * assumption to compute. Used by justifiedMultiple.js to estimate the
+ * CURRENT (in-progress) fiscal year's net profit for the Sustainable
+ * Growth Rate ROE-fade starting point, without dragging in the
+ * guidance-comparison machinery (beat/meet/miss, significance thresholds)
+ * that question has nothing to do with.
+ *
+ * Requires at least one reported quarter for the target year and at least
+ * one complete PRIOR year to learn seasonality from — no seasonality, no
+ * extrapolation; a flat quarters/4 guess would misread any seasonal
+ * business, and this is exactly the mistake seasonality tracking here
+ * exists to avoid making.
+ *
+ * @param quarterRows  [{ fiscalYear, quarterIndex, [metric]: number }],
+ *                     any order, any number of years mixed together
+ * @param opts.metric  which field to extrapolate (default 'revenue')
+ * @param opts.quartersInYear  4 unless a company reports differently
+ * @returns { runRateFullYear, targetFy, quartersReported, quartersInYear,
+ *            seasonalityUsed } or null if there's nothing (usable) to
+ *            extrapolate from — the target year is already fully reported
+ *            (nothing to project), or no prior complete year exists.
+ */
+export function extrapolateFullYear(quarterRows, opts = {}) {
+  const { metric = 'revenue', quartersInYear = 4 } = opts
+  const rows = (quarterRows || []).filter(q => q && q[metric] != null && q.fiscalYear)
+  if (!rows.length) return null
+
+  const byFy = new Map()
+  for (const r of rows) {
+    if (!byFy.has(r.fiscalYear)) byFy.set(r.fiscalYear, [])
+    byFy.get(r.fiscalYear).push(r)
+  }
+  const fys = [...byFy.keys()].sort()
+  const targetFy = fys[fys.length - 1]
+  const current = byFy.get(targetFy)
+  const reported = current.length
+
+  // The latest year is already fully reported — nothing to extrapolate,
+  // the annual figure already covers it.
+  if (reported >= quartersInYear) return null
+
+  const seasonality = seasonalityFrom(
+    fys.filter(fy => fy !== targetFy).flatMap(fy => byFy.get(fy)),
+    quartersInYear, metric,
+  )
+  if (!seasonality) return null   // no complete prior year — decline, don't guess flat
+
+  const ytdShare = seasonality.slice(0, reported).reduce((s, w) => s + w, 0)
+  if (!(ytdShare > 0)) return null
+  const actualYtd = current.reduce((s, q) => s + q[metric], 0)
+  const runRateFullYear = actualYtd / ytdShare
+
+  return {
+    runRateFullYear, targetFy, quartersReported: reported, quartersInYear,
+    seasonalityUsed: true,
+  }
 }
 
 /** Normalize supplied weights to sum to 1; fall back to flat quarters. */
