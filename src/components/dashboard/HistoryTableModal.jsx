@@ -42,10 +42,24 @@ import Modal from '../Modal.jsx'
 
 const TABLES = [
   { key: 'income',    label: 'P&L',        icon: '📊' },
+  // Same P&L field set as `income`, sliced by quarter instead of by fiscal
+  // year — stored in its own quarterlyHistory array (histKeyFor below),
+  // never merged into reportedIncomeHistory, so every consumer that reads
+  // that as full years is unaffected. See metricsTableFor's own note on why
+  // field lookups below redirect quarterly -> income.
+  { key: 'quarterly', label: 'Quarterly',  icon: '🗓️' },
   { key: 'balance',   label: 'Balance',    icon: '⚖️' },
   { key: 'cashflow',  label: 'Cash Flow',  icon: '💵' },
   { key: 'formulas',  label: 'Formulas',   icon: '🧮' },
 ]
+
+// metrics.js has no separate field dictionary for 'quarterly' — it's the
+// same P&L rows as 'income', just sliced by quarter (see metrics.js's own
+// TABLE_SHAPE.quarterly comment). Every METRICS[key].table lookup in this
+// file needs to redirect quarterly -> income to find those field
+// definitions; the HISTORY ARRAY itself still resolves separately via
+// histKeyFor (quarterlyHistory, never reportedIncomeHistory).
+const metricsTableFor = table => table === 'quarterly' ? 'income' : table
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
 const histKeyFor = table => table === 'income' ? 'reportedIncomeHistory' : `${table}History`
@@ -196,7 +210,7 @@ export default function HistoryTableModal({ open, onClose, initialFocus }) {
   // straight off data.customFields, not this filtered view.
   const customFields = (data.customFields || []).filter(f => f.table === table && !METRICS[f.key])
 
-  const trackedKeys = Object.keys(METRICS).filter(k => METRICS[k].table === table)
+  const trackedKeys = Object.keys(METRICS).filter(k => METRICS[k].table === metricsTableFor(table))
   const signatureKeys = TABLE_SHAPE[table]?.signature || []
   const populatedKeys = trackedKeys.filter(k => history.some(r => val(r?.[k]) != null))
   // Signature fields always shown (even blank) so there's an obvious place

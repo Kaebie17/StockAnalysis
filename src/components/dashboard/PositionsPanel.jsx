@@ -5,7 +5,7 @@ import Modal from '../Modal.jsx'
 import { usePositions, positionMath, removePosition, saveExitPlan, updatePositionDate, backfillSnapshot, rebuildAllSnapshots } from '../../store/usePositions.js'
 import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
-import { assessFromQuarterly } from '../../engine/quarterlyBridge.js'
+import { assessFromQuarterly, quarterlyRowsFor } from '../../engine/quarterlyBridge.js'
 import { fetchMarketRegime } from '../../api/marketRegime.js'
 import { getCached, getCachedAge, FINANCIALS_TTL, loadExitPlanForTicker } from '../../utils/db.js'
 import { fetchQuotes } from '../../api/quotesClient.js'
@@ -353,7 +353,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
       balanceHistory: rawBalanceHistory,
       basis: analysis.data?.basis,
     })
-    const ga = assessFromQuarterly(isLive ? state.quarterlyData : null, {
+    const ga = assessFromQuarterly(isLive ? quarterlyRowsFor(analysis.data, state.quarterlyData) : null, {
       guidance: isLive ? state.guidance : null,
       modelGrowth: est?.growth ?? null,
       incomeHistory: rawIncomeHistory,

@@ -3,7 +3,7 @@ import { useApp } from './AppContext.jsx'
 import { listRevisions, appendRevision, saveEstimate, currentEstimate } from '../utils/db.js'
 import { queuePush } from '../sync/sync.js'
 import { buildEstimate, buildJustifiedEstimate, scoreEstimate, sanityCheck } from '../engine/estimate.js'
-import { assessFromQuarterly, growthDriftSuggestion } from '../engine/quarterlyBridge.js'
+import { assessFromQuarterly, growthDriftSuggestion, quarterlyRowsFor } from '../engine/quarterlyBridge.js'
 import { fetchPeerCandidates } from '../api/peersClient.js'
 import { relativePerformance } from '../api/marketRegime.js'
 import { getRiskFreeRate, refreshRiskFreeRate } from '../api/riskFreeClient.js'
@@ -219,7 +219,7 @@ export function useEstimate(state, opts = {}) {
   // Quarterly results → guidance verdict. Both halves of this were built and
   // never joined: rows sat in `quarterlyData` and nothing read them, so a
   // company could miss guidance three quarters running with no bar moving.
-  const guidanceAssessment = assessFromQuarterly(state?.quarterlyData, {
+  const guidanceAssessment = assessFromQuarterly(quarterlyRowsFor(state?.data, state?.quarterlyData), {
     guidance: state?.guidance,
     modelGrowth: guidedGrowthOf(state) ?? cagrOf(state),
     incomeHistory: rawIncomeHistory,

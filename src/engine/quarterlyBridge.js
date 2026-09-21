@@ -20,6 +20,24 @@ import { activeValue } from './dataQuality.js'
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
 /**
+ * Quarterly rows now live on data.quarterlyHistory (the Data Table's own
+ * Quarterly tab — wired the same way as reportedIncomeHistory/
+ * balanceHistory/cashflowHistory, so pasting there flows through the
+ * ordinary MERGE_PASTED path instead of a separate, disconnected store).
+ * `legacyQuarterlyData` is the OLD location (AppContext's state.quarterlyData,
+ * saved via saveGuidance) — kept as a read-only fallback so a ticker whose
+ * quarterly data was pasted before this change doesn't silently lose it;
+ * any NEW paste goes to data.quarterlyHistory and takes over from there.
+ * assessFromQuarterly's own `val()` already unwraps a tagged
+ * {value,status,formula} field the same as a plain one, so the new
+ * location's tagged shape needs no translation here.
+ */
+export function quarterlyRowsFor(data, legacyQuarterlyData) {
+  const rows = data?.quarterlyHistory?.length ? data.quarterlyHistory : legacyQuarterlyData?.rows
+  return rows?.length ? { rows } : null
+}
+
+/**
  * @param quarterlyData  { rows: [{ period, fiscalYear, quarterIndex, revenue, ... }] }
  * @param opts.guidance      the ticker's guidance record
  * @param opts.modelGrowth   standing growth assumption (decimal)

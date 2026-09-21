@@ -54,9 +54,13 @@ export function fieldLabel(data, field) {
 }
 
 export function fieldHistory(data, table) {
-  if (table === 'income')   return data?.reportedIncomeHistory || data?.incomeHistory || []
-  if (table === 'balance')  return data?.balanceHistory || []
-  if (table === 'cashflow') return data?.cashflowHistory || []
+  if (table === 'income')    return data?.reportedIncomeHistory || data?.incomeHistory || []
+  if (table === 'balance')   return data?.balanceHistory || []
+  if (table === 'cashflow')  return data?.cashflowHistory || []
+  // Same P&L fields as 'income', sliced by quarter — its own array, never
+  // merged into reportedIncomeHistory (every consumer that reads that as
+  // full fiscal years would otherwise silently corrupt on a quarter).
+  if (table === 'quarterly') return data?.quarterlyHistory || []
   return []
 }
 

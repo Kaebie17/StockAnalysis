@@ -525,12 +525,22 @@ export function quarterMeta(label) {
  */
 export const SKIP_SCALE = new Set(['eps','dividendPayout'])
 
+// Fields that describe the ROW ITSELF (which period/fiscal-year/quarter it
+// is) rather than a financial figure — carried through as plain values,
+// same treatment `year` always got, so a quarterly row's fiscal-year
+// placement and quarter index survive intact instead of being wrapped in
+// the {value,status,formula} shape meant for actual line items. Only ever
+// present on quarterly rows (quarterMeta, pasteParser.js's
+// parsePastedTable) — harmless no-ops for income/balance/cashflow rows,
+// which never carry these keys.
+const STRUCTURAL_FIELDS = new Set(['year', 'period', 'fiscalYear', 'quarterIndex', 'fiscalYearFull', 'assumedIndianFY'])
+
 export function tagPastedRows(rows, tableType, opts = {}) {
   const scale = opts.scale ?? 1
   return rows.map(row => {
-    const tagged = { year: row.year }
+    const tagged = {}
     for (const [key, value] of Object.entries(row)) {
-      if (key === 'year') continue
+      if (STRUCTURAL_FIELDS.has(key)) { tagged[key] = value; continue }
       let scaled = value != null && !SKIP_SCALE.has(key) ? value * scale : value
       // metrics.js's alwaysPositive (capex) — a spend magnitude, not a signed
       // quantity. Screener's own cash-flow-statement row is negative (an

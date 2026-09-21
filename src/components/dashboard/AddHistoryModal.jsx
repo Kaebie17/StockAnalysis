@@ -212,40 +212,23 @@ export default function AddHistoryModal({ open, onClose, ticker, onApplyAll, foc
     if (overwrite && !window.confirm(
       `Replace mode will overwrite every matching field shown above with this paste's values — including anything manually corrected earlier. This can't be undone. Continue?`
     )) return
-    // Annual financials → history series.
-    // Quarterly is deliberately NOT sent here: incomeHistory is keyed by fiscal
-    // year and every consumer (ratios, CAGR, the DCF) reads it as full years.
-    // Merging quarters in would silently corrupt all of them — a Q2 revenue
-    // figure sitting in a year slot reads as a catastrophic collapse.
+    // Annual financials AND quarterly → the same history-series path.
+    // Quarterly used to be routed to a separate, disconnected store
+    // (Block-5 `quarterlyData`, never actually consumed anywhere in the
+    // app) specifically to avoid corrupting reportedIncomeHistory — that
+    // risk was real (a Q2 revenue figure sitting in a year slot reads as a
+    // catastrophic collapse to every consumer that reads incomeHistory as
+    // full years), but the fix is a genuinely separate history array
+    // (data.quarterlyHistory, keyed by period, never merged into
+    // reportedIncomeHistory), not a separate STORAGE MECHANISM entirely.
+    // `onApplyAll`'s MERGE_PASTED reducer already keys by `${tableType}History`
+    // generically, so routing 'quarterly' through here writes to
+    // quarterlyHistory automatically, with zero reducer changes needed.
     for (const [tableType, result] of Object.entries(results)) {
-      if (tableType === 'holdings' || tableType === 'quarterly') continue
+      if (tableType === 'holdings') continue
       if (result.matchedCount > 0) {
         onApplyAll(tableType, tagPastedRows(result.rows, tableType, { scale: pasteScale(currency, ticker) }), { overwrite })
       }
-    }
-    // Quarterly → its own series, alongside (not inside) the annual history.
-    const q = results.quarterly
-    if (q?.matchedCount > 0 && !q.rejected) {
-      const scale = pasteScale(currency, ticker)
-      const money = new Set(['revenue', 'operatingProfit', 'netProfit', 'interest', 'depreciation'])
-      setQualInputs({
-        quarterlyData: {
-          // Keep the raw shape: period label, FY placement and quarter index all
-          // travel with the row so guidance tracking and seasonality don't have
-          // to re-derive which fiscal year a March quarter belongs to.
-          rows: q.rows.map(r => {
-            const out = { period: r.period ?? r.year, fiscalYear: r.fiscalYear,
-                          quarterIndex: r.quarterIndex }
-            for (const [k, v] of Object.entries(r)) {
-              if (k === 'year' || k === 'period' || k === 'fiscalYear' ||
-                  k === 'quarterIndex' || k === 'fiscalYearFull' || k === 'assumedIndianFY') continue
-              out[k] = (v != null && money.has(k)) ? v * scale : v
-            }
-            return out
-          }),
-          savedAt: Date.now(),
-        },
-      })
     }
     // Shareholding → store (promoter holding, Block-5 gate input)
     const h = results.holdings
