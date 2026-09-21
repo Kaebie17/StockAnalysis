@@ -1435,6 +1435,45 @@ export function tableRatioBasis(data, formulaKey, basis, opts = {}) {
 }
 
 /**
+ * The current, best-available ANNUAL ROE — one factual question ("what is
+ * this company's ROE") that justifiedMultiple.js, buildLenderEstimate, and
+ * estimate.js's fitted-multiple regression each used to answer with their
+ * own independent copy of the same tableRatioBasis(...,'roe',...) call.
+ * That's defensible for how each method turns ROE into a PRICE (CAPM fade-
+ * to-r vs an observed P/B multiple vs a regressed fitted multiple are
+ * genuinely different, deliberate modeling choices) — it is not defensible
+ * for the ROE figure itself, which isn't a modeling choice at all. The
+ * three copies could silently drift (e.g. one honoring a user's Formulas-
+ * tab window adjustment, the others not), so every caller now shares this.
+ *
+ * Ladder: the materialized Sustainable Growth Rate row's own median
+ * (Formulas tab, user-adjustable start/end window — the one place this is
+ * actually configurable, so every consumer should see what the user set
+ * there) → a fresh 3-year median of equity-supported years → the latest
+ * single year → ratioResult's own pre-computed ROE, as a last resort.
+ *
+ * This is the ANNUAL figure only — callers needing the current, possibly
+ * mid-year figure still layer determineROEStart (justifiedMultiple.js) on
+ * top, passing this as its fallbackRoe.
+ */
+export function resolveAnnualRoe({ incomeHistory, balanceHistory, basis, ratioResult }) {
+  const latestRow = latestRealRow(incomeHistory)
+  const sgMethods = activeValue(latestRow, 'sustainableGrowth', basis)?.methods
+  const roeBasis = sgMethods?.available ? null : tableRatioBasis(
+    { reportedIncomeHistory: incomeHistory, balanceHistory, basis }, 'roe', basis, {
+      filterYear: p => {
+        const bRow = (balanceHistory || []).find(b => yearOf(b) === p.year)
+        return val(bRow?.totalEquity) > 0
+      },
+    })
+  const value = sgMethods?.roeMedian ?? roeBasis?.value ?? activeValue(latestRow, 'roe', basis)?.value
+    ?? ratioResult?.ratios?.roe?.value ?? null
+  const source = sgMethods?.available ? `${sgMethods.startYear}–${sgMethods.endYear} median (Formulas tab)`
+    : (roeBasis?.value != null ? roeBasis.source : 'latest')
+  return { value, source }
+}
+
+/**
  * Other income's forward basis — deliberately NOT the plain ratio ladder
  * above, because a one-off gain (an asset sale, a fair-value swing, a
  * settlement) sitting in "Other Income" would otherwise get averaged in as

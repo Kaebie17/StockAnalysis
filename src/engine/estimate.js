@@ -25,7 +25,7 @@ import { targetMultiple } from './targetMultiple.js'
 import { justifiedMultiples, preferredForm, averagePayoutPct, determineROEStart } from './justifiedMultiple.js'
 import { percentileSpread, filterRelativeOutliers } from './spread.js'
 import { activeValue } from './dataQuality.js'
-import { tableGrowthRate, tableRatioBasis, otherIncomeForecastBasis, latestRealRow } from './formulas.js'
+import { tableGrowthRate, tableRatioBasis, otherIncomeForecastBasis, latestRealRow, resolveAnnualRoe } from './formulas.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -785,23 +785,15 @@ export function buildLenderEstimate(ratioResult, opts = {}) {
   // snapshotRebuild.js's historical "as of" reconstruction, whose truncated
   // income slice may not carry every materialized field).
   const incRowL = latestRealRow(incomeHistory)
-  // ROE ladder: median of the last 3 years a real equity base supports (same
-  // guided→median-of-N-years→latest principle tableRatioBasis gives every
-  // other driver), not just whatever the latest year happened to report — a
-  // single depressed or inflated year otherwise sets the whole compounding
-  // rate. Negative/zero-equity years are excluded from the ladder the same
-  // way pbBand excludes them from its own P/B band: ROE isn't a meaningful
-  // ratio there, it's a sign-flipped or divide-by-near-zero artefact.
-  const roeData = { reportedIncomeHistory: incomeHistory, balanceHistory, basis }
-  const roeBasis = tableRatioBasis(roeData, 'roe', basis, {
-    filterYear: p => {
-      const bRow = (balanceHistory || []).find(b => yearOf(b) === p.year)
-      return val(bRow?.totalEquity) > 0
-    },
-  })
-  const fallbackRoe = roeBasis.value ?? activeValue(incRowL, 'roe', basis)?.value ?? ratioResult?.ratios?.roe?.value
+  // ROE: the same shared answer (resolveAnnualRoe, formulas.js) every
+  // ROE-based method here uses, rather than this model's own independent
+  // 3-year ladder — see its own doc comment for why the figure itself
+  // shouldn't drift between methods even though how each turns it into a
+  // price legitimately does.
+  const roeResolved = resolveAnnualRoe({ incomeHistory, balanceHistory, basis, ratioResult })
+  const fallbackRoe = roeResolved.value ?? activeValue(incRowL, 'roe', basis)?.value ?? ratioResult?.ratios?.roe?.value
   let roe = fallbackRoe
-  let roeSource = roeBasis.value != null ? roeBasis.source : 'latest'
+  let roeSource = roeResolved.source
   // Same principle as justifiedMultiple.js's determineROEStart: a current,
   // mid-year quarterly run-rate beats a stale annual median wherever one is
   // actually available. Without this, the book-compounding growth rate here
@@ -2267,18 +2259,20 @@ export function buildEstimate(ratioResult, opts = {}) {
   // priced its returns and growth. This is what analysts do — the flat median
   // below gives a company earning materially better returns than its history
   // exactly its history's multiple, which is the step that was missing.
-  // ROE ladder: median of the last 3 equity-supported years, same mechanism
-  // buildLenderEstimate/justifiedMultiples use — a single depressed or
-  // inflated year otherwise sets this regression's forward-ROE assumption
-  // outright. Falls back to the raw latest-year figure only when the ladder
-  // can't compute one.
-  const forwardRoeData = { reportedIncomeHistory: incomeHistory, balanceHistory, basis: normBasis }
-  const forwardRoeBasis = tableRatioBasis(forwardRoeData, 'roe', normBasis, {
-    filterYear: p => {
-      const bRow = (balanceHistory || []).find(b => yearOf(b) === p.year)
-      return val(bRow?.totalEquity) > 0
-    },
-  })
+  // ROE: the same shared answer (resolveAnnualRoe, formulas.js) and the same
+  // quarterly-preference layer (determineROEStart, justifiedMultiple.js)
+  // buildLenderEstimate/justifiedMultiples use, rather than a fourth
+  // independent 3-year ladder — one factual "what is this company's ROE"
+  // question, same answer regardless of which method is asking.
+  let forwardRoeValue = resolveAnnualRoe({ incomeHistory, balanceHistory, basis: normBasis, ratioResult }).value
+  if (forwardRoeValue != null) {
+    const started = determineROEStart({
+      data: { reportedIncomeHistory: incomeHistory, quarterlyHistory: opts.quarterlyHistory || [] },
+      basis: normBasis, fallbackRoe: forwardRoeValue, latestBalRow: latestRealRow(balanceHistory),
+    })
+    if (started.source !== '3-year annual median') forwardRoeValue = started.roe
+  }
+  const forwardRoeBasis = { value: forwardRoeValue }
   const fitted = targetMultiple({
     basis: 'pe', priceHistory, incomeHistory, balanceHistory,
     // Forward expectation. Defensible over a one-year horizon — ROE is far

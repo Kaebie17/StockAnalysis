@@ -24,7 +24,7 @@
 import { capmCostOfEquity, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
-import { latestRealRow, tableRatioBasis, averagePayoutPct, fieldHistory } from './formulas.js'
+import { latestRealRow, averagePayoutPct, fieldHistory, resolveAnnualRoe } from './formulas.js'
 import { extrapolateFullYear } from './guidanceTracking.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
@@ -295,26 +295,16 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   const latestIncJm = latestRealRow(incomeHistory)
   const latestBalRow = latestRealRow(balanceHistory)
 
-  // ROE ladder: median of the equity-supported years in the Formulas tab's
-  // Sustainable Growth Rate window (formulas.js's materializeSustainableGrowth,
-  // run from computeAll — user-adjustable there, same start/end year controls
-  // Revenue/Net Profit Growth already have) — not a second, independent
-  // 3-year median computed fresh here. Falls back to a fresh 3-year ladder
-  // only when the materialized row isn't there yet (e.g. a caller building
-  // its own bare ratioResult without a live materialized table).
+  // ROE: the one shared answer to "what is this company's ROE" every
+  // ROE-based valuation method here uses (resolveAnnualRoe, formulas.js) —
+  // preferring the Formulas tab's own Sustainable Growth Rate window
+  // (materializeSustainableGrowth, user-adjustable there, same start/end
+  // year controls Revenue/Net Profit Growth already have) over a second,
+  // independent 3-year median computed fresh. sgMethods is kept here only
+  // for payoutPct below, which resolveAnnualRoe doesn't carry.
   const sgMethods = activeValue(latestIncJm, 'sustainableGrowth', opts.basis)?.methods
-  const roeLadderData = { reportedIncomeHistory: incomeHistory, balanceHistory, basis: opts.basis }
-  // sgMethods can exist but be `{ available: false, reason }` (materializeSustainableGrowth
-  // now always writes a row, even a failed one, so the Formulas tab can show
-  // WHY instead of the row silently vanishing) — only skip the fresh ladder
-  // below when the materialized bundle actually resolved something.
-  const roeBasis = sgMethods?.available ? null : tableRatioBasis(roeLadderData, 'roe', opts.basis, {
-    filterYear: p => {
-      const bRow = (balanceHistory || []).find(b => yearOf(b) === p.year)
-      return val(bRow?.totalEquity) > 0
-    },
-  })
-  const roe = sgMethods?.roeMedian ?? roeBasis?.value ?? activeValue(latestIncJm, 'roe', opts.basis)?.value ?? R.roe?.value
+  const roeResolved = resolveAnnualRoe({ incomeHistory, balanceHistory, basis: opts.basis, ratioResult })
+  const roe = roeResolved.value
   const payoutPct = sgMethods?.payoutPct ?? activeValue(latestIncJm, 'dividendPayout', opts.basis)?.value ?? R.dividendPayout?.value
     ?? averagePayoutPct(incomeHistory, {
     cashflowHistory: opts.cashflowHistory || [],
@@ -508,8 +498,7 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     forms, missing,
     requiredReturn: rr,
     growth: { g, gPct: round(g * 100, 1), retention, roe,
-      roeSource: sgMethods?.available ? `${sgMethods.startYear}–${sgMethods.endYear} median (Formulas tab)`
-        : (roeBasis?.value != null ? roeBasis.source : 'latest'),
+      roeSource: roeResolved.source,
       payoutPct,
       // Only meaningful once two-stage triggers — the actual starting point
       // fed to the fade, vs `g`/`roe` above (the trigger's own inputs,
