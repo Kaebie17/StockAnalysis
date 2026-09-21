@@ -4,7 +4,7 @@ import { METRICS, TABLE_SHAPE } from '../../engine/metrics.js'
 import { SKIP_SCALE, parseRestatementRows } from '../../utils/pasteParser.js'
 import { parseExcerpt, proposalToEdit } from '../../engine/parseExcerpt.js'
 import { activeValue } from '../../engine/dataQuality.js'
-import { availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField, consumersOf, INPUT_FORMULAS, computedRowEquation, formulaTerms } from '../../engine/formulas.js'
+import { availableTargets, listFormulas, fieldLabel, fieldHistory, assignmentsForField, consumersOf, INPUT_FORMULAS, computedRowEquation, formulaTerms, SUSTAINABLE_GROWTH_KEY } from '../../engine/formulas.js'
 import { marketOf } from '../../engine/requiredReturn.js'
 import { getRiskFreeRate, refreshRiskFreeRate } from '../../api/riskFreeClient.js'
 import { getEquityRiskPremium, refreshEquityRiskPremium } from '../../api/erpClient.js'
@@ -1085,7 +1085,77 @@ function FormulasTab({ data, div, focusField, setGrowthMethodWindow, lastSeenOut
             markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [formula.key]: { ...prev[formula.key], [basis]: value } }))} />
         )
       ))}
+      {/* Sustainable Growth Rate — feeds every Justified Multiple form
+          (P/E, P/B, EV/EBITDA, EV/Sales all read this SAME g). Rendered here
+          rather than through the formulas.map() loop above since it isn't a
+          `computed: true` custom row or a DERIVED_FORMULAS growth entry —
+          it combines ROE and payout, two different fields, rather than
+          computing one field's own CAGR/median-YoY. See formulas.js's
+          materializeSustainableGrowth. */}
+      <SustainableGrowthRow data={data}
+        setGrowthMethodWindow={setGrowthMethodWindow}
+        lastSeen={lastSeenOutputs[SUSTAINABLE_GROWTH_KEY]}
+        markSeen={(basis, value) => setLastSeenOutputs(prev => ({ ...prev, [SUSTAINABLE_GROWTH_KEY]: { ...prev[SUSTAINABLE_GROWTH_KEY], [basis]: value } }))} />
     </div>
+  )
+}
+
+/**
+ * Sustainable Growth Rate row — median ROE (over an adjustable window,
+ * same start/end year controls Revenue/Net Profit Growth already have)
+ * times retention (1 − the window's end-year payout). This is the `g` every
+ * Justified Multiple form (P/E, P/B, EV/EBITDA, EV/Sales) is built on —
+ * adjusting the window here changes all four together, same as editing a
+ * data-table cell changes every consumer that reads it.
+ */
+function SustainableGrowthRow({ data, setGrowthMethodWindow, lastSeen, markSeen }) {
+  const incRows = fieldHistory(data, 'income')
+  const realRows = incRows.filter(r => !r?.synthetic && /^\d{4}$/.test(String(r?.year ?? '').trim()))
+  const latestRow = realRows[realRows.length - 1]
+  const hasOwnNormalization = latestRow?.sustainableGrowthNormalized?.value != null
+  const [basis, setBasis] = useState(hasOwnNormalization ? 'normalized' : 'reported')
+  const resolved = latestRow ? activeValue(latestRow, SUSTAINABLE_GROWTH_KEY, basis) : null
+  const methods = resolved?.methods
+
+  const currentValue = resolved?.value ?? null
+  const changed = lastSeen?.[basis] === undefined || lastSeen[basis] !== currentValue
+  const latestRef = useRef({ basis, value: currentValue })
+  latestRef.current = { basis, value: currentValue }
+  useEffect(() => () => markSeen(latestRef.current.basis, latestRef.current.value), [markSeen])
+
+  if (!methods) return null
+
+  const startYear = methods.startYear ?? ''
+  const endYear = methods.endYear ?? ''
+  const availableStartYears = methods.availableStartYears || []
+  const availableEndYears = methods.availableEndYears || []
+
+  return (
+    <fieldset className={'flex items-center gap-2 rounded-lg border px-3 py-2 text-xs min-w-0 ' + (changed ? 'border-navy-700 bg-navy-800/30' : 'border-accent/50 bg-accent/10')}>
+      <legend className="px-1 text-[11px] text-slate-400">Sustainable Growth Rate</legend>
+      <select value={basis} onChange={e => setBasis(e.target.value)}
+        className="flex-shrink-0 bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[11px] text-slate-300">
+        <option value="reported">Reported</option>
+        <option value="normalized">Normalized</option>
+      </select>
+      <select value={startYear}
+        title="ROE window start year — which years' Return on Equity feed the median"
+        onChange={e => setGrowthMethodWindow(SUSTAINABLE_GROWTH_KEY, 'window', 'start', e.target.value === '' ? null : Number(e.target.value))}
+        className="flex-shrink-0 bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[11px] text-slate-300">
+        {availableStartYears.map(y => <option key={y} value={y}>from FY{y}</option>)}
+      </select>
+      <select value={endYear}
+        title="ROE window end year — also which year's Dividend Payout % is used"
+        onChange={e => setGrowthMethodWindow(SUSTAINABLE_GROWTH_KEY, 'window', 'end', e.target.value === '' ? null : Number(e.target.value))}
+        className="flex-shrink-0 bg-navy-800 border border-navy-700 rounded px-1 py-0.5 text-[11px] text-slate-300">
+        {availableEndYears.map(y => <option key={y} value={y}>to FY{y}</option>)}
+      </select>
+      <span className="flex-1 text-slate-400 font-mono truncate min-w-0" title={methods.desc || ''}>{methods.equation}</span>
+      <span className={'flex-shrink-0 font-mono whitespace-nowrap ' + (changed ? 'text-bear' : 'text-slate-300')}
+        title={changed ? 'Different from what you last saw here' : undefined}>
+        {resolved.value.toFixed(1)}%
+      </span>
+    </fieldset>
   )
 }
 

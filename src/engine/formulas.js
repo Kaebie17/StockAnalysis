@@ -1106,6 +1106,120 @@ export function materializeFormulas(data) {
   return out
 }
 
+/**
+ * Sustainable Growth Rate — g = median ROE × retention (1 − payout%) — the
+ * rate at which retained earnings alone let book value compound. Feeds
+ * every form in justifiedMultiple.js's justifiedMultiples() (Justified P/E,
+ * P/B, EV/EBITDA and EV/Sales all read this SAME g).
+ *
+ * Not a DERIVED_FORMULAS 'growth' entry: revenueGrowth/netProfitGrowth are a
+ * CAGR/median-YoY of ONE field's own history; this combines TWO fields
+ * (ROE, dividend payout) that answer different questions, so
+ * computeGrowthBundle's math doesn't apply. Deliberately kept a separate
+ * materialization step rather than shoehorned into that machinery.
+ *
+ * The window is which years' ROE feed the median (default: the last 3 with
+ * positive equity — same guard justifiedMultiple.js's old inline "ROE
+ * ladder" used, now materialized here instead so the Formulas tab can show
+ * and adjust it, same start/end year controls medianYoY already has).
+ * Payout is read from the window's END year — "latest, unless excluded" is
+ * the same convention buildMedianMethod's own endYear already uses above.
+ */
+export const SUSTAINABLE_GROWTH_KEY = 'sustainableGrowth'
+
+function computeSustainableGrowthBundle(data, basis) {
+  const incRows = fieldHistory(data, 'income').filter(isFiscalYearRow)
+  const balRows = fieldHistory(data, 'balance').filter(isFiscalYearRow)
+  if (!incRows.length) return null
+
+  // A year with wiped-out or negative equity produces a meaningless (often
+  // explosively large) ROE that shouldn't join a median with real years —
+  // same guard justifiedMultiple.js's ROE ladder already applied.
+  const series = incRows
+    .map(r => {
+      const year = yearOf(r)
+      const roe = resolvedValue(r, 'roe', basis)
+      const bRow = balRows.find(b => yearOf(b) === year)
+      const equity = resolvedValue(bRow, 'totalEquity', basis)
+      return { year, roe, equity }
+    })
+    .filter(p => p.year != null && p.roe != null && p.equity > 0)
+    .sort((a, b) => a.year - b.year)
+  if (!series.length) return null
+
+  const availableYears = series.map(p => p.year)
+  const latestYear = availableYears[availableYears.length - 1]
+  const defaultStart = availableYears[Math.max(0, availableYears.length - 3)]
+
+  const overrides = data?.growthMethodWindow?.[SUSTAINABLE_GROWTH_KEY]?.window || {}
+  const snapToAvailable = (requested, fallback, dir) => {
+    if (requested == null) return fallback
+    if (availableYears.includes(requested)) return requested
+    const pool = dir === 'up' ? availableYears.filter(y => y > requested) : availableYears.filter(y => y < requested)
+    if (!pool.length) return fallback
+    return dir === 'up' ? Math.min(...pool) : Math.max(...pool)
+  }
+  const startYear = snapToAvailable(overrides.start, defaultStart, 'up')
+  const endYear = snapToAvailable(overrides.end, latestYear, 'down')
+
+  const windowed = series.filter(p => p.year >= startYear && p.year <= endYear)
+  if (!windowed.length) return null
+
+  const roeMedian = median(windowed.map(p => p.roe))
+  // A company with no reported payout for the window's end year is treated
+  // as retaining everything — same "non-payer reinvests all earnings"
+  // convention sustainableGrowth() (justifiedMultiple.js) already uses.
+  const endRow = incRows.find(r => yearOf(r) === endYear)
+  const payoutPct = resolvedValue(endRow, 'dividendPayout', basis)
+  const retention = payoutPct != null ? Math.max(0, Math.min(1, 1 - payoutPct / 100)) : 1
+  const g = roeMedian * retention
+
+  return {
+    value: g,
+    roeMedian, payoutPct: payoutPct ?? null, payoutAssumed: payoutPct == null,
+    equation: `Median ROE (FY${windowed[0].year}–FY${windowed[windowed.length - 1].year}) × (1 − FY${endYear} payout)`,
+    desc: `${roeMedian.toFixed(1)}% median ROE over ${windowed.length} year${windowed.length === 1 ? '' : 's'} × ${(retention * 100).toFixed(0)}% retention`,
+    startYear, endYear, availableStartYears: availableYears, availableEndYears: availableYears,
+  }
+}
+
+/**
+ * Writes sustainableGrowth/sustainableGrowthNormalized onto the latest
+ * income row — same sibling-field convention every other basis-aware
+ * formula in this app uses, so any consumer reads it exactly like any
+ * other field: activeValue(row, 'sustainableGrowth', basis).
+ */
+export function materializeSustainableGrowth(data) {
+  const incRows = fieldHistory(data, 'income')
+  if (!incRows.length) return data
+  const latest = latestRealRow(incRows.filter(isFiscalYearRow))
+  if (!latest) return data
+
+  const reportedBundle = computeSustainableGrowthBundle(data, 'reported')
+  const normalizedBundle = computeSustainableGrowthBundle(data, 'normalized')
+
+  const newHistory = incRows.map(row => {
+    if (row !== latest) {
+      if (!('sustainableGrowth' in row) && !('sustainableGrowthNormalized' in row)) return row
+      const { sustainableGrowth: _a, sustainableGrowthNormalized: _b, ...rest } = row
+      return rest
+    }
+    let next = { ...row }
+    if (reportedBundle) {
+      next.sustainableGrowth = { value: reportedBundle.value, status: 'calculated', formula: reportedBundle.equation, methods: reportedBundle }
+    } else if ('sustainableGrowth' in next) {
+      const { sustainableGrowth: _a, ...rest } = next; next = rest
+    }
+    if (normalizedBundle && normalizedBundle.value !== reportedBundle?.value) {
+      next.sustainableGrowthNormalized = { value: normalizedBundle.value, adjusted: true, formula: normalizedBundle.equation, methods: normalizedBundle }
+    } else if ('sustainableGrowthNormalized' in next) {
+      const { sustainableGrowthNormalized: _d, ...rest } = next; next = rest
+    }
+    return next
+  })
+  return { ...data, reportedIncomeHistory: newHistory }
+}
+
 // Method key -> its three field names in a computeGrowthBundle bundle
 // (formula.key/formula.keyStartYear/formula.keyEndYear) — used below to
 // look up whichever method is actually in play without three separate

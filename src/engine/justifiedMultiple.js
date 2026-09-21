@@ -219,20 +219,23 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   // live materialized table, same reasoning as estimate.js's builders).
   const latestIncJm = latestRealRow(incomeHistory)
 
-  // ROE ladder: median of the last 3 equity-supported years, same mechanism
-  // buildLenderEstimate uses (see its own comment) — a single depressed or
-  // inflated year otherwise sets this entire justified-multiple calculation,
-  // the same fragility the lender fix addressed. Negative/zero-equity years
-  // are excluded the same way pbBand excludes them from its own P/B band.
+  // ROE ladder: median of the equity-supported years in the Formulas tab's
+  // Sustainable Growth Rate window (formulas.js's materializeSustainableGrowth,
+  // run from computeAll — user-adjustable there, same start/end year controls
+  // Revenue/Net Profit Growth already have) — not a second, independent
+  // 3-year median computed fresh here. Falls back to a fresh 3-year ladder
+  // only when the materialized row isn't there yet (e.g. a caller building
+  // its own bare ratioResult without a live materialized table).
+  const sgMethods = activeValue(latestIncJm, 'sustainableGrowth', opts.basis)?.methods
   const roeLadderData = { reportedIncomeHistory: incomeHistory, balanceHistory, basis: opts.basis }
-  const roeBasis = tableRatioBasis(roeLadderData, 'roe', opts.basis, {
+  const roeBasis = sgMethods ? null : tableRatioBasis(roeLadderData, 'roe', opts.basis, {
     filterYear: p => {
       const bRow = (balanceHistory || []).find(b => yearOf(b) === p.year)
       return val(bRow?.totalEquity) > 0
     },
   })
-  const roe = roeBasis.value ?? activeValue(latestIncJm, 'roe', opts.basis)?.value ?? R.roe?.value
-  const payoutPct = activeValue(latestIncJm, 'dividendPayout', opts.basis)?.value ?? R.dividendPayout?.value
+  const roe = sgMethods?.roeMedian ?? roeBasis?.value ?? activeValue(latestIncJm, 'roe', opts.basis)?.value ?? R.roe?.value
+  const payoutPct = sgMethods?.payoutPct ?? activeValue(latestIncJm, 'dividendPayout', opts.basis)?.value ?? R.dividendPayout?.value
     ?? averagePayoutPct(incomeHistory, {
     cashflowHistory: opts.cashflowHistory || [],
     dividendYield: R.dividendYield?.value ?? null,
@@ -405,7 +408,10 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     available: Object.keys(forms).length > 0,
     forms, missing,
     requiredReturn: rr,
-    growth: { g, gPct: round(g * 100, 1), retention, roe, roeSource: roeBasis.value != null ? roeBasis.source : 'latest', payoutPct },
+    growth: { g, gPct: round(g * 100, 1), retention, roe,
+      roeSource: sgMethods ? `${sgMethods.startYear}–${sgMethods.endYear} median (Formulas tab)`
+        : (roeBasis?.value != null ? roeBasis.source : 'latest'),
+      payoutPct },
     twoStage,
     stageOneYears: twoStage ? STAGE_1_YEARS : null,
     terminalGrowthPct: twoStage ? round(terminalG * 100, 1) : null,

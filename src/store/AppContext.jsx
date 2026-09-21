@@ -8,7 +8,7 @@ import { runValuation } from '../engine/valuation.js'
 import { runTechnicals } from '../engine/technicals.js'
 import { assessDataQuality, materializeIncomeNormalization, hasAnyNormalization } from '../engine/dataQuality.js'
 import { METRICS } from '../engine/metrics.js'
-import { materializeFormulas, materializeCustomRows, recomputeNormalizedTargets } from '../engine/formulas.js'
+import { materializeFormulas, materializeCustomRows, recomputeNormalizedTargets, materializeSustainableGrowth } from '../engine/formulas.js'
 import { scoreQuality } from '../engine/quality.js'
 import { detectStage, detectSectorType } from '../engine/stage.js'
 import { runMarketExpectation } from '../engine/marketExpectation.js'
@@ -623,6 +623,10 @@ export function computeAll(data, assumptions, meAssumptions, weights, arData = n
   // reading EBIT and Effective Tax Rate) and there's no fixed code
   // declaration order any more to guarantee resolution in one linear pass.
   data = materializeCustomRows(data)
+  // Sustainable Growth Rate (justifiedMultiple.js's g) — needs `roe` to
+  // already be on each row, so this runs AFTER materializeCustomRows, not
+  // alongside materializeFormulas above (which runs before roe exists).
+  data = materializeSustainableGrowth(data)
   // Normalize for everything, not a toggle between two equally-weighted
   // views: every restatement in this app is an explicit, evidence-based,
   // user-confirmed correction (a NormalizeModal entry, a restatement-tool
