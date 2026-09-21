@@ -1116,7 +1116,13 @@ export function buildCyclicalEstimate(ratioResult, opts = {}) {
   const mcInterest = interestBasis.value != null ? projRevenue * (interestBasis.value / 100) : 0
   const mcOtherIncome = projRevenue * (otherIncomeBasis.value ?? 0)
   const mcPbt = mcEbit - mcInterest + mcOtherIncome
-  const mcTaxRate = taxBasis.value != null ? Math.max(0, Math.min(1, taxBasis.value / 100)) : 0
+  // effectiveTaxRate (formulas.js) has no `scale: 100` unlike its sibling
+  // ratio formulas here (ebitdaMargin/daToRevenue/netInterestToRevenue all
+  // do) — it's stored as a raw 0-1 fraction, not a percentage number, the
+  // same convention fcff's own (1 - effectiveTaxRate) weight relies on. This
+  // used to divide by 100 again on top of that, turning a real 20% rate into
+  // 0.2% and taxing away almost nothing.
+  const mcTaxRate = taxBasis.value != null ? Math.max(0, Math.min(1, taxBasis.value)) : 0
   const mcTax = mcPbt > 0 ? mcPbt * mcTaxRate : 0
   const normalisedProfit = mcPbt - mcTax
   const midCycleMargin = normalisedProfit / projRevenue          // net-margin equivalent, for disclosure
@@ -1744,7 +1750,16 @@ export function buildWaterfallForecast(data, opts = {}) {
   // Negative PBT: tax is set to zero in this simplified model rather than
   // modelling a tax benefit — a deliberate, disclosed simplification, not
   // an oversight.
-  let taxRate = taxBasis.value != null ? Math.max(0, Math.min(1, taxBasis.value / 100)) : 0
+  //
+  // effectiveTaxRate (formulas.js) has no `scale: 100` unlike its sibling
+  // ratio formulas above (ebitdaMargin/daToRevenue/netInterestToRevenue all
+  // do) — it's stored as a raw 0-1 fraction, not a percentage number, the
+  // same convention fcff's own (1 - effectiveTaxRate) weight relies on. This
+  // used to divide by 100 again on top of that, turning a real 20% rate into
+  // 0.2% — net profit was landing barely below pre-tax profit, silently
+  // inflating every waterfall-based estimate for any company with a normal
+  // (non-near-zero) tax rate.
+  let taxRate = taxBasis.value != null ? Math.max(0, Math.min(1, taxBasis.value)) : 0
   const tax1 = pbt1 > 0 ? pbt1 * taxRate : 0
   const netProfit1 = pbt1 - tax1
 
