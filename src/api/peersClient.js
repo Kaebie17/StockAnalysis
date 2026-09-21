@@ -42,7 +42,11 @@ import { buildWaterfallForecast } from '../engine/estimate.js'
 async function enrichFromCache(peers) {
   return Promise.all(peers.map(async p => {
     try {
-      const rec = await getCached(p.symbol)
+      // touch:false — reading a peer's cache to enrich a comparison isn't
+      // the user searching for that peer, so it shouldn't bump lastAccessed
+      // and start showing that peer as a suggested ticker on the landing
+      // page (listRecentTickers, db.js).
+      const rec = await getCached(p.symbol, { touch: false })
       // `cached` is whether this ticker has EVER been analyzed in this app
       // — distinct from whether these fields actually computed (a cached
       // record might still lack, say, FCF). PeerSelectModal and the
