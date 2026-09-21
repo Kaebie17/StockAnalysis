@@ -10,6 +10,7 @@
 import { computeNormalizedRow } from './dataQuality.js'
 import { METRICS } from './metrics.js'
 import { seedStandardFormulaRows } from './formulas.js'
+import { quarterMeta } from '../utils/pasteParser.js'
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
@@ -103,6 +104,7 @@ export function migrateStoredData(data) {
   data = dropTTMRows(data)
   data = fixAlwaysPositiveFields(data)
   data = migrateCustomFieldAssignments(data)
+  data = fixQuarterlyFiscalTags(data)
   // One-time creation of the ~20 standard computed rows (NWC, PBT, EBITDA,
   // margins, ROE, FCFF, ...) for a ticker that doesn't have them yet —
   // checked by key existing in data.customFields, never re-applied once a
@@ -184,6 +186,34 @@ function migrateCustomFieldAssignments(data) {
     return rest
   })
   return { ...data, customFields: cleaned, fieldAssignments: assignments }
+}
+
+/**
+ * One-time repair for quarterlyHistory rows saved by a build where the
+ * MERGE_PASTED reducer dropped a quarterly row's fiscal-year placement
+ * (fiscalYear/quarterIndex/fiscalYearFull/assumedIndianFY) on every paste —
+ * it only copied fields shaped {value,status,formula}, and those four are
+ * deliberately plain values (tagPastedRows, pasteParser.js), so they never
+ * made it into storage. A ticker pasted before that fix is left with real
+ * quarterly figures but no fiscal-year tag on any of them, which silently
+ * disabled the seasonality extrapolation those tags exist for. Re-derived
+ * here from the row's own `year`/`period` label ("Jun 2025" etc, the same
+ * string quarterMeta already parses at paste time) — no re-paste required.
+ * A row whose tag already survived (saved after the fix, or already
+ * repaired once) is left alone.
+ */
+function fixQuarterlyFiscalTags(data) {
+  const rows = data?.quarterlyHistory
+  if (!rows?.length) return data
+  let changed = false
+  const fixed = rows.map(row => {
+    if (row?.fiscalYear) return row
+    const meta = quarterMeta(row?.period ?? row?.year)
+    if (!meta) return row
+    changed = true
+    return { ...row, ...meta }
+  })
+  return changed ? { ...data, quarterlyHistory: fixed } : data
 }
 
 /**
