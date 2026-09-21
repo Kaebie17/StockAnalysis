@@ -1368,14 +1368,14 @@ export function tableGrowthRate(data, formulaKey, basis) {
   if (!base.length) return { value: null, windowYears: null }
   const latest = latestRealRow(base)
 
-  const empty = { value: null, windowYears: null }
+  const empty = { value: null, windowYears: null, method: null }
   const fromBundle = (bundle, methodKey) => {
     const fields = GROWTH_METHOD_FIELDS[methodKey]
     if (!bundle || !fields) return empty
     const [vKey, sKey, eKey] = fields
     const value = bundle[vKey] ?? null
     const start = bundle[sKey], end = bundle[eKey]
-    return { value, windowYears: (start != null && end != null) ? end - start : null }
+    return { value, windowYears: (start != null && end != null) ? end - start : null, method: methodKey }
   }
 
   if (basis === 'normalized') {

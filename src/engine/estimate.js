@@ -1539,10 +1539,21 @@ export function resolveGrowthBasis(ratioResult, opts = {}) {
   const revCagrValue = tableGrowth.value ?? r.revCagr?.value ?? null
   const revCagrWindowYears = tableGrowth.windowYears ?? r.revCagrWindowYears?.value ?? null
   if (revCagrValue != null && isFinite(revCagrValue)) {
+    // tableGrowthRate can hand back three genuinely different methods
+    // (fullPeriodCagr for reported; medianYoY or recentMedianYoY for
+    // normalized, whichever this ticker has selected) — this used to call
+    // all three "CAGR" regardless, which is simply the wrong name for a
+    // median-of-yearly-growth-rates figure (a real, different calculation,
+    // not just a different window of the same one).
+    const methodName = {
+      fullPeriodCagr: 'revenue CAGR',
+      medianYoY: 'median YoY revenue growth',
+      recentMedianYoY: 'recent median YoY revenue growth',
+    }[tableGrowth.method] || 'revenue CAGR'
     all.push({ growth: revCagrValue / 100, source: 'cagr', rung: 'fallback',
                label: revCagrWindowYears
-                ? `${revCagrWindowYears}-yr revenue CAGR (your window)`
-                  : 'revenue CAGR (your window)' })
+                ? `${revCagrWindowYears}-yr ${methodName} (your window)`
+                  : `${methodName} (your window)` })
   }
 
   if (all.length === 0) {
