@@ -377,6 +377,28 @@ function EstimateExplainer({ state }) {
                                 {' '}Margin has moved {est.marginTrendPct > 0 ? '+' : ''}{est.marginTrendPct} pts over 3 years.
                               </span>
                             )}
+                            {/* The waterfall computes this margin from several
+                                independent drivers rather than assuming one flat
+                                rate — engine already exposes them (est.waterfallDrivers),
+                                but nothing rendered them, so there was no way to
+                                see WHICH driver (EBITDA margin, D&A, interest,
+                                other income, tax) actually produced a given
+                                margin, only the end result. */}
+                            {est.waterfallDrivers && (
+                              <ul className="mt-1 text-[11px] text-slate-600 space-y-0.5">
+                                <li>EBITDA margin {est.waterfallDrivers.ebitdaMarginPct}% ({est.waterfallDrivers.ebitdaMarginSource})</li>
+                                {est.waterfallDrivers.daToRevenuePct != null && (
+                                  <li>D&A {est.waterfallDrivers.daToRevenuePct}% of revenue</li>
+                                )}
+                                {est.waterfallDrivers.netInterestToRevenuePct != null && (
+                                  <li>Net interest {est.waterfallDrivers.netInterestToRevenuePct}% of revenue</li>
+                                )}
+                                {est.waterfallDrivers.otherIncomeToRevenuePct > 0 && (
+                                  <li>Other income {est.waterfallDrivers.otherIncomeToRevenuePct}% of revenue ({est.waterfallDrivers.otherIncomeSource})</li>
+                                )}
+                                <li>Tax rate {est.waterfallDrivers.taxRatePct}% ({est.waterfallDrivers.taxRateSource})</li>
+                              </ul>
+                            )}
                           </Step>
                           <Step n="3" title="Split across the shares">
                             {est.dilutionPct > 0.1
