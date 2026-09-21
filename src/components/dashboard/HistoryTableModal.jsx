@@ -1123,7 +1123,20 @@ function SustainableGrowthRow({ data, setGrowthMethodWindow, lastSeen, markSeen 
   latestRef.current = { basis, value: currentValue }
   useEffect(() => () => markSeen(latestRef.current.basis, latestRef.current.value), [markSeen])
 
+  // No row at all means this ticker's income history hasn't gone through
+  // materializeSustainableGrowth yet (very old cached data) — genuinely
+  // nothing to show. `methods.available === false` is different: it DID
+  // run, and couldn't resolve a number for a stated reason (shown below,
+  // not hidden) — see formulas.js's computeSustainableGrowthBundle.
   if (!methods) return null
+  if (!methods.available) {
+    return (
+      <fieldset className="flex items-center gap-2 rounded-lg border border-navy-800 px-3 py-2 text-xs min-w-0">
+        <legend className="px-1 text-[11px] text-slate-400">Sustainable Growth Rate</legend>
+        <span className="text-slate-600">Unavailable — {methods.reason}</span>
+      </fieldset>
+    )
+  }
 
   const startYear = methods.startYear ?? ''
   const endYear = methods.endYear ?? ''

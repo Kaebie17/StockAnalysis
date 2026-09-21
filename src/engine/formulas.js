@@ -1127,15 +1127,76 @@ export function materializeFormulas(data) {
  */
 export const SUSTAINABLE_GROWTH_KEY = 'sustainableGrowth'
 
+/**
+ * Payout from whatever the statements actually carry.
+ *
+ * The first version read only `dividendPaid` on the income rows, which most
+ * sources don't provide — so a company with a perfectly visible dividend
+ * reported "missing dividend payout history" and Estimate 1 declined. Every
+ * route to the same figure is tried before giving up:
+ *
+ *   1. dividend paid, from the income statement
+ *   2. dividend paid, from the cash flow statement (where it usually lives)
+ *   3. dividend per share ÷ EPS, which needs no absolute figures at all
+ *   4. the trailing dividend yield against the P/E, the last resort (live
+ *      quote data — the only branch a caller needs to pass opts for; not
+ *      knowable from the statement table alone, so
+ *      computeSustainableGrowthBundle below can't use it)
+ */
+export function averagePayoutPct(history = [], opts = {}) {
+  const rates = []
+  for (const row of history || []) {
+    const np = val(activeValue(row, 'netProfit', opts.basis))
+    const div = val(row?.dividendPaid) ?? val(row?.dividend) ?? val(row?.dividendsPaid)
+    if (np > 0 && div >= 0) {
+      const pct = (Math.abs(div) / np) * 100
+      if (pct >= 0 && pct <= 100) rates.push(pct)
+    }
+    // Per-share route — often present where absolutes aren't.
+    const dps = val(row?.dps) ?? val(row?.dividendPerShare)
+    const eps = val(activeValue(row, 'eps', opts.basis))
+    if (rates.length === 0 && dps >= 0 && eps > 0) {
+      const pct = (dps / eps) * 100
+      if (pct >= 0 && pct <= 100) rates.push(pct)
+    }
+  }
+
+  // Cash-flow statement, where dividends paid are normally reported.
+  if (rates.length === 0) {
+    for (const row of opts.cashflowHistory || []) {
+      const div = Math.abs(val(row?.dividendsPaid) ?? val(row?.dividendPaid) ?? 0)
+      const y = String(row?.year ?? '')
+      const inc = (history || []).find(r => String(r?.year ?? '') === y)
+      const np = val(activeValue(inc, 'netProfit', opts.basis))
+      if (div > 0 && np > 0) {
+        const pct = (div / np) * 100
+        if (pct >= 0 && pct <= 100) rates.push(pct)
+      }
+    }
+  }
+
+  // Yield × P/E is the payout ratio, arithmetically — usable when the
+  // statements carry neither figure but the quote does.
+  if (rates.length === 0 && opts.dividendYield > 0 && opts.pe > 0) {
+    const pct = opts.dividendYield * opts.pe
+    if (pct > 0 && pct <= 100) rates.push(pct)
+  }
+
+  if (rates.length === 0) return null
+  rates.sort((a, b) => a - b)
+  return rates[Math.floor(rates.length / 2)]
+}
+
 function computeSustainableGrowthBundle(data, basis) {
   const incRows = fieldHistory(data, 'income').filter(isFiscalYearRow)
   const balRows = fieldHistory(data, 'balance').filter(isFiscalYearRow)
-  if (!incRows.length) return null
+  const cfRows  = fieldHistory(data, 'cashflow').filter(isFiscalYearRow)
+  if (!incRows.length) return { available: false, reason: 'No income statement history' }
 
   // A year with wiped-out or negative equity produces a meaningless (often
   // explosively large) ROE that shouldn't join a median with real years —
-  // same guard justifiedMultiple.js's ROE ladder already applied.
-  const series = incRows
+  // same guard justifiedMultiple.js's old ROE ladder already applied.
+  const withEquity = incRows
     .map(r => {
       const year = yearOf(r)
       const roe = resolvedValue(r, 'roe', basis)
@@ -1143,9 +1204,21 @@ function computeSustainableGrowthBundle(data, basis) {
       const equity = resolvedValue(bRow, 'totalEquity', basis)
       return { year, roe, equity }
     })
-    .filter(p => p.year != null && p.roe != null && p.equity > 0)
+    .filter(p => p.year != null && p.roe != null)
     .sort((a, b) => a.year - b.year)
-  if (!series.length) return null
+
+  const equityMatched = withEquity.filter(p => p.equity > 0)
+  // Prefer years where equity actually matched (the clean case); if NONE
+  // did — a balance-sheet/income-statement year-alignment gap, not
+  // necessarily a genuinely bad ROE — fall back to every year that has a
+  // real ROE reading rather than silently producing nothing. Flagged via
+  // `equityUnmatched` so the UI can say so rather than presenting it as the
+  // clean case.
+  const series = equityMatched.length ? equityMatched : withEquity
+  if (!series.length) {
+    return { available: false, reason: 'No Return on Equity could be resolved for any year — needs Net Profit and Total Equity on at least one matching year' }
+  }
+  const equityUnmatched = !equityMatched.length
 
   const availableYears = series.map(p => p.year)
   const latestYear = availableYears[availableYears.length - 1]
@@ -1163,22 +1236,41 @@ function computeSustainableGrowthBundle(data, basis) {
   const endYear = snapToAvailable(overrides.end, latestYear, 'down')
 
   const windowed = series.filter(p => p.year >= startYear && p.year <= endYear)
-  if (!windowed.length) return null
+  if (!windowed.length) return { available: false, reason: 'No years in the selected window' }
 
   const roeMedian = median(windowed.map(p => p.roe))
-  // A company with no reported payout for the window's end year is treated
-  // as retaining everything — same "non-payer reinvests all earnings"
-  // convention sustainableGrowth() (justifiedMultiple.js) already uses.
+
+  // Payout for the window's end year — tries the SAME table-native routes
+  // averagePayoutPct() does (dividend paid, DPS/EPS, cash-flow statement),
+  // scoped to the end year first, then across the full history, before
+  // treating this as a non-payer. Only the live dividend-yield x P/E route
+  // is skipped here (needs a quote, not knowable from the table alone) —
+  // justifiedMultiple.js still tries that one as its own final fallback
+  // when even this can't resolve anything.
   const endRow = incRows.find(r => yearOf(r) === endYear)
-  const payoutPct = resolvedValue(endRow, 'dividendPayout', basis)
+  let payoutPct = resolvedValue(endRow, 'dividendPayout', basis)
+  let payoutSource = payoutPct != null ? 'reported' : null
+  if (payoutPct == null) {
+    payoutPct = averagePayoutPct([endRow], { cashflowHistory: cfRows.filter(r => yearOf(r) === endYear), basis })
+    if (payoutPct != null) payoutSource = `FY${endYear} dividend/EPS`
+  }
+  if (payoutPct == null) {
+    payoutPct = averagePayoutPct(incRows, { cashflowHistory: cfRows, basis })
+    if (payoutPct != null) payoutSource = 'median across all years'
+  }
   const retention = payoutPct != null ? Math.max(0, Math.min(1, 1 - payoutPct / 100)) : 1
   const g = roeMedian * retention
 
+  const roeNote = equityUnmatched ? ' (Total Equity didn\'t line up by year — used every year with a real ROE reading instead)' : ''
+  const payoutNote = payoutPct == null ? ' — no dividend data found anywhere in the statements; treated as retaining 100% of earnings'
+    : payoutSource !== 'reported' ? ` (via ${payoutSource}, not a direct Dividend Payout % figure)` : ''
+
   return {
+    available: true,
     value: g,
-    roeMedian, payoutPct: payoutPct ?? null, payoutAssumed: payoutPct == null,
+    roeMedian, payoutPct: payoutPct ?? null, payoutAssumed: payoutPct == null, payoutSource, equityUnmatched,
     equation: `Median ROE (FY${windowed[0].year}–FY${windowed[windowed.length - 1].year}) × (1 − FY${endYear} payout)`,
-    desc: `${roeMedian.toFixed(1)}% median ROE over ${windowed.length} year${windowed.length === 1 ? '' : 's'} × ${(retention * 100).toFixed(0)}% retention`,
+    desc: `${roeMedian.toFixed(1)}% median ROE over ${windowed.length} year${windowed.length === 1 ? '' : 's'}${roeNote} × ${(retention * 100).toFixed(0)}% retention${payoutNote}`,
     startYear, endYear, availableStartYears: availableYears, availableEndYears: availableYears,
   }
 }
@@ -1188,6 +1280,13 @@ function computeSustainableGrowthBundle(data, basis) {
  * income row — same sibling-field convention every other basis-aware
  * formula in this app uses, so any consumer reads it exactly like any
  * other field: activeValue(row, 'sustainableGrowth', basis).
+ *
+ * Writes a row even when computeSustainableGrowthBundle couldn't resolve a
+ * number — `available: false` plus a stated reason, not nothing. This used
+ * to write nothing at all when the bundle came back null, which made the
+ * Formulas tab row disappear with no indication anything was wrong — a
+ * data-alignment gap (income and balance-sheet years not matching, say)
+ * read as "this feature doesn't exist" instead of "here's what's missing."
  */
 export function materializeSustainableGrowth(data) {
   const incRows = fieldHistory(data, 'income')
@@ -1205,12 +1304,10 @@ export function materializeSustainableGrowth(data) {
       return rest
     }
     let next = { ...row }
-    if (reportedBundle) {
-      next.sustainableGrowth = { value: reportedBundle.value, status: 'calculated', formula: reportedBundle.equation, methods: reportedBundle }
-    } else if ('sustainableGrowth' in next) {
-      const { sustainableGrowth: _a, ...rest } = next; next = rest
-    }
-    if (normalizedBundle && normalizedBundle.value !== reportedBundle?.value) {
+    next.sustainableGrowth = reportedBundle.available
+      ? { value: reportedBundle.value, status: 'calculated', formula: reportedBundle.equation, methods: reportedBundle }
+      : { value: null, status: 'unavailable', formula: reportedBundle.reason, methods: reportedBundle }
+    if (normalizedBundle.available && normalizedBundle.value !== (reportedBundle.available ? reportedBundle.value : undefined)) {
       next.sustainableGrowthNormalized = { value: normalizedBundle.value, adjusted: true, formula: normalizedBundle.equation, methods: normalizedBundle }
     } else if ('sustainableGrowthNormalized' in next) {
       const { sustainableGrowthNormalized: _d, ...rest } = next; next = rest

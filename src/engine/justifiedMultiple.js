@@ -24,7 +24,7 @@
 import { capmCostOfEquity, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
-import { latestRealRow, tableRatioBasis } from './formulas.js'
+import { latestRealRow, tableRatioBasis, averagePayoutPct } from './formulas.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -228,7 +228,11 @@ export function justifiedMultiples(ratioResult, opts = {}) {
   // its own bare ratioResult without a live materialized table).
   const sgMethods = activeValue(latestIncJm, 'sustainableGrowth', opts.basis)?.methods
   const roeLadderData = { reportedIncomeHistory: incomeHistory, balanceHistory, basis: opts.basis }
-  const roeBasis = sgMethods ? null : tableRatioBasis(roeLadderData, 'roe', opts.basis, {
+  // sgMethods can exist but be `{ available: false, reason }` (materializeSustainableGrowth
+  // now always writes a row, even a failed one, so the Formulas tab can show
+  // WHY instead of the row silently vanishing) — only skip the fresh ladder
+  // below when the materialized bundle actually resolved something.
+  const roeBasis = sgMethods?.available ? null : tableRatioBasis(roeLadderData, 'roe', opts.basis, {
     filterYear: p => {
       const bRow = (balanceHistory || []).find(b => yearOf(b) === p.year)
       return val(bRow?.totalEquity) > 0
@@ -409,7 +413,7 @@ export function justifiedMultiples(ratioResult, opts = {}) {
     forms, missing,
     requiredReturn: rr,
     growth: { g, gPct: round(g * 100, 1), retention, roe,
-      roeSource: sgMethods ? `${sgMethods.startYear}–${sgMethods.endYear} median (Formulas tab)`
+      roeSource: sgMethods?.available ? `${sgMethods.startYear}–${sgMethods.endYear} median (Formulas tab)`
         : (roeBasis?.value != null ? roeBasis.source : 'latest'),
       payoutPct },
     twoStage,
@@ -452,59 +456,7 @@ function firstOf(forms) {
   return k.length ? k[0] : null
 }
 
-/**
- * Payout from whatever the statements actually carry.
- *
- * The first version read only `dividendPaid` on the income rows, which most
- * sources don't provide — so a company with a perfectly visible dividend
- * reported "missing dividend payout history" and Estimate 1 declined. Every
- * route to the same figure is tried before giving up:
- *
- *   1. dividend paid, from the income statement
- *   2. dividend paid, from the cash flow statement (where it usually lives)
- *   3. dividend per share ÷ EPS, which needs no absolute figures at all
- *   4. the trailing dividend yield against the P/E, the last resort
- */
-export function averagePayoutPct(history = [], opts = {}) {
-  const rates = []
-  for (const row of history || []) {
-    const np = val(activeValue(row, 'netProfit', opts.basis))
-    const div = val(row?.dividendPaid) ?? val(row?.dividend) ?? val(row?.dividendsPaid)
-    if (np > 0 && div >= 0) {
-      const pct = (Math.abs(div) / np) * 100
-      if (pct >= 0 && pct <= 100) rates.push(pct)
-    }
-    // Per-share route — often present where absolutes aren't.
-    const dps = val(row?.dps) ?? val(row?.dividendPerShare)
-    const eps = val(activeValue(row, 'eps', opts.basis))
-    if (rates.length === 0 && dps >= 0 && eps > 0) {
-      const pct = (dps / eps) * 100
-      if (pct >= 0 && pct <= 100) rates.push(pct)
-    }
-  }
-
-  // Cash-flow statement, where dividends paid are normally reported.
-  if (rates.length === 0) {
-    for (const row of opts.cashflowHistory || []) {
-      const div = Math.abs(val(row?.dividendsPaid) ?? val(row?.dividendPaid) ?? 0)
-      const y = String(row?.year ?? '')
-      const inc = (history || []).find(r => String(r?.year ?? '') === y)
-      const np = val(activeValue(inc, 'netProfit', opts.basis))
-      if (div > 0 && np > 0) {
-        const pct = (div / np) * 100
-        if (pct >= 0 && pct <= 100) rates.push(pct)
-      }
-    }
-  }
-
-  // Yield × P/E is the payout ratio, arithmetically — usable when the
-  // statements carry neither figure but the quote does.
-  if (rates.length === 0 && opts.dividendYield > 0 && opts.pe > 0) {
-    const pct = opts.dividendYield * opts.pe
-    if (pct > 0 && pct <= 100) rates.push(pct)
-  }
-
-  if (rates.length === 0) return null
-  rates.sort((a, b) => a - b)
-  return rates[Math.floor(rates.length / 2)]
-}
+// averagePayoutPct moved to formulas.js so materializeSustainableGrowth can
+// use the same table-native fallback chain the Formulas tab shows —
+// re-exported here so every existing caller of THIS file needs zero changes.
+export { averagePayoutPct } from './formulas.js'
