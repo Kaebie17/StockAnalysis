@@ -39,10 +39,16 @@
  * time a question is asked.
  */
 
+// shortLabel is what's shown on the trigger buttons themselves and in the
+// verdict popup's own title — this produces a Buy/Hold/Sell/Wait decision,
+// not an answer to a casually-phrased question, so the UI names it as a
+// verdict rather than "asking" something. label is kept for anywhere a
+// fuller description still reads better (none currently, but cheap to keep
+// distinct from shortLabel rather than overload one string for both).
 export const INTENTS = [
-  { id: 'average-up',   label: 'Average up — buy more at a higher price' },
-  { id: 'average-down', label: 'Average down — buy more at a lower price' },
-  { id: 'exit',         label: 'Exit the position' },
+  { id: 'average-up',   label: 'Average up — buy more at a higher price', shortLabel: 'Average Up' },
+  { id: 'average-down', label: 'Average down — buy more at a lower price', shortLabel: 'Average Down' },
+  { id: 'exit',         label: 'Exit the position', shortLabel: 'Exit' },
 ]
 
 const round1 = v => (v == null || !isFinite(v) ? null : Math.round(v * 10) / 10)

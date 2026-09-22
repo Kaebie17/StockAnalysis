@@ -543,31 +543,32 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
             <p className="text-[10px] text-slate-600">from the last saved analysis</p>
           )}
 
-          {/* Answers a specific question you're asking, reusing exactly the
-              triggers/health/quality/moat/market-expectation already
-              computed above plus a fresh, on-demand peer fetch — it doesn't
-              decide anything or get saved anywhere, and every point behind
-              the lean is shown, same disclosure standard as the bars above.
-              Opens straight into the full-detail popup — picking a question
-              IS the action, nothing to click through first. Disabled while
-              the peer fetch for the current question is still in flight, so
-              a second question can't race the first one's async work; each
-              gets its own complete run. Resetting intent on close (rather
-              than leaving it selected) means choosing the same option again
-              still fires onChange next time. */}
+          {/* positionAdvice.js produces a Buy/Hold/Sell/Wait decision, not
+              an answer to a casually-phrased question — labeled as a
+              Verdict rather than "Ask a question" for that reason, and
+              triggered directly by a button per intent instead of a
+              dropdown, since picking one IS the action (no separate
+              "submit" step either way). Reuses exactly the triggers/health/
+              quality/moat/market-expectation already computed above plus a
+              fresh, on-demand peer fetch — it doesn't decide anything or
+              get saved anywhere, and every point behind the lean is shown,
+              same disclosure standard as the bars above. Buttons disable
+              while the peer fetch for the current pick is still in flight,
+              so a second pick can't race the first one's async work — each
+              gets its own complete run. */}
           {health && (
-            <div className="pt-1 border-t border-navy-800">
-              <select value={intent} disabled={peerLoading}
-                onChange={e => { e.stopPropagation(); askAdvice(e.target.value) }}
-                onClick={e => e.stopPropagation()}
-                className="w-full bg-navy-900 border border-navy-700 rounded px-2 py-1 text-[11px] text-slate-300 disabled:opacity-50">
-                <option value="">
-                  {peerLoading ? 'Gathering full analysis…' : 'Ask: should I average up, average down, or exit?'}
-                </option>
-                {INTENTS.map(i => <option key={i.id} value={i.id}>{i.label}</option>)}
-              </select>
+            <div className="pt-1 border-t border-navy-800 flex items-center gap-1.5">
+              <span className="text-[11px] text-slate-500 shrink-0">Verdict:</span>
+              {INTENTS.map(i => (
+                <button key={i.id} disabled={peerLoading}
+                  onClick={e => { e.stopPropagation(); askAdvice(i.id) }}
+                  className="text-[11px] px-2 py-1 rounded border border-navy-700 bg-navy-900 text-slate-300
+                             hover:border-accent hover:text-accent disabled:opacity-50">
+                  {peerLoading && intent === i.id ? '…' : i.shortLabel}
+                </button>
+              ))}
               <AdviceDetailModal open={detailOpen} onClose={() => { setDetailOpen(false); setIntent(''); setPeerInfo(null) }}
-                ticker={agg.ticker} intentLabel={INTENTS.find(i => i.id === intent)?.label}
+                ticker={agg.ticker} intentLabel={INTENTS.find(i => i.id === intent)?.shortLabel}
                 advice={advice} peerLoading={peerLoading} />
             </div>
           )}
@@ -652,7 +653,7 @@ function AdviceDetailModal({ open, onClose, ticker, intentLabel, advice, peerLoa
   const style = DECISION_STYLE[decision.action] || DECISION_STYLE.Hold
   return (
     <Modal open={open} onClose={onClose}
-      title={`${ticker.replace(/\.(NS|BO)$/, '')} — ${intentLabel || ''}`}
+      title={`${ticker.replace(/\.(NS|BO)$/, '')} — Verdict: ${intentLabel || ''}`}
       subtitle="Valuation, business quality, and price action, kept separate — the decision is synthesized from all three, last">
       {peerLoading && (
         <p className="text-[11px] text-accent">Gathering peer comparison — the rest of this is ready now.</p>
