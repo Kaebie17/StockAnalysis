@@ -601,6 +601,17 @@ function AdviceDetailModal({ open, onClose, ticker, intentLabel, advice }) {
   )
 }
 
+// A detail line that just restates the point's own text isn't detail — a
+// safety net beyond fixing each source individually, since a future point
+// could reuse a bar's collapsed label/detail pair (identical when the bar
+// has only one contributing part) the same way the ones already fixed did.
+const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+function isRedundantDetail(detail, text) {
+  if (!detail) return true
+  const d = normalize(detail), t = normalize(text)
+  return d === t || d.includes(t) || t.includes(d)
+}
+
 function DetailHorizon({ label, result }) {
   const style = LEAN_STYLE[result.lean] || LEAN_STYLE.unavailable
   return (
@@ -616,7 +627,7 @@ function DetailHorizon({ label, result }) {
         {result.points.map((p, i) => (
           <li key={i} className="text-xs">
             <span className={p.for ? 'text-bull' : 'text-bear'}>{p.for ? '+' : '−'} {p.text}</span>
-            {p.detail && <p className="text-slate-500 mt-0.5">{p.detail}</p>}
+            {!isRedundantDetail(p.detail, p.text) && <p className="text-slate-500 mt-0.5">{p.detail}</p>}
           </li>
         ))}
       </ul>

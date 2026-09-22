@@ -32,6 +32,40 @@ export const INTENTS = [
 // thesis at a cheaper price is not).
 const THESIS_BREAK_IDS = new Set(['margin-erosion', 'guidance-miss', 'estimate-cut'])
 
+// technicalBar (positionHealth.js) collapses everything into label/detail
+// via `parts.join(' · ')` — with only one contributing part (the common
+// case: just the moving-average read, nothing else notable), label and
+// detail come out identical, so reusing tb.detail here just repeated the
+// point back with no new information. Rebuilt from the same raw indicators
+// technicalBar reads (technicals.indicators/smaDistances/regime) instead,
+// the same way suggestLevels' own `why` text is built from real numbers
+// rather than a restated label.
+function trendDetail(technicals) {
+  const ind = technicals?.indicators
+  const dist = technicals?.smaDistances
+  if (!(ind?.price > 0) || (dist?.sma50Pct == null && dist?.sma200Pct == null)) return null
+  const parts = []
+  if (dist.sma50Pct != null && ind.sma50 > 0) {
+    parts.push(`${Math.abs(dist.sma50Pct)}% ${dist.sma50Pct < 0 ? 'below' : 'above'} its 50-day average (${Math.round(ind.sma50)})`)
+  }
+  if (dist.sma200Pct != null && ind.sma200 > 0) {
+    parts.push(`${Math.abs(dist.sma200Pct)}% ${dist.sma200Pct < 0 ? 'below' : 'above'} its 200-day average (${Math.round(ind.sma200)})`)
+  }
+  if (parts.length === 0) return null
+  const regimeNote = technicals?.regime ? `, classified as a ${technicals.regime.toLowerCase()}` : ''
+  return `Price ${Math.round(ind.price)} is ${parts.join(' and ')}${regimeNote}. Historically, price tends to keep trending the same way until one of these averages is reclaimed.`
+}
+
+// Same reasoning as trendDetail: rerateBar's own detail collapses every
+// contributing setup down to just its short label, discarding the setup's
+// OWN much richer detail (e.g. priceFundamentalGap's actual EPS-vs-multiple
+// figures). Looked up directly from the underlying setups array — already
+// on health.rerate.setups — instead of the bar's collapsed summary.
+function setupDetail(rerate, direction) {
+  return (rerate?.setups || []).find(s => s.direction === direction)?.detail
+    ?? rerate?.detail ?? null
+}
+
 function longTermPoints(intent, { triggers, health }) {
   const points = []
   const fired = triggers?.fired || []
@@ -93,7 +127,12 @@ function longTermPoints(intent, { triggers, health }) {
     if (impliedVsGuidance) points.push({ for: false, text: impliedVsGuidance.title, detail: impliedVsGuidance.detail })
     if (fb?.available && fb.level >= 3) points.push({ for: true, text: fb.label, detail: fb.detail })
     if (!aboveRange && !upperThird && (withinRange || (fb?.available && fb.level >= 2))) {
-      points.push({ for: true, text: 'Thesis on track and price still below the top of your estimate range' })
+      points.push({
+        for: true, text: 'Thesis on track and price still below the top of your estimate range',
+        detail: withinRange
+          ? `${withinRange.title} — ${withinRange.detail || ''}`.trim()
+          : (fb?.detail || null),
+      })
     }
   }
 
@@ -105,14 +144,16 @@ function shortTermPoints(intent, { health, technicals, suggestions }) {
   const tb = health?.technical
   const rb = health?.rerate
   const sig = technicals?.signals || {}
+  const rsi = technicals?.indicators?.rsi
   const supportStop = (suggestions?.stops || []).find(s => s.id === 'support')
   const resistanceTarget = (suggestions?.targets || []).find(t => t.id === 'resistance')
+  const trend = trendDetail(technicals)
 
   if (intent === 'exit') {
-    if (tb?.available && tb.level <= 1) points.push({ for: true, text: tb.label, detail: tb.detail })
-    if (tb?.available && tb.level >= 3) points.push({ for: false, text: tb.label, detail: tb.detail })
-    if (rb?.available && rb.direction === 'down') points.push({ for: true, text: rb.label, detail: rb.detail })
-    if (rb?.available && rb.direction === 'up') points.push({ for: false, text: rb.label, detail: rb.detail })
+    if (tb?.available && tb.level <= 1) points.push({ for: true, text: tb.label, detail: trend })
+    if (tb?.available && tb.level >= 3) points.push({ for: false, text: tb.label, detail: trend })
+    if (rb?.available && rb.direction === 'down') points.push({ for: true, text: rb.label, detail: setupDetail(rb, 'bearish') })
+    if (rb?.available && rb.direction === 'up') points.push({ for: false, text: rb.label, detail: setupDetail(rb, 'bullish') })
     if (resistanceTarget) {
       points.push({ for: true, text: `Near resistance at ${resistanceTarget.price}`, detail: resistanceTarget.why })
     }
@@ -123,14 +164,24 @@ function shortTermPoints(intent, { health, technicals, suggestions }) {
     // even while the broader trend is still down — that's a different
     // question from "is this an uptrend," which is what the plain technical
     // bar answers, so both are checked rather than only the coarser one.
-    if (sig.rsiOversold) points.push({ for: true, text: 'RSI oversold' })
-    if (sig.rsiOverbought) points.push({ for: false, text: 'RSI overbought — an unusual point to be adding' })
+    if (sig.rsiOversold) {
+      points.push({ for: true, text: 'RSI oversold', detail: rsi != null
+        ? `RSI at ${rsi} — below the 30 line usually read as oversold, where selling pressure has historically been stretched and a bounce becomes more likely, though not guaranteed.`
+        : null })
+    }
+    if (sig.rsiOverbought) {
+      points.push({ for: false, text: 'RSI overbought — an unusual point to be adding', detail: rsi != null
+        ? `RSI at ${rsi} — above the 70 line usually read as overbought, an unusual point to be adding to a position on a dip thesis.` : null })
+    }
     if (supportStop && !supportStop.tooClose) {
       points.push({ for: true, text: `Sitting near ${supportStop.label.toLowerCase()} (${supportStop.price})`, detail: supportStop.why })
     }
-    if (sig.deathCross) points.push({ for: false, text: 'Death cross — the trend is still deteriorating' })
+    if (sig.deathCross) {
+      points.push({ for: false, text: 'Death cross — the trend is still deteriorating',
+        detail: 'The 50-day average has crossed below the 200-day average — a classic longer-term downtrend signal, historically associated with continued weakness rather than an imminent reversal.' })
+    }
     if (tb?.available && tb.level <= 1 && !supportStop) {
-      points.push({ for: false, text: 'No nearby support and the trend is still weak — a real risk of catching a falling knife', detail: tb.detail })
+      points.push({ for: false, text: 'No nearby support and the trend is still weak — a real risk of catching a falling knife', detail: trend })
     }
   }
 
@@ -141,13 +192,16 @@ function shortTermPoints(intent, { health, technicals, suggestions }) {
     // one). A downtrend doesn't mean the stock is expensive; it means the
     // confirmed strength this specific action relies on isn't there right
     // now, whatever the valuation case looks like separately.
-    if (tb?.available && tb.level >= 3) points.push({ for: true, text: tb.label, detail: tb.detail })
+    if (tb?.available && tb.level >= 3) points.push({ for: true, text: tb.label, detail: trend })
     if (tb?.available && tb.level <= 1) {
-      points.push({ for: false, text: `${tb.label} — not the confirmed strength averaging up usually relies on`, detail: tb.detail })
+      points.push({ for: false, text: `${tb.label} — not the confirmed strength averaging up usually relies on`, detail: trend })
     }
-    if (rb?.available && rb.direction === 'up') points.push({ for: true, text: rb.label, detail: rb.detail })
-    if (rb?.available && rb.direction === 'down') points.push({ for: false, text: rb.label, detail: rb.detail })
-    if (sig.rsiOverbought) points.push({ for: false, text: 'RSI overbought — already extended' })
+    if (rb?.available && rb.direction === 'up') points.push({ for: true, text: rb.label, detail: setupDetail(rb, 'bullish') })
+    if (rb?.available && rb.direction === 'down') points.push({ for: false, text: rb.label, detail: setupDetail(rb, 'bearish') })
+    if (sig.rsiOverbought) {
+      points.push({ for: false, text: 'RSI overbought — already extended', detail: rsi != null
+        ? `RSI at ${rsi} — above the 70 line usually read as overbought, meaning the recent move has already stretched further than this stock typically sustains without a pause.` : null })
+    }
     if (resistanceTarget) {
       points.push({ for: false, text: `Approaching resistance at ${resistanceTarget.price}`, detail: resistanceTarget.why })
     }
