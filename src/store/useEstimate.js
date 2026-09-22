@@ -13,6 +13,26 @@ import { peerBandFrom, detectRerating } from '../engine/rerating.js'
 import { forwardPeBand } from '../engine/estimate.js'
 import { financialsFromRatioResult } from '../engine/peerCompatibility.js'
 
+// Strips rerating.js's own summary wrapper ("The market has repriced this
+// to about X×, below/above its usual Y–Z× range — following <cause>.") back
+// down to <cause>, repeatedly (bounded at 5 passes — real nesting is never
+// more than a couple of accept-cycles deep) — a revision saved by
+// FactInputModal's acceptRerating before it stored the underlying cause
+// instead of this whole sentence would otherwise nest one call's own
+// narration inside the next one's forever. Reading-side fix rather than a
+// rewrite of stored data: this runs every time, so it's correct regardless
+// of when the underlying revision was written.
+function unwrapNestedRerating(reason) {
+  if (!reason) return reason
+  let current = reason
+  for (let i = 0; i < 5; i++) {
+    const m = /^The market has (?:paid about|repriced this to about) [\d.]+×.*?—\s*following\s+(.+?)\.?$/s.exec(current)
+    if (!m) break
+    current = m[1]
+  }
+  return current
+}
+
 /**
  * useEstimate — the live estimate, with your accepted revisions applied.
  *
@@ -298,7 +318,16 @@ export function useEstimate(state, opts = {}) {
     r.disposition === 'revised' && (Date.now() - r.createdAt) < RECENT_MS)
   const cause = recentRevision
     ? { type: recentRevision.trigger || 'revision',
-        label: recentRevision.reason || 'a revision you applied',
+        // unwrapNestedRerating strips FactInputModal's own former bug (now
+        // fixed at the write side too — see acceptRerating's comment) where
+        // accepting a re-rating proposal stored the full generated summary
+        // ("The market has repriced this to about X×... following <cause>")
+        // as the revision's reason instead of just <cause>. A revision
+        // written before that fix still has the nested text sitting in
+        // IndexedDB; this un-nests it on read (bounded, handles more than
+        // one level of accidental nesting) rather than requiring a
+        // destructive rewrite of stored data to fix a display artifact.
+        label: unwrapNestedRerating(recentRevision.reason) || 'a revision you applied',
         at: recentRevision.createdAt,
         // The revision's own sourceItem (title/url/date) is captured and
         // saved when a news fact is applied (ValuationPanel.jsx's

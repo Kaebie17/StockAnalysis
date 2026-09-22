@@ -91,7 +91,18 @@ export default function FactInputModal({ open, onClose, ctx, rerating, onCommit,
         newValue: rerating.proposal.multiple,
         disposition: 'revised',
         trigger: 'rerating',
-        reason: rerating.summary,
+        // The UNDERLYING cause (a plain headline, e.g. "LIC Q1 Results:
+        // VNB jumps 61%..."), not rerating.summary — that's the app's own
+        // SELF-DESCRIPTION of this re-rating event ("The market has
+        // repriced this to about X×... following <cause>"). Storing the
+        // full summary here meant that if THIS revision later became the
+        // `cause` for a SUBSEQUENT re-rating detection (useEstimate.js's
+        // recentRevision lookup), the new summary embedded the entire old
+        // one verbatim — "...following The market has repriced this to
+        // about 6.1×... following LIC Q1 Results...", nesting one call's
+        // own narration inside the next one's, worse each time it repeats.
+        reason: rerating.cause?.label || 'a detected re-rating',
+        sourceItem: rerating.cause?.sourceItem || null,
         steps: [rerating.summary, rerating.peerContext?.label].filter(Boolean),
       })
       onClose()
