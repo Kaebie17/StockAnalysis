@@ -13,6 +13,8 @@ import { analyzeMany } from '../../store/analyzeTicker.js'
 import { evaluateTriggers, suggestLevels } from '../../engine/exitTriggers.js'
 import { adviseOnIntent, INTENTS } from '../../engine/positionAdvice.js'
 import { assessMoatQuality } from '../../engine/moatQuality.js'
+import { fetchPeerCandidates } from '../../api/peersClient.js'
+import { peerBand } from '../../engine/peerBands.js'
 import { detectSetups } from '../../engine/setups.js'
 import { forwardPeBand } from '../../engine/estimate.js'
 import { yearlyObservations } from '../../engine/targetMultiple.js'
@@ -328,6 +330,8 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
   const [refreshing, setRefreshing] = useState(false)
   const [intent, setIntent] = useState('')
   const [detailOpen, setDetailOpen] = useState(false)
+  const [peerInfo, setPeerInfo] = useState(null)
+  const [peerLoading, setPeerLoading] = useState(false)
   const handleManualRefresh = async (e) => {
     e.stopPropagation()
     if (refreshing) return
@@ -337,7 +341,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
 
   // Analysis is computed once for the holding, from live state when this is the
   // loaded ticker and from the saved analysis otherwise.
-  const { estimate, health, triggers, quality, moatQuality, marketExpectation } = useMemo(() => {
+  const { estimate, health, triggers, quality, moatQuality, marketExpectation, ownPe, ownRoe } = useMemo(() => {
     if (!analysis?.ratioResult) return {}
     const rr = price != null && price !== analysis.ratioResult.price
       ? { ...analysis.ratioResult, price } : analysis.ratioResult
@@ -411,16 +415,46 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
     return {
       estimate: est, health: h, triggers: t,
       quality: analysis.quality, moatQuality: mq, marketExpectation: analysis.marketExpectation,
+      ownPe: rr.ratios?.pe?.value ?? null, ownRoe: rr.ratios?.roe?.value ?? null,
     }
   }, [analysis, price, isLive, state, regime, agg, totalValue, totalCost, exitPlan])
 
   const level = summaryLevel(health)
   const firedCount = triggers?.fired?.length || 0
-  // Reuses triggers/health computed just above — no separate data pass, only
-  // interpretation, and cheap enough to not need its own useMemo.
+  // Reuses triggers/health/quality/moatQuality/marketExpectation computed
+  // just above — no separate data pass for those, only interpretation.
+  // peers is the one genuinely async piece (fetchPeerCandidates below,
+  // triggered on demand when a question is asked) — null until it resolves,
+  // which positionAdvice.js treats as "not available yet," not "no peers."
   const advice = intent ? adviseOnIntent(intent, {
     triggers, health, technicals: analysis?.technicals, quality, moatQuality, marketExpectation,
+    peers: peerInfo,
   }) : null
+
+  // Fetched fresh per question, not pre-loaded for every holding on render —
+  // this is exactly the kind of on-demand cost a user-triggered feature is
+  // supposed to absorb instead of paying for every holding whether or not
+  // anyone ever asks. The dropdown disables for the duration so a second
+  // question can't race the first one's fetch.
+  const askAdvice = async (nextIntent) => {
+    setIntent(nextIntent)
+    if (!nextIntent) return
+    setDetailOpen(true)
+    setPeerInfo(null)
+    setPeerLoading(true)
+    try {
+      const candidates = await fetchPeerCandidates({
+        ticker: agg.ticker, meta: analysis?.data?.meta, sectorType: analysis?.sectorType, classification: null,
+      })
+      const peBand = peerBand(candidates, 'pe')
+      const roeBand = peerBand(candidates, 'roe')
+      setPeerInfo({ peBand, roeBand, ownPe, ownRoe, count: peBand?.count ?? roeBand?.count ?? candidates.length })
+    } catch {
+      setPeerInfo({ error: true })
+    } finally {
+      setPeerLoading(false)
+    }
+  }
 
   return (
     <div className="bg-navy-800/40 rounded-lg overflow-hidden">
@@ -499,25 +533,31 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
           )}
 
           {/* Answers a specific question you're asking, reusing exactly the
-              triggers/health already computed above — it doesn't decide
-              anything or get saved anywhere, and every point behind the
-              lean is shown, same disclosure standard as the bars above.
+              triggers/health/quality/moat/market-expectation already
+              computed above plus a fresh, on-demand peer fetch — it doesn't
+              decide anything or get saved anywhere, and every point behind
+              the lean is shown, same disclosure standard as the bars above.
               Opens straight into the full-detail popup — picking a question
-              IS the action, nothing to click through first. Resetting intent
-              on close (rather than leaving it selected) means choosing the
-              same option again still fires onChange next time. */}
+              IS the action, nothing to click through first. Disabled while
+              the peer fetch for the current question is still in flight, so
+              a second question can't race the first one's async work; each
+              gets its own complete run. Resetting intent on close (rather
+              than leaving it selected) means choosing the same option again
+              still fires onChange next time. */}
           {health && (
             <div className="pt-1 border-t border-navy-800">
-              <select value={intent}
-                onChange={e => { setIntent(e.target.value); if (e.target.value) setDetailOpen(true) }}
+              <select value={intent} disabled={peerLoading}
+                onChange={e => { e.stopPropagation(); askAdvice(e.target.value) }}
                 onClick={e => e.stopPropagation()}
-                className="w-full bg-navy-900 border border-navy-700 rounded px-2 py-1 text-[11px] text-slate-300">
-                <option value="">Ask: should I average up, average down, or exit?</option>
+                className="w-full bg-navy-900 border border-navy-700 rounded px-2 py-1 text-[11px] text-slate-300 disabled:opacity-50">
+                <option value="">
+                  {peerLoading ? 'Gathering full analysis…' : 'Ask: should I average up, average down, or exit?'}
+                </option>
                 {INTENTS.map(i => <option key={i.id} value={i.id}>{i.label}</option>)}
               </select>
-              <AdviceDetailModal open={detailOpen} onClose={() => { setDetailOpen(false); setIntent('') }}
+              <AdviceDetailModal open={detailOpen} onClose={() => { setDetailOpen(false); setIntent(''); setPeerInfo(null) }}
                 ticker={agg.ticker} intentLabel={INTENTS.find(i => i.id === intent)?.label}
-                advice={advice} />
+                advice={advice} peerLoading={peerLoading} />
             </div>
           )}
           {/* evaluateTriggers() computes this but nothing read it, so a holding
@@ -596,12 +636,21 @@ const LEAN_STYLE = {
  * reasoning behind it is one tap away rather than crammed into the same
  * space or left invisible.
  */
-function AdviceDetailModal({ open, onClose, ticker, intentLabel, advice }) {
+function AdviceDetailModal({ open, onClose, ticker, intentLabel, advice, peerLoading }) {
   if (!advice) return null
   return (
     <Modal open={open} onClose={onClose}
       title={`${ticker.replace(/\.(NS|BO)$/, '')} — ${intentLabel || ''}`}
       subtitle="Full reasoning behind the leaning shown, both horizons">
+      {/* Everything except the peer comparison is ready immediately (all
+          synchronous); the peer fetch resolving later just adds its points
+          in when it lands (React re-renders this same open modal) rather
+          than blocking the rest of a genuinely-ready analysis on it. Called
+          out explicitly so a missing peer read in the meantime looks like
+          "still coming," not "no peer signal exists for this stock." */}
+      {peerLoading && (
+        <p className="text-[11px] text-accent">Gathering peer comparison — the rest of this is ready now.</p>
+      )}
       <DetailHorizon label="Short term (technical)" result={advice.shortTerm} />
       <DetailHorizon label="Long term (fundamental)" result={advice.longTerm} />
       <p className="text-[11px] text-slate-600 pt-2 border-t border-navy-800">
@@ -631,6 +680,14 @@ function DetailHorizon({ label, result }) {
         <span className="text-slate-300 font-medium">{label}</span>
         <span className={style.text}>{style.label}</span>
       </div>
+      {/* The actual "how this connects" answer — not just a direction, but
+          how many of the INDEPENDENT blocks that contributed at all (quality,
+          moat, market pricing, peers, triggers, technicals, ...) agree with
+          it versus point the other way. See positionAdvice.js's convergence()
+          for why this is a block count, not a point count. */}
+      {result.convergence && (
+        <p className="text-[11px] text-slate-500">{result.convergence.note}</p>
+      )}
       {result.points.length === 0 && (
         <p className="text-xs text-slate-600">Nothing on this side fired, watched, or read either way.</p>
       )}
