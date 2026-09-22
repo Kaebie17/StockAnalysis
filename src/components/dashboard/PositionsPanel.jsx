@@ -12,6 +12,7 @@ import { fetchQuotes } from '../../api/quotesClient.js'
 import { analyzeMany } from '../../store/analyzeTicker.js'
 import { evaluateTriggers, suggestLevels } from '../../engine/exitTriggers.js'
 import { adviseOnIntent, INTENTS } from '../../engine/positionAdvice.js'
+import { assessMoatQuality } from '../../engine/moatQuality.js'
 import { detectSetups } from '../../engine/setups.js'
 import { forwardPeBand } from '../../engine/estimate.js'
 import { yearlyObservations } from '../../engine/targetMultiple.js'
@@ -336,7 +337,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
 
   // Analysis is computed once for the holding, from live state when this is the
   // loaded ticker and from the saved analysis otherwise.
-  const { estimate, health, triggers } = useMemo(() => {
+  const { estimate, health, triggers, quality, moatQuality, marketExpectation } = useMemo(() => {
     if (!analysis?.ratioResult) return {}
     const rr = price != null && price !== analysis.ratioResult.price
       ? { ...analysis.ratioResult, price } : analysis.ratioResult
@@ -402,14 +403,24 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
         suggestions: suggestLevels({
           price, estimate: est, technicals: analysis.technicals,
           priceHistory: analysis.data?.priceHistory || [], buyPrice: agg.avgPrice }) })
-    return { estimate: est, health: h, triggers: t }
+    // Ratios-only (no holdings/AR data on a saved position analysis, same as
+    // MoatQualityPanel/SummaryStrip run before either is present) — moat/
+    // quality tiers are still fully computed from financials already here,
+    // just without the governance overlay that needs those two documents.
+    const mq = assessMoatQuality(analysis.data, rr, { sectorType: analysis.sectorType })
+    return {
+      estimate: est, health: h, triggers: t,
+      quality: analysis.quality, moatQuality: mq, marketExpectation: analysis.marketExpectation,
+    }
   }, [analysis, price, isLive, state, regime, agg, totalValue, totalCost, exitPlan])
 
   const level = summaryLevel(health)
   const firedCount = triggers?.fired?.length || 0
   // Reuses triggers/health computed just above — no separate data pass, only
   // interpretation, and cheap enough to not need its own useMemo.
-  const advice = intent ? adviseOnIntent(intent, { triggers, health, technicals: analysis?.technicals }) : null
+  const advice = intent ? adviseOnIntent(intent, {
+    triggers, health, technicals: analysis?.technicals, quality, moatQuality, marketExpectation,
+  }) : null
 
   return (
     <div className="bg-navy-800/40 rounded-lg overflow-hidden">

@@ -3,14 +3,21 @@
  * asking about a held position: average up, average down, or exit.
  *
  * Deliberately NOT a new scoring model. exitTriggers.js already computes the
- * facts (profit/loss/risk triggers) and positionHealth.js already interprets
- * the technical and fundamental picture into disclosed bars — this reuses
- * both rather than re-deriving a parallel judgment from raw data. What's new
- * here is purely INTERPRETATION: which of those already-computed facts argue
- * for or against the SPECIFIC action being asked about, since "margin
- * eroded" argues against averaging down but says nothing about whether to
- * average up, and "price near resistance" cuts the opposite way for exiting
- * versus adding.
+ * price/thesis facts (profit/loss/risk triggers) and positionHealth.js
+ * already interprets the technical and fundamental picture into disclosed
+ * bars; quality.js, moatQuality.js and marketExpectation.js already answer
+ * "is this a good business," "how does it compare competitively" and "what
+ * growth does the current price already assume" — this reuses all of them
+ * rather than re-deriving a parallel judgment from raw data. What's new here
+ * is purely INTERPRETATION: which of those already-computed facts argue for
+ * or against the SPECIFIC action being asked about, since "margin eroded"
+ * argues against averaging down but says nothing about whether to average
+ * up, and "price near resistance" cuts the opposite way for exiting versus
+ * adding. An earlier version of this file only drew on the price/trigger
+ * side and left quality/moat/market-expectation entirely unused — the
+ * long-term reading talked about price position and almost nothing about
+ * the business itself, which defeated the point of a "long-term
+ * (fundamental)" question.
  *
  * A lean is a synthesis of the evidence shown alongside it, never a bare
  * directive — every point that fed it is named and visible, same disclosure
@@ -18,6 +25,13 @@
  * an action" principle, which this respects: it answers a question you
  * asked, it doesn't decide anything or get saved anywhere). Computed fresh
  * from the same live data every time it's asked, nothing cached.
+ *
+ * Not yet included: peer/industry comparison. peerBands.js exists and is
+ * used elsewhere (ValuationPanel/useEstimate), but nothing in the Positions
+ * flow currently fetches a peer set for an arbitrary held ticker — that's a
+ * real gap, not a judgment that it's unimportant, and would need a new
+ * fetch wired into PositionsPanel.jsx's own data loading before it could
+ * feed in here the same way.
  */
 
 export const INTENTS = [
@@ -66,7 +80,89 @@ function setupDetail(rerate, direction) {
     ?? rerate?.detail ?? null
 }
 
-function longTermPoints(intent, { triggers, health }) {
+// Moat/Quality tiers ranked so "is this combination favorable" is a
+// comparison, not a hand-picked list of which of the 4×3 = 12 tier
+// combinations count as good — moatQuality.js's own implicationFor() already
+// makes this exact judgment (its whole reason for existing: "Strong premium
+// justified" down to "pay only at cheap valuations"), this just reads off
+// the same two tiers implicationFor was given rather than re-deriving a
+// second opinion from the label text.
+const MOAT_RANK = { 'Very Wide': 3, Wide: 2, Narrow: 1, None: 0 }
+const QUALITY_RANK = { High: 2, Medium: 1, Low: 0 }
+
+// Quality Score (quality.js) and Moat/Quality (moatQuality.js) answer "is
+// this a good business" independently of price — genuinely different
+// questions from exitTriggers.js's price-vs-your-cost/estimate signals, and
+// relevant to every intent the same way (a durable, well-run business is a
+// reason to stay invested regardless of which specific action is being
+// asked about). Market Expectation answers a third, separate question —
+// what growth rate the CURRENT price already assumes, and how that compares
+// to what the company has actually delivered — which is the "future growth
+// prospects" angle triggers.js's price-vs-estimate-range doesn't cover at
+// all (that's about your own cost basis and a DCF-style estimate, not about
+// what the market's own pricing implies).
+function businessQualityPoints(intent, { quality, moatQuality, marketExpectation }) {
+  const points = []
+
+  // ── Quality Score — the business's own operating record ──────────────────
+  if (quality?.label) {
+    const good = quality.label === 'EXCELLENT' || quality.label === 'HEALTHY'
+    const text = `Quality Score ${quality.score}/10 (${quality.label})`
+    if (intent === 'exit') points.push({ for: !good, text })
+    else points.push({ for: good, text })
+    const failing = (quality.predictors || []).filter(p => p.pass === false)
+    if (failing.length > 0) {
+      const detail = failing.map(p =>
+        `${p.label}: ${p.value != null ? p.value.toFixed(1) : '—'} vs a ${p.threshold} threshold`).join('; ')
+      points.push({ for: intent === 'exit', text: `${failing.length} quality check${failing.length > 1 ? 's' : ''} failing`, detail })
+    }
+  }
+
+  // ── Moat & Quality tier — competitive positioning, not just this year's numbers ──
+  if (moatQuality?.moat?.tier && moatQuality?.quality?.tier) {
+    const mRank = MOAT_RANK[moatQuality.moat.tier] ?? 0
+    const qRank = QUALITY_RANK[moatQuality.quality.tier] ?? 0
+    const strong = mRank >= 2 && qRank >= 1        // Wide+/Medium+ or better
+    const weak = qRank === 0 || (mRank === 0 && qRank <= 1)
+    const text = `${moatQuality.moat.tier} moat, ${moatQuality.quality.tier} quality`
+    if (strong) points.push({ for: intent !== 'exit', text, detail: moatQuality.implication })
+    else if (weak) points.push({ for: intent === 'exit', text, detail: moatQuality.implication })
+    // A middling combination (e.g. Narrow moat + High quality, "fair
+    // valuation only") is genuinely neither a reason to add nor to leave —
+    // reported nowhere, same as positionHealth's own mixed-setup handling.
+  }
+
+  // ── Market Expectation — what growth the CURRENT price already assumes ──
+  const variant = ['earnings', 'sales', 'fcf', 'reverseDcf']
+    .map(k => marketExpectation?.variants?.[k])
+    .find(v => v?.applicable !== false && v?.impliedGrowth != null)
+  if (variant) {
+    const hc = variant.historicalComparison
+    const currentRow = variant.sanityTable?.find(r => r.isCurrentImplied)
+    if (currentRow?.label) {
+      const rich = currentRow.label === 'Overvalued' || currentRow.label === 'Highly overvalued'
+      const cheap = currentRow.label === 'Undervalued'
+      if (rich) points.push({ for: intent === 'exit', text: `Market pricing: ${currentRow.label}`, detail: variant.conclusion })
+      else if (cheap) points.push({ for: intent !== 'exit', text: `Market pricing: ${currentRow.label}`, detail: variant.conclusion })
+    }
+    if (hc?.available && Math.abs(hc.gapVsMedianYoY) >= 5) {
+      const strained = hc.gapVsMedianYoY > 0   // priced for MORE growth than the company has actually delivered
+      points.push({
+        for: strained ? intent === 'exit' : intent !== 'exit',
+        text: strained
+          ? `Priced for ${round1(variant.impliedGrowth)}% growth vs a ${round1(hc.medianYoY)}% historical median — asking a lot of the future`
+          : `Priced for ${round1(variant.impliedGrowth)}% growth, below its own ${round1(hc.medianYoY)}% historical median — room to re-rate if it keeps delivering`,
+        detail: variant.conclusion,
+      })
+    }
+  }
+
+  return points
+}
+
+const round1 = v => (v == null ? v : Math.round(v * 10) / 10)
+
+function longTermPoints(intent, { triggers, health, quality, moatQuality, marketExpectation }) {
   const points = []
   const fired = triggers?.fired || []
   const watching = triggers?.watching || []
@@ -136,7 +232,28 @@ function longTermPoints(intent, { triggers, health }) {
     }
   }
 
+  points.push(...businessQualityPoints(intent, { quality, moatQuality, marketExpectation }))
   return points
+}
+
+// technicals.js's own headline read (score/label), backed by its 4-group
+// breakdown (trend/momentum/participation/structure) — the one-line summary
+// the Technicals panel itself leads with, previously never read here at
+// all; only a handful of individual signals (moving averages, RSI,
+// crossovers) were checked ad hoc. NEUTRAL genuinely carries no directional
+// information (that's what the label means), so it contributes nothing
+// rather than being forced into either side.
+function technicalSummaryPoint(technicals) {
+  if (!technicals?.available || (technicals.label !== 'BULLISH' && technicals.label !== 'BEARISH')) return null
+  const bullish = technicals.label === 'BULLISH'
+  const groupLines = Object.entries(technicals.groups || {})
+    .map(([k, g]) => `${k[0].toUpperCase()}${k.slice(1)}: ${g.status}`)
+    .join(', ')
+  return {
+    bullish,
+    text: `Overall technical read: ${technicals.label} (${technicals.score}/10)`,
+    detail: groupLines ? `Across the four groups this reads from — ${groupLines}.` : null,
+  }
 }
 
 function shortTermPoints(intent, { health, technicals, suggestions }) {
@@ -148,8 +265,10 @@ function shortTermPoints(intent, { health, technicals, suggestions }) {
   const supportStop = (suggestions?.stops || []).find(s => s.id === 'support')
   const resistanceTarget = (suggestions?.targets || []).find(t => t.id === 'resistance')
   const trend = trendDetail(technicals)
+  const summary = technicalSummaryPoint(technicals)
 
   if (intent === 'exit') {
+    if (summary) points.push({ for: !summary.bullish, text: summary.text, detail: summary.detail })
     if (tb?.available && tb.level <= 1) points.push({ for: true, text: tb.label, detail: trend })
     if (tb?.available && tb.level >= 3) points.push({ for: false, text: tb.label, detail: trend })
     if (rb?.available && rb.direction === 'down') points.push({ for: true, text: rb.label, detail: setupDetail(rb, 'bearish') })
@@ -160,6 +279,12 @@ function shortTermPoints(intent, { health, technicals, suggestions }) {
   }
 
   if (intent === 'average-down') {
+    // Overall direction still counts here even though the questions below
+    // are more specific (is THIS price a defensible entry) — a stretched
+    // bounce case built on support/oversold alone, in an otherwise strongly
+    // bearish tape, is a weaker case than the same setup in a merely
+    // sideways one.
+    if (summary) points.push({ for: summary.bullish, text: summary.text, detail: summary.detail })
     // A support/oversold read makes the CURRENT price a defensible entry
     // even while the broader trend is still down — that's a different
     // question from "is this an uptrend," which is what the plain technical
@@ -192,6 +317,7 @@ function shortTermPoints(intent, { health, technicals, suggestions }) {
     // one). A downtrend doesn't mean the stock is expensive; it means the
     // confirmed strength this specific action relies on isn't there right
     // now, whatever the valuation case looks like separately.
+    if (summary) points.push({ for: summary.bullish, text: summary.text, detail: summary.detail })
     if (tb?.available && tb.level >= 3) points.push({ for: true, text: tb.label, detail: trend })
     if (tb?.available && tb.level <= 1) {
       points.push({ for: false, text: `${tb.label} — not the confirmed strength averaging up usually relies on`, detail: trend })
@@ -224,16 +350,31 @@ function leanFrom(points) {
 
 /**
  * @param intent one of INTENTS' ids
- * @param ctx.triggers   evaluateTriggers()'s return, with .suggestions
- *                       (suggestLevels()'s return) merged in — same object
- *                       PositionsPanel.jsx already builds for the exit-plan UI
- * @param ctx.health     positionHealth()'s return
- * @param ctx.technicals the raw technicals object (for signals not already
- *                       surfaced by a health bar, e.g. RSI oversold/overbought)
+ * @param ctx.triggers          evaluateTriggers()'s return, with .suggestions
+ *                              (suggestLevels()'s return) merged in — same
+ *                              object PositionsPanel.jsx already builds for
+ *                              the exit-plan UI
+ * @param ctx.health            positionHealth()'s return
+ * @param ctx.technicals        the raw technicals object (for signals not
+ *                              already surfaced by a health bar, e.g. RSI
+ *                              oversold/overbought, and the overall score/
+ *                              label/groups summary)
+ * @param ctx.quality           scoreQuality()'s return (quality.js) — the
+ *                              business's own operating record, independent
+ *                              of price
+ * @param ctx.moatQuality       assessMoatQuality()'s return (moatQuality.js)
+ *                              — competitive positioning (moat tier) and a
+ *                              second, ratios-only quality tier
+ * @param ctx.marketExpectation runMarketExpectation()'s return
+ *                              (marketExpectation.js) — what growth rate the
+ *                              CURRENT price already assumes, and how that
+ *                              compares to what the company has actually
+ *                              delivered; a different question from
+ *                              triggers' price-vs-your-cost/estimate signals
  */
 export function adviseOnIntent(intent, ctx = {}) {
-  const { triggers, health, technicals } = ctx
-  const longTermPts = longTermPoints(intent, { triggers, health })
+  const { triggers, health, technicals, quality, moatQuality, marketExpectation } = ctx
+  const longTermPts = longTermPoints(intent, { triggers, health, quality, moatQuality, marketExpectation })
   const shortTermPts = shortTermPoints(intent, { health, technicals, suggestions: triggers?.suggestions })
   return {
     intent,
