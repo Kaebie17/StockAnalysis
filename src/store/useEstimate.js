@@ -314,6 +314,13 @@ export function useEstimate(state, opts = {}) {
         at: Date.now() }
     : null
 
+  // Weighted-average share count the company itself used for its latest
+  // EPS — profit ÷ EPS, same derivation resolveDilution/buildLenderEstimate
+  // already use elsewhere, since normalize.js stores no per-year share
+  // count field directly.
+  const rr = state?.ratioResult
+  const shares = (rr?.netProfit > 0 && rr?.eps > 0) ? rr.netProfit / rr.eps : (rr?.shares || null)
+
   const rerating = (!overrides.multiple && band)
     ? detectRerating(state?.data?.priceHistory || [], rawIncomeHistory, band,
         // growth passed so the current reading is put on the same FORWARD basis
@@ -321,7 +328,12 @@ export function useEstimate(state, opts = {}) {
         // currentEps comes straight from ratioResult, already basis-resolved,
         // so it takes precedence over detectRerating's own fallback anyway —
         // basis is still passed for when that fallback is what actually runs.
-        { peerBand, currentEps: state?.ratioResult?.eps, growth: estimate?.growth ?? null,
+        // quarterlyHistory/shares let detectRerating prefer a mid-year
+        // quarterly run-rate over that same stale-annual currentEps/latestEps
+        // fallback chain, same reasoning as justifiedMultiple.js's
+        // determineROEStart for ROE.
+        { peerBand, currentEps: rr?.eps, growth: estimate?.growth ?? null,
+          quarterlyHistory: state?.data?.quarterlyHistory || [], shares,
           relative, cause, basis })
     : { detected: false, reason: overrides.multiple ? 'You have already set a multiple' : 'No band yet' }
 

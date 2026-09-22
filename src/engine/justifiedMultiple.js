@@ -24,8 +24,7 @@
 import { capmCostOfEquity, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
-import { latestRealRow, averagePayoutPct, fieldHistory, resolveAnnualRoe } from './formulas.js'
-import { extrapolateFullYear } from './guidanceTracking.js'
+import { latestRealRow, averagePayoutPct, fieldHistory, resolveAnnualRoe, extrapolatedCurrentYearNetProfit } from './formulas.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -236,8 +235,10 @@ function twoStagePbMultiple({ roeStart, g1, r, years = STAGE_1_YEARS, terminalG 
  *
  *   1. Mid-year quarters for the current, not-yet-annually-reported fiscal
  *      year, extrapolated to a full year via seasonality learned from a
- *      prior complete year (extrapolateFullYear, guidanceTracking.js) —
- *      the only case quarterly data is worth anything for this purpose.
+ *      prior complete year (extrapolatedCurrentYearNetProfit, formulas.js
+ *      — shared with rerating.js's own trailing-EPS basis, since ROE and
+ *      EPS are just different ratios of the same extrapolated net profit)
+ *      — the only case quarterly data is worth anything for this purpose.
  *      (A full 4-quarter "TTM" is NOT a separate case: in Indian reporting
  *      Q4 is never independently published, it's back-solved as Annual −
  *      (Q1+Q2+Q3), so summing 4 quarters is mathematically identical to
@@ -251,25 +252,10 @@ function twoStagePbMultiple({ roeStart, g1, r, years = STAGE_1_YEARS, terminalG 
  * which basis actually produced the number is never hidden.
  */
 export function determineROEStart({ data, basis, fallbackRoe, latestBalRow }) {
-  const quarterRows = fieldHistory(data, 'quarterly')
-  if (quarterRows.length && latestBalRow) {
-    const equity = val(activeValue(latestBalRow, 'totalEquity', basis))
-    if (equity > 0) {
-      const plainRows = quarterRows
-        .map(r => ({
-          fiscalYear: val(r?.fiscalYear) ?? r?.fiscalYear,
-          quarterIndex: val(r?.quarterIndex) ?? r?.quarterIndex,
-          netProfit: val(activeValue(r, 'netProfit', basis)),
-        }))
-        .filter(r => r.fiscalYear && r.netProfit != null)
-      const extrap = extrapolateFullYear(plainRows, { metric: 'netProfit' })
-      if (extrap?.runRateFullYear > 0) {
-        return {
-          roe: (extrap.runRateFullYear / equity) * 100,
-          source: `${extrap.quartersReported}/${extrap.quartersInYear} quarters reported for ${extrap.targetFy}, seasonality-extrapolated`,
-        }
-      }
-    }
+  const equity = val(activeValue(latestBalRow, 'totalEquity', basis))
+  if (equity > 0) {
+    const extrap = extrapolatedCurrentYearNetProfit({ quarterlyHistory: fieldHistory(data, 'quarterly'), basis })
+    if (extrap) return { roe: (extrap.netProfit / equity) * 100, source: extrap.source }
   }
   return { roe: fallbackRoe, source: '3-year annual median' }
 }

@@ -24,6 +24,7 @@
 const round = (v, d = 1) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 import { peerBand, screenedPeerBand } from './peerBands.js'
 import { activeValue } from './dataQuality.js'
+import { extrapolatedCurrentYearNetProfit } from './formulas.js'
 
 const DAY = 86400000
 
@@ -49,7 +50,8 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   // `null` (a realistic shape for unset state in this app) would bypass them.
   priceHistory = priceHistory || []
   incomeHistory = incomeHistory || []
-  const { peerBand = null, currentEps = null, monthsWindow = 6, basis } = opts
+  const { peerBand = null, currentEps = null, monthsWindow = 6, basis,
+          quarterlyHistory = [], shares = null } = opts
   if (!band?.median || !(band.median > 0)) {
     return { detected: false, reason: 'No historical multiple band to compare against' }
   }
@@ -60,7 +62,24 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   // trailing and forward is roughly the growth rate — so a growing company would
   // read as permanently "re-rated upward" and the detector would fire on
   // arithmetic rather than on anything the market did.
-  const trailingEps = currentEps ?? latestEps(incomeHistory, basis)
+  //
+  // "Today's EPS" itself used to always mean the latest ANNUAL figure, even
+  // when mid-year quarters showed the current year running well above or
+  // below that trend — the same staleness justifiedMultiple.js's
+  // determineROEStart exists to fix for ROE, just for EPS instead. Prefers
+  // the quarterly-extrapolated current-year run-rate (same mechanism,
+  // shared via extrapolatedCurrentYearNetProfit — divided by SHARE COUNT
+  // here rather than equity, since EPS and ROE are different ratios of the
+  // same extrapolated net profit) wherever share count is available and a
+  // prior complete year exists to learn seasonality from; falls back to the
+  // caller-supplied currentEps or the latest annual EPS otherwise, exactly
+  // as before.
+  let trailingEps = currentEps ?? latestEps(incomeHistory, basis)
+  let trailingEpsSource = currentEps != null ? 'current' : 'latest annual'
+  if (shares > 0) {
+    const extrap = extrapolatedCurrentYearNetProfit({ quarterlyHistory, basis })
+    if (extrap) { trailingEps = extrap.netProfit / shares; trailingEpsSource = extrap.source }
+  }
   if (!(trailingEps > 0)) return { detected: false, reason: 'No EPS to measure the current multiple' }
   const g = opts.growth
   if (g == null || !isFinite(g)) {
@@ -184,6 +203,10 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
     // box. growthUnusual flags rather than hides an extreme-but-real reading.
     growthUsedPct: round(g * 100, 0),
     growthUnusual,
+    // Same disclosure for the trailing-EPS side of the same ratio — whether
+    // "current" reflects a mid-year quarterly run-rate or fell back to the
+    // latest annual figure, same as justifiedMultiple.js's roeStartSource.
+    trailingEpsSource,
     thin: thinReading,
     proposal: {
       multiple: round(median, 1),

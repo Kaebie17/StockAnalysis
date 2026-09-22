@@ -40,6 +40,7 @@
  */
 import { METRICS } from './metrics.js'
 import { activeValue } from './dataQuality.js'
+import { extrapolateFullYear } from './guidanceTracking.js'
 
 const val = t => (t && typeof t === 'object' ? t.value : t)
 
@@ -1471,6 +1472,38 @@ export function resolveAnnualRoe({ incomeHistory, balanceHistory, basis, ratioRe
   const source = sgMethods?.available ? `${sgMethods.startYear}–${sgMethods.endYear} median (Formulas tab)`
     : (roeBasis?.value != null ? roeBasis.source : 'latest')
   return { value, source }
+}
+
+/**
+ * The current fiscal year's net profit, extrapolated from whatever partial
+ * quarters have been reported so far — the one shared calculation behind
+ * both justifiedMultiple.js's determineROEStart (divides this by total
+ * equity) and rerating.js's trailing-EPS basis (divides this by share
+ * count). ROE and EPS are different ratios of the exact same numerator, so
+ * this is computed once here rather than duplicating the same "quarterly
+ * rows -> plain rows -> extrapolateFullYear" extraction a third time.
+ *
+ * Requires at least one reported quarter for the year in progress AND a
+ * prior complete year to learn seasonality from (extrapolateFullYear's own
+ * requirement) — returns null otherwise, same "decline rather than guess
+ * flat" rule as everywhere else this pattern is used.
+ */
+export function extrapolatedCurrentYearNetProfit({ quarterlyHistory, basis }) {
+  const quarterRows = quarterlyHistory || []
+  if (!quarterRows.length) return null
+  const plainRows = quarterRows
+    .map(r => ({
+      fiscalYear: val(r?.fiscalYear) ?? r?.fiscalYear,
+      quarterIndex: val(r?.quarterIndex) ?? r?.quarterIndex,
+      netProfit: val(activeValue(r, 'netProfit', basis)),
+    }))
+    .filter(r => r.fiscalYear && r.netProfit != null)
+  const extrap = extrapolateFullYear(plainRows, { metric: 'netProfit' })
+  if (!(extrap?.runRateFullYear > 0)) return null
+  return {
+    netProfit: extrap.runRateFullYear,
+    source: `${extrap.quartersReported}/${extrap.quartersInYear} quarters reported for ${extrap.targetFy}, seasonality-extrapolated`,
+  }
 }
 
 /**
