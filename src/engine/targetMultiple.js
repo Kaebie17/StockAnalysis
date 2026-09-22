@@ -132,6 +132,7 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
   let excludedLossYears = 0
   if (closes.length === 0) return Object.assign([], { priceGapYears, excludedLossYears })
 
+  const isEv = basis === 'ev-ebitda' || basis === 'ev-sales'
   const out = []
   for (const row of incomeHistory || []) {
     const y = yearOf(row)
@@ -140,13 +141,18 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
     const eps = val(activeValue(row, 'eps', normBasis))
     const revenue = val(activeValue(row, 'revenue', normBasis))
     const netProfit = val(activeValue(row, 'netProfit', normBasis))
+    const ebitda = val(activeValue(row, 'ebitda', normBasis))
     const bRow = (balanceHistory || []).find(b => yearOf(b) === y)
     const equity = val(activeValue(bRow, 'totalEquity', normBasis))
+    const netDebt = val(activeValue(bRow, 'netDebt', normBasis))
     const shares = (netProfit > 0 && eps > 0) ? netProfit / eps : null
     const bps = (equity > 0 && shares > 0) ? equity / shares : null
 
-    const denom = basis === 'pb' ? bps : eps
-    if (!(denom > 0)) { if (denom != null) excludedLossYears++; continue }
+    // EV-based forms need a share count to turn a per-share close into an
+    // enterprise value (close × shares + net debt) — P/E and P/B don't,
+    // since they're already per-share ratios on both sides.
+    const denom = basis === 'pb' ? bps : basis === 'ev-ebitda' ? ebitda : basis === 'ev-sales' ? revenue : eps
+    if (!(denom > 0) || (isEv && !(shares > 0))) { if (denom != null) excludedLossYears++; continue }
 
     const start = Date.UTC(y - 1, fyEndMonth, 1)
     const end = Date.UTC(y, fyEndMonth, 0)
@@ -163,12 +169,17 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
     // headline ratio elsewhere.
     const roe = (netProfit > 0 && equity > 0) ? (netProfit / equity) * 100 : null
     const margin = (netProfit != null && revenue > 0) ? (netProfit / revenue) * 100 : null
+    // Enterprise value at that year's median price — net debt treated as
+    // roughly constant across the year (it's a balance-sheet snapshot, not
+    // something with its own daily series), same simplification the current-
+    // day EV reading in rerating.js makes for exactly the same reason.
+    const ev = isEv ? medianClose * shares + (netDebt ?? 0) : null
 
     out.push({
       year: y,
-      multiple: medianClose / denom,
+      multiple: isEv ? ev / denom : medianClose / denom,
       roe, margin,
-      eps, revenue, bps,
+      eps, revenue, bps, ebitda, netDebt, shares,
       price: medianClose,
       thin: thinYear,
     })
@@ -178,7 +189,7 @@ export function yearlyObservations({ priceHistory = [], incomeHistory = [], bala
   // Year-on-year growth, available only from the second observation.
   for (let i = 1; i < out.length; i++) {
     const prev = out[i - 1], cur = out[i]
-    const base = basis === 'pb' ? 'bps' : 'eps'
+    const base = basis === 'pb' ? 'bps' : basis === 'ev-ebitda' ? 'ebitda' : basis === 'ev-sales' ? 'revenue' : 'eps'
     if (prev[base] > 0 && cur[base] > 0) {
       out[i].growth = ((cur[base] / prev[base]) - 1) * 100
     }

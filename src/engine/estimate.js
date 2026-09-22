@@ -467,6 +467,71 @@ export function pbBand(priceHistory = [], balanceHistory = [], incomeHistory = [
            excludedNegativeEquityYears, excludedLossYears }
 }
 
+/**
+ * The EV/EBITDA or EV/Sales analog of pbBand() above — same daily-pooled-
+ * across-fiscal-years methodology (a real historical band, not a single
+ * anchor), the piece rerating.js's EV-based re-rating check was missing:
+ * previously that check was simply never run for a company whose own
+ * estimate uses EV/EBITDA or EV/Sales, rather than silently comparing it
+ * against the wrong ratio (a P/E band) the way the lender case used to.
+ *
+ * Enterprise value at each historical close: close × that fiscal year's
+ * share count (profit ÷ EPS) + that fiscal year's net debt. Net debt is
+ * treated as one snapshot per fiscal year rather than a daily series, same
+ * simplification pbBand already makes for book value and for the same
+ * reason — it's a balance-sheet figure, not something with its own
+ * daily-moving series the way price does.
+ */
+export function evMultipleBand(priceHistory = [], incomeHistory = [], balanceHistory = [], opts = {}) {
+  const { fyEndMonth = 3, metric = 'ev-ebitda', normBasis = 'reported' } = opts
+  const closes = (priceHistory || [])
+    .filter(p => p?.date && p.close > 0)
+    .map(p => ({ t: Date.parse(p.date), close: p.close }))
+    .filter(p => isFinite(p.t))
+    .sort((a, b) => a.t - b.t)
+  if (closes.length === 0) return null
+
+  const byYear = new Map()
+  let excludedYears = 0
+  for (const iRow of incomeHistory || []) {
+    const y = yearOf(iRow)
+    if (y == null) continue
+    const np = val(activeValue(iRow, 'netProfit', normBasis))
+    const eps = val(activeValue(iRow, 'eps', normBasis))
+    const shares = (np > 0 && eps > 0) ? np / eps : null
+    const denom = metric === 'ev-sales'
+      ? val(activeValue(iRow, 'revenue', normBasis))
+      : val(activeValue(iRow, 'ebitda', normBasis))
+    // A negative/zero denominator or an undeterminable share count both
+    // make this year's EV multiple undefined, same class of exclusion
+    // pbBand applies for a loss year or negative equity — tracked as one
+    // count rather than two since, unlike pbBand, there's no meaningfully
+    // different STORY behind each cause here worth telling apart.
+    if (!(shares > 0) || !(denom > 0)) { excludedYears++; continue }
+    const bRow = (balanceHistory || []).find(b => yearOf(b) === y)
+    const netDebt = val(activeValue(bRow, 'netDebt', normBasis)) ?? 0
+    byYear.set(y, { shares, denom, netDebt })
+  }
+  if (byYear.size === 0) return null
+
+  const ratios = []
+  for (const [y, { shares, denom, netDebt }] of byYear) {
+    const end = Date.UTC(y, fyEndMonth, 0)
+    const start = Date.UTC(y - 1, fyEndMonth, 1)
+    for (const c of closes) {
+      if (c.t < start || c.t > end) continue
+      const ev = c.close * shares + netDebt
+      const m = ev / denom
+      if (m > 0) ratios.push(m)
+    }
+  }
+  const cleaned = filterRelativeOutliers(ratios, { multiple: OUTLIER_MULTIPLE, minKeep: 20 })
+  const ps = percentileSpread(cleaned, { preferredSamples: 100 })
+  if (!ps) return null
+  return { low: round(ps.low, 2), median: round(ps.median, 2), high: round(ps.high, 2),
+           samples: ps.count, thin: ps.thin, excludedYears }
+}
+
 // "Near zero" relative to the company's OWN normal scale — a flat rupee
 // threshold means nothing across the wildly different EPS scales this app
 // sees; a fraction of the company's own median positive EPS does. Shared

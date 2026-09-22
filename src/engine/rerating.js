@@ -24,7 +24,7 @@
 const round = (v, d = 1) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 import { peerBand, screenedPeerBand } from './peerBands.js'
 import { activeValue } from './dataQuality.js'
-import { extrapolatedCurrentYearNetProfit } from './formulas.js'
+import { extrapolatedCurrentYearMetric } from './formulas.js'
 
 const DAY = 86400000
 
@@ -43,25 +43,45 @@ const MIN_DEVIATION = 0.08
  * @param priceHistory  daily closes
  * @param incomeHistory annual rows (for forward EPS by year)
  * @param band          { low, median, high } — from forwardPeBand for
- *                       metric:'pe' (the default), or from pbBand for
- *                       metric:'pb'. Whichever it is, it must be built on
- *                       the SAME metric as `band` and `opts.currentEps` —
- *                       see opts.metric below.
+ *                       metric:'pe' (the default), pbBand for metric:'pb',
+ *                       or evMultipleBand for metric:'ev-ebitda'/'ev-sales'.
+ *                       Whichever it is, it must be built on the SAME
+ *                       metric as `band` and `opts.currentEps` — see
+ *                       opts.metric below.
  * @param peerBand      { median, ... } optional
- * @param opts.metric   'pe' (default) or 'pb' — which ratio this check is
- *                       actually run on. Introduced because App Target
- *                       itself doesn't always use P/E: a lender/insurer's
- *                       own estimate (buildLenderEstimate, estimate.js) is
- *                       built on P/B, and running THIS check on P/E anyway
- *                       produced a re-rating flag answering a question
- *                       about a ratio the ticker's own valuation doesn't
- *                       even use — confusing at best (a P/E de-rating
- *                       shown next to a P/B-based target range) and
- *                       possibly just wrong at worst. For metric:'pb',
- *                       opts.currentEps is overloaded to mean "current
- *                       book value per share" and opts.growth means "book
- *                       growth" (ROE × retention) — the quarterly-EPS-
- *                       specific extrapolation below only applies to 'pe'.
+ * @param opts.metric   'pe' (default), 'pb', 'ev-ebitda', or 'ev-sales' —
+ *                       which ratio this check is actually run on.
+ *                       Introduced because App Target itself doesn't
+ *                       always use P/E: a lender/insurer's own estimate
+ *                       (buildLenderEstimate) is P/B-based, a capital-
+ *                       intensive/cyclical one can be EV/EBITDA-based, and
+ *                       a pre-profit one EV/Sales-based — running this
+ *                       check on P/E regardless produced a re-rating flag
+ *                       answering a question about a ratio the ticker's
+ *                       own valuation doesn't even use.
+ *                       For 'pb', opts.currentEps means "current book
+ *                       value per share" and opts.growth means "book
+ *                       growth" (ROE × retention).
+ *                       For 'ev-ebitda'/'ev-sales', opts.currentEps means
+ *                       "current EBITDA" or "current revenue" (a whole-
+ *                       company AGGREGATE, not per-share — both of these
+ *                       divide an enterprise value by a whole-company
+ *                       fundamental), opts.growth is the forward growth
+ *                       rate for that fundamental, opts.shares converts
+ *                       price into market cap, and opts.netDebt completes
+ *                       the enterprise-value numerator (treated as one
+ *                       roughly-current snapshot, not a daily series — a
+ *                       balance-sheet figure, same simplification pbBand/
+ *                       evMultipleBand already make for the historical
+ *                       band itself).
+ *                       The quarterly-extrapolation preference below
+ *                       applies to 'pe' (net profit) and both EV metrics
+ *                       (EBITDA or revenue) — book value has no equivalent
+ *                       "extrapolate from partial quarters" concept the
+ *                       same way an income-statement line does (it
+ *                       compounds via retained earnings across a full
+ *                       year, not a run-rate), so 'pb' always uses
+ *                       opts.currentEps as given.
  */
 export function detectRerating(priceHistory = [], incomeHistory = [], band = null, opts = {}) {
   // Default params only cover `undefined` — a caller passing an explicit
@@ -69,43 +89,34 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   priceHistory = priceHistory || []
   incomeHistory = incomeHistory || []
   const { peerBand = null, currentEps = null, monthsWindow = 6, basis,
-          quarterlyHistory = [], shares = null, metric = 'pe' } = opts
+          quarterlyHistory = [], shares = null, metric = 'pe', netDebt = null } = opts
   if (!band?.median || !(band.median > 0)) {
     return { detected: false, reason: 'No historical multiple band to compare against' }
   }
+  const isEv = metric === 'ev-ebitda' || metric === 'ev-sales'
+  const fundamentalName = metric === 'pb' ? 'book value' : metric === 'ev-sales' ? 'revenue' : metric === 'ev-ebitda' ? 'EBITDA' : 'EPS'
 
   // The band this is compared against is a FORWARD one (price over NEXT year's
-  // earnings), so the current reading has to be forward too. Measuring today's
-  // price against today's EPS produces a trailing multiple, and the gap between
-  // trailing and forward is roughly the growth rate — so a growing company would
-  // read as permanently "re-rated upward" and the detector would fire on
-  // arithmetic rather than on anything the market did.
-  //
-  // "Today's EPS" itself used to always mean the latest ANNUAL figure, even
-  // when mid-year quarters showed the current year running well above or
-  // below that trend — the same staleness justifiedMultiple.js's
-  // determineROEStart exists to fix for ROE, just for EPS instead. Prefers
-  // the quarterly-extrapolated current-year run-rate (same mechanism,
-  // shared via extrapolatedCurrentYearNetProfit — divided by SHARE COUNT
-  // here rather than equity, since EPS and ROE are different ratios of the
-  // same extrapolated net profit) wherever share count is available and a
-  // prior complete year exists to learn seasonality from; falls back to the
-  // caller-supplied currentEps or the latest annual EPS otherwise, exactly
-  // as before. Book value doesn't have an equivalent "extrapolate from
-  // partial quarters" concept the same way earnings do (it compounds via
-  // retained earnings across a full year, not a run-rate) — for metric:'pb'
-  // this just uses opts.currentEps (the current book value per share) as
-  // given, no quarterly refinement.
-  let trailingEps = currentEps
-  let trailingEpsSource = currentEps != null ? 'current' : 'latest annual'
+  // fundamental), so the current reading has to be forward too. Measuring
+  // today's price against today's figure produces a trailing multiple, and
+  // the gap between trailing and forward is roughly the growth rate — so a
+  // growing company would read as permanently "re-rated upward" and the
+  // detector would fire on arithmetic rather than on anything the market did.
+  let trailingValue = currentEps
+  let trailingValueSource = currentEps != null ? 'current' : 'latest annual'
   if (metric === 'pe') {
-    trailingEps = currentEps ?? latestEps(incomeHistory, basis)
+    trailingValue = currentEps ?? latestEps(incomeHistory, basis)
     if (shares > 0) {
-      const extrap = extrapolatedCurrentYearNetProfit({ quarterlyHistory, basis })
-      if (extrap) { trailingEps = extrap.netProfit / shares; trailingEpsSource = extrap.source }
+      const extrap = extrapolatedCurrentYearMetric({ quarterlyHistory, basis, metric: 'netProfit' })
+      if (extrap) { trailingValue = extrap.value / shares; trailingValueSource = extrap.source }
     }
+  } else if (isEv) {
+    const qMetric = metric === 'ev-sales' ? 'revenue' : 'ebitda'
+    const extrap = extrapolatedCurrentYearMetric({ quarterlyHistory, basis, metric: qMetric })
+    if (extrap) { trailingValue = extrap.value; trailingValueSource = extrap.source }
   }
-  if (!(trailingEps > 0)) return { detected: false, reason: `No ${metric === 'pb' ? 'book value' : 'EPS'} to measure the current multiple` }
+  if (!(trailingValue > 0)) return { detected: false, reason: `No ${fundamentalName} to measure the current multiple` }
+  if (isEv && !(shares > 0)) return { detected: false, reason: 'No share count to convert price into enterprise value' }
   const g = opts.growth
   if (g == null || !isFinite(g)) {
     // Without a growth rate the two aren't comparable at all; saying so beats
@@ -113,24 +124,33 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
     return { detected: false, reason: 'No growth rate available to compare like with like' }
   }
   // Structural floor, not a plausibility judgment: 1+g must stay positive for
-  // a forward EPS — and so a multiple off it — to mean anything at all. Below
-  // this the math is undefined, not merely unusual. An unusual-but-computable
-  // g (a real -40% collapse, a real +80% recovery) is used as-is and flagged
-  // below, not hidden — a measured number beats a guess about whether it's
-  // trustworthy.
+  // the forward fundamental — and so a multiple off it — to mean anything at
+  // all. Below this the math is undefined, not merely unusual. An unusual-
+  // but-computable g (a real -40% collapse, a real +80% recovery) is used
+  // as-is and flagged below, not hidden — a measured number beats a guess
+  // about whether it's trustworthy.
   if (!(g > -1)) {
-    return { detected: false, reason: `Growth rate (${round(g * 100, 0)}%) makes forward ${metric === 'pb' ? 'book value' : 'EPS'} non-positive — can't compute a multiple from it` }
+    return { detected: false, reason: `Growth rate (${round(g * 100, 0)}%) makes forward ${fundamentalName} non-positive — can't compute a multiple from it` }
   }
   // Flagged, not gated: this is real, measured data even when it sits well
   // outside a typical range — the caller decides whether to trust it, the
   // detector doesn't decide for them by hiding the reading.
   const growthUnusual = g > 0.6 || g < -0.3
-  const eps = trailingEps * (1 + g)
+  const forwardValue = trailingValue * (1 + g)
 
   const cutoff = Date.now() - monthsWindow * 30 * DAY
   const recent = (priceHistory || [])
     .filter(p => p?.date && p.close > 0 && Date.parse(p.date) >= cutoff)
-    .map(p => ({ t: Date.parse(p.date), pe: p.close / eps }))
+    .map(p => ({
+      t: Date.parse(p.date),
+      // isEv: today's enterprise value (price × shares + net debt) over the
+      // forward fundamental, instead of a plain per-share ratio — the one
+      // real formula difference EV-based metrics need; everything else in
+      // this function (the band comparison, duration check, cause,
+      // summary) is already written generically enough to not care which
+      // ratio produced this number.
+      pe: isEv ? (p.close * shares + (netDebt ?? 0)) / forwardValue : p.close / forwardValue,
+    }))
     .filter(p => isFinite(p.t) && p.pe > 0)
     .sort((a, b) => a.t - b.t)
 
@@ -223,15 +243,17 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
     heldDays, heldMonths: round(heldMonths, 0),
     cause,
     peerContext, sectorContext,
-    // The growth rate this reading's forward EPS is built on — always shown,
-    // not just when it's unusual, so the basis for "current" is never a black
-    // box. growthUnusual flags rather than hides an extreme-but-real reading.
+    // The growth rate this reading's forward fundamental is built on —
+    // always shown, not just when it's unusual, so the basis for "current"
+    // is never a black box. growthUnusual flags rather than hides an
+    // extreme-but-real reading.
     growthUsedPct: round(g * 100, 0),
     growthUnusual,
-    // Same disclosure for the trailing-EPS side of the same ratio — whether
+    // Same disclosure for the trailing side of the same ratio — whether
     // "current" reflects a mid-year quarterly run-rate or fell back to the
     // latest annual figure, same as justifiedMultiple.js's roeStartSource.
-    trailingEpsSource,
+    trailingValueSource,
+    metric,
     thin: thinReading,
     proposal: {
       multiple: round(median, 1),

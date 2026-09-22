@@ -24,7 +24,7 @@
 import { capmCostOfEquity, TERMINAL_GROWTH_BY_MARKET } from './requiredReturn.js'
 import { TIER } from './methodologyTier.js'
 import { activeValue } from './dataQuality.js'
-import { latestRealRow, averagePayoutPct, fieldHistory, resolveAnnualRoe, extrapolatedCurrentYearNetProfit } from './formulas.js'
+import { latestRealRow, averagePayoutPct, fieldHistory, resolveAnnualRoe, extrapolatedCurrentYearMetric } from './formulas.js'
 
 const round = (v, d = 2) => (v == null || !isFinite(v) ? null : +v.toFixed(d))
 const val = t => (t && typeof t === 'object' ? t.value : t)
@@ -254,8 +254,8 @@ function twoStagePbMultiple({ roeStart, g1, r, years = STAGE_1_YEARS, terminalG 
 export function determineROEStart({ data, basis, fallbackRoe, latestBalRow }) {
   const equity = val(activeValue(latestBalRow, 'totalEquity', basis))
   if (equity > 0) {
-    const extrap = extrapolatedCurrentYearNetProfit({ quarterlyHistory: fieldHistory(data, 'quarterly'), basis })
-    if (extrap) return { roe: (extrap.netProfit / equity) * 100, source: extrap.source }
+    const extrap = extrapolatedCurrentYearMetric({ quarterlyHistory: fieldHistory(data, 'quarterly'), basis, metric: 'netProfit' })
+    if (extrap) return { roe: (extrap.value / equity) * 100, source: extrap.source }
   }
   return { roe: fallbackRoe, source: '3-year annual median' }
 }

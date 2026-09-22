@@ -10,7 +10,7 @@ import { getRiskFreeRate, refreshRiskFreeRate } from '../api/riskFreeClient.js'
 import { getEquityRiskPremium } from '../api/erpClient.js'
 import { getAiKey } from '../utils/aiKey.js'
 import { peerBandFrom, detectRerating } from '../engine/rerating.js'
-import { forwardPeBand, pbBand } from '../engine/estimate.js'
+import { forwardPeBand, pbBand, evMultipleBand } from '../engine/estimate.js'
 import { financialsFromRatioResult } from '../engine/peerCompatibility.js'
 
 // Strips rerating.js's own summary wrapper ("The market has repriced this
@@ -319,12 +319,11 @@ export function useEstimate(state, opts = {}) {
   let band = null, reratingMetric = 'pe'
   let reratingUnsupportedReason = null
   if (rrModel === 'ev-ebitda' || rrModel === 'ev-sales') {
-    // Building a genuine historical EV/EBITDA or EV/Sales band needs a full
-    // enterprise-value time series (debt/cash history alongside price), not
-    // just price/EPS — a real, separate piece of work this doesn't attempt
-    // yet. Suppressed rather than silently shown on the wrong ratio, same
-    // reasoning as the lender fix below.
-    reratingUnsupportedReason = `This company's own target uses an ${rrModel === 'ev-ebitda' ? 'EV/EBITDA' : 'EV/Sales'} basis — re-rating detection doesn't yet support that, only P/E and P/B.`
+    reratingMetric = rrModel
+    const evRaw = evMultipleBand(state?.data?.priceHistory || [], rawIncomeHistory, state?.data?.balanceHistory || [],
+      { metric: rrModel, normBasis: basis })
+    band = evRaw || null
+    if (!band) reratingUnsupportedReason = 'Not enough matched price/financial history to measure an EV band for this company.'
   } else if (rrModel === 'lender') {
     reratingMetric = 'pb'
     const pbRaw = pbBand(state?.data?.priceHistory || [], state?.data?.balanceHistory || [], rawIncomeHistory, {})
@@ -376,14 +375,21 @@ export function useEstimate(state, opts = {}) {
   const rr = state?.ratioResult
   const shares = (rr?.netProfit > 0 && rr?.eps > 0) ? rr.netProfit / rr.eps : (rr?.shares || null)
 
-  // metric:'pb' overloads currentEps to mean "current book value per share"
-  // (see detectRerating's own doc comment) — read the same way
-  // buildLenderEstimate itself reads it, so the "current" reading and the
-  // estimate it's being compared against are never built from two
-  // different book-value figures.
-  const reratingCurrentValue = reratingMetric === 'pb'
-    ? (rr?.ratios?.bookPerShare?.value ?? rr?.bookPerShare ?? null)
+  // detectRerating's own doc comment covers what currentEps is overloaded to
+  // mean per metric — read here the SAME way each estimate builder itself
+  // reads the equivalent figure, so the "current" reading and the estimate
+  // it's being compared against are never built from two different numbers.
+  const reratingCurrentValue =
+    reratingMetric === 'pb' ? (rr?.ratios?.bookPerShare?.value ?? rr?.bookPerShare ?? null)
+    : reratingMetric === 'ev-ebitda' ? (rr?.ebitda ?? null)
+    : reratingMetric === 'ev-sales' ? (rr?.revenue ?? null)
     : rr?.eps
+
+  // Current net debt (EV − market cap, both already computed and stored on
+  // every ratioResult by ratios.js) — only meaningful for the EV metrics,
+  // where price alone isn't the per-share fundamental it is for P/E/P/B and
+  // has to be converted into an enterprise value first.
+  const reratingNetDebt = (rr?.ev != null && rr?.marketCap != null) ? rr.ev - rr.marketCap : null
 
   const rerating = reratingUnsupportedReason
     ? { detected: false, reason: reratingUnsupportedReason }
@@ -397,10 +403,11 @@ export function useEstimate(state, opts = {}) {
         // quarterlyHistory/shares let detectRerating prefer a mid-year
         // quarterly run-rate over that same stale-annual currentEps/latestEps
         // fallback chain, same reasoning as justifiedMultiple.js's
-        // determineROEStart for ROE — 'pe' only; a book-value equivalent
-        // doesn't apply the same way (see detectRerating's own comment).
+        // determineROEStart for ROE — applies to 'pe' and both EV metrics;
+        // a book-value equivalent doesn't apply the same way (see
+        // detectRerating's own comment).
         { peerBand, currentEps: reratingCurrentValue, growth: estimate?.growth ?? null,
-          quarterlyHistory: state?.data?.quarterlyHistory || [], shares,
+          quarterlyHistory: state?.data?.quarterlyHistory || [], shares, netDebt: reratingNetDebt,
           relative, cause, basis, metric: reratingMetric })
     : { detected: false, reason: overrides.multiple ? 'You have already set a multiple' : 'No band yet' }
 

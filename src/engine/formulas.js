@@ -1475,33 +1475,57 @@ export function resolveAnnualRoe({ incomeHistory, balanceHistory, basis, ratioRe
 }
 
 /**
- * The current fiscal year's net profit, extrapolated from whatever partial
- * quarters have been reported so far — the one shared calculation behind
- * both justifiedMultiple.js's determineROEStart (divides this by total
- * equity) and rerating.js's trailing-EPS basis (divides this by share
- * count). ROE and EPS are different ratios of the exact same numerator, so
- * this is computed once here rather than duplicating the same "quarterly
- * rows -> plain rows -> extrapolateFullYear" extraction a third time.
+ * The current fiscal year's net profit / EBITDA / revenue, extrapolated
+ * from whatever partial quarters have been reported so far — the one
+ * shared calculation behind justifiedMultiple.js's determineROEStart
+ * (net profit ÷ total equity), rerating.js's trailing-EPS basis (net
+ * profit ÷ share count), and its EV/EBITDA and EV/Sales bases (EBITDA or
+ * revenue directly, no per-share division at all). All four are the same
+ * "extrapolate this one line item from partial quarters" operation on a
+ * different line item, so it's computed once here rather than four copies
+ * of the same "quarterly rows -> plain rows -> extrapolateFullYear"
+ * extraction.
+ *
+ * `metric: 'ebitda'` is the one case handled specially: quarterly rows are
+ * raw pasted fields, never run through materializeFormulas (that pipeline
+ * only touches the annual reportedIncomeHistory/balanceHistory/
+ * cashflowHistory tables) — so there is no materialized `ebitda` field on
+ * a quarterly row to read, even when one exists on the annual table.
+ * Derived here directly from the same two raw fields
+ * STANDARD_FORMULA_ROWS.ebitda itself sums (operatingProfit +
+ * depreciation), when a quarterly paste happened to include both — a
+ * fuller paste than the Revenue/Net Profit/EPS most quarterly pastes carry,
+ * so this is expected to come up empty (falling back to the annual figure,
+ * same as every other metric here) more often than 'netProfit' or
+ * 'revenue' do.
  *
  * Requires at least one reported quarter for the year in progress AND a
  * prior complete year to learn seasonality from (extrapolateFullYear's own
  * requirement) — returns null otherwise, same "decline rather than guess
  * flat" rule as everywhere else this pattern is used.
  */
-export function extrapolatedCurrentYearNetProfit({ quarterlyHistory, basis }) {
+export function extrapolatedCurrentYearMetric({ quarterlyHistory, basis, metric = 'netProfit' }) {
   const quarterRows = quarterlyHistory || []
   if (!quarterRows.length) return null
+  const readMetric = row => {
+    if (metric === 'ebitda') {
+      const op = val(activeValue(row, 'operatingProfit', basis))
+      const da = val(activeValue(row, 'depreciation', basis))
+      return (op != null && da != null) ? op + da : null
+    }
+    return val(activeValue(row, metric, basis))
+  }
   const plainRows = quarterRows
     .map(r => ({
       fiscalYear: val(r?.fiscalYear) ?? r?.fiscalYear,
       quarterIndex: val(r?.quarterIndex) ?? r?.quarterIndex,
-      netProfit: val(activeValue(r, 'netProfit', basis)),
+      value: readMetric(r),
     }))
-    .filter(r => r.fiscalYear && r.netProfit != null)
-  const extrap = extrapolateFullYear(plainRows, { metric: 'netProfit' })
+    .filter(r => r.fiscalYear && r.value != null)
+  const extrap = extrapolateFullYear(plainRows, { metric: 'value' })
   if (!(extrap?.runRateFullYear > 0)) return null
   return {
-    netProfit: extrap.runRateFullYear,
+    value: extrap.runRateFullYear,
     source: `${extrap.quartersReported}/${extrap.quartersInYear} quarters reported for ${extrap.targetFy}, seasonality-extrapolated`,
   }
 }
