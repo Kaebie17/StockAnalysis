@@ -232,7 +232,18 @@ export default function PositionsPanel({ open, onClose }) {
         </>
       }
     >
-          {loading ? (
+          {/* Only the genuine first load (nothing in state yet) replaces the
+              whole list with this — usePositions()'s own refresh() sets
+              loading back to true on every re-sync (e.g. a background pull
+              landing, or backfillMissing calling it after a snapshot
+              backfill), not just the initial mount. Gating on loading alone
+              unmounted every <Holding> — and every bit of state it holds,
+              including an open advice popup, the expanded row, an in-flight
+              peer fetch — on every one of those background refreshes, not
+              just the first. The list itself only needs to exist once; a
+              background reload updating its contents in place doesn't need
+              to destroy and recreate every row to do that. */}
+          {loading && positions.length === 0 ? (
             <p className="text-sm text-slate-500">Loading…</p>
           ) : holdings.length === 0 && closed.length === 0 ? (
             <div className="text-center py-8 space-y-2">
@@ -427,7 +438,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
   // triggered on demand when a question is asked) — null until it resolves,
   // which positionAdvice.js treats as "not available yet," not "no peers."
   const advice = intent ? adviseOnIntent(intent, {
-    triggers, health, technicals: analysis?.technicals, quality, moatQuality, marketExpectation,
+    estimate, price, triggers, technicals: analysis?.technicals, quality, moatQuality, marketExpectation,
     peers: peerInfo,
   }) : null
 
@@ -620,39 +631,82 @@ function BarRow({ label, bar, mode = 'level' }) {
   )
 }
 
-const LEAN_STYLE = {
-  for:         { text: 'text-bull',   label: 'Leans for' },
-  against:     { text: 'text-bear',   label: 'Leans against' },
-  mixed:       { text: 'text-neutral', label: 'Mixed signals' },
-  unavailable: { text: 'text-slate-600', label: 'Not enough signal' },
+const DECISION_STYLE = {
+  Buy:  { text: 'text-bull',    bg: 'bg-bull/10' },
+  Hold: { text: 'text-slate-300', bg: 'bg-navy-800' },
+  Sell: { text: 'text-bear',    bg: 'bg-bear/10' },
+  Wait: { text: 'text-neutral', bg: 'bg-neutral/10' },
 }
 
 /**
- * The full working behind a positionAdvice.js reading — every point's fuller
- * `detail` text (the same explanation the underlying trigger/bar itself
- * carries), not just the compact label shown inline. Same relationship the
- * rest of the app already has between a compact line and its own
- * "Valuation Detail"/"why" expansion — the inline view stays a glance, the
- * reasoning behind it is one tap away rather than crammed into the same
- * space or left invisible.
+ * positionAdvice.js's own section order, followed exactly: Valuation ->
+ * Quality -> Technical -> Conflict -> Decision (last, computed from the
+ * other three, not first). Three separate questions shown as three separate
+ * sections on purpose — a good business at a rich price with a confirming
+ * uptrend and a weak business at a cheap price with unconfirmed technicals
+ * are different situations a single collapsed score can't tell apart.
  */
 function AdviceDetailModal({ open, onClose, ticker, intentLabel, advice, peerLoading }) {
   if (!advice) return null
+  const { valuation, quality, technical, conflict, decision } = advice
+  const style = DECISION_STYLE[decision.action] || DECISION_STYLE.Hold
   return (
     <Modal open={open} onClose={onClose}
       title={`${ticker.replace(/\.(NS|BO)$/, '')} — ${intentLabel || ''}`}
-      subtitle="Full reasoning behind the leaning shown, both horizons">
-      {/* Everything except the peer comparison is ready immediately (all
-          synchronous); the peer fetch resolving later just adds its points
-          in when it lands (React re-renders this same open modal) rather
-          than blocking the rest of a genuinely-ready analysis on it. Called
-          out explicitly so a missing peer read in the meantime looks like
-          "still coming," not "no peer signal exists for this stock." */}
+      subtitle="Valuation, business quality, and price action, kept separate — the decision is synthesized from all three, last">
       {peerLoading && (
         <p className="text-[11px] text-accent">Gathering peer comparison — the rest of this is ready now.</p>
       )}
-      <DetailHorizon label="Short term (technical)" result={advice.shortTerm} />
-      <DetailHorizon label="Long term (fundamental)" result={advice.longTerm} />
+
+      <AdviceSection title="Valuation — what price is the market assuming?" verdict={valuation.verdict}
+        facts={valuation.facts} available={valuation.available} />
+      <AdviceSection title="Business quality — is the underlying business supporting that price?"
+        verdict={quality.verdict} facts={quality.facts} narrative={quality.narrative} available={quality.available} />
+      <AdviceSection title="Technical — is the market confirming this now?" verdict={technical.verdict}
+        facts={technical.facts} narrative={technical.narrative ? [technical.narrative] : []} available={technical.available} />
+
+      <div className="space-y-2 pt-2 border-t border-navy-800">
+        <p className="text-slate-300 font-medium text-sm">Why the signals disagree</p>
+        {conflict.supporting.length > 0 && (
+          <div>
+            <p className="text-xs text-bull mb-0.5">Supporting the position</p>
+            <ul className="text-xs text-slate-400 space-y-0.5">
+              {conflict.supporting.map((s, i) => <li key={i}>+ {s}</li>)}
+            </ul>
+          </div>
+        )}
+        {conflict.against.length > 0 && (
+          <div>
+            <p className="text-xs text-bear mb-0.5">Against the position</p>
+            <ul className="text-xs text-slate-400 space-y-0.5">
+              {conflict.against.map((s, i) => <li key={i}>− {s}</li>)}
+            </ul>
+          </div>
+        )}
+        <p className="text-xs text-slate-300 pt-1"><span className="text-slate-500">Central issue — </span>{conflict.centralIssue}</p>
+      </div>
+
+      <div className={`rounded-lg p-3 space-y-1.5 ${style.bg}`}>
+        <p className={`font-semibold ${style.text}`}>Decision: {decision.action}</p>
+        <p className="text-xs text-slate-400">{decision.reason}</p>
+        {decision.strengthen?.length > 0 && (
+          <div className="pt-1">
+            <p className="text-[11px] text-slate-500">What would strengthen the case</p>
+            <ul className="text-[11px] text-slate-500 space-y-0.5">
+              {decision.strengthen.map((s, i) => <li key={i}>· {s}</li>)}
+            </ul>
+          </div>
+        )}
+        {decision.weaken?.length > 0 && (
+          <div className="pt-1">
+            <p className="text-[11px] text-slate-500">What would weaken the case</p>
+            <ul className="text-[11px] text-slate-500 space-y-0.5">
+              {decision.weaken.map((s, i) => <li key={i}>· {s}</li>)}
+            </ul>
+          </div>
+        )}
+      </div>
+
       <p className="text-[11px] text-slate-600 pt-2 border-t border-navy-800">
         This is a synthesis of the same signals shown elsewhere on this holding — it doesn't decide
         anything, save anything, or act on anything by itself.
@@ -661,44 +715,23 @@ function AdviceDetailModal({ open, onClose, ticker, intentLabel, advice, peerLoa
   )
 }
 
-// A detail line that just restates the point's own text isn't detail — a
-// safety net beyond fixing each source individually, since a future point
-// could reuse a bar's collapsed label/detail pair (identical when the bar
-// has only one contributing part) the same way the ones already fixed did.
-const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
-function isRedundantDetail(detail, text) {
-  if (!detail) return true
-  const d = normalize(detail), t = normalize(text)
-  return d === t || d.includes(t) || t.includes(d)
-}
-
-function DetailHorizon({ label, result }) {
-  const style = LEAN_STYLE[result.lean] || LEAN_STYLE.unavailable
+function AdviceSection({ title, verdict, facts = [], narrative = [], available }) {
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2 text-sm">
-        <span className="text-slate-300 font-medium">{label}</span>
-        <span className={style.text}>{style.label}</span>
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-slate-300 font-medium text-sm">{title}</p>
+        <span className="text-xs text-accent shrink-0">{verdict}</span>
       </div>
-      {/* The actual "how this connects" answer — not just a direction, but
-          how many of the INDEPENDENT blocks that contributed at all (quality,
-          moat, market pricing, peers, triggers, technicals, ...) agree with
-          it versus point the other way. See positionAdvice.js's convergence()
-          for why this is a block count, not a point count. */}
-      {result.convergence && (
-        <p className="text-[11px] text-slate-500">{result.convergence.note}</p>
+      {!available ? (
+        <p className="text-xs text-slate-600">Not enough data for this section.</p>
+      ) : (
+        <>
+          <ul className="text-xs text-slate-500 space-y-0.5">
+            {facts.map((f, i) => <li key={i}>{f}</li>)}
+          </ul>
+          {narrative.map((n, i) => <p key={i} className="text-xs text-slate-400 pt-0.5">{n}</p>)}
+        </>
       )}
-      {result.points.length === 0 && (
-        <p className="text-xs text-slate-600">Nothing on this side fired, watched, or read either way.</p>
-      )}
-      <ul className="space-y-1.5">
-        {result.points.map((p, i) => (
-          <li key={i} className="text-xs">
-            <span className={p.for ? 'text-bull' : 'text-bear'}>{p.for ? '+' : '−'} {p.text}</span>
-            {!isRedundantDetail(p.detail, p.text) && <p className="text-slate-500 mt-0.5">{p.detail}</p>}
-          </li>
-        ))}
-      </ul>
     </div>
   )
 }
