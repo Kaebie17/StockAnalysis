@@ -42,8 +42,26 @@ const MIN_DEVIATION = 0.08
 /**
  * @param priceHistory  daily closes
  * @param incomeHistory annual rows (for forward EPS by year)
- * @param band          { low, median, high } from forwardPeBand
+ * @param band          { low, median, high } — from forwardPeBand for
+ *                       metric:'pe' (the default), or from pbBand for
+ *                       metric:'pb'. Whichever it is, it must be built on
+ *                       the SAME metric as `band` and `opts.currentEps` —
+ *                       see opts.metric below.
  * @param peerBand      { median, ... } optional
+ * @param opts.metric   'pe' (default) or 'pb' — which ratio this check is
+ *                       actually run on. Introduced because App Target
+ *                       itself doesn't always use P/E: a lender/insurer's
+ *                       own estimate (buildLenderEstimate, estimate.js) is
+ *                       built on P/B, and running THIS check on P/E anyway
+ *                       produced a re-rating flag answering a question
+ *                       about a ratio the ticker's own valuation doesn't
+ *                       even use — confusing at best (a P/E de-rating
+ *                       shown next to a P/B-based target range) and
+ *                       possibly just wrong at worst. For metric:'pb',
+ *                       opts.currentEps is overloaded to mean "current
+ *                       book value per share" and opts.growth means "book
+ *                       growth" (ROE × retention) — the quarterly-EPS-
+ *                       specific extrapolation below only applies to 'pe'.
  */
 export function detectRerating(priceHistory = [], incomeHistory = [], band = null, opts = {}) {
   // Default params only cover `undefined` — a caller passing an explicit
@@ -51,7 +69,7 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   priceHistory = priceHistory || []
   incomeHistory = incomeHistory || []
   const { peerBand = null, currentEps = null, monthsWindow = 6, basis,
-          quarterlyHistory = [], shares = null } = opts
+          quarterlyHistory = [], shares = null, metric = 'pe' } = opts
   if (!band?.median || !(band.median > 0)) {
     return { detected: false, reason: 'No historical multiple band to compare against' }
   }
@@ -73,14 +91,21 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   // same extrapolated net profit) wherever share count is available and a
   // prior complete year exists to learn seasonality from; falls back to the
   // caller-supplied currentEps or the latest annual EPS otherwise, exactly
-  // as before.
-  let trailingEps = currentEps ?? latestEps(incomeHistory, basis)
+  // as before. Book value doesn't have an equivalent "extrapolate from
+  // partial quarters" concept the same way earnings do (it compounds via
+  // retained earnings across a full year, not a run-rate) — for metric:'pb'
+  // this just uses opts.currentEps (the current book value per share) as
+  // given, no quarterly refinement.
+  let trailingEps = currentEps
   let trailingEpsSource = currentEps != null ? 'current' : 'latest annual'
-  if (shares > 0) {
-    const extrap = extrapolatedCurrentYearNetProfit({ quarterlyHistory, basis })
-    if (extrap) { trailingEps = extrap.netProfit / shares; trailingEpsSource = extrap.source }
+  if (metric === 'pe') {
+    trailingEps = currentEps ?? latestEps(incomeHistory, basis)
+    if (shares > 0) {
+      const extrap = extrapolatedCurrentYearNetProfit({ quarterlyHistory, basis })
+      if (extrap) { trailingEps = extrap.netProfit / shares; trailingEpsSource = extrap.source }
+    }
   }
-  if (!(trailingEps > 0)) return { detected: false, reason: 'No EPS to measure the current multiple' }
+  if (!(trailingEps > 0)) return { detected: false, reason: `No ${metric === 'pb' ? 'book value' : 'EPS'} to measure the current multiple` }
   const g = opts.growth
   if (g == null || !isFinite(g)) {
     // Without a growth rate the two aren't comparable at all; saying so beats
@@ -94,7 +119,7 @@ export function detectRerating(priceHistory = [], incomeHistory = [], band = nul
   // below, not hidden — a measured number beats a guess about whether it's
   // trustworthy.
   if (!(g > -1)) {
-    return { detected: false, reason: `Growth rate (${round(g * 100, 0)}%) makes forward EPS non-positive — can't compute a multiple from it` }
+    return { detected: false, reason: `Growth rate (${round(g * 100, 0)}%) makes forward ${metric === 'pb' ? 'book value' : 'EPS'} non-positive — can't compute a multiple from it` }
   }
   // Flagged, not gated: this is real, measured data even when it sits well
   // outside a typical range — the caller decides whether to trust it, the

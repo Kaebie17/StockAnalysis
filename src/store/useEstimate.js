@@ -10,7 +10,7 @@ import { getRiskFreeRate, refreshRiskFreeRate } from '../api/riskFreeClient.js'
 import { getEquityRiskPremium } from '../api/erpClient.js'
 import { getAiKey } from '../utils/aiKey.js'
 import { peerBandFrom, detectRerating } from '../engine/rerating.js'
-import { forwardPeBand } from '../engine/estimate.js'
+import { forwardPeBand, pbBand } from '../engine/estimate.js'
 import { financialsFromRatioResult } from '../engine/peerCompatibility.js'
 
 // Strips rerating.js's own summary wrapper ("The market has repriced this
@@ -303,12 +303,38 @@ export function useEstimate(state, opts = {}) {
     peerWeight: state.data?.peerWeight ?? 0,
   }) : null
 
-  // Re-rating check runs against the same band the estimate uses, so a proposal
-  // and the number it would replace are always talking about the same thing.
-  const bandRaw = forwardPeBand(state?.data?.priceHistory || [], rawIncomeHistory, { normBasis: basis })
-  // forwardPeBand now returns a diagnostic object when it can't build a band;
-  // treating that as a band would compare a multiple against undefined edges.
-  const band = bandRaw?.insufficient ? null : bandRaw
+  // Re-rating check runs against the same band AND THE SAME METRIC the
+  // estimate itself uses — this comment always said so, but the code below
+  // it didn't actually do it: it built a P/E band unconditionally, even for
+  // a lender/insurer whose own estimate (buildLenderEstimate) is entirely
+  // P/B-based. That produced a re-rating flag answering a question about a
+  // ratio the ticker's own valuation doesn't use at all — a P/E "de-rating"
+  // shown directly beside a P/B-based target range, with nothing on screen
+  // explaining they're different numbers. estimate.model (set by each of
+  // estimate.js's sector-specific builders) is what actually determines the
+  // ratio here, not sectorType directly, since it reflects what the
+  // estimate ACTUALLY resolved to (a lender-sector ticker whose own
+  // buildLenderEstimate failed still falls through to the plain P/E chain).
+  const rrModel = estimate?.model
+  let band = null, reratingMetric = 'pe'
+  let reratingUnsupportedReason = null
+  if (rrModel === 'ev-ebitda' || rrModel === 'ev-sales') {
+    // Building a genuine historical EV/EBITDA or EV/Sales band needs a full
+    // enterprise-value time series (debt/cash history alongside price), not
+    // just price/EPS — a real, separate piece of work this doesn't attempt
+    // yet. Suppressed rather than silently shown on the wrong ratio, same
+    // reasoning as the lender fix below.
+    reratingUnsupportedReason = `This company's own target uses an ${rrModel === 'ev-ebitda' ? 'EV/EBITDA' : 'EV/Sales'} basis — re-rating detection doesn't yet support that, only P/E and P/B.`
+  } else if (rrModel === 'lender') {
+    reratingMetric = 'pb'
+    const pbRaw = pbBand(state?.data?.priceHistory || [], state?.data?.balanceHistory || [], rawIncomeHistory, {})
+    band = pbRaw || null
+  } else {
+    const bandRaw = forwardPeBand(state?.data?.priceHistory || [], rawIncomeHistory, { normBasis: basis })
+    // forwardPeBand now returns a diagnostic object when it can't build a band;
+    // treating that as a band would compare a multiple against undefined edges.
+    band = bandRaw?.insufficient ? null : bandRaw
+  }
   // Does anything explain the current deviation? A revision applied in the last
   // couple of months, or a quarterly verdict, is a cause — and a cause makes the
   // waiting period pointless, because it's the confirmation the wait was
@@ -350,7 +376,18 @@ export function useEstimate(state, opts = {}) {
   const rr = state?.ratioResult
   const shares = (rr?.netProfit > 0 && rr?.eps > 0) ? rr.netProfit / rr.eps : (rr?.shares || null)
 
-  const rerating = (!overrides.multiple && band)
+  // metric:'pb' overloads currentEps to mean "current book value per share"
+  // (see detectRerating's own doc comment) — read the same way
+  // buildLenderEstimate itself reads it, so the "current" reading and the
+  // estimate it's being compared against are never built from two
+  // different book-value figures.
+  const reratingCurrentValue = reratingMetric === 'pb'
+    ? (rr?.ratios?.bookPerShare?.value ?? rr?.bookPerShare ?? null)
+    : rr?.eps
+
+  const rerating = reratingUnsupportedReason
+    ? { detected: false, reason: reratingUnsupportedReason }
+    : (!overrides.multiple && band)
     ? detectRerating(state?.data?.priceHistory || [], rawIncomeHistory, band,
         // growth passed so the current reading is put on the same FORWARD basis
         // as the band; without it the comparison is trailing-vs-forward.
@@ -360,10 +397,11 @@ export function useEstimate(state, opts = {}) {
         // quarterlyHistory/shares let detectRerating prefer a mid-year
         // quarterly run-rate over that same stale-annual currentEps/latestEps
         // fallback chain, same reasoning as justifiedMultiple.js's
-        // determineROEStart for ROE.
-        { peerBand, currentEps: rr?.eps, growth: estimate?.growth ?? null,
+        // determineROEStart for ROE — 'pe' only; a book-value equivalent
+        // doesn't apply the same way (see detectRerating's own comment).
+        { peerBand, currentEps: reratingCurrentValue, growth: estimate?.growth ?? null,
           quarterlyHistory: state?.data?.quarterlyHistory || [], shares,
-          relative, cause, basis })
+          relative, cause, basis, metric: reratingMetric })
     : { detected: false, reason: overrides.multiple ? 'You have already set a multiple' : 'No band yet' }
 
   // How the last frozen estimate has fared. 'in-range' / 'above' / 'below',
