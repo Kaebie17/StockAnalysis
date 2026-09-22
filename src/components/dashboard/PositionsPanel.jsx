@@ -326,6 +326,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
   const m = holdingMath(agg, price)
   const [refreshing, setRefreshing] = useState(false)
   const [intent, setIntent] = useState('')
+  const [detailOpen, setDetailOpen] = useState(false)
   const handleManualRefresh = async (e) => {
     e.stopPropagation()
     if (refreshing) return
@@ -504,6 +505,13 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
                 <div className="space-y-1.5">
                   <AdviceHorizon label="Short term (technical)" result={advice.shortTerm} />
                   <AdviceHorizon label="Long term (fundamental)" result={advice.longTerm} />
+                  <button onClick={e => { e.stopPropagation(); setDetailOpen(true) }}
+                    className="text-[10px] text-accent hover:text-accent-light">
+                    Full detail ↗
+                  </button>
+                  <AdviceDetailModal open={detailOpen} onClose={() => setDetailOpen(false)}
+                    ticker={agg.ticker} intentLabel={INTENTS.find(i => i.id === intent)?.label}
+                    advice={advice} />
                 </div>
               )}
             </div>
@@ -598,6 +606,54 @@ function AdviceHorizon({ label, result }) {
           ))}
         </ul>
       )}
+    </div>
+  )
+}
+
+/**
+ * The full working behind an AdviceHorizon reading — every point's fuller
+ * `detail` text (the same explanation the underlying trigger/bar itself
+ * carries), not just the compact label shown inline. Same relationship the
+ * rest of the app already has between a compact line and its own
+ * "Valuation Detail"/"why" expansion — the inline view stays a glance, the
+ * reasoning behind it is one tap away rather than crammed into the same
+ * space or left invisible.
+ */
+function AdviceDetailModal({ open, onClose, ticker, intentLabel, advice }) {
+  if (!advice) return null
+  return (
+    <Modal open={open} onClose={onClose}
+      title={`${ticker.replace(/\.(NS|BO)$/, '')} — ${intentLabel || ''}`}
+      subtitle="Full reasoning behind the leaning shown, both horizons">
+      <DetailHorizon label="Short term (technical)" result={advice.shortTerm} />
+      <DetailHorizon label="Long term (fundamental)" result={advice.longTerm} />
+      <p className="text-[11px] text-slate-600 pt-2 border-t border-navy-800">
+        This is a synthesis of the same signals shown elsewhere on this holding — it doesn't decide
+        anything, save anything, or act on anything by itself.
+      </p>
+    </Modal>
+  )
+}
+
+function DetailHorizon({ label, result }) {
+  const style = LEAN_STYLE[result.lean] || LEAN_STYLE.unavailable
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 text-sm">
+        <span className="text-slate-300 font-medium">{label}</span>
+        <span className={style.text}>{style.label}</span>
+      </div>
+      {result.points.length === 0 && (
+        <p className="text-xs text-slate-600">Nothing on this side fired, watched, or read either way.</p>
+      )}
+      <ul className="space-y-1.5">
+        {result.points.map((p, i) => (
+          <li key={i} className="text-xs">
+            <span className={p.for ? 'text-bull' : 'text-bear'}>{p.for ? '+' : '−'} {p.text}</span>
+            {p.detail && <p className="text-slate-500 mt-0.5">{p.detail}</p>}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
