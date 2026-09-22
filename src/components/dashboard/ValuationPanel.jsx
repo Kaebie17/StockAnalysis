@@ -798,7 +798,14 @@ function EstimateRevisions({ state }) {
               {rerating.sectorContext && (
                 <div className="text-slate-400 mt-0.5">{rerating.sectorContext.label}</div>
               )}
-              <button onClick={() => setFactOpen(true)}
+              {/* rerating.cause.sourceItem (useEstimate.js) is the same
+                  {title,url,date} shape a news item's own seedItem carries —
+                  without setting it here, this button opened the modal with
+                  seedItem left at whatever it last was (often null), so the
+                  actual article behind "following <headline>" was never
+                  shown, even though its URL was sitting right there on the
+                  applied revision that caused this flag in the first place. */}
+              <button onClick={() => { setSeedItem(rerating.cause?.sourceItem || null); setFactOpen(true) }}
                 className="text-accent hover:text-accent-light ml-1">review</button>
             </div>
           )}

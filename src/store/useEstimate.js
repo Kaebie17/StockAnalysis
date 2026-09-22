@@ -299,7 +299,15 @@ export function useEstimate(state, opts = {}) {
   const cause = recentRevision
     ? { type: recentRevision.trigger || 'revision',
         label: recentRevision.reason || 'a revision you applied',
-        at: recentRevision.createdAt }
+        at: recentRevision.createdAt,
+        // The revision's own sourceItem (title/url/date) is captured and
+        // saved when a news fact is applied (ValuationPanel.jsx's
+        // applyItem/FactInputModal) — carried through here so a re-rating
+        // explained by that revision can actually be verified, not just
+        // asserted. Previously dropped at exactly this step: the headline
+        // text made it into the flag, the URL that would let a user check
+        // it did not.
+        sourceItem: recentRevision.sourceItem || null }
     : (guidanceAssessment?.verdict === 'miss' || guidanceAssessment?.verdict === 'beat')
     ? { type: 'results',
         label: `results that ${guidanceAssessment.verdict === 'beat' ? 'beat' : 'missed'} the plan`,

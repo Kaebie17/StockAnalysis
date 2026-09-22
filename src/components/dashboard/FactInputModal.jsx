@@ -117,9 +117,21 @@ export default function FactInputModal({ open, onClose, ctx, rerating, onCommit,
       )}
     >
           {sourceItem && (
-            <p className="text-xs text-slate-400 bg-navy-800/50 rounded-lg px-3 py-2">
-              {sourceItem.title}
-            </p>
+            <div className="text-xs text-slate-400 bg-navy-800/50 rounded-lg px-3 py-2">
+              {/* The headline alone asserts a claim with no way to check it —
+                  sourceItem.url is fetched and saved (newsClient.js) right
+                  alongside the title, but this used to show only the plain
+                  text, same as a re-rating's applied-revision "review" link
+                  led back to a summary that repeated the headline with no
+                  way to verify it either. */}
+              {sourceItem.url
+                ? <a href={sourceItem.url} target="_blank" rel="noopener noreferrer" className="text-accent hover:text-accent-light">
+                    {sourceItem.title} ↗
+                  </a>
+                : sourceItem.title}
+              {sourceItem.source && <span className="text-slate-600"> · {sourceItem.source}</span>}
+              {sourceItem.date && <span className="text-slate-600"> · {new Date(sourceItem.date).toLocaleDateString('en-IN')}</span>}
+            </div>
           )}
 
           {/* Re-rating proposal sits above the fact list because it's the one
