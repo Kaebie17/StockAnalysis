@@ -11,6 +11,7 @@ import { getCached, getCachedAge, FINANCIALS_TTL, loadExitPlanForTicker } from '
 import { fetchQuotes } from '../../api/quotesClient.js'
 import { analyzeMany } from '../../store/analyzeTicker.js'
 import { evaluateTriggers, suggestLevels } from '../../engine/exitTriggers.js'
+import { adviseOnIntent, INTENTS } from '../../engine/positionAdvice.js'
 import { detectSetups } from '../../engine/setups.js'
 import { forwardPeBand } from '../../engine/estimate.js'
 import { yearlyObservations } from '../../engine/targetMultiple.js'
@@ -324,6 +325,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
   const c = agg.lots[0]?.snapshot?.currency
   const m = holdingMath(agg, price)
   const [refreshing, setRefreshing] = useState(false)
+  const [intent, setIntent] = useState('')
   const handleManualRefresh = async (e) => {
     e.stopPropagation()
     if (refreshing) return
@@ -404,6 +406,9 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
 
   const level = summaryLevel(health)
   const firedCount = triggers?.fired?.length || 0
+  // Reuses triggers/health computed just above — no separate data pass, only
+  // interpretation, and cheap enough to not need its own useMemo.
+  const advice = intent ? adviseOnIntent(intent, { triggers, health, technicals: analysis?.technicals }) : null
 
   return (
     <div className="bg-navy-800/40 rounded-lg overflow-hidden">
@@ -480,6 +485,29 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
           {health?.stale && (
             <p className="text-[10px] text-slate-600">from the last saved analysis</p>
           )}
+
+          {/* Answers a specific question you're asking, reusing exactly the
+              triggers/health already computed above — it doesn't decide
+              anything or get saved anywhere, and every point behind the
+              lean is shown, same disclosure standard as the bars above.
+              See positionAdvice.js's own doc comment for why this is framed
+              as a leaning rather than a bare directive. */}
+          {health && (
+            <div className="pt-1 border-t border-navy-800 space-y-1.5">
+              <select value={intent} onChange={e => setIntent(e.target.value)}
+                onClick={e => e.stopPropagation()}
+                className="w-full bg-navy-900 border border-navy-700 rounded px-2 py-1 text-[11px] text-slate-300">
+                <option value="">Ask: should I average up, average down, or exit?</option>
+                {INTENTS.map(i => <option key={i.id} value={i.id}>{i.label}</option>)}
+              </select>
+              {advice && (
+                <div className="space-y-1.5">
+                  <AdviceHorizon label="Short term (technical)" result={advice.shortTerm} />
+                  <AdviceHorizon label="Long term (fundamental)" result={advice.longTerm} />
+                </div>
+              )}
+            </div>
+          )}
           {/* evaluateTriggers() computes this but nothing read it, so a holding
               with no analysis available looked identical to one that was
               checked and came back clean. */}
@@ -535,6 +563,40 @@ function BarRow({ label, bar, mode = 'level' }) {
           confidence as a genuine purchase-day reading. */}
       {bar?.available && bar?.lateSnapshot && (
         <span className="text-neutral shrink-0" title="Baseline wasn't captured at purchase — this drift reading starts from a later date">⚠</span>
+      )}
+    </div>
+  )
+}
+
+const LEAN_STYLE = {
+  for:         { text: 'text-bull',   label: 'Leans for' },
+  against:     { text: 'text-bear',   label: 'Leans against' },
+  mixed:       { text: 'text-neutral', label: 'Mixed signals' },
+  unavailable: { text: 'text-slate-600', label: 'Not enough signal' },
+}
+
+/**
+ * One horizon's worth of positionAdvice.js output — the lean plus every
+ * point that fed it. Points are shown regardless of which way they point,
+ * same reasoning as exitTriggers.js's fired/watching split: a lean without
+ * its dissenting evidence visible would read as more certain than it is.
+ */
+function AdviceHorizon({ label, result }) {
+  const style = LEAN_STYLE[result.lean] || LEAN_STYLE.unavailable
+  return (
+    <div className="text-[11px]">
+      <div className="flex items-center gap-2">
+        <span className="text-slate-500 w-32 shrink-0">{label}</span>
+        <span className={style.text}>{style.label}</span>
+      </div>
+      {result.points.length > 0 && (
+        <ul className="pl-[8.5rem] -mt-0.5 space-y-0.5">
+          {result.points.map((p, i) => (
+            <li key={i} className={p.for ? 'text-bull/80' : 'text-bear/80'}>
+              {p.for ? '+' : '−'} {p.text}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )
