@@ -491,29 +491,22 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
               triggers/health already computed above — it doesn't decide
               anything or get saved anywhere, and every point behind the
               lean is shown, same disclosure standard as the bars above.
-              See positionAdvice.js's own doc comment for why this is framed
-              as a leaning rather than a bare directive. */}
+              Opens straight into the full-detail popup — picking a question
+              IS the action, nothing to click through first. Resetting intent
+              on close (rather than leaving it selected) means choosing the
+              same option again still fires onChange next time. */}
           {health && (
-            <div className="pt-1 border-t border-navy-800 space-y-1.5">
-              <select value={intent} onChange={e => setIntent(e.target.value)}
+            <div className="pt-1 border-t border-navy-800">
+              <select value={intent}
+                onChange={e => { setIntent(e.target.value); if (e.target.value) setDetailOpen(true) }}
                 onClick={e => e.stopPropagation()}
                 className="w-full bg-navy-900 border border-navy-700 rounded px-2 py-1 text-[11px] text-slate-300">
                 <option value="">Ask: should I average up, average down, or exit?</option>
                 {INTENTS.map(i => <option key={i.id} value={i.id}>{i.label}</option>)}
               </select>
-              {advice && (
-                <div className="space-y-1.5">
-                  <AdviceHorizon label="Short term (technical)" result={advice.shortTerm} />
-                  <AdviceHorizon label="Long term (fundamental)" result={advice.longTerm} />
-                  <button onClick={e => { e.stopPropagation(); setDetailOpen(true) }}
-                    className="text-[10px] text-accent hover:text-accent-light">
-                    Full detail ↗
-                  </button>
-                  <AdviceDetailModal open={detailOpen} onClose={() => setDetailOpen(false)}
-                    ticker={agg.ticker} intentLabel={INTENTS.find(i => i.id === intent)?.label}
-                    advice={advice} />
-                </div>
-              )}
+              <AdviceDetailModal open={detailOpen} onClose={() => { setDetailOpen(false); setIntent('') }}
+                ticker={agg.ticker} intentLabel={INTENTS.find(i => i.id === intent)?.label}
+                advice={advice} />
             </div>
           )}
           {/* evaluateTriggers() computes this but nothing read it, so a holding
@@ -584,34 +577,7 @@ const LEAN_STYLE = {
 }
 
 /**
- * One horizon's worth of positionAdvice.js output — the lean plus every
- * point that fed it. Points are shown regardless of which way they point,
- * same reasoning as exitTriggers.js's fired/watching split: a lean without
- * its dissenting evidence visible would read as more certain than it is.
- */
-function AdviceHorizon({ label, result }) {
-  const style = LEAN_STYLE[result.lean] || LEAN_STYLE.unavailable
-  return (
-    <div className="text-[11px]">
-      <div className="flex items-center gap-2">
-        <span className="text-slate-500 w-32 shrink-0">{label}</span>
-        <span className={style.text}>{style.label}</span>
-      </div>
-      {result.points.length > 0 && (
-        <ul className="pl-[8.5rem] -mt-0.5 space-y-0.5">
-          {result.points.map((p, i) => (
-            <li key={i} className={p.for ? 'text-bull/80' : 'text-bear/80'}>
-              {p.for ? '+' : '−'} {p.text}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )
-}
-
-/**
- * The full working behind an AdviceHorizon reading — every point's fuller
+ * The full working behind a positionAdvice.js reading — every point's fuller
  * `detail` text (the same explanation the underlying trigger/bar itself
  * carries), not just the compact label shown inline. Same relationship the
  * rest of the app already has between a compact line and its own
