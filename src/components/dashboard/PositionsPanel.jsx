@@ -339,8 +339,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
   const c = agg.lots[0]?.snapshot?.currency
   const m = holdingMath(agg, price)
   const [refreshing, setRefreshing] = useState(false)
-  const [intent, setIntent] = useState('')
-  const [detailOpen, setDetailOpen] = useState(false)
+  const [verdictOpen, setVerdictOpen] = useState(false)
   const [peerInfo, setPeerInfo] = useState(null)
   const [peerLoading, setPeerLoading] = useState(false)
   const handleManualRefresh = async (e) => {
@@ -432,25 +431,26 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
 
   const level = summaryLevel(health)
   const firedCount = triggers?.fired?.length || 0
-  // Reuses triggers/health/quality/moatQuality/marketExpectation computed
-  // just above — no separate data pass for those, only interpretation.
-  // peers is the one genuinely async piece (fetchPeerCandidates below,
-  // triggered on demand when a question is asked) — null until it resolves,
-  // which positionAdvice.js treats as "not available yet," not "no peers."
-  const advice = intent ? adviseOnIntent(intent, {
-    estimate, price, triggers, technicals: analysis?.technicals, quality, moatQuality, marketExpectation,
-    peers: peerInfo,
-  }) : null
+  // All three at once, not one at a time behind three separate buttons —
+  // Valuation and Quality don't even depend on intent (buildValuation/
+  // buildQuality never take it), so computing them three times and showing
+  // them three times was pure repetition; only Technical/Decision/Conflict
+  // actually differ per intent. Cheap enough to always compute all three
+  // (no separate data pass beyond what's already above); peers is the one
+  // genuinely async piece (fetchPeerCandidates below, shared across all
+  // three) — null until it resolves, which positionAdvice.js treats as
+  // "not available yet," not "no peers."
+  const adviceCtx = { estimate, price, triggers, technicals: analysis?.technicals, quality, moatQuality, marketExpectation, peers: peerInfo }
+  const adviceByIntent = verdictOpen
+    ? Object.fromEntries(INTENTS.map(i => [i.id, adviseOnIntent(i.id, adviceCtx)]))
+    : null
 
-  // Fetched fresh per question, not pre-loaded for every holding on render —
-  // this is exactly the kind of on-demand cost a user-triggered feature is
+  // Fetched once per open, not pre-loaded for every holding on render — this
+  // is exactly the kind of on-demand cost a user-triggered feature is
   // supposed to absorb instead of paying for every holding whether or not
-  // anyone ever asks. The dropdown disables for the duration so a second
-  // question can't race the first one's fetch.
-  const askAdvice = async (nextIntent) => {
-    setIntent(nextIntent)
-    if (!nextIntent) return
-    setDetailOpen(true)
+  // anyone ever opens it.
+  const openVerdict = async () => {
+    setVerdictOpen(true)
     setPeerInfo(null)
     setPeerLoading(true)
     try {
@@ -543,33 +543,27 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
             <p className="text-[10px] text-slate-600">from the last saved analysis</p>
           )}
 
-          {/* positionAdvice.js produces a Buy/Hold/Sell/Wait decision, not
-              an answer to a casually-phrased question — labeled as a
-              Verdict rather than "Ask a question" for that reason, and
-              triggered directly by a button per intent instead of a
-              dropdown, since picking one IS the action (no separate
-              "submit" step either way). Reuses exactly the triggers/health/
+          {/* positionAdvice.js produces a Buy/Hold/Sell/Wait decision for
+              all three intents (average up/down, exit) at once — Valuation
+              and Quality don't even depend on intent, so one button opening
+              one popup with all three outcomes is both simpler and less
+              repetitive than three separate buttons each reopening the
+              same shared analysis. Reuses exactly the triggers/health/
               quality/moat/market-expectation already computed above plus a
-              fresh, on-demand peer fetch — it doesn't decide anything or
-              get saved anywhere, and every point behind the lean is shown,
-              same disclosure standard as the bars above. Buttons disable
-              while the peer fetch for the current pick is still in flight,
-              so a second pick can't race the first one's async work — each
-              gets its own complete run. */}
+              fresh, on-demand peer fetch shared across all three — it
+              doesn't decide anything or get saved anywhere, and every point
+              behind each lean is shown, same disclosure standard as the
+              bars above. */}
           {health && (
-            <div className="pt-1 border-t border-navy-800 flex items-center gap-1.5">
-              <span className="text-[11px] text-slate-500 shrink-0">Verdict:</span>
-              {INTENTS.map(i => (
-                <button key={i.id} disabled={peerLoading}
-                  onClick={e => { e.stopPropagation(); askAdvice(i.id) }}
-                  className="text-[11px] px-2 py-1 rounded border border-navy-700 bg-navy-900 text-slate-300
-                             hover:border-accent hover:text-accent disabled:opacity-50">
-                  {peerLoading && intent === i.id ? '…' : i.shortLabel}
-                </button>
-              ))}
-              <AdviceDetailModal open={detailOpen} onClose={() => { setDetailOpen(false); setIntent(''); setPeerInfo(null) }}
-                ticker={agg.ticker} intentLabel={INTENTS.find(i => i.id === intent)?.shortLabel}
-                advice={advice} peerLoading={peerLoading} />
+            <div className="pt-1 border-t border-navy-800">
+              <button disabled={peerLoading}
+                onClick={e => { e.stopPropagation(); openVerdict() }}
+                className="text-[11px] px-2 py-1 rounded border border-navy-700 bg-navy-900 text-slate-300
+                           hover:border-accent hover:text-accent disabled:opacity-50">
+                {peerLoading ? 'Gathering verdict…' : 'Verdict'}
+              </button>
+              <AdviceDetailModal open={verdictOpen} onClose={() => { setVerdictOpen(false); setPeerInfo(null) }}
+                ticker={agg.ticker} adviceByIntent={adviceByIntent} peerLoading={peerLoading} />
             </div>
           )}
           {/* evaluateTriggers() computes this but nothing read it, so a holding
@@ -647,65 +641,31 @@ const DECISION_STYLE = {
  * uptrend and a weak business at a cheap price with unconfirmed technicals
  * are different situations a single collapsed score can't tell apart.
  */
-function AdviceDetailModal({ open, onClose, ticker, intentLabel, advice, peerLoading }) {
-  if (!advice) return null
-  const { valuation, quality, technical, conflict, decision } = advice
-  const style = DECISION_STYLE[decision.action] || DECISION_STYLE.Hold
+function AdviceDetailModal({ open, onClose, ticker, adviceByIntent, peerLoading }) {
+  if (!adviceByIntent) return null
+  // Valuation and Quality never depend on intent (buildValuation/
+  // buildQuality in positionAdvice.js don't take one) — reading either off
+  // any of the three is the same data, so they're shown once instead of
+  // three times. Only Technical/Conflict/Decision actually differ per
+  // intent (see positionAdvice.js's average-down-specific technical check).
+  const any = adviceByIntent['average-up']
   return (
     <Modal open={open} onClose={onClose}
-      title={`${ticker.replace(/\.(NS|BO)$/, '')} — Verdict: ${intentLabel || ''}`}
-      subtitle="Valuation, business quality, and price action, kept separate — the decision is synthesized from all three, last">
+      title={`${ticker.replace(/\.(NS|BO)$/, '')} — Verdict`}
+      subtitle="Valuation and business quality (shared) plus a separate technical read and decision for each action">
       {peerLoading && (
         <p className="text-[11px] text-accent">Gathering peer comparison — the rest of this is ready now.</p>
       )}
 
-      <AdviceSection title="Valuation — what price is the market assuming?" verdict={valuation.verdict}
-        facts={valuation.facts} available={valuation.available} />
+      <AdviceSection title="Valuation — what price is the market assuming?" verdict={any.valuation.verdict}
+        facts={any.valuation.facts} available={any.valuation.available} />
       <AdviceSection title="Business quality — is the underlying business supporting that price?"
-        verdict={quality.verdict} facts={quality.facts} narrative={quality.narrative} available={quality.available} />
-      <AdviceSection title="Technical — is the market confirming this now?" verdict={technical.verdict}
-        facts={technical.facts} narrative={technical.narrative ? [technical.narrative] : []} available={technical.available} />
+        verdict={any.quality.verdict} facts={any.quality.facts} narrative={any.quality.narrative} available={any.quality.available} />
 
-      <div className="space-y-2 pt-2 border-t border-navy-800">
-        <p className="text-slate-300 font-medium text-sm">Why the signals disagree</p>
-        {conflict.supporting.length > 0 && (
-          <div>
-            <p className="text-xs text-bull mb-0.5">Supporting the position</p>
-            <ul className="text-xs text-slate-400 space-y-0.5">
-              {conflict.supporting.map((s, i) => <li key={i}>+ {s}</li>)}
-            </ul>
-          </div>
-        )}
-        {conflict.against.length > 0 && (
-          <div>
-            <p className="text-xs text-bear mb-0.5">Against the position</p>
-            <ul className="text-xs text-slate-400 space-y-0.5">
-              {conflict.against.map((s, i) => <li key={i}>− {s}</li>)}
-            </ul>
-          </div>
-        )}
-        <p className="text-xs text-slate-300 pt-1"><span className="text-slate-500">Central issue — </span>{conflict.centralIssue}</p>
-      </div>
-
-      <div className={`rounded-lg p-3 space-y-1.5 ${style.bg}`}>
-        <p className={`font-semibold ${style.text}`}>Decision: {decision.action}</p>
-        <p className="text-xs text-slate-400">{decision.reason}</p>
-        {decision.strengthen?.length > 0 && (
-          <div className="pt-1">
-            <p className="text-[11px] text-slate-500">What would strengthen the case</p>
-            <ul className="text-[11px] text-slate-500 space-y-0.5">
-              {decision.strengthen.map((s, i) => <li key={i}>· {s}</li>)}
-            </ul>
-          </div>
-        )}
-        {decision.weaken?.length > 0 && (
-          <div className="pt-1">
-            <p className="text-[11px] text-slate-500">What would weaken the case</p>
-            <ul className="text-[11px] text-slate-500 space-y-0.5">
-              {decision.weaken.map((s, i) => <li key={i}>· {s}</li>)}
-            </ul>
-          </div>
-        )}
+      <div className="space-y-3 pt-2 border-t border-navy-800">
+        {INTENTS.map(i => (
+          <IntentVerdict key={i.id} label={i.shortLabel} advice={adviceByIntent[i.id]} />
+        ))}
       </div>
 
       <p className="text-[11px] text-slate-600 pt-2 border-t border-navy-800">
@@ -713,6 +673,60 @@ function AdviceDetailModal({ open, onClose, ticker, intentLabel, advice, peerLoa
         anything, save anything, or act on anything by itself.
       </p>
     </Modal>
+  )
+}
+
+function IntentVerdict({ label, advice }) {
+  const { technical, conflict, decision } = advice
+  const style = DECISION_STYLE[decision.action] || DECISION_STYLE.Hold
+  return (
+    <div className={`rounded-lg p-3 space-y-2 ${style.bg}`}>
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-slate-300 font-medium text-sm">{label}</p>
+        <p className={`font-semibold text-sm ${style.text}`}>{decision.action}</p>
+      </div>
+      <p className="text-xs text-slate-400">{decision.reason}</p>
+
+      <AdviceSection title="Technical — is the market confirming this now?" verdict={technical.verdict}
+        facts={technical.facts} narrative={technical.narrative ? [technical.narrative] : []} available={technical.available} />
+
+      {(conflict.supporting.length > 0 || conflict.against.length > 0) && (
+        <div className="space-y-1">
+          {conflict.supporting.length > 0 && (
+            <ul className="text-xs text-slate-400 space-y-0.5">
+              {conflict.supporting.map((s, i) => <li key={`s${i}`} className="text-bull">+ {s}</li>)}
+            </ul>
+          )}
+          {conflict.against.length > 0 && (
+            <ul className="text-xs text-slate-400 space-y-0.5">
+              {conflict.against.map((s, i) => <li key={`a${i}`} className="text-bear">− {s}</li>)}
+            </ul>
+          )}
+          <p className="text-xs text-slate-300 pt-0.5"><span className="text-slate-500">Central issue — </span>{conflict.centralIssue}</p>
+        </div>
+      )}
+
+      {(decision.strengthen?.length > 0 || decision.weaken?.length > 0) && (
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          {decision.strengthen?.length > 0 && (
+            <div>
+              <p className="text-[11px] text-slate-500">Would strengthen</p>
+              <ul className="text-[11px] text-slate-500 space-y-0.5">
+                {decision.strengthen.map((s, i) => <li key={i}>· {s}</li>)}
+              </ul>
+            </div>
+          )}
+          {decision.weaken?.length > 0 && (
+            <div>
+              <p className="text-[11px] text-slate-500">Would weaken</p>
+              <ul className="text-[11px] text-slate-500 space-y-0.5">
+                {decision.weaken.map((s, i) => <li key={i}>· {s}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
