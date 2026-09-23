@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useApp } from '../../store/AppContext.jsx'
 import PositionModal from './PositionModal.jsx'
 import Modal from '../Modal.jsx'
@@ -7,7 +7,8 @@ import { positionHealth } from '../../engine/positionHealth.js'
 import { buildEstimate } from '../../engine/estimate.js'
 import { assessFromQuarterly, quarterlyRowsFor } from '../../engine/quarterlyBridge.js'
 import { fetchMarketRegime } from '../../api/marketRegime.js'
-import { getCached, getCachedAge, FINANCIALS_TTL, loadExitPlanForTicker } from '../../utils/db.js'
+import { getCached, getCachedAge, FINANCIALS_TTL, loadExitPlanForTicker, listRevisions } from '../../utils/db.js'
+import { activeOverrides } from '../../store/useEstimate.js'
 import { fetchQuotes } from '../../api/quotesClient.js'
 import { analyzeMany } from '../../store/analyzeTicker.js'
 import { evaluateTriggers, suggestLevels } from '../../engine/exitTriggers.js'
@@ -15,6 +16,8 @@ import { adviseOnPosition } from '../../engine/positionAdvice.js'
 import { assessMoatQuality } from '../../engine/moatQuality.js'
 import { fetchPeerCandidates } from '../../api/peersClient.js'
 import { peerBand } from '../../engine/peerBands.js'
+import { peerBandFrom } from '../../engine/rerating.js'
+import { financialsFromRatioResult } from '../../engine/peerCompatibility.js'
 import { detectSetups } from '../../engine/setups.js'
 import { forwardPeBand } from '../../engine/estimate.js'
 import { yearlyObservations } from '../../engine/targetMultiple.js'
@@ -342,6 +345,20 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
   const [verdictOpen, setVerdictOpen] = useState(false)
   const [peerInfo, setPeerInfo] = useState(null)
   const [peerLoading, setPeerLoading] = useState(false)
+  // Growth/margin/multiple corrections the user has actually accepted for
+  // THIS ticker (a news item applied, a quarterly-driven revision, a
+  // re-rating accepted) — buildEstimate's target range moves on these the
+  // same way the live Valuation dashboard's App Target does. Without this,
+  // a held position whose ticker has an accepted re-rating (exactly the
+  // case that dragged App Target down elsewhere this session) silently
+  // recomputed the OLD, unrevised range here instead, next to a Verdict
+  // that's supposed to be reading the same number.
+  const [revisions, setRevisions] = useState([])
+  useEffect(() => {
+    let dead = false
+    listRevisions({ ticker: agg.ticker }).then(r => { if (!dead) setRevisions(r) }).catch(() => {})
+    return () => { dead = true }
+  }, [agg.ticker])
   const handleManualRefresh = async (e) => {
     e.stopPropagation()
     if (refreshing) return
@@ -362,14 +379,31 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
     // not a copy this component pre-corrects itself.
     const rawIncomeHistory = analysis.data?.reportedIncomeHistory || []
     const rawBalanceHistory = analysis.data?.balanceHistory || []
+    // Growth/margin/multiple overrides from accepted revisions (news, a
+    // quarterly-driven correction, an accepted re-rating) — the exact same
+    // resolver useEstimate.js uses for the live Valuation dashboard's App
+    // Target. Without this, a ticker with a real accepted revision showed
+    // one target range here and a completely different one on its own
+    // Valuation page, both claiming to be "the" App Target for the same
+    // stock.
+    const overrides = activeOverrides(revisions)
     const est = buildEstimate(rr, {
       sectorType: analysis.sectorType,
       guidedGrowth: (isLive && state.assumptions?.nearTermGrowth != null
         && isFinite(state.assumptions.nearTermGrowth)) ? state.assumptions.nearTermGrowth : null,
+      growthOverride:   overrides.growth   ?? null,
+      marginOverride:   overrides.margin   ?? null,
+      multipleOverride: overrides.multiple ?? null,
       priceHistory:   analysis.data?.priceHistory   || [],
       incomeHistory:  rawIncomeHistory,
       balanceHistory: rawBalanceHistory,
+      quarterlyHistory: analysis.data?.quarterlyHistory || [],
       basis: analysis.data?.basis,
+      // Confirmed-peer cross-check, once the Verdict button has fetched it —
+      // null (no effect on the ladder) until then, same as it is on first
+      // paint of the live dashboard before ITS peer fetch resolves.
+      peerBand: peerInfo?.forEstimate ?? null,
+      peerWeight: analysis.data?.peerWeight ?? 0,
     })
     const ga = assessFromQuarterly(isLive ? quarterlyRowsFor(analysis.data, state.quarterlyData) : null, {
       guidance: isLive ? state.guidance : null,
@@ -427,7 +461,7 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
       quality: analysis.quality, moatQuality: mq, marketExpectation: analysis.marketExpectation,
       ownPe: rr.ratios?.pe?.value ?? null, ownRoe: rr.ratios?.roe?.value ?? null,
     }
-  }, [analysis, price, isLive, state, regime, agg, totalValue, totalCost, exitPlan])
+  }, [analysis, price, isLive, state, regime, agg, totalValue, totalCost, exitPlan, revisions, peerInfo])
 
   const level = summaryLevel(health)
   const firedCount = triggers?.fired?.length || 0
@@ -454,7 +488,19 @@ function Holding({ agg, price, analysis, isLive, state, regime, totalValue, tota
       })
       const peBand = peerBand(candidates, 'pe')
       const roeBand = peerBand(candidates, 'roe')
-      setPeerInfo({ peBand, roeBand, ownPe, ownRoe, count: peBand?.count ?? roeBand?.count ?? candidates.length })
+      // Same input App Target's own peer rung uses (estimate.js's peerBand
+      // option, via useEstimate.js's peerBandFrom) — CONFIRMED peers only,
+      // screened against this ticker's own financials, not the full
+      // candidate pool peBand/roeBand above read for the Verdict's own
+      // "trading at Nx vs peer median" fact. Without this, buildEstimate's
+      // target range here never reflected any peer cross-check at all, so
+      // it could disagree with the live Valuation dashboard's App Target
+      // for a ticker whose peer band pulls the fitted multiple meaningfully.
+      const confirmedSet = new Set(analysis?.data?.confirmedPeers || [])
+      const confirmedCandidates = candidates.filter(p => confirmedSet.has(p.symbol))
+      const forEstimate = analysis?.ratioResult
+        ? peerBandFrom(confirmedCandidates, financialsFromRatioResult(analysis.ratioResult)) : null
+      setPeerInfo({ peBand, roeBand, ownPe, ownRoe, count: peBand?.count ?? roeBand?.count ?? candidates.length, forEstimate })
     } catch {
       setPeerInfo({ error: true })
     } finally {
