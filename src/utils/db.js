@@ -203,36 +203,47 @@ export async function getCachedAge(ticker) {
   } catch { return null }
 }
 
-// opts.touch (default true): whether this read counts as a real visit for
-// listRecentTickers()'s "Try:" row. A genuine user lookup should bump it; a
-// peer's data pulled in to build another ticker's comparison shouldn't — the
-// user never searched for that peer, so it has no business showing up as a
-// suggested ticker on the landing page just because someone else's page
-// happened to reference it. peersClient.js passes touch:false for exactly
-// this reason.
+// lastAccessed vs visitedAt — two different questions that used to be one
+// field, which was the bug: lastAccessed feeds evictIfNeeded() ("is this
+// record still in use by ANYONE, for ANY reason" — a peer read counts,
+// since it's real, ongoing use of that data) while visitedAt feeds
+// listRecentTickers()'s "Try:" row ("did the USER actually look this ticker
+// up" — a peer pulled in to enrich another ticker's comparison doesn't
+// count, since the user never searched for it). Collapsing both into
+// lastAccessed and then skipping it entirely for peer reads (opts.touch)
+// fixed the "Try:" pollution but broke eviction: a confirmed peer (or any
+// ticker only ever reached as someone else's peer candidate) stopped
+// getting ANY freshness signal at all, so it silently became the oldest,
+// first-evicted record the moment the 40MB cache filled up — which then
+// un-cached that peer, dropped confirmed peer coverage below the
+// auto-open floor (App.jsx), and re-triggered "select peers" for a peer
+// the user had already confirmed. lastAccessed is bumped on every read
+// unconditionally; only visitedAt is gated on opts.touch.
 export async function getCached(ticker, opts = {}) {
   const { touch = true } = opts
   // IMPORTANT: return null ONLY when the record genuinely doesn't exist. A read
   // FAILURE must throw — otherwise the caller can't tell "no cache" from "read
   // broke" and would re-fetch + overwrite good (e.g. Screener-merged) data.
   //
-  // The get and the lastAccessed touch-write run in ONE readwrite transaction.
-  // Doing them as two separate transactions (get, then a later put) let a
-  // concurrent setCached() land in between: this function would re-save the
-  // record it read BEFORE that write, clobbering the fresh data with a stale
-  // copy stamped with a new lastAccessed. That surfaced as a manually-
-  // refreshed price reverting on reload whenever something else (e.g. the
-  // Positions panel) read the same ticker's cache while the price save was
-  // still in flight. touch:false skips the write entirely (a plain readonly
-  // get), so there's nothing for a concurrent setCached() to race against.
+  // The get and the touch-write run in ONE readwrite transaction. Doing them
+  // as two separate transactions (get, then a later put) let a concurrent
+  // setCached() land in between: this function would re-save the record it
+  // read BEFORE that write, clobbering the fresh data with a stale copy
+  // stamped with a new lastAccessed. That surfaced as a manually-refreshed
+  // price reverting on reload whenever something else (e.g. the Positions
+  // panel) read the same ticker's cache while the price save was still in
+  // flight. Always a readwrite transaction now (lastAccessed always needs
+  // writing), but still one single transaction for the same reason.
   const d = await openDB()
   return new Promise((resolve, reject) => {
-    const store = d.transaction('financials', touch ? 'readwrite' : 'readonly').objectStore('financials')
+    const store = d.transaction('financials', 'readwrite').objectStore('financials')
     const req = store.get(ticker.toUpperCase())
     req.onsuccess = () => {
       const rec = req.result
       if (!rec) { resolve(null); return }
-      if (touch) { try { store.put({ ...rec, lastAccessed: Date.now() }) } catch {} }
+      try {
+        store.put({ ...rec, lastAccessed: Date.now(), visitedAt: touch ? Date.now() : rec.visitedAt })
+      } catch {}
       resolve(rec.data)
     }
     req.onerror = () => reject(req.error)
@@ -249,6 +260,7 @@ export async function setCached(ticker, data) {
       data,
       timestamp:    Date.now(),
       lastAccessed: Date.now(),
+      visitedAt:    Date.now(),
       bytes
     })
 
@@ -295,15 +307,18 @@ export async function deleteCached(ticker) {
 
 // Most recently looked-up tickers, newest first — powers the "Try:" row on
 // the landing page (Header.jsx) with the user's own search history instead
-// of a fixed example list. Reuses the financials cache's lastAccessed
-// (bumped on every getCached() read, i.e. every real visit) rather than a
-// separate history store.
+// of a fixed example list. Uses visitedAt, not lastAccessed — the latter is
+// bumped by peer-enrichment reads too (see getCached above), which would put
+// someone else's peer back on this list just because their page happened to
+// reference it. `|| rec.lastAccessed` is a one-time fallback for a record
+// cached before visitedAt existed, so history doesn't go blank for anything
+// written before this field was added.
 export async function listRecentTickers(limit = 8) {
   try {
     const all = await txGetAll('financials')
     return all
-      .filter(rec => rec.lastAccessed)
-      .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))
+      .filter(rec => rec.visitedAt || rec.lastAccessed)
+      .sort((a, b) => (b.visitedAt || b.lastAccessed || 0) - (a.visitedAt || a.lastAccessed || 0))
       .slice(0, limit)
       .map(rec => rec.key)
   } catch { return [] }
