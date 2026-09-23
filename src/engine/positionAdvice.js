@@ -1,9 +1,6 @@
 /**
- * src/engine/positionAdvice.js — Buy/Hold/Sell/Wait for a specific question
- * (average up, average down, exit) about a held position.
- *
- * Three genuinely different questions, kept separate rather than collapsed
- * into one score:
+ * src/engine/positionAdvice.js — a single Buy/Hold/Sell/Wait verdict for a
+ * held position, synthesized from three genuinely different questions:
  *   VALUATION  — what price is the market assuming? (model estimate range,
  *                market-implied growth vs this company's own historical
  *                growth, peer multiple)
@@ -36,20 +33,15 @@
  * saved anywhere; it's answered fresh from the same live analysis blocks
  * the rest of the app already computes (quality.js, moatQuality.js,
  * marketExpectation.js, technicals.js, peersClient.js/peerBands.js) every
- * time a question is asked.
+ * time the verdict is asked for.
+ *
+ * This used to ask the same three questions once each for "average up",
+ * "average down", and "exit" — but those three verdicts almost always
+ * landed on the same action (the position doesn't know or care which
+ * question you're about to ask it), so the three-way split mostly
+ * reproduced the same Valuation/Quality facts three times over for no
+ * distinguishing information. One verdict, asked once.
  */
-
-// shortLabel is what's shown on the trigger buttons themselves and in the
-// verdict popup's own title — this produces a Buy/Hold/Sell/Wait decision,
-// not an answer to a casually-phrased question, so the UI names it as a
-// verdict rather than "asking" something. label is kept for anywhere a
-// fuller description still reads better (none currently, but cheap to keep
-// distinct from shortLabel rather than overload one string for both).
-export const INTENTS = [
-  { id: 'average-up',   label: 'Average up — buy more at a higher price', shortLabel: 'Average Up' },
-  { id: 'average-down', label: 'Average down — buy more at a lower price', shortLabel: 'Average Down' },
-  { id: 'exit',         label: 'Exit the position', shortLabel: 'Exit' },
-]
 
 const round1 = v => (v == null || !isFinite(v) ? null : Math.round(v * 10) / 10)
 const fmtPct = v => (v == null ? '—' : `${round1(v)}%`)
@@ -218,7 +210,7 @@ function buildQuality({ quality, moatQuality }) {
 // TECHNICAL — is the market currently confirming either case?
 // ─────────────────────────────────────────────────────────────────────────
 
-function buildTechnical(intent, { technicals, suggestions }) {
+function buildTechnical({ technicals, suggestions }) {
   const facts = []
   if (!technicals?.available) return { verdict: 'Unavailable', facts, available: false }
 
@@ -237,55 +229,21 @@ function buildTechnical(intent, { technicals, suggestions }) {
 
   const bullish = technicals.label === 'BULLISH'
   const bearish = technicals.label === 'BEARISH'
-  let verdict, narrative
+  const verdict = bullish ? 'Bullish' : bearish ? 'Bearish' : 'Neutral'
+  const narrative = bullish
+    ? `Price action currently agrees with the fundamental case — technicals are reading bullish (${technicals.label}, ${technicals.score}/10).`
+    : bearish
+    ? `Price action is currently running against the fundamental case — technicals are reading bearish (${technicals.label}, ${technicals.score}/10), a real, active disagreement rather than just an absence of confirmation.`
+    : `Price action isn't offering a clear read either way (${technicals.label}, ${technicals.score}/10) — this doesn't invalidate the fundamental case, it just means technical strength isn't currently available as additional confirmation.`
 
-  if (intent === 'average-down') {
-    // A genuinely different question from average-up's, not the same one
-    // asked twice: not "is this trending up" but "is NOW a defensible
-    // entry despite the trend." A support/oversold setup answers that even
-    // while the broader trend is still bearish — that's what a real dip
-    // worth buying looks like, as distinct from a stock that's simply weak.
-    // Previously this branch didn't exist at all: average-up and
-    // average-down ran the identical bullish-only check, so the two
-    // buttons could never produce a different verdict for the same stock.
-    const bounceSetup = rsiOversold || (support && !support.tooClose)
-    if (bounceSetup) {
-      verdict = 'Confirmed'
-      narrative = `A support/oversold setup makes the current price a defensible entry even though the broader trend (${technicals.label}, ${technicals.score}/10) hasn't turned — a different question from whether the stock is outright strong.`
-    } else if (bearish) {
-      verdict = 'Contradicting'
-      narrative = `Price action is actively working against this — bearish (${technicals.label}, ${technicals.score}/10) with no support/oversold setup to make the current price a defensible entry despite that.`
-    } else if (bullish) {
-      verdict = 'Confirmed'
-      narrative = `Price action is currently confirming this — technicals (${technicals.label}, ${technicals.score}/10) agree with the direction this question is asking about.`
-    } else {
-      verdict = 'Not confirmed'
-      narrative = `Neither a clear trend nor a support/oversold setup is present (${technicals.label}, ${technicals.score}/10) — nothing here argues for or against the current price as an entry point.`
-    }
-  } else {
-    // exit wants bearish price action to confirm it; average-up wants
-    // CONFIRMED, ongoing strength — a bounce setup isn't enough here, since
-    // averaging up is specifically a bet on strength continuing, not on a
-    // reversal from weakness the way a dip-buy is.
-    const wantsBullish = intent !== 'exit'
-    const confirming = wantsBullish ? bullish : bearish
-    const contradicting = wantsBullish ? bearish : bullish
-    verdict = confirming ? 'Confirmed' : contradicting ? 'Contradicting' : 'Not confirmed'
-    narrative = verdict === 'Confirmed'
-      ? `Price action is currently confirming this — technicals (${technicals.label}, ${technicals.score}/10) agree with the direction this question is asking about.`
-      : verdict === 'Contradicting'
-      ? `Price action is currently running the OPPOSITE way (${technicals.label}, ${technicals.score}/10) — a real, active disagreement with this question's direction, not just an absence of confirmation.`
-      : `The fundamental case is not currently being confirmed by price action (${technicals.label}, ${technicals.score}/10). This doesn't invalidate the fundamental thesis; it means the technical evidence does not currently support using technical strength as additional confirmation.`
-  }
-
-  return { verdict, facts, narrative, available: true, label: technicals.label, score: technicals.score }
+  return { verdict, facts, narrative, available: true, label: technicals.label, score: technicals.score, bullish, bearish }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
 // CONFLICT — why do the signals disagree?
 // ─────────────────────────────────────────────────────────────────────────
 
-function buildConflict(intent, valuation, quality, technical) {
+function buildConflict(valuation, quality, technical) {
   const supporting = [], against = []
 
   if (valuation.available) {
@@ -300,7 +258,6 @@ function buildConflict(intent, valuation, quality, technical) {
   }
 
   if (quality.available) {
-    const goodMetric = (label, m) => m?.pass && supporting.push(`${label} clears its own threshold.`)
     const badMetric = (label, m) => m && !m.pass && against.push(`${label} is weak.`)
     const revG = metricOf(quality, 'revenueGrowth'), roe = metricOf(quality, 'roe'), roce = metricOf(quality, 'roce'), opM = metricOf(quality, 'ebitdaMargin'), netM = metricOf(quality, 'netMargin')
     if (roe?.pass) supporting.push(`Reported ROE is high (${fmtPct(roe.value)}).`)
@@ -310,15 +267,15 @@ function buildConflict(intent, valuation, quality, technical) {
   }
 
   if (technical.available) {
-    if (technical.verdict === 'Confirmed') supporting.push('Technical trend is confirming this direction.')
-    else against.push(technical.verdict === 'Contradicting' ? 'Technical trend is actively running the other way.' : 'Technical trend isn\'t confirming.')
+    if (technical.bullish) supporting.push('Technical trend is confirming.')
+    else if (technical.bearish) against.push('Technical trend is running against the fundamental case.')
   }
 
   // A handful of named, common patterns get a tailored central-issue
   // sentence; anything else gets an honest generic one rather than a
   // fabricated-sounding specific claim the evidence doesn't actually support.
   let centralIssue
-  if (valuation.base === 'positive' && (quality.verdict.startsWith('Mixed') || quality.verdict === 'Weak operating quality') && technical.verdict !== 'Confirmed') {
+  if (valuation.base === 'positive' && (quality.verdict.startsWith('Mixed') || quality.verdict === 'Weak operating quality') && !technical.bullish) {
     centralIssue = 'The valuation says the market may be underestimating future value, while the quality and technical evidence do not yet provide strong confirmation that the underlying business is translating that into sustainable operating returns.'
   } else if (valuation.base === 'negative' && quality.verdict === 'Strong operating quality') {
     centralIssue = 'This looks like a genuinely good business trading at a price that already assumes it — the risk here is paying up for quality that\'s already in the number, not a deteriorating business.'
@@ -341,8 +298,8 @@ function buildWatchlist(valuation, quality, technical) {
   const roce = (quality.predictors || []).find(p => p.key === 'roce')
   const opMargin = (quality.predictors || []).find(p => p.key === 'ebitdaMargin')
 
-  if (technical.available && technical.verdict !== 'Confirmed') {
-    strengthen.push('Price reclaims the relevant moving averages, or the technical trend confirms.')
+  if (technical.available && !technical.bullish) {
+    strengthen.push('Price reclaims the relevant moving averages, or the technical trend turns bullish.')
   }
   if (technical.available) weaken.push('Technical deterioration continues.')
 
@@ -367,48 +324,38 @@ function buildWatchlist(valuation, quality, technical) {
 // DECISION — computed last, from the three verdicts plus their conflict
 // ─────────────────────────────────────────────────────────────────────────
 
-function buildDecision(intent, valuation, quality, technical, conflict) {
+function buildDecision(valuation, quality, technical) {
   const valGood = valuation.base === 'positive'
   const valBad = valuation.base === 'negative'
   const qualGood = quality.verdict === 'Strong operating quality' || quality.verdict === 'Reasonable operating quality'
   const qualBad = quality.verdict === 'Weak operating quality'
-  const techConfirms = technical.verdict === 'Confirmed'
-  const techFights = technical.verdict === 'Contradicting'
+  const techConfirms = technical.bullish
+  const techFights = technical.bearish
 
-  if (intent === 'exit') {
-    let action, reason
-    if (valBad && qualBad) { action = 'Sell'; reason = 'The valuation case has deteriorated and the underlying business isn\'t supporting it either — both the reason to own this and the price you\'d be holding it at have moved against you.' }
-    else if (valGood && qualGood && !techFights) { action = 'Hold'; reason = 'Neither the valuation nor the business case has broken — the evidence doesn\'t currently support giving this up.' }
-    else if (techFights && !valBad) { action = 'Wait'; reason = 'Price action is currently working against the position, but neither the valuation nor the business case has actually deteriorated — worth distinguishing a real thesis break from a temporary de-rating before acting.' }
-    else { action = 'Hold'; reason = 'The evidence is mixed rather than clearly broken — not the same as a confirmed reason to exit.' }
-    return { action, reason, ...buildWatchlist(valuation, quality, technical) }
-  }
-
-  // average-up / average-down: the question is whether to ADD, so the
-  // floor is higher than merely "not broken" — Buy needs actual, not just
-  // absent-of-bad, support.
   let action, reason
-  if (valGood && qualGood && techConfirms) {
+  if (valBad && qualBad) {
+    action = 'Sell'
+    reason = 'The valuation case has deteriorated and the underlying business isn\'t supporting it either — both the reason to own this and the price you\'d be holding it at have moved against you.'
+  } else if (valGood && qualGood && techConfirms) {
     action = 'Buy'
     reason = 'Valuation, business quality, and price action are all pointing the same way — as close to a clean case as this framework produces.'
   } else if (valGood && qualGood && !techFights) {
     action = 'Wait'
-    reason = 'The valuation case is positive and the business quality evidence supports it, but price action isn\'t yet confirming — worth watching for that confirmation rather than adding into an unconfirmed setup.'
+    reason = 'The valuation case is positive and the business quality evidence supports it, but price action isn\'t yet confirming — worth watching for that confirmation before adding.'
   } else if (valGood && !qualGood) {
     action = 'Hold'
-    reason = 'The valuation case is positive, but it is offset by weak or conflicted operating-quality evidence. The evidence doesn\'t currently establish a sufficiently strong case for adding at this price.'
+    reason = 'The valuation case is positive, but it is offset by weak or conflicted operating-quality evidence — not enough to add, not a reason to give up the position either.'
   } else if (valBad || qualBad) {
     action = 'Hold'
-    reason = `${valBad ? 'The price already appears to assume a favorable outcome' : 'The underlying business evidence is weak'} — this isn't a case for adding exposure right now.`
+    reason = `${valBad ? 'The price already appears to assume a favorable outcome' : 'The underlying business evidence is weak'}, but not both at once — not a confirmed reason to exit, and not a case for adding either.`
   } else {
     action = 'Hold'
-    reason = 'The evidence doesn\'t clear the bar for adding — the existing position\'s own thesis isn\'t necessarily wrong, there just isn\'t a strong enough case here to increase exposure.'
+    reason = 'The evidence is mixed rather than clearly pointing one way — the existing position\'s own thesis isn\'t necessarily wrong, there just isn\'t a strong enough case here to act on it either direction.'
   }
   return { action, reason, ...buildWatchlist(valuation, quality, technical) }
 }
 
 /**
- * @param intent one of INTENTS' ids
  * @param ctx.estimate          buildEstimate()'s return (App Target) — the
  *                              model range used for the valuation section
  * @param ctx.price             current price
@@ -425,11 +372,11 @@ function buildDecision(intent, valuation, quality, technical, conflict) {
  *                              only .suggestions is used here (support/
  *                              resistance levels for the technical section)
  */
-export function adviseOnIntent(intent, ctx = {}) {
+export function adviseOnPosition(ctx = {}) {
   const valuation = buildValuation(ctx)
   const quality = buildQuality(ctx)
-  const technical = buildTechnical(intent, { technicals: ctx.technicals, suggestions: ctx.triggers?.suggestions })
-  const conflict = buildConflict(intent, valuation, quality, technical)
-  const decision = buildDecision(intent, valuation, quality, technical, conflict)
-  return { intent, valuation, quality, technical, conflict, decision }
+  const technical = buildTechnical({ technicals: ctx.technicals, suggestions: ctx.triggers?.suggestions })
+  const conflict = buildConflict(valuation, quality, technical)
+  const decision = buildDecision(valuation, quality, technical)
+  return { valuation, quality, technical, conflict, decision }
 }
