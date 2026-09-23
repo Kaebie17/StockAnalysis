@@ -139,7 +139,16 @@ function metricOf(quality, key) {
 
 function buildQuality({ quality, moatQuality }) {
   const facts = []
-  const narrative = []
+  // conflictNotes: genuine internal tensions in the ratios themselves (used
+  // to decide the verdict below). contextNotes: real, useful, but NOT a
+  // conflict — the moat implication sentence, for instance, is a positive
+  // read as often as not, and used to contaminate `conflicted` simply by
+  // existing, which meant a HEALTHY, non-conflicted business with a Wide
+  // moat could get its own verdict knocked down to "Mixed" for no reason
+  // connected to any actual tension. Both are shown; only conflictNotes
+  // decides the verdict.
+  const conflictNotes = []
+  const contextNotes = []
   const revGrowth = metricOf(quality, 'revenueGrowth')
   const opMargin = metricOf(quality, 'ebitdaMargin')
   const netMargin = metricOf(quality, 'netMargin')
@@ -162,7 +171,7 @@ function buildQuality({ quality, moatQuality }) {
   // and a poor ROCE at the same time; when that happens, the ROE number on
   // its own is not evidence of superior capital-allocation economics.
   if (roe?.pass && roce && !roce.pass) {
-    narrative.push(
+    conflictNotes.push(
       `ROE is strong (${fmtPct(roe.value)}), but it is not accompanied by strong ROCE (${fmtPct(roce.value)})` +
       `${opMargin && !opMargin.pass ? ` or operating margins (${fmtPct(opMargin.value)})` : ''}. ` +
       `On its own, a high ROE alongside weak capital efficiency more broadly is not strong evidence of superior ` +
@@ -171,17 +180,17 @@ function buildQuality({ quality, moatQuality }) {
     )
   }
   if (revGrowth && !revGrowth.pass && netMargin?.pass) {
-    narrative.push(`Growth is slow (${fmtPct(revGrowth.value)}), but net margin (${fmtPct(netMargin.value)}) is holding up — a maturity/capital-discipline profile rather than a growth one.`)
+    contextNotes.push(`Growth is slow (${fmtPct(revGrowth.value)}), but net margin (${fmtPct(netMargin.value)}) is holding up — a maturity/capital-discipline profile rather than a growth one.`)
   }
 
   if (moatQuality?.moat?.tier && moatQuality?.quality?.tier) {
     facts.push(`Moat: ${moatQuality.moat.tier}. Quality tier: ${moatQuality.quality.tier}.`)
-    if (moatQuality.implication) narrative.push(moatQuality.implication)
+    if (moatQuality.implication) contextNotes.push(moatQuality.implication)
   }
 
   const withValues = (quality?.predictors || []).filter(p => p.value != null && p.threshold != null)
   const failing = withValues.filter(p => !p.pass)
-  const conflicted = narrative.length > 0 && quality?.label !== 'WEAK'
+  const conflicted = conflictNotes.length > 0 && quality?.label !== 'WEAK'
   const verdict = !quality?.label ? 'Unavailable'
     : quality.label === 'EXCELLENT' && !conflicted ? 'Strong operating quality'
     : quality.label === 'WEAK' ? 'Weak operating quality'
@@ -189,7 +198,12 @@ function buildQuality({ quality, moatQuality }) {
     : 'Reasonable operating quality'
 
   return {
-    verdict, narrative, facts,
+    verdict, narrative: [...conflictNotes, ...contextNotes], facts,
+    // Exposed separately from narrative so buildConflict can check for a
+    // GENUINE conflict directly, instead of inferring one from
+    // narrative.length — which would also be true whenever there's only a
+    // context note (the moat implication) and nothing actually in tension.
+    conflicted,
     scoreLabel: quality?.label ?? null, score: quality?.score ?? null,
     failingCount: failing.length, totalCount: withValues.length,
     available: !!quality?.label,
@@ -218,22 +232,51 @@ function buildTechnical(intent, { technicals, suggestions }) {
   const resistance = (suggestions?.targets || []).find(t => t.id === 'resistance')
   if (support) facts.push(`Support: ${support.price}.`)
   if (resistance) facts.push(`Resistance: ${resistance.price}.`)
+  const rsiOversold = !!technicals.signals?.rsiOversold
+  if (rsiOversold) facts.push('RSI oversold.')
 
-  // "Confirming" means what an average-up/average-down question needs
-  // (bullish price action) — for exit, it's the mirror (bearish price
-  // action confirms the case FOR exiting).
-  const wantsBullish = intent !== 'exit'
   const bullish = technicals.label === 'BULLISH'
   const bearish = technicals.label === 'BEARISH'
-  const confirming = wantsBullish ? bullish : bearish
-  const contradicting = wantsBullish ? bearish : bullish
-  const verdict = confirming ? 'Confirmed' : contradicting ? 'Contradicting' : 'Not confirmed'
+  let verdict, narrative
 
-  const narrative = verdict === 'Confirmed'
-    ? `Price action is currently confirming this — technicals (${technicals.label}, ${technicals.score}/10) agree with the direction this question is asking about.`
-    : verdict === 'Contradicting'
-    ? `Price action is currently running the OPPOSITE way (${technicals.label}, ${technicals.score}/10) — a real, active disagreement with this question's direction, not just an absence of confirmation.`
-    : `The fundamental case is not currently being confirmed by price action (${technicals.label}, ${technicals.score}/10). This doesn't invalidate the fundamental thesis; it means the technical evidence does not currently support using technical strength as additional confirmation.`
+  if (intent === 'average-down') {
+    // A genuinely different question from average-up's, not the same one
+    // asked twice: not "is this trending up" but "is NOW a defensible
+    // entry despite the trend." A support/oversold setup answers that even
+    // while the broader trend is still bearish — that's what a real dip
+    // worth buying looks like, as distinct from a stock that's simply weak.
+    // Previously this branch didn't exist at all: average-up and
+    // average-down ran the identical bullish-only check, so the two
+    // buttons could never produce a different verdict for the same stock.
+    const bounceSetup = rsiOversold || (support && !support.tooClose)
+    if (bounceSetup) {
+      verdict = 'Confirmed'
+      narrative = `A support/oversold setup makes the current price a defensible entry even though the broader trend (${technicals.label}, ${technicals.score}/10) hasn't turned — a different question from whether the stock is outright strong.`
+    } else if (bearish) {
+      verdict = 'Contradicting'
+      narrative = `Price action is actively working against this — bearish (${technicals.label}, ${technicals.score}/10) with no support/oversold setup to make the current price a defensible entry despite that.`
+    } else if (bullish) {
+      verdict = 'Confirmed'
+      narrative = `Price action is currently confirming this — technicals (${technicals.label}, ${technicals.score}/10) agree with the direction this question is asking about.`
+    } else {
+      verdict = 'Not confirmed'
+      narrative = `Neither a clear trend nor a support/oversold setup is present (${technicals.label}, ${technicals.score}/10) — nothing here argues for or against the current price as an entry point.`
+    }
+  } else {
+    // exit wants bearish price action to confirm it; average-up wants
+    // CONFIRMED, ongoing strength — a bounce setup isn't enough here, since
+    // averaging up is specifically a bet on strength continuing, not on a
+    // reversal from weakness the way a dip-buy is.
+    const wantsBullish = intent !== 'exit'
+    const confirming = wantsBullish ? bullish : bearish
+    const contradicting = wantsBullish ? bearish : bullish
+    verdict = confirming ? 'Confirmed' : contradicting ? 'Contradicting' : 'Not confirmed'
+    narrative = verdict === 'Confirmed'
+      ? `Price action is currently confirming this — technicals (${technicals.label}, ${technicals.score}/10) agree with the direction this question is asking about.`
+      : verdict === 'Contradicting'
+      ? `Price action is currently running the OPPOSITE way (${technicals.label}, ${technicals.score}/10) — a real, active disagreement with this question's direction, not just an absence of confirmation.`
+      : `The fundamental case is not currently being confirmed by price action (${technicals.label}, ${technicals.score}/10). This doesn't invalidate the fundamental thesis; it means the technical evidence does not currently support using technical strength as additional confirmation.`
+  }
 
   return { verdict, facts, narrative, available: true, label: technicals.label, score: technicals.score }
 }
@@ -263,7 +306,7 @@ function buildConflict(intent, valuation, quality, technical) {
     if (roe?.pass) supporting.push(`Reported ROE is high (${fmtPct(roe.value)}).`)
     if (revG?.pass) supporting.push('Earnings/revenue have grown strongly.')
     badMetric('Operating margin', opM); badMetric('Net margin', netM); badMetric('ROCE', roce)
-    if (quality.narrative.length > 0) against.push('The strong ROE is not corroborated by capital efficiency more broadly.')
+    if (quality.conflicted) against.push('The strong ROE is not corroborated by capital efficiency more broadly.')
   }
 
   if (technical.available) {
