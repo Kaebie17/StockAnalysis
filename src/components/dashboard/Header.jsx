@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react'
 import { usePositions } from '../../store/usePositions.js'
+import { useEstimate } from '../../store/useEstimate.js'
 import { assessDataQuality, hasAnyNormalization, activeValue } from '../../engine/dataQuality.js'
 import { saveDataResolution, listDataResolutions, listRecentTickers, recordSearch } from '../../utils/db.js'
 import { useApp } from '../../store/AppContext.jsx'
@@ -161,6 +162,7 @@ function IdentityBar() {
   const [fullRefreshing, setFullRefreshing] = React.useState(false)
   // Just the held-lots label; the actions themselves live in PositionFab.
   const { positions } = usePositions(state.ticker)
+  const { relative } = useEstimate(state)
   const openLots = positions.filter(p => p.status !== 'closed')
   const stageInfo = STAGES[stage] || STAGES.ESTABLISHED
 
@@ -254,6 +256,20 @@ function IdentityBar() {
           {fullRefreshing ? '↻ refreshing…' : '↻ refresh price history'}
         </button>
       </div>
+
+      {/* Stock vs its sector and the market over the same window */}
+      {relative?.sectorPct != null && (
+        <div className="text-[11px] text-slate-500">
+          Over {Math.round(relative.days / 30)} months: this stock {sgn(relative.stockPct)}%
+          {relative.sectorName && <> · {relative.sectorName} {sgn(relative.sectorPct)}%</>}
+          {relative.marketPct != null && <> · Nifty {sgn(relative.marketPct)}%</>}
+          {relative.vsSector != null && (
+            <span className={relative.vsSector >= 0 ? 'text-bull' : 'text-bear'}>
+              {' '}({sgn(relative.vsSector)}% vs its sector)
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Row 3: data vintage badge (its own line — it's long) */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -404,6 +420,8 @@ function GrowthMethodBadge({ data, setGrowthMethodOverride }) {
  * the company has almost certainly reported a newer year that data
  * providers (including Yahoo) simply haven't ingested yet.
  */
+const sgn = v => (v == null ? '—' : (v >= 0 ? '+' : '') + v)
+
 function DataVintageBadge({ data, state, onNormalize }) {
   // Screener's page always trails its real fiscal-year columns with one
   // more, literally headed "TTM" — a partial, overlapping period, not a

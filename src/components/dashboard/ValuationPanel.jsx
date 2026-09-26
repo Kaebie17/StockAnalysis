@@ -8,7 +8,6 @@ import { computeFact } from '../../engine/factImpact.js'
 import { extractSegmentShares } from '../../engine/segmentShare.js'
 import { TIER } from '../../engine/methodologyTier.js'
 import ProvenanceTag from '../ProvenanceTag.jsx'
-import PeerWeightSlider from './PeerWeightSlider.jsx'
 
 // Dot bar: 5 dots, filled based on upside magnitude
 // Green dots = upside, red dots = downside
@@ -444,8 +443,6 @@ function EstimateExplainer({ state }) {
                       )}
                     </div>
 
-                    <PeerWeightSlider peerBand={peerBand} />
-
                     {isEv ? (
                       <div className="bg-navy-900/60 rounded px-3 py-2 space-y-1 font-mono text-[11px]">
                         <div className="text-slate-500">
@@ -778,19 +775,6 @@ function EstimateRevisions({ state }) {
           ))}
 
           {loading && pending === 0 && <p className="text-[11px] text-slate-600">Checking news…</p>}
-
-          {relative?.sectorPct != null && (
-            <div className="text-[11px] text-slate-500">
-              Over {Math.round(relative.days / 30)} months: this stock {sign(relative.stockPct)}%
-              {relative.sectorName && <> · {relative.sectorName} {sign(relative.sectorPct)}%</>}
-              {relative.marketPct != null && <> · Nifty {sign(relative.marketPct)}%</>}
-              {relative.vsSector != null && (
-                <span className={relative.vsSector >= 0 ? 'text-bull' : 'text-bear'}>
-                  {' '}({sign(relative.vsSector)}% vs its sector)
-                </span>
-              )}
-            </div>
-          )}
 
           {rerating?.detected && (
             <div className="text-[11px] text-neutral bg-neutral/10 rounded px-2 py-1.5">

@@ -3,6 +3,8 @@ import { AppProvider, useApp } from './store/AppContext.jsx'
 import Header from './components/dashboard/Header.jsx'
 import SummaryStrip from './components/dashboard/SummaryStrip.jsx'
 import BetaWindowPicker from './components/dashboard/BetaWindowPicker.jsx'
+import PeerWeightSlider from './components/dashboard/PeerWeightSlider.jsx'
+import { useEstimate } from './store/useEstimate.js'
 import ValuationPanel from './components/dashboard/ValuationPanel.jsx'
 import FundamentalsPanel from './components/dashboard/FundamentalsPanel.jsx'
 import TechnicalsPanel from './components/dashboard/TechnicalsPanel.jsx'
@@ -25,6 +27,7 @@ const MIN_PEERS_FOR_BAND = 3
 
 function Dashboard() {
   const { state, load, applyPastedTable, dismissGap, refreshPeers, togglePeerConfirmation } = useApp()
+  const { peerBand } = useEstimate(state)
   const [expanded, setExpanded] = useState(null)
   const [studioOpen, setStudioOpen] = useState(false)
   const [gapFillOpen, setGapFillOpen] = useState(false)
@@ -98,6 +101,7 @@ function Dashboard() {
               <SummaryStrip onExpand={handleExpand} expanded={expanded} onAddHistory={() => setAddHistoryOpen(true)} detail={
                 <div className="space-y-4">
                   <BetaWindowPicker />
+                  <PeerWeightSlider peerBand={peerBand} />
                   <div className="flex items-center justify-between gap-2">
                     <DataGapBanner
                       ratioResult={state.ratioResult}
