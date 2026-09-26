@@ -203,24 +203,10 @@ export async function getCachedAge(ticker) {
   } catch { return null }
 }
 
-// lastAccessed vs visitedAt — two different questions that used to be one
-// field, which was the bug: lastAccessed feeds evictIfNeeded() ("is this
-// record still in use by ANYONE, for ANY reason" — a peer read counts,
-// since it's real, ongoing use of that data) while visitedAt feeds
-// listRecentTickers()'s "Try:" row ("did the USER actually look this ticker
-// up" — a peer pulled in to enrich another ticker's comparison doesn't
-// count, since the user never searched for it). Collapsing both into
-// lastAccessed and then skipping it entirely for peer reads (opts.touch)
-// fixed the "Try:" pollution but broke eviction: a confirmed peer (or any
-// ticker only ever reached as someone else's peer candidate) stopped
-// getting ANY freshness signal at all, so it silently became the oldest,
-// first-evicted record the moment the 40MB cache filled up — which then
-// un-cached that peer, dropped confirmed peer coverage below the
-// auto-open floor (App.jsx), and re-triggered "select peers" for a peer
-// the user had already confirmed. lastAccessed is bumped on every read
-// unconditionally; only visitedAt is gated on opts.touch.
-export async function getCached(ticker, opts = {}) {
-  const { touch = true } = opts
+// lastAccessed is bumped on EVERY read (peer reads included) — it drives
+// evictIfNeeded() only. It says nothing about what the user searched for; the
+// landing page's "Try:" row is a separate list (recordSearch below).
+export async function getCached(ticker) {
   // IMPORTANT: return null ONLY when the record genuinely doesn't exist. A read
   // FAILURE must throw — otherwise the caller can't tell "no cache" from "read
   // broke" and would re-fetch + overwrite good (e.g. Screener-merged) data.
@@ -242,7 +228,7 @@ export async function getCached(ticker, opts = {}) {
       const rec = req.result
       if (!rec) { resolve(null); return }
       try {
-        store.put({ ...rec, lastAccessed: Date.now(), visitedAt: touch ? Date.now() : rec.visitedAt })
+        store.put({ ...rec, lastAccessed: Date.now() })
       } catch {}
       resolve(rec.data)
     }
@@ -260,7 +246,6 @@ export async function setCached(ticker, data) {
       data,
       timestamp:    Date.now(),
       lastAccessed: Date.now(),
-      visitedAt:    Date.now(),
       bytes
     })
 
@@ -305,22 +290,24 @@ export async function deleteCached(ticker) {
   try { await txDelete('financials', ticker.toUpperCase()) } catch { /* non-critical */ }
 }
 
-// Most recently looked-up tickers, newest first — powers the "Try:" row on
-// the landing page (Header.jsx) with the user's own search history instead
-// of a fixed example list. Uses visitedAt, not lastAccessed — the latter is
-// bumped by peer-enrichment reads too (see getCached above), which would put
-// someone else's peer back on this list just because their page happened to
-// reference it. `|| rec.lastAccessed` is a one-time fallback for a record
-// cached before visitedAt existed, so history doesn't go blank for anything
-// written before this field was added.
+// The "Try:" row on the landing page: ONLY tickers typed into (or picked
+// from) the search box. Kept in its own small list rather than derived from the
+// financials cache, because that cache also fills with peers, holdings and
+// warmed tickers the user never searched for.
+const SEARCH_KEY = 'stockanalyzr.searches'
+export function recordSearch(ticker) {
+  const t = String(ticker || '').trim().toUpperCase()
+  if (!t) return
+  try {
+    const list = JSON.parse(localStorage.getItem(SEARCH_KEY) || '[]').filter(x => x !== t)
+    localStorage.setItem(SEARCH_KEY, JSON.stringify([t, ...list].slice(0, 20)))
+  } catch { /* non-critical */ }
+}
+
 export async function listRecentTickers(limit = 8) {
   try {
-    const all = await txGetAll('financials')
-    return all
-      .filter(rec => rec.visitedAt || rec.lastAccessed)
-      .sort((a, b) => (b.visitedAt || b.lastAccessed || 0) - (a.visitedAt || a.lastAccessed || 0))
-      .slice(0, limit)
-      .map(rec => rec.key)
+    const list = JSON.parse(localStorage.getItem(SEARCH_KEY) || '[]')
+    return Array.isArray(list) ? list.slice(0, limit) : []
   } catch { return [] }
 }
 

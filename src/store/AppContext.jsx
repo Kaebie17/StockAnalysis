@@ -737,7 +737,7 @@ export function AppProvider({ children }) {
     // setCached writes: { key, data: payload, ... }.
     if (state.data.deepSource === 'screener') {
       const t = state.ticker.toUpperCase()
-      queuePush(`financials:${t}`, { key: t, data: forStorage(payload), timestamp: Date.now(), lastAccessed: Date.now(), visitedAt: Date.now() })
+      queuePush(`financials:${t}`, { key: t, data: forStorage(payload), timestamp: Date.now(), lastAccessed: Date.now() })
     }
   }, [state.data])   // eslint-disable-line react-hooks/exhaustive-deps
 

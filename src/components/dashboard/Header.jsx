@@ -3,7 +3,7 @@
 import React, { useState } from 'react'
 import { usePositions } from '../../store/usePositions.js'
 import { assessDataQuality, hasAnyNormalization, activeValue } from '../../engine/dataQuality.js'
-import { saveDataResolution, listDataResolutions, listRecentTickers } from '../../utils/db.js'
+import { saveDataResolution, listDataResolutions, listRecentTickers, recordSearch } from '../../utils/db.js'
 import { useApp } from '../../store/AppContext.jsx'
 import { deleteCached } from '../../utils/db.js'
 import { STAGES } from '../../engine/stage.js'
@@ -41,10 +41,21 @@ export default function Header() {
     if (state.ticker && state.status === 'success') setInput(state.ticker)
   }, [state.ticker, state.status])
 
+  // Only a search-box lookup (typed, or a suggestion chip) counts toward the
+  // "Try:" list, and only once it actually loads.
+  const pendingSearch = React.useRef(null)
+  React.useEffect(() => {
+    if (state.status === 'success' && pendingSearch.current
+        && String(state.ticker || '').toUpperCase() === pendingSearch.current) {
+      recordSearch(pendingSearch.current)
+      pendingSearch.current = null
+    }
+  }, [state.status, state.ticker])
+
   const submit = (e) => {
     e?.preventDefault()
     const t = input.trim()
-    if (t) load(t)
+    if (t) { pendingSearch.current = t.toUpperCase(); load(t) }
   }
 
   return (
@@ -113,7 +124,7 @@ export default function Header() {
           <div className="flex flex-wrap gap-1.5 pt-1">
             <span className="text-xs text-slate-600">Try:</span>
             {examples.map(t => (
-              <button key={t} onClick={() => { setInput(t); load(t) }}
+              <button key={t} onClick={() => { setInput(t); pendingSearch.current = t.toUpperCase(); load(t) }}
                 className="text-xs px-2 py-0.5 rounded bg-navy-800 text-slate-400 hover:text-white hover:bg-navy-700 transition-colors font-mono">
                 {t}
               </button>

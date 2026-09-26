@@ -45,10 +45,10 @@ function hashString(s) {
   return h.toString(36)
 }
 
-// financials' top-level `timestamp`, `lastAccessed` and `visitedAt` — and the
+// financials' top-level `timestamp` and `lastAccessed` — and the
 // live price/marketCap/change1d fields nested inside data.data — all get
 // touched by routine, no-edit-behind-them activity: `timestamp` on every
-// fetch/poll (setCached), `lastAccessed`/`visitedAt` on every plain read
+// fetch/poll (setCached), `lastAccessed` on every plain read
 // (getCached, called on basically every ticker view, including as a peer —
 // see getCached's own note on why those two are now separate fields), and
 // the price fields on every 60s poll tick (pullAll below has the matching
@@ -59,7 +59,7 @@ function fingerprintOf(key, value) {
   const store = key.split(':', 1)[0]
   if (store === 'financials' && value?.data?.data) {
     const { price, marketCap, meta, ...restData } = value.data.data
-    const { timestamp, lastAccessed, visitedAt, ...restValue } = value
+    const { timestamp, lastAccessed, ...restValue } = value
     return hashString(JSON.stringify({
       ...restValue,
       data: { ...value.data, data: { ...restData, meta: meta ? { ...meta, change1d: undefined } : meta } },

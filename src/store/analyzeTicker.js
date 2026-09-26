@@ -30,6 +30,24 @@ const inflight = new Map()
 const failedAt = new Map()
 const RETRY_AFTER_MS = 10 * 60 * 1000
 
+// Fields the user builds up on a ticker (pasted Screener statements, confirmed
+// peers, basis toggle, custom rows, growth-method choices, quarterly paste).
+// A refresh has to carry these over: replacing the record with a bare fetch
+// silently wiped them, which showed up as pasted metrics and confirmed peers
+// "going missing" every time the Positions panel re-analysed a stale ticker.
+const USER_OWNED = ['confirmedPeers', 'peerWeight', 'basis', 'customFields', 'fieldAssignments',
+  'growthMethodOverride', 'growthMethodWindow', 'quarterlyHistory']
+const STATEMENT_TABLES = ['reportedIncomeHistory', 'incomeHistory', 'balanceHistory', 'cashflowHistory',
+  'deepSource', 'source']
+
+function mergeRefresh(existing, fresh) {
+  if (!existing) return fresh
+  const merged = { ...fresh }
+  for (const k of USER_OWNED) if (existing[k] !== undefined) merged[k] = existing[k]
+  if (existing.deepSource) for (const k of STATEMENT_TABLES) if (existing[k] !== undefined) merged[k] = existing[k]
+  return merged
+}
+
 export async function analyzeTicker(ticker, { force = false } = {}) {
   const t = String(ticker || '').trim().toUpperCase()
   if (!t) return null
@@ -52,8 +70,10 @@ export async function analyzeTicker(ticker, { force = false } = {}) {
   const job = (async () => {
     try {
       const { source, raw } = await fetchTicker(t)
-      const data = normalize(source, raw)
-      const payload = { data, ...computeAll(data, {}, {}, {}, null) }
+      let existing = null
+      try { existing = (await getCached(t))?.data ?? null } catch { /* treat as absent */ }
+      const data = mergeRefresh(existing, normalize(source, raw))
+      const payload = { data, ...computeAll(data, {}, {}, {}, null, { basis: data.basis }) }
       try { await setCached(t, payload) } catch { /* quota — still usable in memory */ }
       failedAt.delete(t)
       return payload
