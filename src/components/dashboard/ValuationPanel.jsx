@@ -784,7 +784,7 @@ function EstimateRevisions({ state }) {
               Over {Math.round(relative.days / 30)} months: this stock {sign(relative.stockPct)}%
               {relative.sectorName && <> · {relative.sectorName} {sign(relative.sectorPct)}%</>}
               {relative.marketPct != null && <> · Nifty {sign(relative.marketPct)}%</>}
-              {relative.vsSector != null && Math.abs(relative.vsSector) >= 3 && (
+              {relative.vsSector != null && (
                 <span className={relative.vsSector >= 0 ? 'text-bull' : 'text-bear'}>
                   {' '}({sign(relative.vsSector)}% vs its sector)
                 </span>
