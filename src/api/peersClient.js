@@ -125,15 +125,20 @@ const SECTOR_TTL_MS = 60 * 60 * 1000   // shorter than the server's day-long cac
 async function fetchIndexCsv(csvSlug) {
   const hit = sectorCache.get(csvSlug)
   if (hit && Date.now() - hit.at < SECTOR_TTL_MS) return hit.constituents
-  try {
-    const r = await fetch(`/api/nseIndices?index=${encodeURIComponent(csvSlug)}`)
-    const j = r.ok ? await r.json().catch(() => null) : null
-    const constituents = j?.constituents || []
-    sectorCache.set(csvSlug, { at: Date.now(), constituents })
-    return constituents
-  } catch {
-    return []
+  // A failed request (non-OK, bad JSON, network error) is retried once and is
+  // never cached — caching its empty result made a transient failure look like
+  // "this index has no members" for an hour, so the ticker's peers vanished.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await fetch(`/api/nseIndices?index=${encodeURIComponent(csvSlug)}`)
+      const j = r.ok ? await r.json().catch(() => null) : null
+      if (Array.isArray(j?.constituents)) {
+        sectorCache.set(csvSlug, { at: Date.now(), constituents: j.constituents })
+        return j.constituents
+      }
+    } catch { /* retry */ }
   }
+  return []
 }
 
 export async function fetchSectorConstituents(excludeTicker) {
